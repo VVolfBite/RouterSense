@@ -1,0 +1,43 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Model weights and Hugging Face caches
+model/
+models/
+hf_cache/
+**/hf_cache/
+.cache/
+**/.cache/
+
+# Experiment outputs and logs
+outputs/
+outputs_*/
+logs/
+*.log
+
+# Local archives and temporary files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.tmp
+tmp/
+temp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
