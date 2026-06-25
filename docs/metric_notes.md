@@ -57,3 +57,11 @@
 ## 当前阅读建议
 
 先看 `critical_bucket_proxy_summary.json` 里的 v2 overall hit rate，再看 per-layer hit rate，最后看 grouping 维度。当前阶段最重要的问题不是“排序是否分叉”，而是“哪种 proxy 更接近疑似关键桶”。
+
+## 优先级说明
+
+当前最值得优先看的结果是 `critical_bucket_proxy_v2` 的 top-1 hit rate、mean rank 和 per-layer 结果。它们更接近“谁能挑中疑似关键桶”的决策问题。
+
+`proxy_comparison_summary.json` 里的 top-1 different rate 和 top-k Jaccard 仍然有用，但主要是辅助判断 state-only 与 dependency-aware 是否给出不同排序；它们本身不说明哪一个更接近真正短板。
+
+`trace_batch_summary.json` 里的 skew、Gini、hot bucket、active destination 等指标是输入结构描述。它们帮助解释条件差异，但不应该单独当作最终主线结论。

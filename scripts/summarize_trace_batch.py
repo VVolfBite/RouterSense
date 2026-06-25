@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Trace batch implementation used by experiment/poc1/trace_batch.py.
+
+Keep new user-facing POC1 entrypoints under experiment/poc1/.
+"""
 from __future__ import annotations
 
 import argparse

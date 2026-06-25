@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Legacy compatibility entrypoint.
+
+Prefer experiment/poc1/trace_single.py for new POC1 runs.
+"""
 from __future__ import annotations
 
 import argparse

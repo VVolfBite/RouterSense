@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Legacy action dispatcher.
+
+Prefer experiment/poc1/* entrypoints for current POC1 work.
+"""
 from __future__ import annotations
 
 import argparse

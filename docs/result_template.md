@@ -25,8 +25,12 @@ Recommended minimal contents:
 
 Current POC1 examples:
 
-- `outputs/poc1_trace_single/`
-- `outputs/poc1_trace_batch/`
-- `outputs/poc1_proxy_compare/`
+- `outputs/poc1_trace_single/`: one real OLMoE trace and its minimal batch routing summary.
+- `outputs/poc1_trace_batch/`: multi-prompt, multi-layer real trace summaries and per-sample trace files.
+- `outputs/poc1_proxy_compare/`: state/dependency/full proxy comparison, verification, and critical bucket proxy summaries.
+
+For current POC1 work, do not write new main results directly into `outputs/`. Create or reuse an experiment subdirectory and put the main summary there.
+
+If a directory has both `summary.json` and a more specific file such as `trace_batch_summary.json` or `critical_bucket_proxy_summary.json`, treat `summary.json` as the short pointer and the specific file as the full result.
 
 Large outputs stay local and are ignored by git.

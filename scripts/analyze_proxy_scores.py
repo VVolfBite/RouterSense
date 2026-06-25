@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Proxy comparison implementation used by experiment/poc1/proxy_compare.py.
+
+Keep new user-facing POC1 entrypoints under experiment/poc1/.
+"""
 from __future__ import annotations
 
 import argparse

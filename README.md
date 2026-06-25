@@ -34,7 +34,16 @@ The current local conclusion is:
 
 ## Important Entrypoints
 
-Experiment entrypoints live under `experiment/poc1/`. Older `scripts/` entrypoints are kept as compatibility wrappers and smoke-test utilities.
+Current experiment entrypoints live under `experiment/poc1/`. Older `scripts/` entrypoints are kept as compatibility wrappers, platform smoke scripts, or implementation helpers reused by the thin experiment wrappers.
+
+Directory responsibilities:
+
+- `src/routesense_poc1/`: core library logic for config, model loading, trace extraction, schemas, and serialization.
+- `experiment/poc1/`: main POC1 experiment entrypoints.
+- `deploy/`: deployment-facing wrappers and new-machine run notes.
+- `scripts/`: legacy compatibility layer and platform utilities; do not add new main experiments here.
+- `docs/`: result templates, metric notes, and project documentation.
+- `tests/`: regression tests for the current code contracts.
 
 Single real trace:
 
@@ -51,7 +60,7 @@ python scripts/run_action.py trace --text "The history of science is a story of"
 Windows smoke test:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_poc1_windows.ps1 -UseCurrentPython -ModelId model\OLMoE -OutputDir outputs_windows_smoke
+powershell -ExecutionPolicy Bypass -File deploy\run_poc1_windows.ps1 -UseCurrentPython -ModelId model\OLMoE -OutputDir outputs\poc1_windows_smoke
 ```
 
 Trace batch:
@@ -124,7 +133,7 @@ For the current local phase, start with:
 ## Linux Default Flow
 
 ```bash
-bash scripts/run_poc1_linux.sh
+bash deploy/run_poc1_linux.sh
 ```
 
 The Linux script keeps the flow conservative:
@@ -135,6 +144,18 @@ The Linux script keeps the flow conservative:
 4. real trace
 
 It does not run ablation by default because real route ablation is not implemented yet.
+
+## Compatibility Scripts
+
+These `scripts/` files are intentionally kept, but they are not the preferred place for new experiment entrypoints:
+
+- `scripts/trace_one_token.py`: legacy wrapper for single real trace.
+- `scripts/run_action.py`: legacy action dispatcher.
+- `scripts/summarize_trace_batch.py`: implementation helper used by `experiment/poc1/trace_batch.py` and server trace wrappers.
+- `scripts/analyze_proxy_scores.py`: implementation helper used by `experiment/poc1/proxy_compare.py`.
+- `scripts/run_poc1_linux.sh` and `scripts/run_poc1_windows.ps1`: platform scripts called by `deploy/` wrappers.
+
+New POC1 experiment commands should go under `experiment/poc1/`.
 
 ## Repository Hygiene
 
