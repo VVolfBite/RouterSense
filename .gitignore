@@ -22,11 +22,9 @@ hf_cache/
 **/.cache/
 
 # Keep generated outputs tracked for PoC1
-!outputs/
-!outputs/**
+!!outputs/**
 
 # Experiment outputs and logs
-outputs/
 outputs_*/
 logs/
 *.log

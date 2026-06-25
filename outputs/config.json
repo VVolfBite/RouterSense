@@ -1,0 +1,16 @@
+{
+  "model_id": "model\\OLMoE",
+  "precision": "fp16",
+  "device_map": "balanced",
+  "max_memory": {
+    "0": "14GiB",
+    "1": "14GiB",
+    "cpu": "140GiB"
+  },
+  "text": "The history of science is a story of",
+  "layer": "auto",
+  "rank": 0,
+  "output_dir": "outputs",
+  "seed": 42,
+  "mock": false
+}
