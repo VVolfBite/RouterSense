@@ -1,0 +1,9 @@
+﻿{
+    "experiment":  "poc1_trace_single",
+    "primary_files":  [
+                          "one_sample_trace.json",
+                          "batch_routing_summary.json"
+                      ],
+    "purpose":  "Single-sample real OLMoE routing trace smoke output.",
+    "notes":  "Use this directory to confirm real model loading and one trace export are working."
+}
