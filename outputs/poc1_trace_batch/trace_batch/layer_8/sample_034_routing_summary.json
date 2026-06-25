@@ -1,0 +1,1906 @@
+{
+  "sample_id": "layer_8_sample_034",
+  "microbatch_id": null,
+  "layer_id": 8,
+  "layer_path": "model.layers.8.mlp",
+  "sequence_length": 16,
+  "active_destinations": [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    11,
+    12,
+    13,
+    17,
+    18,
+    19,
+    22,
+    23,
+    24,
+    28,
+    29,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    40,
+    43,
+    45,
+    46,
+    49,
+    51,
+    52,
+    53,
+    55,
+    56,
+    57,
+    59,
+    60,
+    62,
+    63
+  ],
+  "destination_count": 43,
+  "total_selected_routes": 128,
+  "source_count": 16,
+  "notes": "summary generated from real router trace",
+  "buckets": [
+    {
+      "destination_id": 11,
+      "expert_ids_in_bucket": [
+        11
+      ],
+      "token_count_in_bucket": 11,
+      "token_positions": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 11,
+      "bucket_rank_by_size": 1,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 5,
+      "expert_ids_in_bucket": [
+        5
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        13,
+        15
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 2,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 19,
+      "expert_ids_in_bucket": [
+        19
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 3,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 46,
+      "expert_ids_in_bucket": [
+        46
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        8,
+        9,
+        11,
+        12,
+        13,
+        15
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 4,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 17,
+      "expert_ids_in_bucket": [
+        17
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        3,
+        8,
+        9,
+        11,
+        12,
+        13
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 5,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 34,
+      "expert_ids_in_bucket": [
+        34
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        6,
+        7,
+        10,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 6,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 57,
+      "expert_ids_in_bucket": [
+        57
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        1,
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 7,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 4,
+      "expert_ids_in_bucket": [
+        4
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        4,
+        5,
+        8,
+        9,
+        11
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 8,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 36,
+      "expert_ids_in_bucket": [
+        36
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        10,
+        12,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 9,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 55,
+      "expert_ids_in_bucket": [
+        55
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 10,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 63,
+      "expert_ids_in_bucket": [
+        63
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 11,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 8,
+      "expert_ids_in_bucket": [
+        8
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        8,
+        9,
+        11,
+        12
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 12,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 24,
+      "expert_ids_in_bucket": [
+        24
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        1,
+        6,
+        13,
+        14
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 13,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 32,
+      "expert_ids_in_bucket": [
+        32
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        0,
+        1,
+        3,
+        4
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 14,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 18,
+      "expert_ids_in_bucket": [
+        18
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        3,
+        4,
+        5
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 15,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 28,
+      "expert_ids_in_bucket": [
+        28
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        3,
+        8,
+        11
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 16,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 40,
+      "expert_ids_in_bucket": [
+        40
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        8,
+        9,
+        12
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 17,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 49,
+      "expert_ids_in_bucket": [
+        49
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        1,
+        2,
+        10
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 18,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 53,
+      "expert_ids_in_bucket": [
+        53
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        5,
+        6,
+        9
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 19,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 59,
+      "expert_ids_in_bucket": [
+        59
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        0,
+        1,
+        3
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 20,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 2,
+      "expert_ids_in_bucket": [
+        2
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        12,
+        13
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 21,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 12,
+      "expert_ids_in_bucket": [
+        12
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        7
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 22,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 51,
+      "expert_ids_in_bucket": [
+        51
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        1,
+        2
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 23,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 52,
+      "expert_ids_in_bucket": [
+        52
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        7
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 24,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 62,
+      "expert_ids_in_bucket": [
+        62
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        14
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 25,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 0,
+      "expert_ids_in_bucket": [
+        0
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        11
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 26,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 1,
+      "expert_ids_in_bucket": [
+        1
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 27,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 6,
+      "expert_ids_in_bucket": [
+        6
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        1
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 28,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 7,
+      "expert_ids_in_bucket": [
+        7
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 29,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 10,
+      "expert_ids_in_bucket": [
+        10
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 30,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 13,
+      "expert_ids_in_bucket": [
+        13
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        12
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 31,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 22,
+      "expert_ids_in_bucket": [
+        22
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 32,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 23,
+      "expert_ids_in_bucket": [
+        23
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        5
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 33,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 29,
+      "expert_ids_in_bucket": [
+        29
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 34,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 31,
+      "expert_ids_in_bucket": [
+        31
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        5
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 35,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 33,
+      "expert_ids_in_bucket": [
+        33
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 36,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 35,
+      "expert_ids_in_bucket": [
+        35
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 37,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 37,
+      "expert_ids_in_bucket": [
+        37
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        6
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 38,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 38,
+      "expert_ids_in_bucket": [
+        38
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        1
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 39,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 43,
+      "expert_ids_in_bucket": [
+        43
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 40,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 45,
+      "expert_ids_in_bucket": [
+        45
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        6
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 41,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 56,
+      "expert_ids_in_bucket": [
+        56
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        11
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 42,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 60,
+      "expert_ids_in_bucket": [
+        60
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 43,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    }
+  ],
+  "source_destination_matrix": [
+    [
+      22,
+      7,
+      29,
+      32,
+      60,
+      1,
+      59,
+      33
+    ],
+    [
+      49,
+      24,
+      6,
+      32,
+      38,
+      51,
+      59,
+      57
+    ],
+    [
+      49,
+      52,
+      57,
+      12,
+      51,
+      63,
+      55,
+      62
+    ],
+    [
+      5,
+      28,
+      18,
+      32,
+      59,
+      46,
+      17,
+      19
+    ],
+    [
+      18,
+      5,
+      10,
+      43,
+      19,
+      4,
+      35,
+      32
+    ],
+    [
+      53,
+      19,
+      11,
+      4,
+      23,
+      18,
+      5,
+      31
+    ],
+    [
+      24,
+      11,
+      45,
+      37,
+      5,
+      34,
+      19,
+      53
+    ],
+    [
+      55,
+      57,
+      63,
+      11,
+      5,
+      34,
+      52,
+      12
+    ],
+    [
+      17,
+      11,
+      28,
+      4,
+      46,
+      19,
+      40,
+      8
+    ],
+    [
+      11,
+      53,
+      19,
+      46,
+      17,
+      4,
+      8,
+      40
+    ],
+    [
+      36,
+      57,
+      11,
+      34,
+      19,
+      63,
+      49,
+      55
+    ],
+    [
+      17,
+      28,
+      4,
+      0,
+      46,
+      11,
+      56,
+      8
+    ],
+    [
+      2,
+      11,
+      40,
+      46,
+      8,
+      36,
+      17,
+      13
+    ],
+    [
+      36,
+      11,
+      2,
+      46,
+      24,
+      17,
+      34,
+      5
+    ],
+    [
+      11,
+      57,
+      34,
+      36,
+      63,
+      55,
+      24,
+      62
+    ],
+    [
+      11,
+      63,
+      57,
+      55,
+      34,
+      36,
+      5,
+      46
+    ]
+  ],
+  "destination_participation_list": [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    11,
+    12,
+    13,
+    17,
+    18,
+    19,
+    22,
+    23,
+    24,
+    28,
+    29,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    40,
+    43,
+    45,
+    46,
+    49,
+    51,
+    52,
+    53,
+    55,
+    56,
+    57,
+    59,
+    60,
+    62,
+    63
+  ],
+  "co_active_destinations": [
+    [
+      0,
+      1,
+      2,
+      4,
+      5,
+      6,
+      7,
+      8,
+      10,
+      11,
+      12,
+      13,
+      17,
+      18,
+      19,
+      22,
+      23,
+      24,
+      28,
+      29,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      40,
+      43,
+      45,
+      46,
+      49,
+      51,
+      52,
+      53,
+      55,
+      56,
+      57,
+      59,
+      60,
+      62,
+      63
+    ]
+  ],
+  "dependency_graph_edges": [],
+  "barrier_relevant_destinations": [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    11,
+    12,
+    13,
+    17,
+    18,
+    19,
+    22,
+    23,
+    24,
+    28,
+    29,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    40,
+    43,
+    45,
+    46,
+    49,
+    51,
+    52,
+    53,
+    55,
+    56,
+    57,
+    59,
+    60,
+    62,
+    63
+  ],
+  "bucket_summaries": [
+    {
+      "destination_id": 11,
+      "expert_ids_in_bucket": [
+        11
+      ],
+      "token_count_in_bucket": 11,
+      "token_positions": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 11,
+      "bucket_rank_by_size": 1,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 5,
+      "expert_ids_in_bucket": [
+        5
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        13,
+        15
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 2,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 19,
+      "expert_ids_in_bucket": [
+        19
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 3,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 46,
+      "expert_ids_in_bucket": [
+        46
+      ],
+      "token_count_in_bucket": 7,
+      "token_positions": [
+        3,
+        8,
+        9,
+        11,
+        12,
+        13,
+        15
+      ],
+      "selected_route_count": 7,
+      "bucket_rank_by_size": 4,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 17,
+      "expert_ids_in_bucket": [
+        17
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        3,
+        8,
+        9,
+        11,
+        12,
+        13
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 5,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 34,
+      "expert_ids_in_bucket": [
+        34
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        6,
+        7,
+        10,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 6,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 57,
+      "expert_ids_in_bucket": [
+        57
+      ],
+      "token_count_in_bucket": 6,
+      "token_positions": [
+        1,
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 6,
+      "bucket_rank_by_size": 7,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 4,
+      "expert_ids_in_bucket": [
+        4
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        4,
+        5,
+        8,
+        9,
+        11
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 8,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 36,
+      "expert_ids_in_bucket": [
+        36
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        10,
+        12,
+        13,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 9,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 55,
+      "expert_ids_in_bucket": [
+        55
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 10,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 63,
+      "expert_ids_in_bucket": [
+        63
+      ],
+      "token_count_in_bucket": 5,
+      "token_positions": [
+        2,
+        7,
+        10,
+        14,
+        15
+      ],
+      "selected_route_count": 5,
+      "bucket_rank_by_size": 11,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 8,
+      "expert_ids_in_bucket": [
+        8
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        8,
+        9,
+        11,
+        12
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 12,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 24,
+      "expert_ids_in_bucket": [
+        24
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        1,
+        6,
+        13,
+        14
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 13,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 32,
+      "expert_ids_in_bucket": [
+        32
+      ],
+      "token_count_in_bucket": 4,
+      "token_positions": [
+        0,
+        1,
+        3,
+        4
+      ],
+      "selected_route_count": 4,
+      "bucket_rank_by_size": 14,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 18,
+      "expert_ids_in_bucket": [
+        18
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        3,
+        4,
+        5
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 15,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 28,
+      "expert_ids_in_bucket": [
+        28
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        3,
+        8,
+        11
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 16,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 40,
+      "expert_ids_in_bucket": [
+        40
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        8,
+        9,
+        12
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 17,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 49,
+      "expert_ids_in_bucket": [
+        49
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        1,
+        2,
+        10
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 18,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 53,
+      "expert_ids_in_bucket": [
+        53
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        5,
+        6,
+        9
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 19,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 59,
+      "expert_ids_in_bucket": [
+        59
+      ],
+      "token_count_in_bucket": 3,
+      "token_positions": [
+        0,
+        1,
+        3
+      ],
+      "selected_route_count": 3,
+      "bucket_rank_by_size": 20,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 2,
+      "expert_ids_in_bucket": [
+        2
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        12,
+        13
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 21,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 12,
+      "expert_ids_in_bucket": [
+        12
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        7
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 22,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 51,
+      "expert_ids_in_bucket": [
+        51
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        1,
+        2
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 23,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 52,
+      "expert_ids_in_bucket": [
+        52
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        7
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 24,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 62,
+      "expert_ids_in_bucket": [
+        62
+      ],
+      "token_count_in_bucket": 2,
+      "token_positions": [
+        2,
+        14
+      ],
+      "selected_route_count": 2,
+      "bucket_rank_by_size": 25,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": true
+    },
+    {
+      "destination_id": 0,
+      "expert_ids_in_bucket": [
+        0
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        11
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 26,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 1,
+      "expert_ids_in_bucket": [
+        1
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 27,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 6,
+      "expert_ids_in_bucket": [
+        6
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        1
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 28,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 7,
+      "expert_ids_in_bucket": [
+        7
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 29,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 10,
+      "expert_ids_in_bucket": [
+        10
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 30,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 13,
+      "expert_ids_in_bucket": [
+        13
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        12
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 31,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 22,
+      "expert_ids_in_bucket": [
+        22
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 32,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 23,
+      "expert_ids_in_bucket": [
+        23
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        5
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 33,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 29,
+      "expert_ids_in_bucket": [
+        29
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 34,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 31,
+      "expert_ids_in_bucket": [
+        31
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        5
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 35,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 33,
+      "expert_ids_in_bucket": [
+        33
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 36,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 35,
+      "expert_ids_in_bucket": [
+        35
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 37,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 37,
+      "expert_ids_in_bucket": [
+        37
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        6
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 38,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 38,
+      "expert_ids_in_bucket": [
+        38
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        1
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 39,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 43,
+      "expert_ids_in_bucket": [
+        43
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        4
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 40,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 45,
+      "expert_ids_in_bucket": [
+        45
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        6
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 41,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 56,
+      "expert_ids_in_bucket": [
+        56
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        11
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 42,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    },
+    {
+      "destination_id": 60,
+      "expert_ids_in_bucket": [
+        60
+      ],
+      "token_count_in_bucket": 1,
+      "token_positions": [
+        0
+      ],
+      "selected_route_count": 1,
+      "bucket_rank_by_size": 43,
+      "estimated_bytes": null,
+      "fanin_proxy": 1,
+      "fanout_proxy": 8,
+      "is_hot_bucket": false
+    }
+  ]
+}

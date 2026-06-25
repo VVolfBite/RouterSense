@@ -1,0 +1,79 @@
+{
+  "input_files": {
+    "trace_batch_summary": "E:\\Test\\routesense_poc1\\outputs\\poc1_trace_batch\\trace_batch_summary.json",
+    "proxy_comparison_summary": "E:\\Test\\routesense_poc1\\outputs\\poc1_proxy_compare\\proxy_comparison_summary.json"
+  },
+  "trace_sample_count": 108,
+  "proxy_sample_count": 108,
+  "recomputed_metrics": {
+    "sample_count": 108,
+    "state_dependency_top1_different_rate": 0.12037037037037036,
+    "full_state_top1_different_rate": 0.09259259259259259,
+    "mean_state_dependency_topk_jaccard": 0.7944444444444444,
+    "mean_state_full_topk_jaccard": 0.825925925925926,
+    "high_skew_state_dependency_top1_different_rate": 0.01694915254237288,
+    "low_skew_state_dependency_top1_different_rate": 0.24489795918367346,
+    "divergence_larger_in_high_skew_samples": false
+  },
+  "reported_metrics": {
+    "sample_count": null,
+    "state_dependency_top1_different_rate": 0.12037037037037036,
+    "full_state_top1_different_rate": 0.09259259259259259,
+    "mean_state_dependency_topk_jaccard": 0.7944444444444444,
+    "mean_state_full_topk_jaccard": 0.825925925925926,
+    "high_skew_state_dependency_top1_different_rate": 0.01694915254237288,
+    "low_skew_state_dependency_top1_different_rate": 0.24489795918367346,
+    "divergence_larger_in_high_skew_samples": false
+  },
+  "checks": {
+    "sample_count": {
+      "recomputed": 108,
+      "reported": 108,
+      "delta": 0.0,
+      "matches": true
+    },
+    "state_dependency_top1_different_rate": {
+      "recomputed": 0.12037037037037036,
+      "reported": 0.12037037037037036,
+      "delta": 0.0,
+      "matches": true
+    },
+    "full_state_top1_different_rate": {
+      "recomputed": 0.09259259259259259,
+      "reported": 0.09259259259259259,
+      "delta": 0.0,
+      "matches": true
+    },
+    "mean_state_dependency_topk_jaccard": {
+      "recomputed": 0.7944444444444444,
+      "reported": 0.7944444444444444,
+      "delta": 0.0,
+      "matches": true
+    },
+    "mean_state_full_topk_jaccard": {
+      "recomputed": 0.825925925925926,
+      "reported": 0.825925925925926,
+      "delta": 0.0,
+      "matches": true
+    },
+    "high_skew_state_dependency_top1_different_rate": {
+      "recomputed": 0.01694915254237288,
+      "reported": 0.01694915254237288,
+      "delta": 0.0,
+      "matches": true
+    },
+    "low_skew_state_dependency_top1_different_rate": {
+      "recomputed": 0.24489795918367346,
+      "reported": 0.24489795918367346,
+      "delta": 0.0,
+      "matches": true
+    },
+    "divergence_larger_in_high_skew_samples": {
+      "recomputed": false,
+      "reported": false,
+      "delta": null,
+      "matches": true
+    }
+  },
+  "conclusion": "verified"
+}
