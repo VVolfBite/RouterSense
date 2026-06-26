@@ -24,6 +24,7 @@ from routesense_poc2.distributed_runtime import (
     resolve_strategy_orders,
     run_policy_on_plan,
     save_artifacts,
+    save_plan_snapshot,
 )
 from routesense_poc2.scheduler import RuntimeState
 
@@ -78,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--intermediate-scale", type=float, default=None)
     parser.add_argument("--release-round-size", type=int, default=4)
     parser.add_argument("--regime", choices=["communication-dominant", "balanced", "compute-dominant"], default="balanced")
+    parser.add_argument("--audit-plan-id", type=str, default=None)
+    parser.add_argument("--plan-snapshot-path", type=str, default=None)
+    parser.add_argument("--strategy-subset", nargs="+", default=None)
     args = parser.parse_args(argv)
     regime_defaults = _regime_defaults(args.regime)
 
@@ -109,14 +113,19 @@ def main(argv: list[str] | None = None) -> int:
             hidden_dim_scale=args.hidden_dim_scale if args.hidden_dim_scale is not None else regime_defaults["hidden_dim_scale"],
             intermediate_scale=args.intermediate_scale if args.intermediate_scale is not None else regime_defaults["intermediate_scale"],
             release_round_size=args.release_round_size,
+            audit_plan_id=args.audit_plan_id,
+            audit_strategy_subset=args.strategy_subset,
+            plan_snapshot_path=args.plan_snapshot_path,
         )
         plans, workload_manifest = create_workload_plans(protocol)
+        active_strategies = list(protocol.audit_strategy_subset or STRATEGIES)
         orders = resolve_strategy_orders(protocol.strategy_order_mode, protocol.warmup_repetitions + protocol.repetitions, protocol.seed)
+        orders = [[strategy for strategy in order if strategy in active_strategies] for order in orders]
         per_repetition: list[dict[str, object]] = []
 
         for repetition_index, order in enumerate(orders):
             warmup = repetition_index < protocol.warmup_repetitions
-            runtime_states = {strategy: RuntimeState() for strategy in STRATEGIES}
+            runtime_states = {strategy: RuntimeState() for strategy in active_strategies}
             for microbatch_id, plan in enumerate(plans):
                 for strategy in order:
                     result = run_policy_on_plan(
@@ -133,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
 
         summary = aggregate_repetition_records(per_repetition, mark_state_meaningful(protocol.microbatch_count))
         if rank == 0:
+            plan_snapshot = save_plan_snapshot(protocol.artifact_dir, plans)
             save_artifacts(
                 protocol.artifact_dir,
                 summary=summary,
@@ -154,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
                     "hidden_dim_scale": protocol.hidden_dim_scale,
                     "intermediate_scale": protocol.intermediate_scale,
                     "release_round_size": protocol.release_round_size,
+                    "audit_plan_id": protocol.audit_plan_id,
+                    "plan_snapshot_path": str(plan_snapshot),
+                    "strategy_subset": active_strategies,
                 },
                 environment=environment_snapshot(protocol.world_size),
                 protocol={
@@ -164,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                     "expert_compute": "rank-local expert-like MLP",
                     "strategy_order_mode": protocol.strategy_order_mode,
                     "benchmark_entrypoint": "experiment/poc2/nccl_4gpu_benchmark.py",
-                    "policies": list(STRATEGIES),
+                    "policies": active_strategies,
                 },
                 workload_manifest=workload_manifest,
                 per_repetition=per_repetition,

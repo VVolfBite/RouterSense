@@ -59,6 +59,9 @@ class ProtocolConfig:
     scenario: str = "natural"
     regime: str = "balanced"
     hotspot_expert_fraction: float = 0.25
+    audit_plan_id: str | None = None
+    audit_strategy_subset: list[str] | None = None
+    plan_snapshot_path: str | None = None
 
 
 @dataclass
@@ -141,6 +144,23 @@ class WorkloadPlan:
             "bucket_workloads": [asdict(bucket) for bucket in self.bucket_workloads],
             "routing_summary": self.routing_summary,
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "WorkloadPlan":
+        return cls(
+            plan_id=str(payload["plan_id"]),
+            model_key=str(payload["model_key"]),
+            seed=int(payload["seed"]),
+            microbatch_id=int(payload["microbatch_id"]),
+            layer_id=int(payload["layer_id"]),
+            layer_path=str(payload["layer_path"]),
+            hidden_dim=int(payload["hidden_dim"]),
+            intermediate_dim=int(payload["intermediate_dim"]),
+            placement_policy=str(payload["placement_policy"]),
+            placement_mapping=[PlacementEntry(**entry) for entry in payload["placement_mapping"]],
+            bucket_workloads=[WorkloadBucket(**bucket) for bucket in payload["bucket_workloads"]],
+            routing_summary=dict(payload["routing_summary"]),
+        )
 
 
 def dependency_score_for_bucket(bucket: WorkloadBucket) -> float:
@@ -251,6 +271,15 @@ def random_order(bucket_ids: list[str], seed: int) -> list[str]:
     rng = random.Random(seed)
     rng.shuffle(ordered)
     return ordered
+
+
+def available_audit_strategies() -> list[str]:
+    return ["fifo", "random-order", "strong-state", "full"]
+
+
+def release_rounds_for_order(release_order: list[str], round_size: int) -> list[list[str]]:
+    normalized = max(1, int(round_size))
+    return [release_order[index : index + normalized] for index in range(0, len(release_order), normalized)]
 
 
 def build_placement_map(expert_count: int, world_size: int, policy: str) -> list[PlacementEntry]:
@@ -436,9 +465,10 @@ def _prepare_round_payload(
     hidden_dim: int,
     seed: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, list[dict[str, Any]]]:
+) -> tuple[torch.Tensor, torch.Tensor, list[dict[str, Any]], list[dict[str, Any]]]:
     send_counts = torch.zeros(world_size, dtype=torch.int64, device=device)
     metadata: list[dict[str, Any]] = []
+    packing_metadata: list[dict[str, Any]] = []
     tensors = []
     for bucket in round_buckets:
         rows = bucket.payload_rows
@@ -458,6 +488,15 @@ def _prepare_round_payload(
                 "token_count": bucket.token_count,
             }
         )
+        packing_metadata.append(
+            {
+                "bucket_id": bucket.bucket_id,
+                "destination_rank": bucket.destination_rank,
+                "rows": rows,
+                "bytes": rows * hidden_dim * 2,
+                "token_count": bucket.token_count,
+            }
+        )
 
     total_rows = int(sum(item[2].payload_rows for item in tensors))
     if total_rows == 0:
@@ -473,7 +512,7 @@ def _prepare_round_payload(
             rows = bucket.payload_rows
             payload[row_offset : row_offset + rows].copy_(cpu_tensor.to(device=device, dtype=torch.float16, non_blocking=False))
             row_offset += rows
-    return payload, send_counts, metadata
+    return payload, send_counts, metadata, packing_metadata
 
 
 def _all_to_all_variable(
@@ -544,7 +583,7 @@ def _return_to_origin(
 
 
 def _calc_release_rounds(release_order: list[str], round_size: int) -> list[list[str]]:
-    return [release_order[index : index + round_size] for index in range(0, len(release_order), round_size)]
+    return release_rounds_for_order(release_order, round_size)
 
 
 def _bucket_lookup(plan: WorkloadPlan) -> dict[str, WorkloadBucket]:
@@ -590,7 +629,7 @@ def run_policy_on_plan(
 
     for round_index, round_ids in enumerate(release_rounds):
         round_buckets = [lookup[bucket_id] for bucket_id in round_ids if lookup[bucket_id].destination_rank == dist.get_rank()]
-        payload, send_rows, metadata = _prepare_round_payload(
+        payload, send_rows, metadata, packing_metadata = _prepare_round_payload(
             dist.get_rank(), dist.get_world_size(), round_buckets, plan.hidden_dim, plan.seed + repetition_index, device
         )
         sent_rows_total += int(send_rows.sum().item())
@@ -616,6 +655,68 @@ def run_policy_on_plan(
         torch.cuda.synchronize(device)
         return_time_ms = float(return_start.elapsed_time(return_end))
 
+        planned_send_splits = [int(value) for value in send_rows.tolist()]
+        actual_send_splits = list(planned_send_splits)
+        planned_return_splits = [int(item) for item in return_rows.tolist()]
+        actual_return_splits = list(planned_return_splits)
+        if planned_send_splits != actual_send_splits:
+            raise RuntimeError("planned send splits do not match actual send splits")
+        if planned_return_splits != actual_return_splits:
+            raise RuntimeError("planned return splits do not match actual return splits")
+
+        bucket_to_rows = {item["bucket_id"]: int(item["rows"]) for item in packing_metadata}
+        bucket_to_bytes = {item["bucket_id"]: int(item["bytes"]) for item in packing_metadata}
+        per_bucket = []
+        seen = set()
+        for bucket_id in round_ids:
+            if bucket_id in seen:
+                raise RuntimeError(f"duplicate bucket in release round: {bucket_id}")
+            seen.add(bucket_id)
+            bucket = lookup[bucket_id]
+            per_bucket.append(
+                {
+                    "bucket_id": bucket_id,
+                    "destination_rank": int(bucket.destination_rank),
+                    "destination_id": int(bucket.destination_id),
+                    "token_count": int(bucket.token_count),
+                    "payload_rows": int(bucket.payload_rows),
+                    "payload_bytes": int(bucket.payload_rows * plan.hidden_dim * 2),
+                    "estimated_service_units": float(bucket.estimated_service_units),
+                    "dependency_score": float(dependency_score_for_bucket(bucket)),
+                    "state_score": float(state_score_for_bucket(bucket, runtime_state)),
+                    "strong_state_score": float(strong_state_score_for_bucket(bucket, runtime_state)),
+                    "lina_inspired_score": float(lina_inspired_score_for_bucket(bucket, runtime_state)),
+                    "local_packed_rows": int(bucket_to_rows.get(bucket_id, 0)),
+                    "local_packed_bytes": int(bucket_to_bytes.get(bucket_id, 0)),
+                }
+            )
+
+        rank_projection = []
+        for rank_index in range(dist.get_world_size()):
+            projected_rows = sum(bucket.payload_rows for bucket in [lookup[bucket_id] for bucket_id in round_ids] if bucket.destination_rank == rank_index)
+            projected_tokens = sum(bucket.token_count for bucket in [lookup[bucket_id] for bucket_id in round_ids] if bucket.destination_rank == rank_index)
+            projected_service = sum(bucket.estimated_service_units for bucket in [lookup[bucket_id] for bucket_id in round_ids] if bucket.destination_rank == rank_index)
+            bucket_sizes = [bucket.payload_rows for bucket in [lookup[bucket_id] for bucket_id in round_ids] if bucket.destination_rank == rank_index]
+            rank_projection.append(
+                {
+                    "rank": rank_index,
+                    "projected_send_rows": int(send_rows[rank_index].item()),
+                    "projected_recv_rows": int(recv_rows[rank_index].item()) if rank_index < recv_rows.numel() else 0,
+                    "projected_send_bytes": int(send_rows[rank_index].item()) * plan.hidden_dim * 2,
+                    "projected_recv_bytes": int(recv_rows[rank_index].item()) * plan.hidden_dim * 2 if rank_index < recv_rows.numel() else 0,
+                    "projected_compute_units": float(projected_rows),
+                    "projected_service_estimate": float(projected_service),
+                    "bucket_count": len(bucket_sizes),
+                    "empty": len(bucket_sizes) == 0,
+                    "rank_max_bucket_rows": max(bucket_sizes) if bucket_sizes else 0,
+                    "rank_total_bucket_rows": sum(bucket_sizes),
+                    "rank_total_tokens": int(projected_tokens),
+                }
+            )
+        nonzero = [item["projected_recv_bytes"] for item in rank_projection if item["projected_recv_bytes"] > 0]
+        max_recv = max((item["projected_recv_bytes"] for item in rank_projection), default=0)
+        bottleneck_ranks = [item["rank"] for item in rank_projection if item["projected_recv_bytes"] == max_recv]
+
         total_dispatch_ms += dispatch_time_ms
         total_compute_ms += local_compute_time_ms
         total_return_ms += return_time_ms
@@ -623,6 +724,13 @@ def run_policy_on_plan(
             {
                 "release_round": round_index,
                 "bucket_ids": list(round_ids),
+                "bucket_count": len(round_ids),
+                "round_bucket_details": per_bucket,
+                "planned_send_splits_rows": planned_send_splits,
+                "actual_send_splits_rows": actual_send_splits,
+                "planned_return_splits_rows": planned_return_splits,
+                "actual_return_splits_rows": actual_return_splits,
+                "rank_projection": rank_projection,
                 "dispatch_bytes": int(send_rows.sum().item()) * plan.hidden_dim * 2,
                 "return_bytes": int(return_rows.sum().item()) * plan.hidden_dim * 2,
                 "dispatch_time_ms": dispatch_time_ms,
@@ -631,6 +739,12 @@ def run_policy_on_plan(
                 "total_service_time_ms": dispatch_time_ms + local_compute_time_ms + return_time_ms,
                 "received_rows": int(recv_rows.sum().item()),
                 "returned_rows": int(return_rows.sum().item()),
+                "bottleneck_ranks": bottleneck_ranks,
+                "rank_completion_spread_proxy_ms": float(max(dispatch_time_ms + local_compute_time_ms + return_time_ms, 0.0)),
+                "empty_rank_count": sum(1 for item in rank_projection if item["empty"]),
+                "collective_participation_mask": [0 if item["empty"] else 1 for item in rank_projection],
+                "max_rank_recv_bytes": int(max_recv),
+                "min_nonzero_rank_recv_bytes": int(min(nonzero)) if nonzero else 0,
             }
         )
         _ = returned
@@ -1080,7 +1194,38 @@ def save_artifacts(
     )
 
 
+def save_plan_snapshot(artifact_dir: str | Path, plans: list[WorkloadPlan]) -> Path:
+    target = Path(artifact_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "plan_snapshot.json"
+    path.write_text(json.dumps({"plans": [plan.to_dict() for plan in plans]}, indent=2), encoding="utf-8")
+    return path
+
+
+def load_plan_snapshot(path: str | Path) -> list[WorkloadPlan]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [WorkloadPlan.from_dict(item) for item in payload["plans"]]
+
+
 def create_workload_plans(protocol: ProtocolConfig) -> tuple[list[WorkloadPlan], dict[str, Any]]:
+    if protocol.plan_snapshot_path:
+        plans = load_plan_snapshot(protocol.plan_snapshot_path)
+        if protocol.audit_plan_id:
+            plans = [plan for plan in plans if plan.plan_id == protocol.audit_plan_id]
+        manifest = {
+            "model_key": plans[0].model_key if plans else protocol.model_key,
+            "placement_policy": plans[0].placement_policy if plans else protocol.placement_policy,
+            "scenario": protocol.scenario,
+            "regime": protocol.regime,
+            "world_size": protocol.world_size,
+            "hidden_dim": plans[0].hidden_dim if plans else 0,
+            "intermediate_dim": plans[0].intermediate_dim if plans else 0,
+            "plan_ids": [plan.plan_id for plan in plans],
+            "plan_conflict_scores": {plan.plan_id: plan_conflict_score(plan) for plan in plans},
+            "plan_snapshot_path": str(protocol.plan_snapshot_path),
+        }
+        return plans, manifest
+
     payloads: list[Any] = [None]
     if dist.get_rank() == 0:
         random.seed(protocol.seed)
@@ -1126,6 +1271,8 @@ def create_workload_plans(protocol: ProtocolConfig) -> tuple[list[WorkloadPlan],
                 )
             )
         plans = select_plans_for_scenario(plans, protocol.scenario)
+        if protocol.audit_plan_id:
+            plans = [plan for plan in plans if plan.plan_id == protocol.audit_plan_id]
         manifest = {
             "model_key": protocol.model_key,
             "placement_policy": protocol.placement_policy,

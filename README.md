@@ -170,3 +170,9 @@ The repository ignores model weights, Hugging Face caches, local outputs, logs, 
 ## Source Packaging
 
 Use `scripts/package_source_only.sh` to create a delivery archive. The source package intentionally excludes `outputs/`, `artifacts/`, logs, caches, model files, and benchmark results. Runtime results stay on the server working directory or in separate result archives; they should not be mixed into the source tarball.
+
+## POC2 Runtime Audit
+
+The current POC2 emphasis is a runtime leverage audit for the NCCL harness rather than a larger policy sweep.
+The audit asks whether policy decisions materially change release-round composition, NCCL split sizes, bottleneck ranks, and end-to-end completion under the current synchronous collective structure.
+This stage is about explaining `full ~= random-order` and locating the bottleneck source, not about claiming dependency-aware success.

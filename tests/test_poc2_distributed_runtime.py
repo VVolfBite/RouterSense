@@ -8,11 +8,15 @@ from routesense_poc2.distributed_runtime import (
     _paired,
     _position_effects,
     dependency_score_for_bucket,
+    available_audit_strategies,
     apply_placement,
     build_placement_map,
     counterbalanced_orders,
+    load_plan_snapshot,
     mark_state_meaningful,
+    release_rounds_for_order,
     resolve_strategy_orders,
+    save_plan_snapshot,
     shuffled_dependency_order,
     strong_state_score_for_bucket,
     lina_inspired_score_for_bucket,
@@ -217,3 +221,55 @@ def test_go_no_go_rules():
         True,
     )
     assert go["decision"] == "go"
+
+
+def test_plan_snapshot_roundtrip(tmp_path):
+    plan = WorkloadPlan(
+        plan_id="p0",
+        model_key="olmoe",
+        seed=1,
+        microbatch_id=0,
+        layer_id=0,
+        layer_path="layer",
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement_policy="balanced",
+        placement_mapping=[PlacementEntry(expert_id=0, destination_rank=0)],
+        bucket_workloads=[
+            WorkloadBucket(
+                bucket_id="b0",
+                destination_id=0,
+                destination_rank=0,
+                token_count=4,
+                payload_rows=4,
+                hidden_dim=64,
+                intermediate_dim=128,
+                estimated_service_units=2.0,
+                source_count=1,
+                source_coverage=0.1,
+                coactive_peer_degree=0.1,
+                coactive_event_density=0.1,
+                position_spread=0.1,
+                bridge_score=0.1,
+                route_share=0.2,
+                density_over_mean=0.3,
+                size_norm=0.4,
+                inverse_size_rank_norm=0.5,
+                is_hot_bucket=False,
+            )
+        ],
+        routing_summary={"token_count": 4},
+    )
+    path = save_plan_snapshot(tmp_path, [plan])
+    loaded = load_plan_snapshot(path)
+    assert loaded[0].plan_id == "p0"
+    assert loaded[0].bucket_workloads[0].payload_rows == 4
+
+
+def test_release_rounds_for_order():
+    rounds = release_rounds_for_order(["a", "b", "c", "d", "e"], 2)
+    assert rounds == [["a", "b"], ["c", "d"], ["e"]]
+
+
+def test_available_audit_strategies():
+    assert available_audit_strategies() == ["fifo", "random-order", "strong-state", "full"]
