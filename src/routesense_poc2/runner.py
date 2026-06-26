@@ -224,11 +224,15 @@ def _load_model_bundle(config: RunnerConfig) -> dict[str, Any]:
     }
     world_size = min(config.world_size, torch.cuda.device_count())
     max_memory = {idx: "20GiB" for idx in range(world_size)}
+    offload_folder = Path(config.output_dir) / ".hf_offload"
+    offload_folder.mkdir(parents=True, exist_ok=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=dtype_map.get(config.precision, torch.bfloat16),
         device_map="balanced",
         max_memory=max_memory,
+        offload_folder=str(offload_folder),
+        low_cpu_mem_usage=True,
         local_files_only=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)

@@ -167,3 +167,6 @@ The repository ignores model weights, Hugging Face caches, local outputs, logs, 
 - CUDA PyTorch is not installed in the active environment.
 - Local GPU/CPU memory is insufficient for OLMoE loading.
 - The installed Transformers version cannot expose OLMoE router logits through `output_router_logits=True`.
+## Source Packaging
+
+Use `scripts/package_source_only.sh` to create a delivery archive. The source package intentionally excludes `outputs/`, `artifacts/`, logs, caches, model files, and benchmark results. Runtime results stay on the server working directory or in separate result archives; they should not be mixed into the source tarball.
