@@ -1,0 +1,13 @@
+{
+  "model_key": "olmoe",
+  "model_path": "/root/autodl-tmp/models/OLMoE-1B-7B-0924",
+  "hf_id": "allenai/OLMoE-1B-7B-0924",
+  "cuda_device_count": 4,
+  "selected_layer_path": "model.layers.8.mlp",
+  "selected_layer_class": "OlmoeSparseMoeBlock",
+  "candidate_layer_count": 16,
+  "routing_mode": "real_router_logits",
+  "service_mode": "synthetic::transfer-aware",
+  "backend_realism_level": "transfer-aware",
+  "service_backend": "transfer-aware"
+}

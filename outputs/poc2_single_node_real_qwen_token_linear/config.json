@@ -1,0 +1,29 @@
+{
+  "model_key": "qwen_moe",
+  "model_path": "/root/autodl-tmp/models/Qwen1.5-MoE-A2.7B",
+  "output_dir": "/root/autodl-tmp/RouterSense/outputs/poc2_single_node_real_qwen_token_linear",
+  "prompts_path": null,
+  "layer": "auto",
+  "microbatch_size": 2,
+  "microbatch_count": 2,
+  "max_length": 48,
+  "precision": "bf16",
+  "world_size": 4,
+  "top_k": null,
+  "seed": 42,
+  "mock_routing": false,
+  "service_backend": "synthetic-token-linear",
+  "service_scale": 64,
+  "per_token_compute_us": 600,
+  "strategies": [
+    "fifo",
+    "state-only",
+    "dependency-only",
+    "full"
+  ],
+  "routing_mode": "real_router_logits",
+  "routing_is_real": true,
+  "service_mode": "synthetic::synthetic-token-linear",
+  "service_is_synthetic": true,
+  "service_backend_description": "GPU linear-stack backend; synthetic compute scales with token_count and estimated_service_units."
+}

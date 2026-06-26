@@ -1,0 +1,22 @@
+{
+  "models": [
+    "olmoe",
+    "qwen_moe"
+  ],
+  "backends": [
+    "transfer-aware"
+  ],
+  "schedulers": [
+    "fifo",
+    "state-only",
+    "dependency-only",
+    "full"
+  ],
+  "microbatch_size": 1,
+  "microbatch_count": 1,
+  "max_length": 32,
+  "precision": "bf16",
+  "world_size": 4,
+  "seed": 42,
+  "layer": "auto"
+}
