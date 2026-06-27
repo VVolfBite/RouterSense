@@ -3,6 +3,8 @@ from __future__ import annotations
 from routesense_poc2.distributed_runtime import (
     benchmark_preflight,
     build_canonical_round_layout,
+    decode_metadata_tensor_rows,
+    expected_route_item_manifest,
     GlobalRuntimeState,
     PlacementEntry,
     WorkloadBucket,
@@ -12,6 +14,7 @@ from routesense_poc2.distributed_runtime import (
     _pack_return_payload_and_metadata,
     _planned_received_metadata_for_rank,
     _metadata_tensor_to_dicts,
+    summarize_route_manifests,
     _hash_payload,
     _go_no_go,
     _planned_round_matrix,
@@ -168,6 +171,10 @@ def test_build_workload_plan_preserves_origin_and_route_identity():
             {"route_id": "r1", "token_id": 23, "token_pos": 1, "route_rank": 0, "expert_id": 2},
         ],
         "routing_summary": {"token_ids": [11, 23]},
+        "route_item_index_map": {
+            str((0, 0, 0, 11, 0, 1, "r0")): 0,
+            str((0, 0, 1, 23, 0, 2, "r1")): 1,
+        },
     }
     placement = [PlacementEntry(expert_id=1, destination_rank=1), PlacementEntry(expert_id=2, destination_rank=2)]
     plan = build_workload_plan(
@@ -205,6 +212,10 @@ def test_build_workload_plan_preserves_topk_route_tuple_alignment():
             {"route_id": "r_topk_0", "token_id": 100, "token_pos": 7, "route_rank": 0, "expert_id": 1},
         ],
         "routing_summary": {"token_ids": [100]},
+        "route_item_index_map": {
+            str((0, 0, 7, 100, 0, 1, "r_topk_0")): 0,
+            str((0, 0, 7, 100, 1, 2, "r_topk_1")): 1,
+        },
     }
     placement = [PlacementEntry(expert_id=1, destination_rank=1), PlacementEntry(expert_id=2, destination_rank=0)]
     plan = build_workload_plan(
@@ -251,6 +262,12 @@ def test_contiguous_origin_sharding_uses_token_ordinal_not_token_id():
             {"route_id": "r3", "token_id": 55, "token_pos": 3, "route_rank": 0, "expert_id": 1},
         ],
         "routing_summary": {"token_ids": [42, 100, 7, 55]},
+        "route_item_index_map": {
+            str((0, 0, 1, 100, 0, 1, "r1")): 0,
+            str((0, 0, 3, 55, 0, 1, "r3")): 1,
+            str((0, 0, 7, 7, 0, 1, "r2")): 2,
+            str((0, 0, 9, 42, 0, 1, "r0")): 3,
+        },
     }
     placement = [PlacementEntry(expert_id=1, destination_rank=1)]
     plan = build_workload_plan(
@@ -893,6 +910,155 @@ def test_metadata_tensor_decoding_matches_planned_rows():
     tensor = torch.tensor([[7, 0, 0, 1, 3, 0], [8, 1, 0, 1, 3, 0]], dtype=torch.int32)
     decoded = _metadata_tensor_to_dicts(tensor, planned)
     assert decoded[0]["token_ids"] == [7, 8]
+
+
+def test_decode_metadata_tensor_rows_roundtrip():
+    import torch
+
+    tensor = torch.tensor([[7, 101, 0, 1, 3, 0], [8, 102, 0, 1, 3, 1]], dtype=torch.int32)
+    rows = decode_metadata_tensor_rows(tensor)
+    assert rows[0].global_route_item_index == 101
+    assert rows[1].route_rank == 1
+
+
+def test_summarize_route_manifests_uses_expected_not_observed_union():
+    expected = [{"global_route_item_index": 0, "token_id": 7, "origin_rank": 0, "destination_rank": 1, "expert_id": 3, "route_rank": 0, "microbatch_id": 0, "layer_id": 0}]
+    summary = summarize_route_manifests(expected, [], [], [], [])
+    assert summary["expected_route_item_count"] == 1
+    assert summary["missing_dispatch_count"] == 1
+
+
+def test_global_route_item_manifest_separates_microbatches():
+    plans = [
+        WorkloadPlan(
+            plan_id="p0",
+            model_key="olmoe",
+            seed=1,
+            microbatch_id=0,
+            layer_id=0,
+            layer_path="layer",
+            hidden_dim=64,
+            intermediate_dim=128,
+            placement_policy="balanced",
+            origin_sharding="round-robin",
+            placement_mapping=[],
+            bucket_workloads=[
+                WorkloadBucket(
+                    bucket_id="b0",
+                    route_id="r0",
+                    token_ids=[11],
+                    token_positions=[0],
+                    origin_rank=0,
+                    destination_id=1,
+                    destination_rank=1,
+                    expert_id=1,
+                    layer_id=0,
+                    microbatch_id=0,
+                    token_count=1,
+                    payload_rows=1,
+                    hidden_dim=64,
+                    intermediate_dim=128,
+                    estimated_service_units=1.0,
+                    payload_bytes=128,
+                    source_count=1,
+                    source_coverage=0.1,
+                    coactive_peer_degree=0.1,
+                    coactive_event_density=0.1,
+                    position_spread=0.1,
+                    bridge_score=0.1,
+                    route_share=0.1,
+                    density_over_mean=0.1,
+                    size_norm=0.1,
+                    inverse_size_rank_norm=1.0,
+                    is_hot_bucket=False,
+                    route_item_indices=[0],
+                    route_item_ids=["r0"],
+                    route_ranks=[0],
+                )
+            ],
+            routing_summary={},
+        ),
+        WorkloadPlan(
+            plan_id="p1",
+            model_key="olmoe",
+            seed=1,
+            microbatch_id=1,
+            layer_id=0,
+            layer_path="layer",
+            hidden_dim=64,
+            intermediate_dim=128,
+            placement_policy="balanced",
+            origin_sharding="round-robin",
+            placement_mapping=[],
+            bucket_workloads=[
+                WorkloadBucket(
+                    bucket_id="b1",
+                    route_id="r1",
+                    token_ids=[22],
+                    token_positions=[1],
+                    origin_rank=1,
+                    destination_id=2,
+                    destination_rank=0,
+                    expert_id=2,
+                    layer_id=0,
+                    microbatch_id=1,
+                    token_count=1,
+                    payload_rows=1,
+                    hidden_dim=64,
+                    intermediate_dim=128,
+                    estimated_service_units=1.0,
+                    payload_bytes=128,
+                    source_count=1,
+                    source_coverage=0.1,
+                    coactive_peer_degree=0.1,
+                    coactive_event_density=0.1,
+                    position_spread=0.1,
+                    bridge_score=0.1,
+                    route_share=0.1,
+                    density_over_mean=0.1,
+                    size_norm=0.1,
+                    inverse_size_rank_norm=1.0,
+                    is_hot_bucket=False,
+                    route_item_indices=[1],
+                    route_item_ids=["r1"],
+                    route_ranks=[0],
+                )
+            ],
+            routing_summary={},
+        ),
+    ]
+    manifest = expected_route_item_manifest(plans)
+    assert [item["global_route_item_index"] for item in manifest] == [0, 1]
+
+
+def test_metadata_tensor_to_dicts_fails_on_tampered_destination():
+    import torch
+
+    planned = [
+        {
+            "bucket_id": "b0",
+            "route_id": "r0",
+            "route_item_ids": ["r0"],
+            "route_item_indices": [101],
+            "route_ranks": [0],
+            "origin_rank": 0,
+            "destination_rank": 1,
+            "rows": 1,
+            "destination_id": 3,
+            "expert_id": 3,
+            "estimated_service_units": 1.0,
+            "token_count": 1,
+            "token_ids": [7],
+            "token_positions": [0],
+            "payload_bytes": 128,
+        }
+    ]
+    tensor = torch.tensor([[7, 101, 0, 2, 3, 0]], dtype=torch.int32)
+    try:
+        _metadata_tensor_to_dicts(tensor, planned, current_destination_rank=1)
+        assert False
+    except RuntimeError:
+        pass
 
 
 def test_benchmark_preflight_reports_stable_contract():

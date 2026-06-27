@@ -24,6 +24,7 @@ from routesense_poc2.distributed_runtime import (
     init_nccl,
     preallocate_execution_cache,
     run_policy_on_plan,
+    expected_route_item_manifest,
     summarize_route_manifests,
 )
 
@@ -69,37 +70,51 @@ def main(argv: list[str] | None = None) -> int:
         if not plans:
             raise RuntimeError("no workload plans created from real router trace")
         global_state = GlobalRuntimeState()
-        local_plan = build_global_dispatch_plan(
-            protocol=protocol,
-            plan=plans[0],
-            strategy="fifo",
-            global_state=global_state,
-            repetition_index=0,
-        ) if rank == 0 else None
-        global_plan = broadcast_global_dispatch_plan(local_plan)
-        cache = preallocate_execution_cache(
-            plans[0],
-            rank,
-            torch.device(f"cuda:{state['local_rank']}"),
-            correctness_mode=True,
-        )
-        result = run_policy_on_plan(
-            protocol=protocol,
-            plan=plans[0],
-            global_plan=global_plan,
-            execution_cache=cache,
-            repetition_index=0,
-            warmup=False,
-            local_rank=state["local_rank"],
-        )
+        all_results = []
+        for microbatch_plan in plans:
+            local_plan = build_global_dispatch_plan(
+                protocol=protocol,
+                plan=microbatch_plan,
+                strategy="fifo",
+                global_state=global_state,
+                repetition_index=0,
+            ) if rank == 0 else None
+            global_plan = broadcast_global_dispatch_plan(local_plan)
+            cache = preallocate_execution_cache(
+                microbatch_plan,
+                rank,
+                torch.device(f"cuda:{state['local_rank']}"),
+                correctness_mode=True,
+            )
+            result = run_policy_on_plan(
+                protocol=protocol,
+                plan=microbatch_plan,
+                global_plan=global_plan,
+                execution_cache=cache,
+                repetition_index=0,
+                warmup=False,
+                local_rank=state["local_rank"],
+            )
+            all_results.append(result)
         if rank == 0:
             artifact_dir = Path(protocol.artifact_dir)
             artifact_dir.mkdir(parents=True, exist_ok=True)
+            dispatch_manifest = [item for result in all_results for item in result["dispatch_route_manifest"]]
+            receive_manifest = [item for result in all_results for item in result["receive_route_manifest"]]
+            return_manifest = [item for result in all_results for item in result["return_route_manifest"]]
+            verified_manifest = [item for result in all_results for item in result["origin_verified_manifest"]]
             manifest_summary = summarize_route_manifests(
-                result["dispatch_route_manifest"],
-                result["receive_route_manifest"],
-                result["return_route_manifest"],
-                result["origin_verified_manifest"],
+                expected_route_item_manifest(plans),
+                dispatch_manifest,
+                receive_manifest,
+                return_manifest,
+                verified_manifest,
+            )
+            dispatch_bytes_matrix = all_results[0]["dispatch_bytes_matrix"]
+            return_bytes_matrix = all_results[0]["return_bytes_matrix"]
+            remote_byte_ratio = all_results[0]["remote_byte_ratio"]
+            communication_semantics_valid = all_results[0]["communication_semantics_valid"] and all(
+                result["communication_semantics_valid"] for result in all_results
             )
             payload = {
                 "kind": "remote_dispatch_semantic_validation",
@@ -107,22 +122,22 @@ def main(argv: list[str] | None = None) -> int:
                 "model": args.model,
                 "placement_policy": args.placement_policy,
                 "origin_sharding": args.origin_sharding,
-                "dispatch_bytes_matrix": result["dispatch_bytes_matrix"],
-                "return_bytes_matrix": result["return_bytes_matrix"],
-                "remote_byte_ratio": result["remote_byte_ratio"],
-                "communication_semantics_valid": result["communication_semantics_valid"],
-                "decision_hash": result["decision_hash"],
-                "used_python_metadata_gather": result["used_python_metadata_gather"],
+                "dispatch_bytes_matrix": dispatch_bytes_matrix,
+                "return_bytes_matrix": return_bytes_matrix,
+                "remote_byte_ratio": remote_byte_ratio,
+                "communication_semantics_valid": communication_semantics_valid,
+                "decision_hashes": [result["decision_hash"] for result in all_results],
+                "used_python_metadata_gather": any(result["used_python_metadata_gather"] for result in all_results),
                 **manifest_summary,
                 "workload_manifest": manifest,
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
             for name, items in [
-                ("dispatch_route_manifest.jsonl", result["dispatch_route_manifest"]),
-                ("receive_route_manifest.jsonl", result["receive_route_manifest"]),
-                ("return_route_manifest.jsonl", result["return_route_manifest"]),
-                ("origin_verified_manifest.jsonl", result["origin_verified_manifest"]),
+                ("dispatch_route_manifest.jsonl", dispatch_manifest),
+                ("receive_route_manifest.jsonl", receive_manifest),
+                ("return_route_manifest.jsonl", return_manifest),
+                ("origin_verified_manifest.jsonl", verified_manifest),
             ]:
                 with (artifact_dir / name).open("w", encoding="utf-8") as handle:
                     for item in items:

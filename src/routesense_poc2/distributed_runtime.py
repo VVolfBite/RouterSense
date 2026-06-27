@@ -302,6 +302,26 @@ class CanonicalRoundSegment:
     return_origin_rank: int
 
 
+@dataclass(frozen=True)
+class RouteItemMetadata:
+    token_id: int
+    global_route_item_index: int
+    origin_rank: int
+    destination_rank: int
+    expert_id: int
+    route_rank: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "token_id": self.token_id,
+            "global_route_item_index": self.global_route_item_index,
+            "origin_rank": self.origin_rank,
+            "destination_rank": self.destination_rank,
+            "expert_id": self.expert_id,
+            "route_rank": self.route_rank,
+        }
+
+
 def dependency_score_for_bucket(bucket: WorkloadBucket) -> float:
     return (
         0.25 * bucket.source_coverage
@@ -517,32 +537,9 @@ def build_workload_plan(
         raise RuntimeError("routing payload is missing route_items; cannot build origin-aware workload plan")
     token_count = len(token_ids)
     token_ordinals = {int(token_id): index for index, token_id in enumerate(sorted(set(int(token_id) for token_id in token_ids)))}
-    route_tuples = sorted(
-        [
-            (
-                int(routing["layer_id"]),
-                int(microbatch_id),
-                int(route["token_pos"]),
-                int(route["token_id"]),
-                int(route["route_rank"]),
-                int(route["expert_id"]),
-                str(route["route_id"]),
-            )
-            for route in route_items
-        ]
-    )
-    route_item_index_map = {
-        (
-            layer_id,
-            mb_id,
-            token_pos,
-            token_id,
-            route_rank,
-            expert_id,
-            route_id,
-        ): index
-        for index, (layer_id, mb_id, token_pos, token_id, route_rank, expert_id, route_id) in enumerate(route_tuples)
-    }
+    route_item_index_map = dict(routing.get("route_item_index_map", {}))
+    if not route_item_index_map:
+        raise RuntimeError("routing payload is missing route_item_index_map; cannot build globally unique route identities")
     grouped: dict[tuple[int, int, int], dict[str, Any]] = {}
     bucket_workloads: list[WorkloadBucket] = []
     bucket_record_map = {bucket.destination_id: bucket for bucket in routing["bucket_records"]}
@@ -561,7 +558,7 @@ def build_workload_plan(
             expert_id,
             str(route["route_id"]),
         )
-        route_item_index = int(route_item_index_map[route_tuple])
+        route_item_index = int(route_item_index_map[str(route_tuple)])
         key = (origin_rank, destination_rank, expert_id)
         token_pos = int(route["token_pos"])
         current = grouped.setdefault(
@@ -1156,9 +1153,9 @@ def _return_to_origin(
     result_metadata: torch.Tensor,
     origin_metadata: list[dict[str, Any]],
     hidden_dim: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int], list[int], list[dict[str, Any]]]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int], list[int], torch.Tensor]:
     metadata_width = int(result_metadata.shape[1]) if result_metadata.ndim == 2 else 0
-    packed_payload, packed_metadata_tensor, send_splits, packed_metadata = _pack_return_payload_and_metadata(
+    packed_payload, packed_metadata_tensor, send_splits, _ = _pack_return_payload_and_metadata(
         result_payload,
         result_metadata,
         origin_metadata,
@@ -1182,7 +1179,7 @@ def _return_to_origin(
         output_split_sizes=[int(value) * metadata_width for value in recv_splits],
         input_split_sizes=[int(value) * metadata_width for value in send_splits],
     )
-    return recv_back, recv_metadata, recv_return_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits], packed_metadata
+    return recv_back, recv_metadata, recv_return_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits], packed_metadata_tensor
 
 
 def _calc_release_rounds(release_order: list[str], round_size: int) -> list[list[str]]:
@@ -1257,6 +1254,7 @@ def _all_gather_object(value: Any) -> list[Any]:
 
 
 def summarize_route_manifests(
+    expected_manifest: list[dict[str, Any]],
     dispatch_manifest: list[dict[str, Any]],
     receive_manifest: list[dict[str, Any]],
     return_manifest: list[dict[str, Any]],
@@ -1272,46 +1270,93 @@ def summarize_route_manifests(
     receive_idx = _index(receive_manifest)
     return_idx = _index(return_manifest)
     verified_idx = _index(origin_verified_manifest)
-    expected = sorted(set(dispatch_idx) | set(receive_idx) | set(return_idx) | set(verified_idx))
-    duplicate_count = sum(max(0, len(items) - 1) for items in dispatch_idx.values())
-    duplicate_count += sum(max(0, len(items) - 1) for items in receive_idx.values())
-    duplicate_count += sum(max(0, len(items) - 1) for items in return_idx.values())
-    duplicate_count += sum(max(0, len(items) - 1) for items in verified_idx.values())
-    missing_count = 0
+    expected_idx = {int(item["global_route_item_index"]): item for item in expected_manifest}
+    expected = sorted(expected_idx)
+    duplicate_dispatch = sum(max(0, len(items) - 1) for items in dispatch_idx.values())
+    duplicate_receive = sum(max(0, len(items) - 1) for items in receive_idx.values())
+    duplicate_return = sum(max(0, len(items) - 1) for items in return_idx.values())
+    duplicate_verified = sum(max(0, len(items) - 1) for items in verified_idx.values())
+    missing_dispatch = 0
+    missing_receive = 0
+    missing_return = 0
+    missing_verified = 0
+    unexpected_dispatch = 0
+    unexpected_receive = 0
+    unexpected_return = 0
+    unexpected_verified = 0
     wrong_origin_count = 0
     wrong_destination_count = 0
     wrong_expert_count = 0
     wrong_route_rank_count = 0
+    wrong_token_id_count = 0
+    wrong_microbatch_count = 0
+    for route_item_index in dispatch_idx:
+        if route_item_index not in expected_idx:
+            unexpected_dispatch += 1
+    for route_item_index in receive_idx:
+        if route_item_index not in expected_idx:
+            unexpected_receive += 1
+    for route_item_index in return_idx:
+        if route_item_index not in expected_idx:
+            unexpected_return += 1
+    for route_item_index in verified_idx:
+        if route_item_index not in expected_idx:
+            unexpected_verified += 1
     for route_item_index in expected:
+        expected_item = expected_idx[route_item_index]
         dispatch_item = dispatch_idx.get(route_item_index, [])
         receive_item = receive_idx.get(route_item_index, [])
         return_item = return_idx.get(route_item_index, [])
         verified_item = verified_idx.get(route_item_index, [])
+        if len(dispatch_item) != 1:
+            missing_dispatch += 1
+        if len(receive_item) != 1:
+            missing_receive += 1
+        if len(return_item) != 1:
+            missing_return += 1
+        if len(verified_item) != 1:
+            missing_verified += 1
         if not (len(dispatch_item) == len(receive_item) == len(return_item) == len(verified_item) == 1):
-            missing_count += 1
             continue
-        baseline = dispatch_item[0]
-        for item in (receive_item[0], return_item[0], verified_item[0]):
-            if int(item["origin_rank"]) != int(baseline["origin_rank"]):
+        for item in (dispatch_item[0], receive_item[0], return_item[0], verified_item[0]):
+            if int(item["token_id"]) != int(expected_item["token_id"]):
+                wrong_token_id_count += 1
+            if int(item["origin_rank"]) != int(expected_item["origin_rank"]):
                 wrong_origin_count += 1
-            if int(item["destination_rank"]) != int(baseline["destination_rank"]):
+            if int(item["destination_rank"]) != int(expected_item["destination_rank"]):
                 wrong_destination_count += 1
-            if int(item["expert_id"]) != int(baseline["expert_id"]):
+            if int(item["expert_id"]) != int(expected_item["expert_id"]):
                 wrong_expert_count += 1
-            if int(item.get("route_rank", 0)) != int(baseline.get("route_rank", 0)):
+            if int(item.get("route_rank", 0)) != int(expected_item.get("route_rank", 0)):
                 wrong_route_rank_count += 1
+            if int(item.get("microbatch_id", expected_item["microbatch_id"])) != int(expected_item["microbatch_id"]):
+                wrong_microbatch_count += 1
     return {
         "expected_route_item_count": len(expected),
         "dispatch_route_item_count": len(dispatch_manifest),
         "receive_route_item_count": len(receive_manifest),
         "return_route_item_count": len(return_manifest),
         "verified_route_item_count": len(origin_verified_manifest),
-        "duplicate_count": duplicate_count,
-        "missing_count": missing_count,
+        "missing_dispatch_count": missing_dispatch,
+        "missing_receive_count": missing_receive,
+        "missing_return_count": missing_return,
+        "missing_verified_count": missing_verified,
+        "unexpected_dispatch_count": unexpected_dispatch,
+        "unexpected_receive_count": unexpected_receive,
+        "unexpected_return_count": unexpected_return,
+        "unexpected_verified_count": unexpected_verified,
+        "duplicate_dispatch_count": duplicate_dispatch,
+        "duplicate_receive_count": duplicate_receive,
+        "duplicate_return_count": duplicate_return,
+        "duplicate_verified_count": duplicate_verified,
+        "wrong_token_id_count": wrong_token_id_count,
         "wrong_origin_count": wrong_origin_count,
         "wrong_destination_count": wrong_destination_count,
         "wrong_expert_count": wrong_expert_count,
         "wrong_route_rank_count": wrong_route_rank_count,
+        "wrong_microbatch_count": wrong_microbatch_count,
+        "route_identity_scope": "global_across_all_microbatches",
+        "manifest_truth_source": "gpu_metadata_sidecar",
     }
 
 
@@ -1459,6 +1504,27 @@ def benchmark_preflight(protocol: ProtocolConfig, plan: WorkloadPlan, execution_
     }
 
 
+def expected_route_item_manifest(plans: list[WorkloadPlan]) -> list[dict[str, Any]]:
+    expected: list[dict[str, Any]] = []
+    for plan in plans:
+        for bucket in plan.bucket_workloads:
+            for route_item_index, token_id, route_rank in zip(bucket.route_item_indices, bucket.token_ids, bucket.route_ranks):
+                expected.append(
+                    {
+                        "global_route_item_index": int(route_item_index),
+                        "token_id": int(token_id),
+                        "origin_rank": int(bucket.origin_rank),
+                        "destination_rank": int(bucket.destination_rank),
+                        "expert_id": int(bucket.expert_id),
+                        "route_rank": int(route_rank),
+                        "microbatch_id": int(plan.microbatch_id),
+                        "layer_id": int(plan.layer_id),
+                    }
+                )
+    expected.sort(key=lambda item: int(item["global_route_item_index"]))
+    return expected
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1561,33 +1627,57 @@ def _planned_received_metadata_for_rank(
     return items
 
 
+def decode_metadata_tensor_rows(metadata_tensor: torch.Tensor) -> list[RouteItemMetadata]:
+    rows = metadata_tensor.cpu().tolist() if int(metadata_tensor.shape[0]) else []
+    decoded: list[RouteItemMetadata] = []
+    for row in rows:
+        if len(row) != 6:
+            raise RuntimeError(f"metadata row width mismatch: expected 6, got {len(row)}")
+        decoded.append(
+            RouteItemMetadata(
+                token_id=int(row[0]),
+                global_route_item_index=int(row[1]),
+                origin_rank=int(row[2]),
+                destination_rank=int(row[3]),
+                expert_id=int(row[4]),
+                route_rank=int(row[5]),
+            )
+        )
+    return decoded
+
+
 def _metadata_tensor_to_dicts(
     metadata_tensor: torch.Tensor,
     planned_metadata: list[dict[str, Any]],
+    *,
+    current_destination_rank: int | None = None,
 ) -> list[dict[str, Any]]:
     rows = int(metadata_tensor.shape[0])
     if rows != sum(int(item["rows"]) for item in planned_metadata):
         raise RuntimeError("metadata tensor rows do not match planned metadata rows")
-    metadata_cpu = metadata_tensor.cpu().tolist() if rows else []
+    decoded_rows = decode_metadata_tensor_rows(metadata_tensor)
     decoded: list[dict[str, Any]] = []
     cursor = 0
     for item in planned_metadata:
         item_rows = int(item["rows"])
-        slice_rows = metadata_cpu[cursor : cursor + item_rows]
+        slice_rows = decoded_rows[cursor : cursor + item_rows]
         if len(slice_rows) != item_rows:
             raise RuntimeError("metadata tensor row slicing mismatch")
-        route_item_ids = list(item.get("route_item_ids", [item.get("route_id", "")]))
-        route_item_indices = list(item.get("route_item_indices", [0 for _ in route_item_ids]))
-        route_ranks = list(item.get("route_ranks", [0 for _ in route_item_ids]))
-        token_ids = [int(row[0]) for row in slice_rows]
+        if any(row.origin_rank != int(item["origin_rank"]) for row in slice_rows):
+            raise RuntimeError("metadata origin_rank does not match planned segment source rank")
+        if any(row.destination_rank != int(item["destination_rank"]) for row in slice_rows):
+            raise RuntimeError("metadata destination_rank does not match planned segment destination rank")
+        if current_destination_rank is not None and any(row.destination_rank != int(current_destination_rank) for row in slice_rows):
+            raise RuntimeError("metadata destination_rank does not match current destination rank")
+        if any(row.expert_id != int(item["expert_id"]) for row in slice_rows):
+            raise RuntimeError("metadata expert_id does not match planned segment expert_id")
         decoded.append(
             {
                 **item,
-                "token_ids": token_ids,
-                "route_item_ids": route_item_ids,
-                "route_item_indices": route_item_indices,
-                "route_ranks": route_ranks,
-                "metadata_rows": [list(map(int, row)) for row in slice_rows],
+                "token_ids": [row.token_id for row in slice_rows],
+                "route_item_indices": [row.global_route_item_index for row in slice_rows],
+                "route_ranks": [row.route_rank for row in slice_rows],
+                "metadata_rows": [row.to_dict() for row in slice_rows],
             }
         )
         cursor += item_rows
@@ -1846,6 +1936,7 @@ def run_policy_on_plan(
                             "expert_id": int(item["expert_id"]),
                             "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "dispatch_row_index": row_index,
+                            "microbatch_id": int(plan.microbatch_id),
                         }
                     )
             for item in received_metadata:
@@ -1861,6 +1952,7 @@ def run_policy_on_plan(
                             "expert_id": int(item["expert_id"]),
                             "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "receive_row_index": row_index,
+                            "microbatch_id": int(plan.microbatch_id),
                         }
                     )
 
@@ -1884,7 +1976,7 @@ def run_policy_on_plan(
         return_end = torch.cuda.Event(enable_timing=True)
         _rank_phase_log(protocol.artifact_dir, rank, "return_payload", round_index)
         return_start.record()
-        returned, returned_metadata_tensor, return_rows, planned_return_splits, actual_return_recv_splits, packed_return_metadata = _return_to_origin(
+        returned, returned_metadata_tensor, return_rows, planned_return_splits, actual_return_recv_splits, packed_return_metadata_tensor = _return_to_origin(
             rank, world_size, compute_result, recv_metadata_tensor, received_metadata, plan.hidden_dim
         )
         return_end.record()
@@ -1918,41 +2010,41 @@ def run_policy_on_plan(
         if int(returned.shape[0]) != expected_origin_rows:
             raise RuntimeError("returned rows do not match origin-owned payload rows")
         if execution_cache.correctness_mode:
-            for item in received_metadata:
-                for row_index, token_id in enumerate(item["token_ids"]):
-                    return_manifest.append(
-                        {
-                            "round": round_index,
-                            "route_item_id": item["route_id"],
-                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
-                            "token_id": int(token_id),
-                            "origin_rank": int(item["origin_rank"]),
-                            "destination_rank": int(item["destination_rank"]),
-                            "expert_id": int(item["expert_id"]),
-                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
-                            "return_row_index": row_index,
-                        }
-                    )
-            verified_metadata = _metadata_tensor_to_dicts(
-                returned_metadata_tensor,
-                [_build_bucket_metadata_dict(bucket, _bucket_effective_rows(bucket, correctness_mode=execution_cache.correctness_mode)) for bucket in local_origin_buckets],
-            )
-            _rank_phase_log(protocol.artifact_dir, rank, "manifest_verify", round_index, rows=len(verified_metadata))
-            for item in verified_metadata:
-                for row_index, token_id in enumerate(item["token_ids"]):
-                    origin_verified_manifest.append(
-                        {
-                            "round": round_index,
-                            "route_item_id": item["route_id"],
-                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
-                            "token_id": int(token_id),
-                            "origin_rank": int(item["origin_rank"]),
-                            "destination_rank": int(item["destination_rank"]),
-                            "expert_id": int(item["expert_id"]),
-                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
-                            "verified_row_index": row_index,
-                        }
-                    )
+            packed_return_rows = decode_metadata_tensor_rows(packed_return_metadata_tensor)
+            for row_index, row in enumerate(packed_return_rows):
+                return_manifest.append(
+                    {
+                        "round": round_index,
+                        "route_item_id": str(row.global_route_item_index),
+                        "route_item_index": int(row.global_route_item_index),
+                        "token_id": int(row.token_id),
+                        "origin_rank": int(row.origin_rank),
+                        "destination_rank": int(row.destination_rank),
+                        "expert_id": int(row.expert_id),
+                        "route_rank": int(row.route_rank),
+                        "return_row_index": row_index,
+                        "microbatch_id": int(plan.microbatch_id),
+                    }
+                )
+            verified_rows = decode_metadata_tensor_rows(returned_metadata_tensor)
+            _rank_phase_log(protocol.artifact_dir, rank, "manifest_verify", round_index, rows=len(verified_rows))
+            for row_index, row in enumerate(verified_rows):
+                if int(row.origin_rank) != rank:
+                    raise RuntimeError("returned metadata row did not return to its original origin rank")
+                origin_verified_manifest.append(
+                    {
+                        "round": round_index,
+                        "route_item_id": str(row.global_route_item_index),
+                        "route_item_index": int(row.global_route_item_index),
+                        "token_id": int(row.token_id),
+                        "origin_rank": int(row.origin_rank),
+                        "destination_rank": int(row.destination_rank),
+                        "expert_id": int(row.expert_id),
+                        "route_rank": int(row.route_rank),
+                        "verified_row_index": row_index,
+                        "microbatch_id": int(plan.microbatch_id),
+                    }
+                )
         sync_wall_start = time.perf_counter()
         _rank_phase_log(protocol.artifact_dir, rank, "cleanup", round_index)
         dist.barrier()
@@ -2670,10 +2762,30 @@ def create_workload_plans(protocol: ProtocolConfig) -> tuple[list[WorkloadPlan],
 
         expert_count = int(getattr(model.config, "num_experts", 64))
         placement = build_placement_map(expert_count, protocol.world_size, protocol.placement_policy)
+        routed_batches = []
         plans: list[WorkloadPlan] = []
         for microbatch_id, batch_prompts in enumerate(microbatches):
             routing = _collect_microbatch_routing(runner_config, batch_prompts, microbatch_id, model_bundle)
             routing["bucket_records"] = apply_placement(routing["bucket_records"], placement)
+            routed_batches.append((microbatch_id, routing))
+        global_route_tuples = []
+        for microbatch_id, routing in routed_batches:
+            for route in list(routing.get("route_items", [])):
+                global_route_tuples.append(
+                    (
+                        int(routing["layer_id"]),
+                        int(microbatch_id),
+                        int(route["token_pos"]),
+                        int(route["token_id"]),
+                        int(route["route_rank"]),
+                        int(route["expert_id"]),
+                        str(route["route_id"]),
+                    )
+                )
+        global_route_tuples = sorted(global_route_tuples)
+        global_route_item_index_map = {str(route_tuple): index for index, route_tuple in enumerate(global_route_tuples)}
+        for microbatch_id, routing in routed_batches:
+            routing["route_item_index_map"] = global_route_item_index_map
             plans.append(
                 build_workload_plan(
                     config=protocol,
