@@ -24,6 +24,7 @@ from routesense_poc2.distributed_runtime import (
     init_nccl,
     preallocate_execution_cache,
     run_policy_on_plan,
+    summarize_route_manifests,
 )
 
 
@@ -94,6 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         if rank == 0:
             artifact_dir = Path(protocol.artifact_dir)
             artifact_dir.mkdir(parents=True, exist_ok=True)
+            manifest_summary = summarize_route_manifests(
+                result["dispatch_route_manifest"],
+                result["receive_route_manifest"],
+                result["return_route_manifest"],
+                result["origin_verified_manifest"],
+            )
             payload = {
                 "kind": "remote_dispatch_semantic_validation",
                 "not_a_benchmark": True,
@@ -106,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
                 "communication_semantics_valid": result["communication_semantics_valid"],
                 "decision_hash": result["decision_hash"],
                 "used_python_metadata_gather": result["used_python_metadata_gather"],
+                **manifest_summary,
                 "workload_manifest": manifest,
                 "environment": environment_snapshot(protocol.world_size),
             }

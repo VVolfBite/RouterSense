@@ -1256,6 +1256,65 @@ def _all_gather_object(value: Any) -> list[Any]:
     return gathered
 
 
+def summarize_route_manifests(
+    dispatch_manifest: list[dict[str, Any]],
+    receive_manifest: list[dict[str, Any]],
+    return_manifest: list[dict[str, Any]],
+    origin_verified_manifest: list[dict[str, Any]],
+) -> dict[str, Any]:
+    def _index(records: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for record in records:
+            grouped.setdefault(int(record["route_item_index"]), []).append(record)
+        return grouped
+
+    dispatch_idx = _index(dispatch_manifest)
+    receive_idx = _index(receive_manifest)
+    return_idx = _index(return_manifest)
+    verified_idx = _index(origin_verified_manifest)
+    expected = sorted(set(dispatch_idx) | set(receive_idx) | set(return_idx) | set(verified_idx))
+    duplicate_count = sum(max(0, len(items) - 1) for items in dispatch_idx.values())
+    duplicate_count += sum(max(0, len(items) - 1) for items in receive_idx.values())
+    duplicate_count += sum(max(0, len(items) - 1) for items in return_idx.values())
+    duplicate_count += sum(max(0, len(items) - 1) for items in verified_idx.values())
+    missing_count = 0
+    wrong_origin_count = 0
+    wrong_destination_count = 0
+    wrong_expert_count = 0
+    wrong_route_rank_count = 0
+    for route_item_index in expected:
+        dispatch_item = dispatch_idx.get(route_item_index, [])
+        receive_item = receive_idx.get(route_item_index, [])
+        return_item = return_idx.get(route_item_index, [])
+        verified_item = verified_idx.get(route_item_index, [])
+        if not (len(dispatch_item) == len(receive_item) == len(return_item) == len(verified_item) == 1):
+            missing_count += 1
+            continue
+        baseline = dispatch_item[0]
+        for item in (receive_item[0], return_item[0], verified_item[0]):
+            if int(item["origin_rank"]) != int(baseline["origin_rank"]):
+                wrong_origin_count += 1
+            if int(item["destination_rank"]) != int(baseline["destination_rank"]):
+                wrong_destination_count += 1
+            if int(item["expert_id"]) != int(baseline["expert_id"]):
+                wrong_expert_count += 1
+            if int(item.get("route_rank", 0)) != int(baseline.get("route_rank", 0)):
+                wrong_route_rank_count += 1
+    return {
+        "expected_route_item_count": len(expected),
+        "dispatch_route_item_count": len(dispatch_manifest),
+        "receive_route_item_count": len(receive_manifest),
+        "return_route_item_count": len(return_manifest),
+        "verified_route_item_count": len(origin_verified_manifest),
+        "duplicate_count": duplicate_count,
+        "missing_count": missing_count,
+        "wrong_origin_count": wrong_origin_count,
+        "wrong_destination_count": wrong_destination_count,
+        "wrong_expert_count": wrong_expert_count,
+        "wrong_route_rank_count": wrong_route_rank_count,
+    }
+
+
 def _rank_phase_log(
     artifact_dir: str,
     rank: int,
@@ -2580,7 +2639,9 @@ def create_workload_plans(protocol: ProtocolConfig) -> tuple[list[WorkloadPlan],
         return plans, manifest
 
     payloads: list[Any] = [None]
-    if dist.get_rank() == 0:
+    distributed = dist.is_available() and dist.is_initialized()
+    current_rank = dist.get_rank() if distributed else 0
+    if current_rank == 0:
         random.seed(protocol.seed)
         runner_config = RunnerConfig(
             model_key=protocol.model_key,
@@ -2643,7 +2704,8 @@ def create_workload_plans(protocol: ProtocolConfig) -> tuple[list[WorkloadPlan],
             "manifest": manifest,
         }
 
-    dist.broadcast_object_list(payloads, src=0)
+    if distributed:
+        dist.broadcast_object_list(payloads, src=0)
     bundle = payloads[0]
     assert bundle is not None
     plans = [
