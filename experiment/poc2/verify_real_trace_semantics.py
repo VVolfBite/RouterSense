@@ -26,6 +26,7 @@ from routesense_poc2.distributed_runtime import (
     run_policy_on_plan,
     expected_route_item_manifest,
     summarize_route_manifests,
+    manifest_is_valid,
 )
 
 
@@ -116,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
             communication_semantics_valid = all_results[0]["communication_semantics_valid"] and all(
                 result["communication_semantics_valid"] for result in all_results
             )
+            communication_semantics_valid = bool(communication_semantics_valid and manifest_is_valid(manifest_summary))
+            if not communication_semantics_valid:
+                raise RuntimeError(f"real-trace manifest gate failed: {json.dumps(manifest_summary, indent=2)}")
             payload = {
                 "kind": "remote_dispatch_semantic_validation",
                 "not_a_benchmark": True,

@@ -719,15 +719,22 @@ def latin_square_orders(strategies: list[str], repetitions: int) -> list[list[st
     return counterbalanced_orders(strategies, repetitions)
 
 
-def resolve_strategy_orders(mode: str, repetitions: int, seed: int) -> list[list[str]]:
+def resolve_strategy_orders(
+    mode: str,
+    repetitions: int,
+    seed: int,
+    *,
+    strategies: list[str] | None = None,
+) -> list[list[str]]:
+    ordered_strategies = list(strategies or STRATEGIES)
     if mode == "fixed":
-        return [list(STRATEGIES) for _ in range(repetitions)]
+        return [list(ordered_strategies) for _ in range(repetitions)]
     if mode == "randomized":
-        return randomized_orders(STRATEGIES, repetitions, seed)
+        return randomized_orders(ordered_strategies, repetitions, seed)
     if mode == "latin-square":
-        return latin_square_orders(STRATEGIES, repetitions)
+        return latin_square_orders(ordered_strategies, repetitions)
     if mode == "counterbalanced":
-        return counterbalanced_orders(STRATEGIES, repetitions)
+        return counterbalanced_orders(ordered_strategies, repetitions)
     raise ValueError(f"unsupported strategy-order-mode: {mode}")
 
 
@@ -1360,6 +1367,30 @@ def summarize_route_manifests(
     }
 
 
+def manifest_is_valid(summary: dict[str, Any]) -> bool:
+    required_zero = [
+        "missing_dispatch_count",
+        "missing_receive_count",
+        "missing_return_count",
+        "missing_verified_count",
+        "unexpected_dispatch_count",
+        "unexpected_receive_count",
+        "unexpected_return_count",
+        "unexpected_verified_count",
+        "duplicate_dispatch_count",
+        "duplicate_receive_count",
+        "duplicate_return_count",
+        "duplicate_verified_count",
+        "wrong_token_id_count",
+        "wrong_origin_count",
+        "wrong_destination_count",
+        "wrong_expert_count",
+        "wrong_route_rank_count",
+        "wrong_microbatch_count",
+    ]
+    return all(int(summary.get(key, 0)) == 0 for key in required_zero)
+
+
 def _rank_phase_log(
     artifact_dir: str,
     rank: int,
@@ -1468,8 +1499,18 @@ def _policy_feature_contract(strategy: str) -> dict[str, Any]:
     return contracts.get(strategy, {"allowed_feature_groups": [], "actual_feature_names_read": [], "forbidden_feature_names_checked": []})
 
 
-def benchmark_preflight(protocol: ProtocolConfig, plan: WorkloadPlan, execution_cache: ExecutionCache) -> dict[str, Any]:
+def benchmark_preflight(
+    protocol: ProtocolConfig,
+    plan: WorkloadPlan,
+    execution_cache: ExecutionCache,
+    *,
+    allowed_pids: list[int] | None = None,
+    allowed_cmd_substrings: list[str] | None = None,
+) -> dict[str, Any]:
     gpu_processes = []
+    unexpected_gpu_processes = []
+    allowed_pid_set = {int(pid) for pid in (allowed_pids or [])}
+    allowed_cmd_tokens = [str(token) for token in (allowed_cmd_substrings or []) if str(token)]
     try:
         result = subprocess.check_output(
             ["nvidia-smi", "--query-compute-apps=pid,process_name,gpu_uuid,used_memory", "--format=csv,noheader,nounits"],
@@ -1480,8 +1521,28 @@ def benchmark_preflight(protocol: ProtocolConfig, plan: WorkloadPlan, execution_
             gpu_processes = [line.strip() for line in result.splitlines() if line.strip()]
     except Exception:
         gpu_processes = []
-    if len(gpu_processes) > protocol.world_size:
-        raise RuntimeError(f"benchmark preflight failed: unexpected GPU compute processes detected: {gpu_processes}")
+    for line in gpu_processes:
+        pid_text = line.split(",", 1)[0].strip()
+        try:
+            pid_value = int(pid_text)
+        except ValueError:
+            unexpected_gpu_processes.append(line)
+            continue
+        if pid_value not in allowed_pid_set:
+            cmdline = ""
+            try:
+                cmdline = subprocess.check_output(
+                    ["ps", "-p", str(pid_value), "-o", "cmd="],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except Exception:
+                cmdline = ""
+            if allowed_cmd_tokens and any(token in cmdline for token in allowed_cmd_tokens):
+                continue
+            unexpected_gpu_processes.append(line)
+    if unexpected_gpu_processes:
+        raise RuntimeError(f"benchmark preflight failed: unexpected GPU compute processes detected: {unexpected_gpu_processes}")
     first_bucket = plan.bucket_workloads[0] if plan.bucket_workloads else None
     payload_checksum = None
     metadata_checksum = None
@@ -1492,13 +1553,56 @@ def benchmark_preflight(protocol: ProtocolConfig, plan: WorkloadPlan, execution_
     if execution_cache.expert_weight1:
         expert_id = sorted(execution_cache.expert_weight1)[0]
         weight_checksum = float(execution_cache.expert_weight1[expert_id].sum().item() + execution_cache.expert_weight2[expert_id].sum().item())
+    trace_hash = _hash_payload(
+        {
+            "model_key": plan.model_key,
+            "microbatch_id": plan.microbatch_id,
+            "layer_id": plan.layer_id,
+            "routing_summary": plan.routing_summary,
+        }
+    )
+    plan_hash = _hash_payload(plan.to_dict())
+    placement_hash = _hash_payload([asdict(entry) for entry in plan.placement_mapping])
+    token_origin_map_hash = _hash_payload(plan.routing_summary.get("token_origin_rank_detail", {}))
+    route_item_records = [
+        {
+            "route_item_index": int(route_item_index),
+            "token_id": int(token_id),
+            "origin_rank": int(bucket.origin_rank),
+            "destination_rank": int(bucket.destination_rank),
+            "expert_id": int(bucket.expert_id),
+            "route_rank": int(route_rank),
+        }
+        for bucket in plan.bucket_workloads
+        for route_item_index, token_id, route_rank in zip(bucket.route_item_indices, bucket.token_ids, bucket.route_ranks)
+    ]
+    route_item_records.sort(
+        key=lambda item: (
+            int(item["route_item_index"]),
+            int(item["token_id"]),
+            int(item["origin_rank"]),
+            int(item["destination_rank"]),
+            int(item["expert_id"]),
+            int(item["route_rank"]),
+        )
+    )
+    total_route_item_set_hash = _hash_payload(route_item_records)
     return {
         "payload_checksum": payload_checksum,
         "metadata_checksum": metadata_checksum,
         "expert_weight_checksum": weight_checksum,
+        "plan_hash": plan_hash,
+        "trace_hash": trace_hash,
+        "placement_hash": placement_hash,
+        "token_origin_map_hash": token_origin_map_hash,
+        "total_route_item_set_hash": total_route_item_set_hash,
+        "global_route_identity_scope": "global_across_all_microbatches",
         "used_python_metadata_gather_expected": False,
         "legacy_payload_function_allowed": False,
         "gpu_processes": gpu_processes,
+        "unexpected_gpu_processes": unexpected_gpu_processes,
+        "allowed_pids": sorted(allowed_pid_set),
+        "allowed_cmd_substrings": allowed_cmd_tokens,
         "metric_semantics_version": "poc2.5-final",
         "state_semantics": "historical_plus_projected",
     }
@@ -2315,11 +2419,31 @@ def update_global_runtime_state(
 
 
 def aggregate_repetition_records(records: list[dict[str, Any]], state_meaningful: bool) -> dict[str, Any]:
-    by_strategy: dict[str, list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
         if record["warmup"]:
             continue
-        by_strategy.setdefault(record["strategy"], []).append(record)
+        grouped.setdefault((str(record["strategy"]), int(record["repetition_index"])), []).append(record)
+
+    per_repetition_aggregate_records = []
+    by_strategy: dict[str, list[dict[str, Any]]] = {}
+    for (strategy, repetition_index), items in sorted(grouped.items()):
+        aggregate = {
+            "strategy": strategy,
+            "repetition_index": repetition_index,
+            "plan_id": items[0].get("plan_id"),
+            "microbatch_count": len(items),
+            "end_to_end_batch_completion_ms": float(statistics.fmean(float(item["global_end_to_end_completion_ms"]) for item in items)),
+            "dispatch_total_ms": float(statistics.fmean(float(item["dispatch_total_ms"]) for item in items)),
+            "compute_total_ms": float(statistics.fmean(float(item["compute_total_ms"]) for item in items)),
+            "return_total_ms": float(statistics.fmean(float(item["return_total_ms"]) for item in items)),
+            "sync_total_ms": float(statistics.fmean(float(item["sync_total_ms"]) for item in items)),
+            "remote_byte_ratio": float(statistics.fmean(float(item["remote_byte_ratio"]) for item in items)),
+            "throughput_tokens_per_s": float(statistics.fmean(float(item["throughput_tokens_per_s"]) for item in items)),
+            "strategy_order": list(items[0].get("strategy_order", [])),
+        }
+        per_repetition_aggregate_records.append(aggregate)
+        by_strategy.setdefault(strategy, []).append(aggregate)
 
     summary_by_strategy: dict[str, dict[str, Any]] = {}
     for strategy, items in by_strategy.items():
@@ -2333,6 +2457,8 @@ def aggregate_repetition_records(records: list[dict[str, Any]], state_meaningful
             "dispatch_total_ms": _stats(dispatch),
             "compute_total_ms": _stats(compute),
             "return_total_ms": _stats(returned),
+            "sync_total_ms": _stats([item["sync_total_ms"] for item in items]),
+            "remote_byte_ratio": _stats([item["remote_byte_ratio"] for item in items]),
             "barrier_wait_ms_deprecated": _stats([item.get("barrier_wait_ms_deprecated", 0.0) for item in items]),
             "throughput_tokens_per_s": _stats([item["throughput_tokens_per_s"] for item in items]),
         }
@@ -2352,6 +2478,7 @@ def aggregate_repetition_records(records: list[dict[str, Any]], state_meaningful
     position_effects = _position_effects(records)
     return {
         "runtime_state_comparison_meaningful": state_meaningful,
+        "per_repetition_aggregate_records": per_repetition_aggregate_records,
         "strategies": summary_by_strategy,
         "paired_deltas": paired,
         "position_effects": position_effects,
@@ -2374,8 +2501,8 @@ def _stats(values: list[float]) -> dict[str, float]:
 
 
 def _paired(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> dict[str, Any]:
-    left_map = {(item["repetition_index"], item["microbatch_id"], item.get("plan_id")): item for item in left}
-    right_map = {(item["repetition_index"], item["microbatch_id"], item.get("plan_id")): item for item in right}
+    left_map = {(item["repetition_index"], item.get("plan_id")): item for item in left}
+    right_map = {(item["repetition_index"], item.get("plan_id")): item for item in right}
     paired_keys = sorted(left_map.keys() & right_map.keys())
     paired_count = len(paired_keys)
     if paired_count == 0:
@@ -2410,8 +2537,7 @@ def _paired(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> dict[str
         per_repetition.append(
             {
                 "repetition_index": int(key[0]),
-                "microbatch_id": int(key[1]),
-                "plan_id": key[2],
+                "plan_id": key[1],
                 "delta_ms": delta,
                 "left_position": left_position,
                 "right_position": right_position,
@@ -2478,7 +2604,7 @@ def _position_effects(records: list[dict[str, Any]]) -> dict[str, dict[str, floa
         if strategy not in order:
             continue
         position = order.index(strategy) + 1
-        positions.setdefault(strategy, {}).setdefault(position, []).append(float(record["end_to_end_batch_completion_ms"]))
+        positions.setdefault(strategy, {}).setdefault(position, []).append(float(record["global_end_to_end_completion_ms"]))
     result: dict[str, dict[str, float]] = {}
     for strategy, per_position in positions.items():
         result[strategy] = {
@@ -2646,9 +2772,10 @@ def _decision_from_order(strategy: str, scheduler_input: SchedulerInput, release
 def environment_snapshot(world_size: int) -> dict[str, Any]:
     commit_hash = None
     dirty = None
+    repo_root = Path(__file__).resolve().parents[2]
     try:
-        commit_hash = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-        dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip())
+        commit_hash = subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True).strip()
+        dirty = bool(subprocess.check_output(["git", "-C", str(repo_root), "status", "--porcelain"], text=True).strip())
     except Exception:
         commit_hash = "unknown"
         dirty = None

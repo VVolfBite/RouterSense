@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -15,9 +16,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense_poc2.distributed_runtime import (
+    benchmark_preflight,
+    counterbalanced_orders,
     GlobalRuntimeState,
     ProtocolConfig,
-    STRATEGIES,
     aggregate_repetition_records,
     broadcast_global_dispatch_plan,
     build_global_dispatch_plan,
@@ -33,6 +35,9 @@ from routesense_poc2.distributed_runtime import (
     save_plan_snapshot,
     update_global_runtime_state,
 )
+
+
+SANITY_STRATEGIES = ["fifo", "random-order", "strong-state", "full"]
 
 
 MODEL_PATHS = {
@@ -71,15 +76,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--placement-policy", choices=["modulo", "balanced", "hotspot"], default="balanced")
     parser.add_argument("--scenario", choices=["natural", "conflict"], default="natural")
     parser.add_argument("--layer", type=str, default="auto")
-    parser.add_argument("--microbatch-size", type=int, default=8)
-    parser.add_argument("--microbatch-count", type=int, default=16)
-    parser.add_argument("--max-length", type=int, default=128)
+    parser.add_argument("--microbatch-size", type=int, default=2)
+    parser.add_argument("--microbatch-count", type=int, default=4)
+    parser.add_argument("--max-length", type=int, default=64)
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--warmup-repetitions", type=int, default=3)
+    parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--repetitions", type=int, default=8)
-    parser.add_argument("--strategy-order-mode", choices=["fixed", "randomized", "counterbalanced", "latin-square"], default="counterbalanced")
+    parser.add_argument("--strategy-order-mode", choices=["latin-square"], default="latin-square")
     parser.add_argument("--compute-scale", type=float, default=None)
     parser.add_argument("--hidden-dim-scale", type=float, default=None)
     parser.add_argument("--intermediate-scale", type=float, default=None)
@@ -126,9 +131,19 @@ def main(argv: list[str] | None = None) -> int:
             origin_sharding=args.origin_sharding,
         )
         plans, workload_manifest = create_workload_plans(protocol)
-        active_strategies = list(protocol.audit_strategy_subset or STRATEGIES)
-        orders = resolve_strategy_orders(protocol.strategy_order_mode, protocol.warmup_repetitions + protocol.repetitions, protocol.seed)
-        orders = [[strategy for strategy in order if strategy in active_strategies] for order in orders]
+        active_strategies = list(protocol.audit_strategy_subset or SANITY_STRATEGIES)
+        if active_strategies != SANITY_STRATEGIES:
+            raise RuntimeError(f"sanity benchmark only allows {SANITY_STRATEGIES}, got {active_strategies}")
+        if protocol.repetitions % 4 != 0:
+            raise RuntimeError("sanity benchmark requires repetitions to be a multiple of 4")
+        warmup_orders = counterbalanced_orders(active_strategies, protocol.warmup_repetitions)
+        measured_orders = resolve_strategy_orders(
+            protocol.strategy_order_mode,
+            protocol.repetitions,
+            protocol.seed,
+            strategies=active_strategies,
+        )
+        orders = warmup_orders + measured_orders
         per_repetition: list[dict[str, object]] = []
         global_states = {strategy: GlobalRuntimeState() for strategy in active_strategies}
         execution_caches = {
@@ -140,10 +155,41 @@ def main(argv: list[str] | None = None) -> int:
             )
             for plan in plans
         }
+        allowed_pids = [int(os.getpid()), int(os.getppid())]
+        gathered_pids: list[object] = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_pids, {"pid": int(os.getpid()), "ppid": int(os.getppid())})
+        if rank == 0:
+            allowed_pids = sorted(
+                {
+                    int(item["pid"])
+                    for item in gathered_pids
+                }
+                | {
+                    int(item["ppid"])
+                    for item in gathered_pids
+                }
+            )
+        preflight = benchmark_preflight(
+            protocol,
+            plans[0],
+            execution_caches[plans[0].plan_id],
+            allowed_pids=allowed_pids,
+            allowed_cmd_substrings=["experiment/poc2/nccl_4gpu_benchmark.py"],
+        ) if rank == 0 else None
+        fairness_references_by_plan: dict[tuple[int, str], dict[str, object]] = {}
 
         for repetition_index, order in enumerate(orders):
             warmup = repetition_index < protocol.warmup_repetitions
             for microbatch_id, plan in enumerate(plans):
+                fairness_key = (repetition_index, plan.plan_id)
+                fairness_reference = fairness_references_by_plan.setdefault(
+                    fairness_key,
+                    {
+                        **dict(preflight or {}),
+                        "total_dispatch_matrix": None,
+                        "total_return_matrix": None,
+                    },
+                )
                 for strategy in order:
                     local_global_plan = None
                     if rank == 0:
@@ -165,6 +211,24 @@ def main(argv: list[str] | None = None) -> int:
                         local_rank=state["local_rank"],
                     )
                     result["strategy_order"] = list(order)
+                    result["fairness_reference"] = {
+                        "plan_hash": fairness_reference.get("plan_hash"),
+                        "trace_hash": fairness_reference.get("trace_hash"),
+                        "placement_hash": fairness_reference.get("placement_hash"),
+                        "token_origin_map_hash": fairness_reference.get("token_origin_map_hash"),
+                        "payload_checksum": fairness_reference.get("payload_checksum"),
+                        "metadata_checksum": fairness_reference.get("metadata_checksum"),
+                        "expert_weight_checksum": fairness_reference.get("expert_weight_checksum"),
+                        "total_route_item_set_hash": fairness_reference.get("total_route_item_set_hash"),
+                    }
+                    if fairness_reference["total_dispatch_matrix"] is None:
+                        fairness_reference["total_dispatch_matrix"] = result["dispatch_bytes_matrix"]
+                        fairness_reference["total_return_matrix"] = result["return_bytes_matrix"]
+                    else:
+                        if result["dispatch_bytes_matrix"] != fairness_reference["total_dispatch_matrix"]:
+                            raise RuntimeError("fairness assertion failed: total dispatch matrix changed across strategies")
+                        if result["return_bytes_matrix"] != fairness_reference["total_return_matrix"]:
+                            raise RuntimeError("fairness assertion failed: total return matrix changed across strategies")
                     per_repetition.append(result)
                     rank_payload = {
                         "rank": state["rank"],
@@ -214,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
                     "audit_plan_id": protocol.audit_plan_id,
                     "plan_snapshot_path": str(plan_snapshot),
                     "strategy_subset": active_strategies,
+                    "sanity_benchmark_only": True,
+                    "paper_claim_ready": False,
                 },
                 environment=environment_snapshot(protocol.world_size),
                 protocol={
@@ -226,8 +292,16 @@ def main(argv: list[str] | None = None) -> int:
                     "control_plane": "rank0 only",
                     "data_plane": "all ranks execute received global dispatch plan only",
                     "strategy_order_mode": protocol.strategy_order_mode,
+                    "latin_square_orders": orders,
                     "benchmark_entrypoint": "experiment/poc2/nccl_4gpu_benchmark.py",
                     "policies": active_strategies,
+                    "preflight": preflight,
+                    "fairness_references_by_plan": {
+                        f"rep{repetition_index}:{plan_id}": value
+                        for (repetition_index, plan_id), value in fairness_references_by_plan.items()
+                    },
+                    "sanity_benchmark_only": True,
+                    "paper_claim_ready": False,
                 },
                 workload_manifest=workload_manifest,
                 per_repetition=per_repetition,

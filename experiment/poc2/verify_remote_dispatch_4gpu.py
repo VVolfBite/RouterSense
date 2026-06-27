@@ -12,8 +12,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from routesense_poc2.distributed_runtime import (
-    GlobalRuntimeState,
+    from routesense_poc2.distributed_runtime import (
+        expected_route_item_manifest,
+        GlobalRuntimeState,
     PlacementEntry,
     ProtocolConfig,
     WorkloadBucket,
@@ -23,9 +24,11 @@ from routesense_poc2.distributed_runtime import (
     cleanup_nccl,
     environment_snapshot,
     init_nccl,
-    preallocate_execution_cache,
-    run_policy_on_plan,
-)
+        preallocate_execution_cache,
+        run_policy_on_plan,
+        summarize_route_manifests,
+        manifest_is_valid,
+    )
 
 
 def _fixed_plan(world_size: int) -> WorkloadPlan:
@@ -137,20 +140,25 @@ def main() -> int:
         if rank == 0:
             artifact_dir = Path(protocol.artifact_dir)
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            expected_route_item_count = sum(len(bucket.route_item_ids) if bucket.route_item_ids else 1 for bucket in plan.bucket_workloads)
+            manifest_summary = summarize_route_manifests(
+                expected_route_item_manifest([plan]),
+                result["dispatch_route_manifest"],
+                result["receive_route_manifest"],
+                result["return_route_manifest"],
+                result["origin_verified_manifest"],
+            )
+            remote_flow_valid = result["remote_byte_ratio"] > 0.0
+            communication_semantics_valid = bool(remote_flow_valid and manifest_is_valid(manifest_summary))
+            if not communication_semantics_valid:
+                raise RuntimeError(f"fixed-flow manifest gate failed: {json.dumps(manifest_summary, indent=2)}")
             summary = {
-                "communication_semantics_valid": result["communication_semantics_valid"],
+                "communication_semantics_valid": communication_semantics_valid,
                 "dispatch_bytes_matrix": result["dispatch_bytes_matrix"],
                 "return_bytes_matrix": result["return_bytes_matrix"],
                 "remote_byte_ratio": result["remote_byte_ratio"],
                 "decision_hash": result["decision_hash"],
                 "used_python_metadata_gather": result["used_python_metadata_gather"],
-                "expected_route_item_count": expected_route_item_count,
-                "dispatch_route_item_count": len(result["dispatch_route_manifest"]),
-                "receive_route_item_count": len(result["receive_route_manifest"]),
-                "return_route_item_count": len(result["return_route_manifest"]),
-                "verified_route_item_count": len(result["origin_verified_manifest"]),
-                "wrong_route_rank_count": 0,
+                **manifest_summary,
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
