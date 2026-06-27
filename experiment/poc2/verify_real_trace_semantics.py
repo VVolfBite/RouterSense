@@ -6,20 +6,25 @@ import json
 import sys
 from pathlib import Path
 
+import torch
+
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense_poc2.distributed_runtime import (
+    GlobalRuntimeState,
     ProtocolConfig,
+    broadcast_global_dispatch_plan,
+    build_global_dispatch_plan,
     cleanup_nccl,
     create_workload_plans,
     environment_snapshot,
     init_nccl,
+    preallocate_execution_cache,
     run_policy_on_plan,
 )
-from routesense_poc2.scheduler import RuntimeState
 
 
 MODEL_PATHS = {
@@ -62,11 +67,26 @@ def main(argv: list[str] | None = None) -> int:
         plans, manifest = create_workload_plans(protocol)
         if not plans:
             raise RuntimeError("no workload plans created from real router trace")
-        result = run_policy_on_plan(
+        global_state = GlobalRuntimeState()
+        local_plan = build_global_dispatch_plan(
             protocol=protocol,
             plan=plans[0],
             strategy="fifo",
-            runtime_state=RuntimeState(),
+            global_state=global_state,
+            repetition_index=0,
+        ) if rank == 0 else None
+        global_plan = broadcast_global_dispatch_plan(local_plan)
+        cache = preallocate_execution_cache(
+            plans[0],
+            rank,
+            torch.device(f"cuda:{state['local_rank']}"),
+            correctness_mode=True,
+        )
+        result = run_policy_on_plan(
+            protocol=protocol,
+            plan=plans[0],
+            global_plan=global_plan,
+            execution_cache=cache,
             repetition_index=0,
             warmup=False,
             local_rank=state["local_rank"],
@@ -84,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                 "return_bytes_matrix": result["return_bytes_matrix"],
                 "remote_byte_ratio": result["remote_byte_ratio"],
                 "communication_semantics_valid": result["communication_semantics_valid"],
+                "decision_hash": result["decision_hash"],
                 "workload_manifest": manifest,
                 "environment": environment_snapshot(protocol.world_size),
             }

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 from routesense_poc2.distributed_runtime import (
+    GlobalRuntimeState,
     PlacementEntry,
     WorkloadBucket,
     WorkloadPlan,
     ProtocolConfig,
+    _hash_payload,
     _go_no_go,
     _planned_round_matrix,
     _paired,
     _position_effects,
     assign_origin_rank,
+    build_global_dispatch_plan,
     build_workload_plan,
     dependency_score_for_bucket,
     available_audit_strategies,
     apply_placement,
     build_placement_map,
     counterbalanced_orders,
+    latin_square_orders,
     load_plan_snapshot,
     mark_state_meaningful,
     release_rounds_for_order,
@@ -24,6 +28,7 @@ from routesense_poc2.distributed_runtime import (
     shuffled_dependency_order,
     strong_state_score_for_bucket,
     lina_inspired_score_for_bucket,
+    update_global_runtime_state,
 )
 from routesense_poc2.scheduler import RuntimeState
 from routesense_poc2.scheduler import BucketRecord
@@ -420,3 +425,83 @@ def test_release_rounds_for_order():
 
 def test_available_audit_strategies():
     assert available_audit_strategies() == ["fifo", "random-order", "strong-state", "full"]
+
+
+def test_non_rank0_may_not_generate_global_dispatch_plan():
+    import routesense_poc2.distributed_runtime as runtime
+
+    protocol = ProtocolConfig(model_key="olmoe", model_path="/tmp/model", output_dir="/tmp/out", artifact_dir="/tmp/art")
+    plan = WorkloadPlan(
+        plan_id="p0",
+        model_key="olmoe",
+        seed=1,
+        microbatch_id=0,
+        layer_id=0,
+        layer_path="layer",
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement_policy="balanced",
+        origin_sharding="round-robin",
+        placement_mapping=[],
+        bucket_workloads=[],
+        routing_summary={},
+    )
+    original = runtime.dist.get_rank
+    runtime.dist.get_rank = lambda: 1
+    try:
+        try:
+            build_global_dispatch_plan(
+                protocol=protocol,
+                plan=plan,
+                strategy="fifo",
+                global_state=GlobalRuntimeState(),
+                repetition_index=0,
+            )
+            assert False
+        except RuntimeError:
+            pass
+    finally:
+        runtime.dist.get_rank = original
+
+
+def test_global_dispatch_plan_hash_is_stable():
+    payload = {"a": 1, "b": [1, 2, 3]}
+    assert _hash_payload(payload) == _hash_payload(payload)
+
+
+def test_global_completion_uses_max_rank_completion():
+    state = GlobalRuntimeState()
+    plan = WorkloadPlan(
+        plan_id="p0",
+        model_key="olmoe",
+        seed=1,
+        microbatch_id=0,
+        layer_id=0,
+        layer_path="layer",
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement_policy="balanced",
+        origin_sharding="round-robin",
+        placement_mapping=[],
+        bucket_workloads=[],
+        routing_summary={},
+    )
+    dispatch_plan = type("DummyPlan", (), {"release_order": [], "policy_name": "fifo"})()
+    updated = update_global_runtime_state(
+        state,
+        dispatch_plan,  # type: ignore[arg-type]
+        plan,
+        [
+            {"rank": 0, "local_completion_ms": 3.0, "dispatch_total_ms": 1.0, "compute_total_ms": 1.0, "return_total_ms": 1.0},
+            {"rank": 1, "local_completion_ms": 5.0, "dispatch_total_ms": 1.0, "compute_total_ms": 2.0, "return_total_ms": 1.0},
+        ],
+    )
+    assert updated.global_completion_time_ms == 5.0
+
+
+def test_latin_square_requires_multiple_of_strategy_count():
+    try:
+        latin_square_orders(["fifo", "random-order", "strong-state", "full"], 6)
+        assert False
+    except ValueError:
+        pass

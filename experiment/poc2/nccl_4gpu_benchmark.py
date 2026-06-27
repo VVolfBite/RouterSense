@@ -7,26 +7,32 @@ import sys
 import traceback
 from pathlib import Path
 
+import torch.distributed as dist
+
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense_poc2.distributed_runtime import (
+    GlobalRuntimeState,
     ProtocolConfig,
     STRATEGIES,
     aggregate_repetition_records,
+    broadcast_global_dispatch_plan,
+    build_global_dispatch_plan,
     cleanup_nccl,
     create_workload_plans,
     environment_snapshot,
     init_nccl,
     mark_state_meaningful,
+    preallocate_execution_cache,
     resolve_strategy_orders,
     run_policy_on_plan,
     save_artifacts,
     save_plan_snapshot,
+    update_global_runtime_state,
 )
-from routesense_poc2.scheduler import RuntimeState
 
 
 MODEL_PATHS = {
@@ -73,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--warmup-repetitions", type=int, default=3)
     parser.add_argument("--repetitions", type=int, default=8)
-    parser.add_argument("--strategy-order-mode", choices=["fixed", "randomized", "counterbalanced"], default="counterbalanced")
+    parser.add_argument("--strategy-order-mode", choices=["fixed", "randomized", "counterbalanced", "latin-square"], default="counterbalanced")
     parser.add_argument("--compute-scale", type=float, default=None)
     parser.add_argument("--hidden-dim-scale", type=float, default=None)
     parser.add_argument("--intermediate-scale", type=float, default=None)
@@ -124,23 +130,61 @@ def main(argv: list[str] | None = None) -> int:
         orders = resolve_strategy_orders(protocol.strategy_order_mode, protocol.warmup_repetitions + protocol.repetitions, protocol.seed)
         orders = [[strategy for strategy in order if strategy in active_strategies] for order in orders]
         per_repetition: list[dict[str, object]] = []
+        global_states = {strategy: GlobalRuntimeState() for strategy in active_strategies}
+        execution_caches = {
+            plan.plan_id: preallocate_execution_cache(
+                plan,
+                state["rank"],
+                device=__import__("torch").device(f"cuda:{state['local_rank']}"),
+                correctness_mode=False,
+            )
+            for plan in plans
+        }
 
         for repetition_index, order in enumerate(orders):
             warmup = repetition_index < protocol.warmup_repetitions
-            runtime_states = {strategy: RuntimeState() for strategy in active_strategies}
             for microbatch_id, plan in enumerate(plans):
                 for strategy in order:
+                    local_global_plan = None
+                    if rank == 0:
+                        local_global_plan = build_global_dispatch_plan(
+                            protocol=protocol,
+                            plan=plan,
+                            strategy=strategy,
+                            global_state=global_states[strategy],
+                            repetition_index=repetition_index,
+                        )
+                    global_plan = broadcast_global_dispatch_plan(local_global_plan)
                     result = run_policy_on_plan(
                         protocol=protocol,
                         plan=plan,
-                        strategy=strategy,
-                        runtime_state=runtime_states[strategy],
+                        global_plan=global_plan,
+                        execution_cache=execution_caches[plan.plan_id],
                         repetition_index=repetition_index,
                         warmup=warmup,
                         local_rank=state["local_rank"],
                     )
                     result["strategy_order"] = list(order)
                     per_repetition.append(result)
+                    rank_payload = {
+                        "rank": state["rank"],
+                        "local_completion_ms": float(result["local_end_to_end_completion_ms"]),
+                        "dispatch_total_ms": float(result["dispatch_total_ms"]),
+                        "compute_total_ms": float(result["compute_total_ms"]),
+                        "return_total_ms": float(result["return_total_ms"]),
+                    }
+                    rank_records: list[object] = [None for _ in range(world_size)]
+                    dist.all_gather_object(rank_records, rank_payload)
+                    if rank == 0:
+                        global_states[strategy] = update_global_runtime_state(
+                            global_states[strategy],
+                            global_plan,
+                            plan,
+                            rank_records,  # type: ignore[arg-type]
+                        )
+                    state_payload = [global_states[strategy].to_dict() if rank == 0 else None]
+                    dist.broadcast_object_list(state_payload, src=0)
+                    global_states[strategy] = GlobalRuntimeState.from_dict(state_payload[0])
 
         summary = aggregate_repetition_records(per_repetition, mark_state_meaningful(protocol.microbatch_count))
         if rank == 0:
@@ -179,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
                     "return_backend": "torch.distributed.all_to_all_single",
                     "expert_compute": "rank-local expert-like MLP",
                     "origin_sharding": protocol.origin_sharding,
+                    "control_plane": "rank0 only",
+                    "data_plane": "all ranks execute received global dispatch plan only",
                     "strategy_order_mode": protocol.strategy_order_mode,
                     "benchmark_entrypoint": "experiment/poc2/nccl_4gpu_benchmark.py",
                     "policies": active_strategies,

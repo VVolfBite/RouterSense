@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import random
@@ -175,6 +176,76 @@ class WorkloadPlan:
             bucket_workloads=[WorkloadBucket(**bucket) for bucket in payload["bucket_workloads"]],
             routing_summary=dict(payload["routing_summary"]),
         )
+
+
+@dataclass
+class GlobalRuntimeState:
+    destination_pending_work: dict[int, float] = field(default_factory=dict)
+    destination_queue_depth: dict[int, int] = field(default_factory=dict)
+    rank_backlog_work: dict[int, float] = field(default_factory=dict)
+    rank_queue_depth: dict[int, int] = field(default_factory=dict)
+    destination_hotness: dict[int, float] = field(default_factory=dict)
+    destination_latency_history: dict[int, list[float]] = field(default_factory=dict)
+    source_outbound_pending_bytes: dict[int, int] = field(default_factory=dict)
+    destination_inbound_pending_bytes: dict[int, int] = field(default_factory=dict)
+    flow_pending_bytes: dict[str, int] = field(default_factory=dict)
+    rank_compute_queue_rows: dict[int, int] = field(default_factory=dict)
+    expert_pending_rows: dict[int, int] = field(default_factory=dict)
+    rank_dispatch_time_ms: dict[int, float] = field(default_factory=dict)
+    rank_compute_time_ms: dict[int, float] = field(default_factory=dict)
+    rank_return_time_ms: dict[int, float] = field(default_factory=dict)
+    rank_local_completion_time_ms: dict[int, float] = field(default_factory=dict)
+    global_completion_time_ms: float = 0.0
+    batch_index: int = 0
+
+    def to_scheduler_state(self) -> RuntimeState:
+        return RuntimeState(
+            destination_pending_work=dict(self.destination_pending_work),
+            destination_queue_depth=dict(self.destination_queue_depth),
+            rank_backlog_work=dict(self.rank_backlog_work),
+            rank_queue_depth=dict(self.rank_queue_depth),
+            destination_hotness=dict(self.destination_hotness),
+            destination_latency_history={key: list(values) for key, values in self.destination_latency_history.items()},
+            batch_index=self.batch_index,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GlobalRuntimeState":
+        return cls(**payload)
+
+
+@dataclass
+class GlobalDispatchPlan:
+    plan_id: str
+    workload_plan_id: str
+    policy_name: str
+    policy_seed: int
+    microbatch_id: int
+    release_order: list[str]
+    release_rounds: list[list[str]]
+    total_dispatch_matrix: list[list[int]]
+    per_round_dispatch_matrices: list[list[list[int]]]
+    decision_hash: str
+    scheduler_state_snapshot: dict[str, Any]
+    scheduler_decision: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "GlobalDispatchPlan":
+        return cls(**payload)
+
+
+@dataclass
+class ExecutionCache:
+    payload_by_bucket_id: dict[str, torch.Tensor]
+    weight1: torch.Tensor
+    weight2: torch.Tensor
+    correctness_mode: bool
 
 
 def dependency_score_for_bucket(bucket: WorkloadBucket) -> float:
@@ -501,11 +572,19 @@ def randomized_orders(strategies: list[str], repetitions: int, seed: int) -> lis
     return orders
 
 
+def latin_square_orders(strategies: list[str], repetitions: int) -> list[list[str]]:
+    if repetitions % max(1, len(strategies)) != 0:
+        raise ValueError("repetitions must be a multiple of the strategy count for Latin square ordering")
+    return counterbalanced_orders(strategies, repetitions)
+
+
 def resolve_strategy_orders(mode: str, repetitions: int, seed: int) -> list[list[str]]:
     if mode == "fixed":
         return [list(STRATEGIES) for _ in range(repetitions)]
     if mode == "randomized":
         return randomized_orders(STRATEGIES, repetitions, seed)
+    if mode == "latin-square":
+        return latin_square_orders(STRATEGIES, repetitions)
     if mode == "counterbalanced":
         return counterbalanced_orders(STRATEGIES, repetitions)
     raise ValueError(f"unsupported strategy-order-mode: {mode}")
@@ -629,8 +708,7 @@ def _all_to_all_variable(
 
 def _run_local_compute(
     payload: torch.Tensor,
-    hidden_dim: int,
-    intermediate_dim: int,
+    execution_cache: ExecutionCache,
 ) -> tuple[torch.Tensor, float]:
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
@@ -638,11 +716,9 @@ def _run_local_compute(
     if payload.numel() == 0:
         result = payload
     else:
-        weight1 = torch.randn((intermediate_dim, hidden_dim), device=payload.device, dtype=torch.float16)
-        weight2 = torch.randn((hidden_dim, intermediate_dim), device=payload.device, dtype=torch.float16)
-        hidden = torch.nn.functional.linear(payload, weight1)
+        hidden = torch.nn.functional.linear(payload, execution_cache.weight1)
         hidden = torch.nn.functional.gelu(hidden)
-        result = torch.nn.functional.linear(hidden, weight2)
+        result = torch.nn.functional.linear(hidden, execution_cache.weight2)
     end.record()
     torch.cuda.synchronize(payload.device)
     return result, float(start.elapsed_time(end))
@@ -693,12 +769,19 @@ def _split_to_matrix(source_rank: int, splits: list[int], hidden_dim: int) -> tu
     return rows_matrix, bytes_matrix
 
 
-def _planned_round_matrix(round_buckets: list[WorkloadBucket], world_size: int, hidden_dim: int) -> tuple[list[list[int]], list[list[int]]]:
+def _planned_round_matrix(
+    round_buckets: list[WorkloadBucket],
+    world_size: int,
+    hidden_dim: int,
+    *,
+    correctness_mode: bool = False,
+) -> tuple[list[list[int]], list[list[int]]]:
     rows = _matrix_zeros(world_size)
     bytes_matrix = _matrix_zeros(world_size)
     for bucket in round_buckets:
-        rows[bucket.origin_rank][bucket.destination_rank] += int(bucket.payload_rows)
-        bytes_matrix[bucket.origin_rank][bucket.destination_rank] += int(bucket.payload_bytes)
+        effective_rows = int(bucket.payload_rows) if not correctness_mode else max(1, int(bucket.token_count))
+        rows[bucket.origin_rank][bucket.destination_rank] += effective_rows
+        bytes_matrix[bucket.origin_rank][bucket.destination_rank] += effective_rows * hidden_dim * 2
     return rows, bytes_matrix
 
 
@@ -736,6 +819,61 @@ def _all_gather_object(value: Any) -> list[Any]:
     return gathered
 
 
+def _hash_payload(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _make_flow_key(source_rank: int, destination_rank: int) -> str:
+    return f"{source_rank}->{destination_rank}"
+
+
+def preallocate_execution_cache(
+    plan: WorkloadPlan,
+    rank: int,
+    device: torch.device,
+    *,
+    correctness_mode: bool,
+) -> ExecutionCache:
+    payload_by_bucket_id: dict[str, torch.Tensor] = {}
+    for bucket in plan.bucket_workloads:
+        if bucket.origin_rank != rank:
+            continue
+        rows = bucket.payload_rows if not correctness_mode else max(1, bucket.token_count)
+        if correctness_mode:
+            payload = torch.zeros((rows, plan.hidden_dim), device=device, dtype=torch.float16)
+            if plan.hidden_dim > 0:
+                payload[:, 0] = torch.tensor(
+                    [float(bucket.token_ids[min(index, len(bucket.token_ids) - 1)]) for index in range(rows)],
+                    device=device,
+                    dtype=torch.float16,
+                )
+            if plan.hidden_dim > 1:
+                payload[:, 1] = float(bucket.origin_rank)
+            if plan.hidden_dim > 2:
+                payload[:, 2] = float(bucket.destination_rank)
+            if plan.hidden_dim > 3:
+                payload[:, 3] = float(bucket.expert_id)
+        else:
+            generator = torch.Generator(device="cuda")
+            generator.manual_seed(plan.seed + rank * 1009 + bucket.destination_rank * 97 + sum(bucket.token_ids) * 13)
+            payload = torch.randn((rows, plan.hidden_dim), device=device, dtype=torch.float16, generator=generator)
+        payload_by_bucket_id[bucket.bucket_id] = payload
+    weight1 = torch.randn((plan.intermediate_dim, plan.hidden_dim), device=device, dtype=torch.float16)
+    weight2 = torch.randn((plan.hidden_dim, plan.intermediate_dim), device=device, dtype=torch.float16)
+    if plan.hidden_dim > 0:
+        warm = torch.zeros((1, plan.hidden_dim), device=device, dtype=torch.float16)
+        hidden = torch.nn.functional.linear(warm, weight1)
+        _ = torch.nn.functional.linear(torch.nn.functional.gelu(hidden), weight2)
+        torch.cuda.synchronize(device)
+    return ExecutionCache(
+        payload_by_bucket_id=payload_by_bucket_id,
+        weight1=weight1,
+        weight2=weight2,
+        correctness_mode=correctness_mode,
+    )
+
+
 def _received_metadata_for_rank(
     all_source_metadata: list[list[dict[str, Any]]],
     destination_rank: int,
@@ -748,19 +886,17 @@ def _received_metadata_for_rank(
     return received
 
 
-def run_policy_on_plan(
+def build_global_dispatch_plan(
     *,
     protocol: ProtocolConfig,
     plan: WorkloadPlan,
     strategy: str,
-    runtime_state: RuntimeState,
+    global_state: GlobalRuntimeState,
     repetition_index: int,
-    warmup: bool,
-    local_rank: int,
-) -> dict[str, Any]:
-    device = torch.device(f"cuda:{local_rank}")
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
+) -> GlobalDispatchPlan:
+    if dist.get_rank() != 0:
+        raise RuntimeError("only rank0 may generate a global dispatch plan")
+    scheduler_state = global_state.to_scheduler_state()
     bucket_records = [bucket.to_scheduler_record() for bucket in plan.bucket_workloads]
     scheduler_input = SchedulerInput(
         strategy=strategy,
@@ -768,22 +904,105 @@ def run_policy_on_plan(
         layer_id=plan.layer_id,
         layer_path=plan.layer_path,
         bucket_records=bucket_records,
-        runtime_state=runtime_state,
+        runtime_state=scheduler_state,
         metadata={"plan_id": plan.plan_id},
     )
-    decision_start = time.perf_counter()
-    decision = _build_policy_decision(strategy, scheduler_input, plan, runtime_state, repetition_index)
-    scheduler_decision_time_ms = (time.perf_counter() - decision_start) * 1000.0
+    decision = _build_policy_decision(strategy, scheduler_input, plan, scheduler_state, repetition_index)
     release_rounds = _calc_release_rounds(decision.release_order, protocol.release_round_size)
     lookup = _bucket_lookup(plan)
+    per_round_dispatch_matrices = []
+    total_dispatch_matrix = _matrix_zeros(protocol.world_size)
+    for round_ids in release_rounds:
+        round_buckets = [lookup[bucket_id] for bucket_id in round_ids]
+        rows_matrix, _ = _planned_round_matrix(
+            round_buckets,
+            protocol.world_size,
+            plan.hidden_dim,
+            correctness_mode=False,
+        )
+        per_round_dispatch_matrices.append(rows_matrix)
+        total_dispatch_matrix = _sum_matrix(total_dispatch_matrix, rows_matrix)
+    plan_payload = {
+        "workload_plan_id": plan.plan_id,
+        "policy_name": strategy,
+        "policy_seed": plan.seed + repetition_index,
+        "microbatch_id": plan.microbatch_id,
+        "release_order": list(decision.release_order),
+        "release_rounds": [list(item) for item in release_rounds],
+        "total_dispatch_matrix": total_dispatch_matrix,
+        "per_round_dispatch_matrices": per_round_dispatch_matrices,
+        "scheduler_state_snapshot": global_state.to_dict(),
+        "scheduler_decision": decision.to_dict(),
+    }
+    decision_hash = _hash_payload(plan_payload)
+    return GlobalDispatchPlan(
+        plan_id=f"{plan.plan_id}_{strategy}_rep{repetition_index}",
+        workload_plan_id=plan.plan_id,
+        policy_name=strategy,
+        policy_seed=plan.seed + repetition_index,
+        microbatch_id=plan.microbatch_id,
+        release_order=list(decision.release_order),
+        release_rounds=[list(item) for item in release_rounds],
+        total_dispatch_matrix=total_dispatch_matrix,
+        per_round_dispatch_matrices=per_round_dispatch_matrices,
+        decision_hash=decision_hash,
+        scheduler_state_snapshot=global_state.to_dict(),
+        scheduler_decision=decision.to_dict(),
+    )
 
-    microbatch_start = time.perf_counter()
+
+def broadcast_global_dispatch_plan(global_plan: GlobalDispatchPlan | None) -> GlobalDispatchPlan:
+    payloads: list[Any] = [global_plan.to_dict() if global_plan is not None else None]
+    dist.broadcast_object_list(payloads, src=0)
+    if payloads[0] is None:
+        raise RuntimeError("global dispatch plan broadcast failed")
+    plan = GlobalDispatchPlan.from_dict(payloads[0])
+    local_hash = _hash_payload(
+        {
+            "workload_plan_id": plan.workload_plan_id,
+            "policy_name": plan.policy_name,
+            "policy_seed": plan.policy_seed,
+            "microbatch_id": plan.microbatch_id,
+            "release_order": plan.release_order,
+            "release_rounds": plan.release_rounds,
+            "total_dispatch_matrix": plan.total_dispatch_matrix,
+            "per_round_dispatch_matrices": plan.per_round_dispatch_matrices,
+            "scheduler_state_snapshot": plan.scheduler_state_snapshot,
+            "scheduler_decision": plan.scheduler_decision,
+        }
+    )
+    gathered = _all_gather_object(local_hash)
+    if any(item != plan.decision_hash for item in gathered):
+        raise RuntimeError(f"global dispatch plan hash mismatch across ranks: {gathered} vs {plan.decision_hash}")
+    return plan
+
+
+def run_policy_on_plan(
+    *,
+    protocol: ProtocolConfig,
+    plan: WorkloadPlan,
+    global_plan: GlobalDispatchPlan,
+    execution_cache: ExecutionCache,
+    repetition_index: int,
+    warmup: bool,
+    local_rank: int,
+) -> dict[str, Any]:
+    device = torch.device(f"cuda:{local_rank}")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    strategy = global_plan.policy_name
+    release_rounds = [list(item) for item in global_plan.release_rounds]
+    lookup = _bucket_lookup(plan)
+
+    microbatch_start_wall = time.perf_counter()
     round_records = []
     sent_rows_total = 0
     recv_rows_total = 0
+    total_pack_ms = 0.0
     total_dispatch_ms = 0.0
     total_compute_ms = 0.0
     total_return_ms = 0.0
+    total_sync_ms = 0.0
     received_tokens = 0
     sent_tokens = 0
     total_dispatch_rows_matrix = _matrix_zeros(world_size)
@@ -796,10 +1015,65 @@ def run_policy_on_plan(
         round_buckets = [lookup[bucket_id] for bucket_id in round_ids]
         local_origin_buckets = [bucket for bucket in round_buckets if bucket.origin_rank == rank]
         local_destination_buckets = [bucket for bucket in round_buckets if bucket.destination_rank == rank]
-        planned_rows_matrix, planned_bytes_matrix = _planned_round_matrix(round_buckets, world_size, plan.hidden_dim)
-        payload, send_rows, metadata, packing_metadata = _prepare_round_payload(
-            rank, world_size, local_origin_buckets, plan.hidden_dim, plan.seed + repetition_index, device
+        planned_rows_matrix, planned_bytes_matrix = _planned_round_matrix(
+            round_buckets,
+            world_size,
+            plan.hidden_dim,
+            correctness_mode=execution_cache.correctness_mode,
         )
+        pack_start = torch.cuda.Event(enable_timing=True)
+        pack_end = torch.cuda.Event(enable_timing=True)
+        pack_start.record()
+        send_rows = torch.zeros(world_size, dtype=torch.int64, device=device)
+        metadata: list[dict[str, Any]] = []
+        packing_metadata: list[dict[str, Any]] = []
+        ordered_tensors: list[torch.Tensor] = []
+        for bucket in local_origin_buckets:
+            rows = bucket.payload_rows if not execution_cache.correctness_mode else max(1, bucket.token_count)
+            tensor = execution_cache.payload_by_bucket_id[bucket.bucket_id]
+            ordered_tensors.append(tensor)
+            send_rows[bucket.destination_rank] += rows
+            metadata.append(
+                {
+                    "bucket_id": bucket.bucket_id,
+                    "route_id": bucket.route_id,
+                    "origin_rank": bucket.origin_rank,
+                    "destination_rank": bucket.destination_rank,
+                    "rows": rows,
+                    "destination_id": bucket.destination_id,
+                    "expert_id": bucket.expert_id,
+                    "estimated_service_units": bucket.estimated_service_units,
+                    "token_count": bucket.token_count,
+                    "token_ids": list(bucket.token_ids),
+                    "token_positions": list(bucket.token_positions),
+                    "payload_bytes": bucket.payload_bytes,
+                }
+            )
+            packing_metadata.append(
+                {
+                    "bucket_id": bucket.bucket_id,
+                    "route_id": bucket.route_id,
+                    "origin_rank": bucket.origin_rank,
+                    "destination_rank": bucket.destination_rank,
+                    "rows": rows,
+                    "bytes": rows * plan.hidden_dim * 2,
+                    "token_count": bucket.token_count,
+                    "token_ids": list(bucket.token_ids),
+                }
+            )
+        if ordered_tensors:
+            payload = torch.cat(
+                [tensor for target_rank in range(world_size) for tensor, bucket in [
+                    (execution_cache.payload_by_bucket_id[b.bucket_id], b) for b in local_origin_buckets if b.destination_rank == target_rank
+                ]],
+                dim=0,
+            )
+        else:
+            payload = torch.zeros((0, plan.hidden_dim), device=device, dtype=torch.float16)
+        pack_end.record()
+        torch.cuda.synchronize(device)
+        pack_time_ms = float(pack_start.elapsed_time(pack_end))
+        total_pack_ms += pack_time_ms
         sent_rows_total += int(send_rows.sum().item())
         sent_tokens += sum(bucket.token_count for bucket in local_origin_buckets)
         for bucket in local_origin_buckets:
@@ -830,7 +1104,7 @@ def run_policy_on_plan(
                 f"{planned_rows_matrix} vs {actual_dispatch_rows_matrix}"
             )
 
-        compute_result, local_compute_time_ms = _run_local_compute(recv_payload, plan.hidden_dim, plan.intermediate_dim)
+        compute_result, local_compute_time_ms = _run_local_compute(recv_payload, execution_cache)
 
         return_start = torch.cuda.Event(enable_timing=True)
         return_end = torch.cuda.Event(enable_timing=True)
@@ -851,8 +1125,15 @@ def run_policy_on_plan(
                 f"{expected_return_rows_matrix} vs {actual_return_rows_matrix}"
             )
 
-        if int(returned.shape[0]) != sum(bucket.payload_rows for bucket in local_origin_buckets):
+        expected_origin_rows = sum(
+            (bucket.payload_rows if not execution_cache.correctness_mode else max(1, bucket.token_count))
+            for bucket in local_origin_buckets
+        )
+        if int(returned.shape[0]) != expected_origin_rows:
             raise RuntimeError("returned rows do not match origin-owned payload rows")
+        sync_wall_start = time.perf_counter()
+        dist.barrier()
+        total_sync_ms += (time.perf_counter() - sync_wall_start) * 1000.0
 
         bucket_to_rows = {item["bucket_id"]: int(item["rows"]) for item in packing_metadata}
         bucket_to_bytes = {item["bucket_id"]: int(item["bytes"]) for item in packing_metadata}
@@ -877,9 +1158,6 @@ def run_policy_on_plan(
                     "payload_bytes": int(bucket.payload_bytes),
                     "estimated_service_units": float(bucket.estimated_service_units),
                     "dependency_score": float(dependency_score_for_bucket(bucket)),
-                    "state_score": float(state_score_for_bucket(bucket, runtime_state)),
-                    "strong_state_score": float(strong_state_score_for_bucket(bucket, runtime_state)),
-                    "lina_inspired_score": float(lina_inspired_score_for_bucket(bucket, runtime_state)),
                     "local_packed_rows": int(bucket_to_rows.get(bucket_id, 0)),
                     "local_packed_bytes": int(bucket_to_bytes.get(bucket_id, 0)),
                 }
@@ -938,11 +1216,13 @@ def run_policy_on_plan(
                 "planned_return_rows_matrix": expected_return_rows_matrix,
                 "actual_return_rows_matrix": actual_return_rows_matrix,
                 "rank_projection": rank_projection,
+                "pack_time_ms": pack_time_ms,
                 "dispatch_bytes": sum(sum(row) for row in actual_dispatch_bytes_matrix),
                 "return_bytes": sum(sum(row) for row in actual_return_rows_matrix) * plan.hidden_dim * 2,
                 "dispatch_time_ms": dispatch_time_ms,
                 "local_compute_time_ms": local_compute_time_ms,
                 "return_time_ms": return_time_ms,
+                "sync_time_ms": total_sync_ms,
                 "total_service_time_ms": dispatch_time_ms + local_compute_time_ms + return_time_ms,
                 "received_rows": int(recv_rows.sum().item()),
                 "returned_rows": int(return_rows.sum().item()),
@@ -959,9 +1239,19 @@ def run_policy_on_plan(
             }
         )
 
-    microbatch_end = time.perf_counter()
-    batch_completion_ms = (microbatch_end - microbatch_start) * 1000.0
-    barrier_wait_ms = max(0.0, batch_completion_ms - total_dispatch_ms - total_compute_ms - total_return_ms)
+    local_completion_ms = (time.perf_counter() - microbatch_start_wall) * 1000.0
+    gathered_rank_records = _all_gather_object(
+        {
+            "rank": rank,
+            "local_completion_ms": local_completion_ms,
+            "dispatch_total_ms": total_dispatch_ms,
+            "compute_total_ms": total_compute_ms,
+            "return_total_ms": total_return_ms,
+            "sync_total_ms": total_sync_ms,
+        }
+    )
+    global_completion_ms = max(float(item["local_completion_ms"]) for item in gathered_rank_records)
+    barrier_wait_ms = max(0.0, global_completion_ms - (total_pack_ms + total_dispatch_ms + total_compute_ms + total_return_ms + total_sync_ms))
     total_bytes = sum(sum(row) for row in total_dispatch_bytes_matrix)
     remote_bytes = _off_diagonal_sum(total_dispatch_bytes_matrix)
     remote_byte_ratio = (remote_bytes / total_bytes) if total_bytes > 0 else 0.0
@@ -981,25 +1271,25 @@ def run_policy_on_plan(
 
     rank_record = {
         "rank": rank,
+        "rank_pack_time_ms": total_pack_ms,
         "rank_busy_time_ms": total_dispatch_ms + total_compute_ms + total_return_ms,
         "rank_idle_time_ms": barrier_wait_ms,
-        "rank_completion_time_ms": batch_completion_ms,
+        "rank_completion_time_ms": local_completion_ms,
         "received_tokens": received_tokens,
         "sent_tokens": sent_tokens,
         "received_bytes": recv_rows_total * plan.hidden_dim * 2,
         "sent_bytes": sent_rows_total * plan.hidden_dim * 2,
         "rounds_participated": len(round_records),
     }
-    _update_runtime_state(runtime_state, decision, plan, batch_completion_ms)
     return {
         "plan_id": plan.plan_id,
         "strategy": strategy,
         "warmup": warmup,
         "repetition_index": repetition_index,
         "microbatch_id": plan.microbatch_id,
-        "scheduler_decision": decision.to_dict(),
+        "global_dispatch_plan": global_plan.to_dict(),
         "origin_sharding": plan.origin_sharding,
-        "scheduler_decision_time_ms": scheduler_decision_time_ms,
+        "decision_hash": global_plan.decision_hash,
         "rounds": round_records,
         "rank_record": rank_record,
         "dispatch_rows_matrix": total_dispatch_rows_matrix,
@@ -1008,14 +1298,17 @@ def run_policy_on_plan(
         "return_bytes_matrix": total_return_bytes_matrix,
         "remote_byte_ratio": remote_byte_ratio,
         "communication_semantics_valid": communication_semantics_valid,
-        "end_to_end_batch_completion_ms": batch_completion_ms,
+        "global_end_to_end_completion_ms": global_completion_ms,
+        "local_end_to_end_completion_ms": local_completion_ms,
+        "pack_total_ms": total_pack_ms,
         "dispatch_total_ms": total_dispatch_ms,
         "compute_total_ms": total_compute_ms,
         "return_total_ms": total_return_ms,
+        "sync_total_ms": total_sync_ms,
         "barrier_wait_ms": barrier_wait_ms,
         "total_communication_bytes": rank_record["received_bytes"] + rank_record["sent_bytes"],
         "total_gpu_compute_time_ms": total_compute_ms,
-        "throughput_tokens_per_s": (sent_tokens / (batch_completion_ms / 1000.0)) if batch_completion_ms > 0 else 0.0,
+        "throughput_tokens_per_s": (sent_tokens / (global_completion_ms / 1000.0)) if global_completion_ms > 0 else 0.0,
     }
 
 
@@ -1042,6 +1335,61 @@ def _update_runtime_state(runtime_state: RuntimeState, decision: Any, plan: Work
     runtime_state.rank_backlog_work = rank_pending
     runtime_state.rank_queue_depth = rank_queue
     runtime_state.batch_index += 1
+
+
+def update_global_runtime_state(
+    global_state: GlobalRuntimeState,
+    global_plan: GlobalDispatchPlan,
+    plan: WorkloadPlan,
+    gathered_rank_records: list[dict[str, Any]],
+) -> GlobalRuntimeState:
+    lookup = _bucket_lookup(plan)
+    next_state = GlobalRuntimeState.from_dict(global_state.to_dict())
+    pending_dest: dict[int, float] = {}
+    rank_pending: dict[int, float] = {}
+    queue_depth: dict[int, int] = {}
+    rank_queue: dict[int, int] = {}
+    source_outbound: dict[int, int] = {}
+    destination_inbound: dict[int, int] = {}
+    flow_pending: dict[str, int] = {}
+    expert_pending: dict[int, int] = {}
+    rank_compute_queue_rows: dict[int, int] = {}
+    for bucket_id in global_plan.release_order:
+        bucket = lookup[bucket_id]
+        pending_dest[bucket.destination_id] = pending_dest.get(bucket.destination_id, 0.0) + float(bucket.estimated_service_units)
+        rank_pending[bucket.destination_rank] = rank_pending.get(bucket.destination_rank, 0.0) + float(bucket.estimated_service_units)
+        queue_depth[bucket.destination_id] = queue_depth.get(bucket.destination_id, 0) + 1
+        rank_queue[bucket.destination_rank] = rank_queue.get(bucket.destination_rank, 0) + 1
+        source_outbound[bucket.origin_rank] = source_outbound.get(bucket.origin_rank, 0) + int(bucket.payload_bytes)
+        destination_inbound[bucket.destination_rank] = destination_inbound.get(bucket.destination_rank, 0) + int(bucket.payload_bytes)
+        flow_pending[_make_flow_key(bucket.origin_rank, bucket.destination_rank)] = (
+            flow_pending.get(_make_flow_key(bucket.origin_rank, bucket.destination_rank), 0) + int(bucket.payload_bytes)
+        )
+        expert_pending[bucket.expert_id] = expert_pending.get(bucket.expert_id, 0) + int(bucket.payload_rows)
+        rank_compute_queue_rows[bucket.destination_rank] = rank_compute_queue_rows.get(bucket.destination_rank, 0) + int(bucket.payload_rows)
+        next_state.destination_hotness[bucket.destination_id] = min(
+            10.0,
+            float(next_state.destination_hotness.get(bucket.destination_id, 0.0)) * 0.5 + bucket.token_count,
+        )
+    next_state.destination_pending_work = pending_dest
+    next_state.destination_queue_depth = queue_depth
+    next_state.rank_backlog_work = rank_pending
+    next_state.rank_queue_depth = rank_queue
+    next_state.source_outbound_pending_bytes = source_outbound
+    next_state.destination_inbound_pending_bytes = destination_inbound
+    next_state.flow_pending_bytes = flow_pending
+    next_state.expert_pending_rows = expert_pending
+    next_state.rank_compute_queue_rows = rank_compute_queue_rows
+    next_state.global_completion_time_ms = max(float(item["local_completion_ms"]) for item in gathered_rank_records)
+    next_state.rank_dispatch_time_ms = {int(item["rank"]): float(item["dispatch_total_ms"]) for item in gathered_rank_records}
+    next_state.rank_compute_time_ms = {int(item["rank"]): float(item["compute_total_ms"]) for item in gathered_rank_records}
+    next_state.rank_return_time_ms = {int(item["rank"]): float(item["return_total_ms"]) for item in gathered_rank_records}
+    next_state.rank_local_completion_time_ms = {int(item["rank"]): float(item["local_completion_ms"]) for item in gathered_rank_records}
+    for bucket in lookup.values():
+        next_state.destination_latency_history.setdefault(bucket.destination_id, []).append(next_state.global_completion_time_ms / 1000.0)
+        next_state.destination_latency_history[bucket.destination_id] = next_state.destination_latency_history[bucket.destination_id][-6:]
+    next_state.batch_index += 1
+    return next_state
 
 
 def aggregate_repetition_records(records: list[dict[str, Any]], state_meaningful: bool) -> dict[str, Any]:

@@ -5,22 +5,27 @@ import json
 import sys
 from pathlib import Path
 
+import torch
+
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense_poc2.distributed_runtime import (
+    GlobalRuntimeState,
     PlacementEntry,
     ProtocolConfig,
     WorkloadBucket,
     WorkloadPlan,
+    broadcast_global_dispatch_plan,
+    build_global_dispatch_plan,
     cleanup_nccl,
     environment_snapshot,
     init_nccl,
+    preallocate_execution_cache,
     run_policy_on_plan,
 )
-from routesense_poc2.scheduler import RuntimeState
 
 
 def _fixed_plan(world_size: int) -> WorkloadPlan:
@@ -102,11 +107,26 @@ def main() -> int:
             origin_sharding="fixed",
             require_remote_traffic=True,
         )
-        result = run_policy_on_plan(
+        global_state = GlobalRuntimeState()
+        local_plan = build_global_dispatch_plan(
             protocol=protocol,
             plan=plan,
             strategy="fifo",
-            runtime_state=RuntimeState(),
+            global_state=global_state,
+            repetition_index=0,
+        ) if rank == 0 else None
+        global_plan = broadcast_global_dispatch_plan(local_plan)
+        cache = preallocate_execution_cache(
+            plan,
+            rank,
+            torch.device(f"cuda:{state['local_rank']}"),
+            correctness_mode=True,
+        )
+        result = run_policy_on_plan(
+            protocol=protocol,
+            plan=plan,
+            global_plan=global_plan,
+            execution_cache=cache,
             repetition_index=0,
             warmup=False,
             local_rank=state["local_rank"],
@@ -119,6 +139,7 @@ def main() -> int:
                 "dispatch_bytes_matrix": result["dispatch_bytes_matrix"],
                 "return_bytes_matrix": result["return_bytes_matrix"],
                 "remote_byte_ratio": result["remote_byte_ratio"],
+                "decision_hash": result["decision_hash"],
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
