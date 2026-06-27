@@ -31,7 +31,6 @@ if [[ "$ARCHIVE_COMMIT" != "$HEAD_COMMIT" ]]; then
   exit 1
 fi
 
-find "$TMP_DIR" -type f ! -name 'PACKAGE_MANIFEST.sha256' ! -name 'SOURCE_COMMIT.txt' ! -name 'SOURCE_TREE_SHA256.txt' -printf '%P\n' | sort > "$TMP_LIST"
 {
   echo "# RouterSense source package manifest"
   while IFS= read -r relpath; do
