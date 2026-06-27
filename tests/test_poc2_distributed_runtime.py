@@ -39,6 +39,14 @@ from routesense_poc2.distributed_runtime import (
     lina_inspired_score_for_bucket,
     update_global_runtime_state,
 )
+from routesense_poc2.stress import (
+    build_burst_episode_schedule,
+    choose_skewed_placement,
+    dependency_predictiveness_gate,
+    oracle_minimax_round_packer,
+    scenario_manifest,
+    split_calibration_and_evaluation,
+)
 from routesense_poc2.scheduler import RuntimeState
 from routesense_poc2.scheduler import BucketRecord
 
@@ -496,8 +504,8 @@ def test_paired_matches_by_key_and_flags_distribution_asymmetry():
 
 def test_position_effects_include_correlation():
     records = [
-        {"warmup": False, "strategy": "full", "strategy_order": ["full", "fifo"], "end_to_end_batch_completion_ms": 10.0},
-        {"warmup": False, "strategy": "full", "strategy_order": ["fifo", "full"], "end_to_end_batch_completion_ms": 20.0},
+        {"warmup": False, "strategy": "full", "strategy_order": ["full", "fifo"], "global_end_to_end_completion_ms": 10.0},
+        {"warmup": False, "strategy": "full", "strategy_order": ["fifo", "full"], "global_end_to_end_completion_ms": 20.0},
     ]
     effects = _position_effects(records)
     assert "position_correlation" in effects["full"]
@@ -1126,3 +1134,124 @@ def test_benchmark_preflight_reports_stable_contract():
     preflight = benchmark_preflight(protocol, plan, cache)  # type: ignore[arg-type]
     assert preflight["used_python_metadata_gather_expected"] is False
     assert preflight["legacy_payload_function_allowed"] is False
+
+
+def _stress_plan(plan_id: str, microbatch_id: int, placement_mapping: list[PlacementEntry]) -> WorkloadPlan:
+    destination_rank_map = {item.expert_id: item.destination_rank for item in placement_mapping}
+    buckets = []
+    for index, (expert_id, token_count, rows, origin_rank) in enumerate(
+        [
+            (0, 4, 8, 0),
+            (1, 6, 12, 1),
+            (2, 8, 16, 2),
+            (3, 5, 10, 3),
+        ]
+    ):
+        destination_rank = destination_rank_map[expert_id]
+        buckets.append(
+            WorkloadBucket(
+                bucket_id=f"{plan_id}_b{index}",
+                route_id=f"{plan_id}_r{index}",
+                route_item_indices=[microbatch_id * 10 + index],
+                token_ids=[1000 + microbatch_id * 100 + index],
+                token_positions=[index],
+                origin_rank=origin_rank,
+                destination_id=expert_id,
+                destination_rank=destination_rank,
+                expert_id=expert_id,
+                layer_id=0,
+                microbatch_id=microbatch_id,
+                token_count=token_count,
+                payload_rows=rows,
+                hidden_dim=64,
+                intermediate_dim=128,
+                estimated_service_units=float(rows),
+                payload_bytes=rows * 64 * 2,
+                source_count=2,
+                source_coverage=0.5 + 0.1 * index,
+                coactive_peer_degree=0.2 + 0.1 * index,
+                coactive_event_density=0.1 + 0.05 * index,
+                position_spread=0.05 * index,
+                bridge_score=0.1 * index,
+                route_share=0.2 + 0.05 * index,
+                density_over_mean=0.3 + 0.05 * index,
+                size_norm=0.4 + 0.1 * index,
+                inverse_size_rank_norm=max(0.0, 1.0 - 0.2 * index),
+                is_hot_bucket=index >= 2,
+                route_item_ids=[f"{plan_id}_ri{index}"],
+                route_ranks=[0],
+            )
+        )
+    return WorkloadPlan(
+        plan_id=plan_id,
+        model_key="olmoe",
+        seed=42,
+        microbatch_id=microbatch_id,
+        layer_id=0,
+        layer_path="layer0",
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement_policy="balanced",
+        origin_sharding="round-robin",
+        placement_mapping=placement_mapping,
+        bucket_workloads=buckets,
+        routing_summary={"token_origin_rank_detail": {str(1000 + microbatch_id * 100 + i): {"origin_rank": i} for i in range(4)}},
+    )
+
+
+def test_stress_split_and_manifest_hash_stability():
+    placement = build_placement_map(4, 4, "balanced")
+    plans = [_stress_plan(f"p{i}", i, placement) for i in range(4)]
+    calibration, evaluation = split_calibration_and_evaluation(plans)
+    assert len(calibration) >= 1
+    assert len(evaluation) >= 1
+    manifest = scenario_manifest(
+        scenario_id="balanced",
+        plans=plans,
+        placement=placement,
+        episode_rows=[{"episode_index": i, "phase": "benign"} for i in range(len(plans))],
+        target_rank=2,
+    )
+    assert manifest["trace_bundle_hash"]
+    assert manifest["placement_hash"]
+    assert manifest["route_item_set_hash"]
+
+
+def test_choose_skewed_placement_preserves_expert_count_per_rank():
+    placement = build_placement_map(4, 4, "balanced")
+    plans = [_stress_plan(f"p{i}", i, placement) for i in range(4)]
+    next_placement, metrics = choose_skewed_placement(placement, plans[:2], plans[2:], target_rank=2, strength="mild-skew")
+    base_counts = {}
+    next_counts = {}
+    for item in placement:
+        base_counts[item.destination_rank] = base_counts.get(item.destination_rank, 0) + 1
+    for item in next_placement:
+        next_counts[item.destination_rank] = next_counts.get(item.destination_rank, 0) + 1
+    assert sorted(base_counts.values()) == sorted(next_counts.values())
+    assert "target_rank_inbound_share" in metrics
+
+
+def test_burst_episode_schedule_preserves_phase_labels():
+    placement = build_placement_map(4, 4, "balanced")
+    plans = [_stress_plan(f"p{i}", i, placement) for i in range(8)]
+    selected, rows = build_burst_episode_schedule(plans, target_rank=2)
+    assert len(selected) == len(rows)
+    assert {row["phase"] for row in rows} == {"benign", "ramp", "burst", "recovery"}
+
+
+def test_dependency_predictiveness_gate_emits_pass_or_fail():
+    placement = build_placement_map(4, 4, "balanced")
+    plans = [_stress_plan(f"p{i}", i, placement) for i in range(8)]
+    gate = dependency_predictiveness_gate(plans[:4], plans[4:], target_rank=2)
+    assert gate["gate"] in {"pass", "fail"}
+    assert "state_only" in gate
+    assert "state_plus_dependency" in gate
+
+
+def test_oracle_minimax_round_packer_preserves_bucket_ids():
+    placement = build_placement_map(4, 4, "balanced")
+    plan = _stress_plan("oracle", 0, placement)
+    oracle = oracle_minimax_round_packer(plan, 2)
+    flattened = [bucket_id for round_ids in oracle["release_rounds"] for bucket_id in round_ids]
+    assert sorted(flattened) == sorted(bucket.bucket_id for bucket in plan.bucket_workloads)
+    assert oracle["peak_bottleneck_pressure"] >= 0

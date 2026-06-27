@@ -94,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-snapshot-path", type=str, default=None)
     parser.add_argument("--strategy-subset", nargs="+", default=None)
     parser.add_argument("--origin-sharding", choices=["contiguous", "round-robin"], default="round-robin")
+    parser.add_argument("--stress-scenario-id", type=str, default=None)
     args = parser.parse_args(argv)
     regime_defaults = _regime_defaults(args.regime)
 
@@ -280,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
                     "strategy_subset": active_strategies,
                     "sanity_benchmark_only": True,
                     "paper_claim_ready": False,
+                    "stress_scenario_id": args.stress_scenario_id,
                 },
                 environment=environment_snapshot(protocol.world_size),
                 protocol={
@@ -302,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                     },
                     "sanity_benchmark_only": True,
                     "paper_claim_ready": False,
+                    "stress_scenario_id": args.stress_scenario_id,
                 },
                 workload_manifest=workload_manifest,
                 per_repetition=per_repetition,
