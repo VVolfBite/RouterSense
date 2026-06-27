@@ -19,6 +19,7 @@ from routesense_poc2.distributed_runtime import (
     _pack_return_payload_and_metadata,
     _planned_received_metadata_for_rank,
     _metadata_tensor_to_dicts,
+    _round_pressure_objective,
     summarize_route_manifests,
     _hash_payload,
     _go_no_go,
@@ -47,10 +48,12 @@ from routesense_poc2.distributed_runtime import (
     update_global_runtime_state,
 )
 from routesense_poc2.stress import (
+    _round_pressure_from_rounds,
     build_burst_episode_schedule,
     choose_skewed_placement,
     dependency_predictiveness_gate,
-    oracle_minimax_round_packer,
+    lookahead_greedy_round_packer,
+    exact_round_packer,
     scenario_manifest,
     split_calibration_and_evaluation,
 )
@@ -592,6 +595,77 @@ def test_strong_state_packer_changes_choice_with_projected_pressure_not_dependen
     dep_mutated[1].bridge_score = 0.01
     packed_dep = _greedy_minimax_round_pack(dep_mutated, round_size=1, runtime_state=RuntimeState(), policy_seed=7, arrival_jitter_mode="none", oracle=False)
     assert packed_dep["release_order"] == packed["release_order"]
+
+
+def test_round_pressure_projected_totals_only_change_scarcity_not_increment():
+    bucket = BucketRecord(
+        bucket_id="b0",
+        origin_rank=0,
+        destination_id=2,
+        destination_rank=1,
+        expert_id=2,
+        arrival_index=0,
+        token_count=1,
+        payload_rows=4,
+        payload_bytes=512,
+    )
+    objective_a, components_a = _round_pressure_objective([bucket], RuntimeState())
+    bucket.source_outbound_pending_bytes = float(1 << 20)
+    bucket.destination_inbound_pending_bytes = float(1 << 20)
+    bucket.flow_pending_bytes = float(1 << 20)
+    objective_b, components_b = _round_pressure_objective([bucket], RuntimeState())
+    assert components_a["round_increment_components"] == components_b["round_increment_components"]
+    assert components_a["historical_baseline_components"] == components_b["historical_baseline_components"]
+    assert components_a["whole_batch_projected_totals"] == components_b["whole_batch_projected_totals"]
+    assert objective_a == objective_b
+
+
+def test_round_increment_counts_each_bucket_once():
+    buckets = [
+        BucketRecord(bucket_id="a", origin_rank=0, destination_id=2, destination_rank=1, expert_id=2, arrival_index=0, token_count=1, payload_rows=4, payload_bytes=256),
+        BucketRecord(bucket_id="b", origin_rank=0, destination_id=2, destination_rank=1, expert_id=2, arrival_index=1, token_count=1, payload_rows=6, payload_bytes=512),
+    ]
+    _, components = _round_pressure_objective(buckets, RuntimeState())
+    assert components["round_increment_components"]["source_outbound_bytes"][0] == 768.0
+    assert components["round_increment_components"]["destination_inbound_bytes"][1] == 768.0
+    assert components["round_increment_components"]["flow_bytes"]["0->1"] == 768.0
+    assert components["round_increment_components"]["expert_rows"][2] == 10.0
+    assert components["round_increment_components"]["rank_compute_rows"][1] == 10.0
+
+
+def test_distributed_round_has_lower_destination_pressure_than_converged_round():
+    converged = [
+        BucketRecord(bucket_id=f"c{i}", origin_rank=i, destination_id=2, destination_rank=2, expert_id=2 + i, arrival_index=i, token_count=1, payload_rows=4, payload_bytes=256)
+        for i in range(4)
+    ]
+    spread = [
+        BucketRecord(bucket_id=f"s{i}", origin_rank=i, destination_id=i, destination_rank=i, expert_id=i, arrival_index=i, token_count=1, payload_rows=4, payload_bytes=256)
+        for i in range(4)
+    ]
+    _, converged_components = _round_pressure_objective(converged, RuntimeState())
+    _, spread_components = _round_pressure_objective(spread, RuntimeState())
+    assert (
+        converged_components["round_pressure_components"]["max_destination_inbound_bytes_norm"]
+        > spread_components["round_pressure_components"]["max_destination_inbound_bytes_norm"]
+    )
+    assert (
+        converged_components["fragmentation_components"]["max_dest_source_fanin"]
+        > spread_components["fragmentation_components"]["max_dest_source_fanin"]
+    )
+
+
+def test_fragmentation_metric_distinguishes_flow_diversity():
+    same_flow = [
+        BucketRecord(bucket_id=f"a{i}", origin_rank=0, destination_id=1, destination_rank=1, expert_id=1, arrival_index=i, token_count=1, payload_rows=2, payload_bytes=128)
+        for i in range(4)
+    ]
+    diverse = [
+        BucketRecord(bucket_id=f"b{i}", origin_rank=i % 4, destination_id=(i + 1) % 4, destination_rank=(i + 1) % 4, expert_id=(i + 1) % 4, arrival_index=i, token_count=1, payload_rows=2, payload_bytes=128)
+        for i in range(4)
+    ]
+    _, same_components = _round_pressure_objective(same_flow, RuntimeState())
+    _, diverse_components = _round_pressure_objective(diverse, RuntimeState())
+    assert diverse_components["round_pressure_components"]["flow_fragmentation_penalty_norm"] > same_components["round_pressure_components"]["flow_fragmentation_penalty_norm"]
 
 
 def test_source_arrival_jitter_does_not_depend_on_destination_rank():
@@ -1466,10 +1540,21 @@ def test_dependency_predictiveness_gate_emits_pass_or_fail():
     assert "state_plus_dependency" in gate
 
 
-def test_oracle_minimax_round_packer_preserves_bucket_ids():
+def test_lookahead_round_packer_preserves_bucket_ids():
     placement = build_placement_map(4, 4, "balanced")
     plan = _stress_plan("oracle", 0, placement)
-    oracle = oracle_minimax_round_packer(plan, 2)
+    oracle = lookahead_greedy_round_packer(plan, 2)
     flattened = [bucket_id for round_ids in oracle["release_rounds"] for bucket_id in round_ids]
     assert sorted(flattened) == sorted(bucket.bucket_id for bucket in plan.bucket_workloads)
     assert oracle["peak_bottleneck_pressure"] >= 0
+
+
+def test_exact_round_packer_not_worse_than_heuristics():
+    placement = build_placement_map(4, 4, "balanced")
+    plan = _stress_plan("exact", 0, placement)
+    fifo_rounds = release_rounds_for_order([bucket.bucket_id for bucket in plan.bucket_workloads], 2)
+    fifo_pressure = _round_pressure_from_rounds(plan, fifo_rounds)["round_pressure"]
+    lookahead = lookahead_greedy_round_packer(plan, 2)
+    exact = exact_round_packer(plan, 2)
+    assert exact["peak_bottleneck_pressure"] <= fifo_pressure
+    assert exact["peak_bottleneck_pressure"] <= lookahead["peak_bottleneck_pressure"]

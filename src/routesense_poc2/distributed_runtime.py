@@ -522,7 +522,11 @@ def _round_pressure_components(
     flow_increment: dict[str, float] = {}
     expert_increment: dict[int, float] = {}
     rank_increment: dict[int, float] = {}
-    fragment_count = 0.0
+    all_sources: set[int] = set()
+    all_destinations: set[int] = set()
+    active_flows: set[tuple[int, int]] = set()
+    dest_fanin: dict[int, set[int]] = {}
+    source_fanout: dict[int, set[int]] = {}
     total_payload_bytes = float(sum(max(1, int(bucket.payload_bytes)) for bucket in round_buckets))
     total_payload_rows = float(sum(max(1, int(bucket.payload_rows)) for bucket in round_buckets))
     total_flow_bytes = float(sum(max(1, int(bucket.payload_bytes)) for bucket in round_buckets))
@@ -534,8 +538,11 @@ def _round_pressure_components(
         flow_increment[flow_key] = flow_increment.get(flow_key, 0.0) + float(bucket.payload_bytes)
         expert_increment[bucket.expert_id] = expert_increment.get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
         rank_increment[bucket.destination_rank] = rank_increment.get(bucket.destination_rank, 0.0) + float(bucket.payload_rows)
-        if bucket.origin_rank != bucket.destination_rank:
-            fragment_count += 1.0
+        all_sources.add(int(bucket.origin_rank))
+        all_destinations.add(int(bucket.destination_rank))
+        active_flows.add((int(bucket.origin_rank), int(bucket.destination_rank)))
+        dest_fanin.setdefault(int(bucket.destination_rank), set()).add(int(bucket.origin_rank))
+        source_fanout.setdefault(int(bucket.origin_rank), set()).add(int(bucket.destination_rank))
 
     historical_source = {int(key): float(value) for key, value in runtime_state.source_outbound_pending_bytes.items()}
     historical_destination = {int(key): float(value) for key, value in runtime_state.destination_inbound_pending_bytes.items()}
@@ -557,7 +564,69 @@ def _round_pressure_components(
         "bytes": max(total_payload_bytes, 1.0),
         "rows": max(total_payload_rows, 1.0),
         "flow_bytes": max(total_flow_bytes, 1.0),
+        "world_size": float(max(1, len(set(all_sources) | set(all_destinations) | set(runtime_state.source_outbound_pending_bytes.keys()) | set(runtime_state.destination_inbound_pending_bytes.keys())))),
     }
+    whole_batch_projected_totals = {
+        "source_outbound_bytes": {
+            int(bucket.origin_rank): sum(float(item.payload_bytes) for item in round_buckets if int(item.origin_rank) == int(bucket.origin_rank))
+            for bucket in round_buckets
+        },
+        "destination_inbound_bytes": {
+            int(bucket.destination_rank): sum(float(item.payload_bytes) for item in round_buckets if int(item.destination_rank) == int(bucket.destination_rank))
+            for bucket in round_buckets
+        },
+        "flow_bytes": {
+            f"{bucket.origin_rank}->{bucket.destination_rank}": sum(
+                float(item.payload_bytes)
+                for item in round_buckets
+                if int(item.origin_rank) == int(bucket.origin_rank) and int(item.destination_rank) == int(bucket.destination_rank)
+            )
+            for bucket in round_buckets
+        },
+        "expert_rows": {
+            int(bucket.expert_id): sum(float(item.payload_rows) for item in round_buckets if int(item.expert_id) == int(bucket.expert_id))
+            for bucket in round_buckets
+        },
+        "rank_compute_rows": {
+            int(bucket.destination_rank): sum(float(item.payload_rows) for item in round_buckets if int(item.destination_rank) == int(bucket.destination_rank))
+            for bucket in round_buckets
+        },
+    }
+    scarcity_components = {
+        "source_outbound_bytes": {
+            str(key): source_totals.get(key, 0.0) / max(1.0, whole_batch_projected_totals["source_outbound_bytes"].get(key, 0.0))
+            for key in source_totals
+        },
+        "destination_inbound_bytes": {
+            str(key): destination_totals.get(key, 0.0) / max(1.0, whole_batch_projected_totals["destination_inbound_bytes"].get(key, 0.0))
+            for key in destination_totals
+        },
+        "flow_bytes": {
+            str(key): flow_totals.get(key, 0.0) / max(1.0, whole_batch_projected_totals["flow_bytes"].get(key, 0.0))
+            for key in flow_totals
+        },
+        "expert_rows": {
+            str(key): expert_totals.get(key, 0.0) / max(1.0, whole_batch_projected_totals["expert_rows"].get(key, 0.0))
+            for key in expert_totals
+        },
+        "rank_compute_rows": {
+            str(key): rank_totals.get(key, 0.0) / max(1.0, whole_batch_projected_totals["rank_compute_rows"].get(key, 0.0))
+            for key in rank_totals
+        },
+    }
+    world_size = normalization["world_size"]
+    active_flow_count = float(len(active_flows))
+    max_dest_source_fanin = float(max((len(value) for value in dest_fanin.values()), default=0))
+    max_source_dest_fanout = float(max((len(value) for value in source_fanout.values()), default=0))
+    active_destination_count = float(len(all_destinations))
+    active_source_count = float(len(all_sources))
+    flow_density = active_flow_count / max(1.0, float(len(round_buckets)))
+    flow_fragmentation = (
+        flow_density
+        + active_flow_count / max(1.0, world_size * world_size)
+        + 0.25 * (max_dest_source_fanin / max(1.0, world_size))
+        + 0.25 * (max_source_dest_fanout / max(1.0, world_size))
+    )
     return {
         "round_increment_components": {
             "source_outbound_bytes": source_increment,
@@ -565,7 +634,7 @@ def _round_pressure_components(
             "flow_bytes": flow_increment,
             "expert_rows": expert_increment,
             "rank_compute_rows": rank_increment,
-            "return_flow_bytes": historical_return,
+            "return_flow_bytes": {},
         },
         "historical_baseline_components": {
             "source_outbound_bytes": historical_source,
@@ -575,13 +644,22 @@ def _round_pressure_components(
             "rank_compute_rows": historical_rank,
             "return_flow_bytes": historical_return,
         },
+        "whole_batch_projected_totals": whole_batch_projected_totals,
+        "scarcity_components": scarcity_components,
+        "fragmentation_components": {
+            "active_flow_count": active_flow_count,
+            "max_dest_source_fanin": max_dest_source_fanin,
+            "max_source_dest_fanout": max_source_dest_fanout,
+            "active_destination_count": active_destination_count,
+            "active_source_count": active_source_count,
+        },
         "round_pressure_components": {
             "max_source_outbound_bytes_norm": max(source_totals.values(), default=0.0) / normalization["bytes"],
             "max_destination_inbound_bytes_norm": max(destination_totals.values(), default=0.0) / normalization["bytes"],
             "max_flow_bytes_norm": max(flow_totals.values(), default=0.0) / normalization["flow_bytes"],
             "max_expert_rows_norm": max(expert_totals.values(), default=0.0) / normalization["rows"],
             "max_rank_compute_rows_norm": max(rank_totals.values(), default=0.0) / normalization["rows"],
-            "split_fragmentation_penalty_norm": fragment_count / max(1.0, float(len(round_buckets))),
+            "flow_fragmentation_penalty_norm": flow_fragmentation,
         },
         "normalization_constants": normalization,
     }

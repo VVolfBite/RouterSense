@@ -15,6 +15,8 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
+from itertools import combinations
+
 from .distributed_runtime import (
     PlacementEntry,
     WorkloadBucket,
@@ -580,7 +582,7 @@ def _spearman(left: list[float], right: list[float]) -> float:
     return numerator / (denom_left * denom_right)
 
 
-def oracle_minimax_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
+def lookahead_greedy_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
     buckets = sorted(
         plan.bucket_workloads,
         key=lambda bucket: (
@@ -619,6 +621,65 @@ def oracle_minimax_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str
         "release_rounds": release_rounds,
         "pressure": diagnostics["rounds"],
         "peak_bottleneck_pressure": diagnostics["round_pressure"],
+        "diagnostic_kind": "lookahead-greedy-upper-heuristic",
+    }
+
+
+def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
+    buckets = sorted(plan.bucket_workloads, key=_stable_bucket_order_key)
+    if len(buckets) > 12:
+        grouped = [
+            buckets[index : index + round_size]
+            for index in range(0, len(buckets), round_size)
+        ]
+        grouped_rounds = [[bucket.bucket_id for bucket in group] for group in grouped]
+        diagnostics = _round_pressure_from_rounds(plan, grouped_rounds)
+        return {
+            "release_rounds": grouped_rounds,
+            "pressure": diagnostics["rounds"],
+            "peak_bottleneck_pressure": diagnostics["round_pressure"],
+            "diagnostic_kind": "best-known-grouped",
+            "optimality_gap_known": False,
+        }
+
+    best_rounds: list[list[str]] | None = None
+    best_pressure = float("inf")
+
+    def search(remaining: list[WorkloadBucket], current: list[list[str]]) -> None:
+        nonlocal best_rounds, best_pressure
+        if not remaining:
+            diagnostics = _round_pressure_from_rounds(plan, current)
+            pressure = float(diagnostics["round_pressure"])
+            if pressure < best_pressure:
+                best_pressure = pressure
+                best_rounds = [list(round_ids) for round_ids in current]
+            return
+        if best_rounds is not None and len(current) > len(best_rounds):
+            return
+        first = remaining[0]
+        candidate_pool = remaining[1:]
+        max_extra = min(round_size - 1, len(candidate_pool))
+        for extra_count in range(max_extra + 1):
+            for subset in combinations(candidate_pool, extra_count):
+                chosen = [first, *subset]
+                round_ids = [bucket.bucket_id for bucket in sorted(chosen, key=_stable_bucket_order_key)]
+                diagnostics = _round_pressure_from_rounds(plan, current + [round_ids])
+                pressure = float(diagnostics["round_pressure"])
+                if pressure > best_pressure:
+                    continue
+                used = {bucket.bucket_id for bucket in chosen}
+                next_remaining = [bucket for bucket in remaining if bucket.bucket_id not in used]
+                search(next_remaining, current + [round_ids])
+
+    search(buckets, [])
+    release_rounds = best_rounds or [[bucket.bucket_id for bucket in buckets]]
+    diagnostics = _round_pressure_from_rounds(plan, release_rounds)
+    return {
+        "release_rounds": release_rounds,
+        "pressure": diagnostics["rounds"],
+        "peak_bottleneck_pressure": diagnostics["round_pressure"],
+        "diagnostic_kind": "exact" if len(buckets) <= 12 else "best-known-grouped",
+        "optimality_gap_known": len(buckets) <= 12,
     }
 
 
@@ -638,6 +699,9 @@ def _round_pressure_from_rounds(plan: WorkloadPlan, release_rounds: list[list[st
             },
             "historical_baseline_components": components["historical_baseline_components"],
             "round_increment_components": components["round_increment_components"],
+            "whole_batch_projected_totals": components["whole_batch_projected_totals"],
+            "scarcity_components": components["scarcity_components"],
+            "fragmentation_components": components["fragmentation_components"],
             "normalization_constants": components["normalization_constants"],
         }
         rows.append(diagnostic)
@@ -687,12 +751,14 @@ def scenario_admissibility(
             arrival_jitter_mode=str(plan.routing_summary.get("arrival_jitter_mode", "none")),
             oracle=False,
         )
-        oracle = oracle_minimax_round_packer(plan, round_size)
+        lookahead = lookahead_greedy_round_packer(plan, round_size)
+        exact = exact_round_packer(plan, round_size)
         fifo_pressure = float(fifo["round_pressure"])
         random_pressure = float(random_diag["round_pressure"])
-        oracle_pressure = float(oracle["peak_bottleneck_pressure"])
-        oracle_gap_vs_fifo = (fifo_pressure - oracle_pressure) / max(fifo_pressure, 1e-9)
-        oracle_gap_vs_random = (random_pressure - oracle_pressure) / max(random_pressure, 1e-9)
+        lookahead_pressure = float(lookahead["peak_bottleneck_pressure"])
+        exact_pressure = float(exact["peak_bottleneck_pressure"])
+        oracle_gap_vs_fifo = (fifo_pressure - exact_pressure) / max(fifo_pressure, 1e-9)
+        oracle_gap_vs_random = (random_pressure - exact_pressure) / max(random_pressure, 1e-9)
         mega_bucket = _non_schedulable_mega_bucket(plan, round_size)
         alternative_flows = len({(bucket.destination_rank, bucket.expert_id) for bucket in plan.bucket_workloads}) >= 2
         schedulable = bool(
@@ -710,7 +776,8 @@ def scenario_admissibility(
                 "random_pressure": random_pressure,
                 "strong_state_sort_pressure": float(strong_sort["round_pressure"]),
                 "strong_state_packer_pressure": float(strong_pack["round_pressure_score"]),
-                "oracle_pressure": oracle_pressure,
+                "lookahead_greedy_pressure": lookahead_pressure,
+                "exact_or_best_known_pressure": exact_pressure,
                 "oracle_gap_vs_fifo": oracle_gap_vs_fifo,
                 "oracle_gap_vs_random": oracle_gap_vs_random,
                 "mega_bucket_dominated": mega_bucket,
