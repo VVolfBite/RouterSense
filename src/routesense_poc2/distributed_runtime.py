@@ -208,6 +208,7 @@ class GlobalRuntimeState:
     source_outbound_pending_bytes: dict[int, int] = field(default_factory=dict)
     destination_inbound_pending_bytes: dict[int, int] = field(default_factory=dict)
     flow_pending_bytes: dict[str, int] = field(default_factory=dict)
+    return_flow_pending_bytes: dict[str, int] = field(default_factory=dict)
     rank_compute_queue_rows: dict[int, int] = field(default_factory=dict)
     expert_pending_rows: dict[int, int] = field(default_factory=dict)
     rank_dispatch_time_ms: dict[int, float] = field(default_factory=dict)
@@ -757,6 +758,44 @@ def _all_to_all_variable(
     return recv, recv_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits]
 
 
+def _pack_return_segments(
+    result_payload: torch.Tensor,
+    received_metadata: list[dict[str, Any]],
+    world_size: int,
+) -> tuple[torch.Tensor, list[int], list[dict[str, Any]]]:
+    grouped_payload: dict[int, list[torch.Tensor]] = {rank: [] for rank in range(world_size)}
+    grouped_metadata: dict[int, list[dict[str, Any]]] = {rank: [] for rank in range(world_size)}
+    offset = 0
+    for item in received_metadata:
+        rows = int(item["rows"])
+        segment = result_payload[offset : offset + rows]
+        origin_rank = int(item["origin_rank"])
+        grouped_payload[origin_rank].append(segment)
+        grouped_metadata[origin_rank].append(dict(item))
+        offset += rows
+    packed_segments: list[torch.Tensor] = []
+    packed_metadata: list[dict[str, Any]] = []
+    send_splits: list[int] = []
+    for origin_rank in range(world_size):
+        metadata_items = grouped_metadata[origin_rank]
+        payload_items = grouped_payload[origin_rank]
+        rows = sum(int(item["rows"]) for item in metadata_items)
+        send_splits.append(rows)
+        if rows:
+            packed_segments.append(torch.cat(payload_items, dim=0) if len(payload_items) > 1 else payload_items[0])
+            packed_metadata.extend(metadata_items)
+    if offset != int(result_payload.shape[0]):
+        raise RuntimeError("pack_return_segments: metadata rows do not cover result payload rows")
+    if sum(send_splits) != int(result_payload.shape[0]):
+        raise RuntimeError("pack_return_segments: send_splits do not match result payload rows")
+    packed_payload = (
+        torch.cat(packed_segments, dim=0)
+        if packed_segments
+        else torch.zeros((0, result_payload.shape[1]), device=result_payload.device, dtype=result_payload.dtype)
+    )
+    return packed_payload, send_splits, packed_metadata
+
+
 def _run_local_compute(
     payload: torch.Tensor,
     execution_cache: ExecutionCache,
@@ -821,17 +860,15 @@ def _return_to_origin(
     origin_metadata: list[dict[str, Any]],
     hidden_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor, list[int], list[int]]:
-    return_counts = torch.zeros(world_size, dtype=torch.int64, device=result_payload.device)
-    for item in origin_metadata:
-        return_counts[int(item["origin_rank"])] += int(item["rows"])
-    send_splits = return_counts.tolist()
+    packed_payload, send_splits, packed_metadata = _pack_return_segments(result_payload, origin_metadata, world_size)
+    return_counts = torch.tensor(send_splits, dtype=torch.int64, device=result_payload.device)
     recv_return_rows = _exchange_sizes(return_counts)
     recv_splits = recv_return_rows.tolist()
     recv_total = int(sum(recv_splits))
     recv_back = torch.empty((recv_total, hidden_dim), device=result_payload.device, dtype=result_payload.dtype)
     dist.all_to_all_single(
         recv_back.reshape(-1),
-        result_payload.reshape(-1),
+        packed_payload.reshape(-1),
         output_split_sizes=[int(value) * hidden_dim for value in recv_splits],
         input_split_sizes=[int(value) * hidden_dim for value in send_splits],
     )
@@ -1612,6 +1649,11 @@ def update_global_runtime_state(
     next_state.source_outbound_pending_bytes = source_outbound
     next_state.destination_inbound_pending_bytes = destination_inbound
     next_state.flow_pending_bytes = flow_pending
+    return_flow_pending: dict[str, int] = {}
+    for bucket in lookup.values():
+        key = _make_flow_key(bucket.destination_rank, bucket.origin_rank)
+        return_flow_pending[key] = return_flow_pending.get(key, 0) + int(bucket.payload_bytes)
+    next_state.return_flow_pending_bytes = return_flow_pending
     next_state.expert_pending_rows = expert_pending
     next_state.rank_compute_queue_rows = rank_compute_queue_rows
     next_state.global_completion_time_ms = max(float(item["local_completion_ms"]) for item in gathered_rank_records)

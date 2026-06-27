@@ -6,6 +6,7 @@ from routesense_poc2.distributed_runtime import (
     WorkloadBucket,
     WorkloadPlan,
     ProtocolConfig,
+    _pack_return_segments,
     _hash_payload,
     _go_no_go,
     _planned_round_matrix,
@@ -551,9 +552,65 @@ def test_global_completion_uses_max_rank_completion():
     assert updated.global_completion_time_ms == 5.0
 
 
+def test_global_runtime_state_default_to_scheduler_state():
+    state = GlobalRuntimeState()
+    scheduler_state = state.to_scheduler_state()
+    assert scheduler_state.return_flow_pending_bytes == {}
+
+
+def test_return_flow_pending_bytes_affects_strong_state():
+    bucket = WorkloadBucket(
+        bucket_id="x",
+        route_id="rx",
+        token_ids=[0],
+        token_positions=[0],
+        origin_rank=0,
+        destination_id=0,
+        destination_rank=1,
+        expert_id=0,
+        layer_id=0,
+        microbatch_id=0,
+        token_count=1,
+        payload_rows=1,
+        hidden_dim=64,
+        intermediate_dim=128,
+        estimated_service_units=1.0,
+        payload_bytes=128,
+        source_count=1,
+        source_coverage=0.1,
+        coactive_peer_degree=0.1,
+        coactive_event_density=0.1,
+        position_spread=0.1,
+        bridge_score=0.1,
+        route_share=0.1,
+        density_over_mean=0.1,
+        size_norm=0.1,
+        inverse_size_rank_norm=1.0,
+        is_hot_bucket=False,
+    )
+    left = RuntimeState(return_flow_pending_bytes={"1->0": 0.0})
+    right = RuntimeState(return_flow_pending_bytes={"1->0": 1 << 20})
+    assert strong_state_score_for_bucket(bucket, left) != strong_state_score_for_bucket(bucket, right)
+
+
 def test_latin_square_requires_multiple_of_strategy_count():
     try:
         latin_square_orders(["fifo", "random-order", "strong-state", "full"], 6)
         assert False
     except ValueError:
         pass
+
+
+def test_pack_return_segments_reorders_by_origin():
+    import torch
+
+    payload = torch.arange(12, dtype=torch.float16).reshape(6, 2)
+    metadata = [
+        {"origin_rank": 2, "rows": 2, "route_id": "r0"},
+        {"origin_rank": 0, "rows": 1, "route_id": "r1"},
+        {"origin_rank": 1, "rows": 3, "route_id": "r2"},
+    ]
+    packed, send_splits, packed_metadata = _pack_return_segments(payload, metadata, 4)
+    assert send_splits == [1, 3, 2, 0]
+    assert [item["route_id"] for item in packed_metadata] == ["r1", "r2", "r0"]
+    assert packed.shape[0] == 6
