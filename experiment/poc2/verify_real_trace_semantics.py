@@ -105,10 +105,20 @@ def main(argv: list[str] | None = None) -> int:
                 "remote_byte_ratio": result["remote_byte_ratio"],
                 "communication_semantics_valid": result["communication_semantics_valid"],
                 "decision_hash": result["decision_hash"],
+                "used_python_metadata_gather": result["used_python_metadata_gather"],
                 "workload_manifest": manifest,
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            for name, items in [
+                ("dispatch_route_manifest.jsonl", result["dispatch_route_manifest"]),
+                ("receive_route_manifest.jsonl", result["receive_route_manifest"]),
+                ("return_route_manifest.jsonl", result["return_route_manifest"]),
+                ("origin_verified_manifest.jsonl", result["origin_verified_manifest"]),
+            ]:
+                with (artifact_dir / name).open("w", encoding="utf-8") as handle:
+                    for item in items:
+                        handle.write(json.dumps(item) + "\n")
             (artifact_dir / "goal.md").write_text(
                 "# POC2.5 Real Trace Semantic Smoke\n\n"
                 "This run only validates that a real router trace produces non-diagonal origin->destination traffic under the repaired runtime.\n"

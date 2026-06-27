@@ -11,6 +11,11 @@ class BucketRecord:
     destination_rank: int
     arrival_index: int
     token_count: int
+    route_item_ids: list[str] = field(default_factory=list)
+    origin_rank: int = 0
+    expert_id: int = 0
+    payload_rows: int = 0
+    payload_bytes: int = 0
     token_positions: list[int] = field(default_factory=list)
     source_count: int = 0
     active_destinations: list[int] = field(default_factory=list)
@@ -26,6 +31,15 @@ class BucketRecord:
     inverse_size_rank_norm: float = 0.0
     is_hot_bucket: bool = False
     estimated_service_units: float = 0.0
+    source_outbound_pending_bytes: float = 0.0
+    destination_inbound_pending_bytes: float = 0.0
+    flow_pending_bytes: float = 0.0
+    return_flow_pending_bytes: float = 0.0
+    rank_compute_queue_rows: float = 0.0
+    expert_pending_rows: float = 0.0
+    estimated_dispatch_cost: float = 0.0
+    estimated_compute_cost: float = 0.0
+    estimated_return_cost: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -39,6 +53,15 @@ class RuntimeState:
     rank_queue_depth: dict[int, int] = field(default_factory=dict)
     destination_hotness: dict[int, float] = field(default_factory=dict)
     destination_latency_history: dict[int, list[float]] = field(default_factory=dict)
+    source_outbound_pending_bytes: dict[int, float] = field(default_factory=dict)
+    destination_inbound_pending_bytes: dict[int, float] = field(default_factory=dict)
+    flow_pending_bytes: dict[str, float] = field(default_factory=dict)
+    return_flow_pending_bytes: dict[str, float] = field(default_factory=dict)
+    rank_compute_queue_rows: dict[int, float] = field(default_factory=dict)
+    expert_pending_rows: dict[int, float] = field(default_factory=dict)
+    rank_dispatch_time_ms: dict[int, float] = field(default_factory=dict)
+    rank_compute_time_ms: dict[int, float] = field(default_factory=dict)
+    rank_return_time_ms: dict[int, float] = field(default_factory=dict)
     batch_index: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +92,7 @@ class BucketDecision:
     state_features: dict[str, float]
     dependency_features: dict[str, float]
     runtime_features: dict[str, float]
+    expert_features: dict[str, float]
     explanation: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,12 +122,13 @@ class SchedulerDecision:
 class BaseScheduler:
     strategy = "base"
 
-    def score_bucket(self, bucket: BucketRecord, state: RuntimeState) -> tuple[float, float, float, dict[str, float], dict[str, float], dict[str, float]]:
+    def score_bucket(self, bucket: BucketRecord, state: RuntimeState) -> tuple[float, float, float, dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
         state_score, state_features = _state_score(bucket, state)
         dependency_score, dependency_features = _dependency_score(bucket)
         runtime_features = _runtime_features(bucket, state)
+        expert_features = _expert_features(bucket, state)
         full_score = 0.5 * state_score + 0.5 * dependency_score
-        return state_score, dependency_score, full_score, state_features, dependency_features, runtime_features
+        return state_score, dependency_score, full_score, state_features, dependency_features, runtime_features, expert_features
 
     def select_score(self, state_score: float, dependency_score: float, full_score: float, bucket: BucketRecord) -> float:
         raise NotImplementedError
@@ -111,7 +136,7 @@ class BaseScheduler:
     def build_decision(self, scheduler_input: SchedulerInput) -> SchedulerDecision:
         decisions: list[BucketDecision] = []
         for bucket in scheduler_input.bucket_records:
-            state_score, dependency_score, full_score, state_features, dependency_features, runtime_features = self.score_bucket(
+            state_score, dependency_score, full_score, state_features, dependency_features, runtime_features, expert_features = self.score_bucket(
                 bucket, scheduler_input.runtime_state
             )
             selected_score = self.select_score(state_score, dependency_score, full_score, bucket)
@@ -128,6 +153,7 @@ class BaseScheduler:
                     state_features=state_features,
                     dependency_features=dependency_features,
                     runtime_features=runtime_features,
+                    expert_features=expert_features,
                     explanation=_build_explanation(
                         self.strategy,
                         bucket,
@@ -260,13 +286,35 @@ def _dependency_score(bucket: BucketRecord) -> tuple[float, dict[str, float]]:
 
 
 def _runtime_features(bucket: BucketRecord, state: RuntimeState) -> dict[str, float]:
+    flow_key = f"{bucket.origin_rank}->{bucket.destination_rank}"
+    return_key = f"{bucket.destination_rank}->{bucket.origin_rank}"
     return {
         "destination_pending_work": float(state.destination_pending_work.get(bucket.destination_id, 0.0)),
         "destination_queue_depth": float(state.destination_queue_depth.get(bucket.destination_id, 0)),
         "rank_backlog_work": float(state.rank_backlog_work.get(bucket.destination_rank, 0.0)),
         "rank_queue_depth": float(state.rank_queue_depth.get(bucket.destination_rank, 0)),
         "destination_hotness": float(state.destination_hotness.get(bucket.destination_id, 0.0)),
+        "source_outbound_pending_bytes": float(state.source_outbound_pending_bytes.get(bucket.origin_rank, 0.0)),
+        "destination_inbound_pending_bytes": float(state.destination_inbound_pending_bytes.get(bucket.destination_rank, 0.0)),
+        "flow_pending_bytes": float(state.flow_pending_bytes.get(flow_key, 0.0)),
+        "return_flow_pending_bytes": float(state.return_flow_pending_bytes.get(return_key, 0.0)),
+        "rank_compute_queue_rows": float(state.rank_compute_queue_rows.get(bucket.destination_rank, 0.0)),
+        "expert_pending_rows": float(state.expert_pending_rows.get(bucket.expert_id, 0.0)),
+        "rank_dispatch_time_ms": float(state.rank_dispatch_time_ms.get(bucket.origin_rank, 0.0)),
+        "rank_compute_time_ms": float(state.rank_compute_time_ms.get(bucket.destination_rank, 0.0)),
+        "rank_return_time_ms": float(state.rank_return_time_ms.get(bucket.destination_rank, 0.0)),
         "estimated_service_units": float(bucket.estimated_service_units),
+    }
+
+
+def _expert_features(bucket: BucketRecord, state: RuntimeState) -> dict[str, float]:
+    return {
+        "payload_rows": float(bucket.payload_rows),
+        "payload_bytes": float(bucket.payload_bytes),
+        "estimated_dispatch_cost": float(bucket.estimated_dispatch_cost),
+        "estimated_compute_cost": float(bucket.estimated_compute_cost),
+        "estimated_return_cost": float(bucket.estimated_return_cost),
+        "expert_pending_rows": float(state.expert_pending_rows.get(bucket.expert_id, 0.0)),
     }
 
 

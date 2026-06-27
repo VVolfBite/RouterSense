@@ -319,6 +319,58 @@ def test_strong_state_and_lina_scores_do_not_depend_on_dependency_fields_when_st
     assert lina_inspired_score_for_bucket(left, state) == lina_inspired_score_for_bucket(right, state)
 
 
+def test_strong_state_changes_with_global_flow_fields():
+    base = WorkloadBucket(
+        bucket_id="x",
+        route_id="rx",
+        token_ids=[0],
+        token_positions=[0],
+        origin_rank=0,
+        destination_id=0,
+        destination_rank=0,
+        expert_id=0,
+        layer_id=0,
+        microbatch_id=0,
+        token_count=4,
+        payload_rows=4,
+        hidden_dim=64,
+        intermediate_dim=128,
+        estimated_service_units=2.0,
+        payload_bytes=4 * 64 * 2,
+        source_count=2,
+        source_coverage=0.1,
+        coactive_peer_degree=0.1,
+        coactive_event_density=0.1,
+        position_spread=0.1,
+        bridge_score=0.1,
+        route_share=0.4,
+        density_over_mean=0.5,
+        size_norm=0.6,
+        inverse_size_rank_norm=0.7,
+        is_hot_bucket=False,
+    )
+    low = RuntimeState(
+        source_outbound_pending_bytes={0: 0.0},
+        destination_inbound_pending_bytes={0: 0.0},
+        flow_pending_bytes={"0->0": 0.0},
+        return_flow_pending_bytes={"0->0": 0.0},
+        rank_compute_queue_rows={0: 0.0},
+        expert_pending_rows={0: 0.0},
+    )
+    high = RuntimeState(
+        source_outbound_pending_bytes={0: 1 << 20},
+        destination_inbound_pending_bytes={0: 1 << 20},
+        flow_pending_bytes={"0->0": 1 << 20},
+        return_flow_pending_bytes={"0->0": 1 << 20},
+        rank_compute_queue_rows={0: 128.0},
+        expert_pending_rows={0: 128.0},
+        rank_dispatch_time_ms={0: 10.0},
+        rank_compute_time_ms={0: 20.0},
+        rank_return_time_ms={0: 10.0},
+    )
+    assert strong_state_score_for_bucket(base, low) != strong_state_score_for_bucket(base, high)
+
+
 def test_paired_matches_by_key_and_flags_distribution_asymmetry():
     left = [
         {"repetition_index": 0, "microbatch_id": 0, "plan_id": "p0", "end_to_end_batch_completion_ms": -10.0, "strategy": "a", "strategy_order": ["a", "b"]},
