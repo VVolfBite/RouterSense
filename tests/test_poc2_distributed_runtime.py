@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from routesense_poc2.distributed_runtime import (
+    build_canonical_round_layout,
     GlobalRuntimeState,
     PlacementEntry,
     WorkloadBucket,
     WorkloadPlan,
     ProtocolConfig,
     _pack_return_segments,
+    _pack_return_payload_and_metadata,
+    _planned_received_metadata_for_rank,
+    _metadata_tensor_to_dicts,
     _hash_payload,
     _go_no_go,
     _planned_round_matrix,
@@ -614,3 +618,188 @@ def test_pack_return_segments_reorders_by_origin():
     assert send_splits == [1, 3, 2, 0]
     assert [item["route_id"] for item in packed_metadata] == ["r1", "r2", "r0"]
     assert packed.shape[0] == 6
+
+
+def test_canonical_receive_order_follows_source_rank_not_release_order():
+    buckets = [
+        WorkloadBucket(
+            bucket_id="b_gpu2",
+            route_id="r2",
+            token_ids=[20],
+            token_positions=[2],
+            origin_rank=2,
+            destination_id=11,
+            destination_rank=1,
+            expert_id=11,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=1,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=1.0,
+            payload_bytes=128,
+            source_count=1,
+            source_coverage=0.1,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.1,
+            bridge_score=0.1,
+            route_share=0.1,
+            density_over_mean=0.1,
+            size_norm=0.1,
+            inverse_size_rank_norm=1.0,
+            is_hot_bucket=False,
+            route_item_ids=["r2"],
+            route_ranks=[0],
+        ),
+        WorkloadBucket(
+            bucket_id="b_gpu0",
+            route_id="r0",
+            token_ids=[0],
+            token_positions=[0],
+            origin_rank=0,
+            destination_id=10,
+            destination_rank=1,
+            expert_id=10,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=1,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=1.0,
+            payload_bytes=128,
+            source_count=1,
+            source_coverage=0.1,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.1,
+            bridge_score=0.1,
+            route_share=0.1,
+            density_over_mean=0.1,
+            size_norm=0.1,
+            inverse_size_rank_norm=1.0,
+            is_hot_bucket=False,
+            route_item_ids=["r0"],
+            route_ranks=[0],
+        ),
+        WorkloadBucket(
+            bucket_id="b_gpu3",
+            route_id="r3",
+            token_ids=[30],
+            token_positions=[3],
+            origin_rank=3,
+            destination_id=12,
+            destination_rank=1,
+            expert_id=12,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=1,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=1.0,
+            payload_bytes=128,
+            source_count=1,
+            source_coverage=0.1,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.1,
+            bridge_score=0.1,
+            route_share=0.1,
+            density_over_mean=0.1,
+            size_norm=0.1,
+            inverse_size_rank_norm=1.0,
+            is_hot_bucket=False,
+            route_item_ids=["r3"],
+            route_ranks=[0],
+        ),
+        WorkloadBucket(
+            bucket_id="b_gpu1",
+            route_id="r1",
+            token_ids=[10],
+            token_positions=[1],
+            origin_rank=1,
+            destination_id=13,
+            destination_rank=1,
+            expert_id=13,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=1,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=1.0,
+            payload_bytes=128,
+            source_count=1,
+            source_coverage=0.1,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.1,
+            bridge_score=0.1,
+            route_share=0.1,
+            density_over_mean=0.1,
+            size_norm=0.1,
+            inverse_size_rank_norm=1.0,
+            is_hot_bucket=False,
+            route_item_ids=["r1"],
+            route_ranks=[0],
+        ),
+    ]
+    layout = build_canonical_round_layout(buckets, 4, correctness_mode=True, round_index=0)
+    lookup = {bucket.bucket_id: bucket for bucket in buckets}
+    received = _planned_received_metadata_for_rank(layout, lookup, 1)
+    assert [item["bucket_id"] for item in received] == ["b_gpu0", "b_gpu1", "b_gpu2", "b_gpu3"]
+
+
+def test_pack_return_payload_and_metadata_aligns_segments():
+    import torch
+
+    payload = torch.arange(12, dtype=torch.float16).reshape(6, 2)
+    metadata_tensor = torch.tensor(
+        [
+            [1, 0, 2, 0, 9, 0],
+            [2, 1, 2, 0, 9, 0],
+            [3, 0, 0, 0, 7, 0],
+            [4, 0, 1, 0, 8, 0],
+            [5, 1, 1, 0, 8, 0],
+            [6, 2, 1, 0, 8, 0],
+        ],
+        dtype=torch.int32,
+    )
+    metadata = [
+        {"origin_rank": 2, "rows": 2, "route_id": "r0", "token_ids": [1, 2]},
+        {"origin_rank": 0, "rows": 1, "route_id": "r1", "token_ids": [3]},
+        {"origin_rank": 1, "rows": 3, "route_id": "r2", "token_ids": [4, 5, 6]},
+    ]
+    packed_payload, packed_metadata, send_splits, packed_dicts = _pack_return_payload_and_metadata(payload, metadata_tensor, metadata, 4)
+    assert send_splits == [1, 3, 2, 0]
+    assert packed_payload.shape[0] == packed_metadata.shape[0] == 6
+    assert [item["route_id"] for item in packed_dicts] == ["r1", "r2", "r0"]
+
+
+def test_metadata_tensor_decoding_matches_planned_rows():
+    import torch
+
+    planned = [
+        {
+            "bucket_id": "b0",
+            "route_id": "r0",
+            "route_item_ids": ["r0"],
+            "route_ranks": [0],
+            "origin_rank": 0,
+            "destination_rank": 1,
+            "rows": 2,
+            "destination_id": 3,
+            "expert_id": 3,
+            "estimated_service_units": 2.0,
+            "token_count": 2,
+            "token_ids": [7, 8],
+            "token_positions": [0, 1],
+            "payload_bytes": 256,
+        }
+    ]
+    tensor = torch.tensor([[7, 0, 0, 1, 3, 0], [8, 1, 0, 1, 3, 0]], dtype=torch.int32)
+    decoded = _metadata_tensor_to_dicts(tensor, planned)
+    assert decoded[0]["token_ids"] == [7, 8]

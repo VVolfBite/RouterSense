@@ -102,6 +102,8 @@ class WorkloadBucket:
     size_norm: float
     inverse_size_rank_norm: float
     is_hot_bucket: bool
+    route_item_ids: list[str] = field(default_factory=list)
+    route_ranks: list[int] = field(default_factory=list)
 
     def to_scheduler_record(self) -> BucketRecord:
         flow_key = f"{self.origin_rank}->{self.destination_rank}"
@@ -276,6 +278,25 @@ class ExecutionCache:
     expert_weight1: dict[int, torch.Tensor]
     expert_weight2: dict[int, torch.Tensor]
     correctness_mode: bool
+
+
+@dataclass(frozen=True)
+class CanonicalRoundSegment:
+    round_index: int
+    source_rank: int
+    destination_rank: int
+    expert_id: int
+    bucket_id: str
+    route_item_ids: list[str]
+    token_ids: list[int]
+    route_ranks: list[int]
+    payload_row_offset: int
+    payload_row_count: int
+    metadata_row_offset: int
+    metadata_row_count: int
+    receive_row_offset: int
+    receive_metadata_row_offset: int
+    return_origin_rank: int
 
 
 def dependency_score_for_bucket(bucket: WorkloadBucket) -> float:
@@ -550,6 +571,8 @@ def build_workload_plan(
                 size_norm=base_bucket.size_norm,
                 inverse_size_rank_norm=1.0 - (index / max(1, len(ordered_groups) - 1)) if ordered_groups else 0.0,
                 is_hot_bucket=token_count_in_bucket > 1,
+                route_item_ids=list(item["route_ids"]),
+                route_ranks=list(item["route_ranks"]),
             )
         )
 
@@ -678,63 +701,7 @@ def _prepare_round_payload(
     seed: int,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, list[dict[str, Any]], list[dict[str, Any]]]:
-    send_counts = torch.zeros(world_size, dtype=torch.int64, device=device)
-    metadata: list[dict[str, Any]] = []
-    packing_metadata: list[dict[str, Any]] = []
-    tensors = []
-    for bucket in round_buckets:
-        if bucket.origin_rank != rank:
-            continue
-        rows = bucket.payload_rows
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(seed + bucket.origin_rank * 1009 + bucket.destination_rank * 97 + sum(bucket.token_ids) * 13)
-        tensor = torch.randn((rows, hidden_dim), generator=generator, dtype=torch.float32).pin_memory()
-        tensors.append((bucket.destination_rank, tensor, bucket))
-        send_counts[bucket.destination_rank] += rows
-        metadata.append(
-            {
-                "bucket_id": bucket.bucket_id,
-                "route_id": bucket.route_id,
-                "origin_rank": bucket.origin_rank,
-                "destination_rank": bucket.destination_rank,
-                "rows": rows,
-                "destination_id": bucket.destination_id,
-                "expert_id": bucket.expert_id,
-                "estimated_service_units": bucket.estimated_service_units,
-                "token_count": bucket.token_count,
-                "token_ids": list(bucket.token_ids),
-                "token_positions": list(bucket.token_positions),
-                "payload_bytes": bucket.payload_bytes,
-            }
-        )
-        packing_metadata.append(
-            {
-                "bucket_id": bucket.bucket_id,
-                "route_id": bucket.route_id,
-                "origin_rank": bucket.origin_rank,
-                "destination_rank": bucket.destination_rank,
-                "rows": rows,
-                "bytes": rows * hidden_dim * 2,
-                "token_count": bucket.token_count,
-                "token_ids": list(bucket.token_ids),
-            }
-        )
-
-    total_rows = int(sum(item[2].payload_rows for item in tensors))
-    if total_rows == 0:
-        payload = torch.zeros((0, hidden_dim), device=device, dtype=torch.float16)
-    else:
-        payload = torch.empty((total_rows, hidden_dim), device=device, dtype=torch.float16)
-        cursor = {target_rank: 0 for target_rank in range(world_size)}
-        ordered = []
-        for target_rank in range(world_size):
-            ordered.extend([item for item in tensors if item[0] == target_rank])
-        row_offset = 0
-        for _, cpu_tensor, bucket in ordered:
-            rows = bucket.payload_rows
-            payload[row_offset : row_offset + rows].copy_(cpu_tensor.to(device=device, dtype=torch.float16, non_blocking=False))
-            row_offset += rows
-    return payload, send_counts, metadata, packing_metadata
+    raise RuntimeError("_prepare_round_payload is deprecated and must not be used by correctness or benchmark paths")
 
 
 def _all_to_all_variable(
@@ -756,6 +723,208 @@ def _all_to_all_variable(
         input_split_sizes=[int(value) * hidden_dim for value in send_splits],
     )
     return recv, recv_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits]
+
+
+def _all_to_all_metadata_variable(
+    metadata: torch.Tensor,
+    send_rows: torch.Tensor,
+    metadata_width: int,
+) -> tuple[torch.Tensor, torch.Tensor, list[int], list[int]]:
+    recv_rows = _exchange_sizes(send_rows)
+    send_splits = [int(value) for value in send_rows.tolist()]
+    recv_splits = [int(value) for value in recv_rows.tolist()]
+    recv_total = int(sum(recv_splits))
+    recv = torch.empty((recv_total, metadata_width), device=metadata.device, dtype=metadata.dtype)
+    dist.all_to_all_single(
+        recv.reshape(-1),
+        metadata.reshape(-1),
+        output_split_sizes=[rows * metadata_width for rows in recv_splits],
+        input_split_sizes=[rows * metadata_width for rows in send_splits],
+    )
+    return recv, recv_rows, send_splits, recv_splits
+
+
+def _bucket_effective_rows(bucket: WorkloadBucket, *, correctness_mode: bool) -> int:
+    return max(1, int(bucket.token_count)) if correctness_mode else int(bucket.payload_rows)
+
+
+def _build_bucket_metadata_dict(bucket: WorkloadBucket, rows: int) -> dict[str, Any]:
+    route_item_ids = list(bucket.route_item_ids) if bucket.route_item_ids else [bucket.route_id]
+    route_ranks = list(bucket.route_ranks) if bucket.route_ranks else [0 for _ in route_item_ids]
+    token_ids = list(bucket.token_ids)
+    return {
+        "bucket_id": bucket.bucket_id,
+        "route_id": bucket.route_id,
+        "route_item_ids": route_item_ids,
+        "route_ranks": route_ranks,
+        "origin_rank": int(bucket.origin_rank),
+        "destination_rank": int(bucket.destination_rank),
+        "rows": int(rows),
+        "destination_id": int(bucket.destination_id),
+        "expert_id": int(bucket.expert_id),
+        "estimated_service_units": float(bucket.estimated_service_units),
+        "token_count": int(bucket.token_count),
+        "token_ids": token_ids,
+        "token_positions": list(bucket.token_positions),
+        "payload_bytes": int(rows * bucket.hidden_dim * 2),
+    }
+
+
+def _canonical_source_bucket_order(buckets: list[WorkloadBucket]) -> list[WorkloadBucket]:
+    return sorted(
+        buckets,
+        key=lambda bucket: (
+            int(bucket.destination_rank),
+            min(bucket.token_positions) if bucket.token_positions else 0,
+            bucket.bucket_id,
+        ),
+    )
+
+
+def build_canonical_round_layout(
+    round_buckets: list[WorkloadBucket],
+    world_size: int,
+    *,
+    correctness_mode: bool,
+    round_index: int,
+) -> dict[str, Any]:
+    by_source: dict[int, list[WorkloadBucket]] = {rank: [] for rank in range(world_size)}
+    for bucket in round_buckets:
+        by_source[int(bucket.origin_rank)].append(bucket)
+
+    source_segments: dict[int, list[CanonicalRoundSegment]] = {rank: [] for rank in range(world_size)}
+    destination_segments: dict[int, list[CanonicalRoundSegment]] = {rank: [] for rank in range(world_size)}
+    send_splits_by_source: dict[int, list[int]] = {rank: [0 for _ in range(world_size)] for rank in range(world_size)}
+    recv_splits_by_destination: dict[int, list[int]] = {rank: [0 for _ in range(world_size)] for rank in range(world_size)}
+
+    for source_rank in range(world_size):
+        payload_offset = 0
+        metadata_offset = 0
+        ordered = _canonical_source_bucket_order(by_source[source_rank])
+        for bucket in ordered:
+            rows = _bucket_effective_rows(bucket, correctness_mode=correctness_mode)
+            segment = CanonicalRoundSegment(
+                round_index=round_index,
+                source_rank=source_rank,
+                destination_rank=int(bucket.destination_rank),
+                expert_id=int(bucket.expert_id),
+                bucket_id=bucket.bucket_id,
+                route_item_ids=list(bucket.route_item_ids) if bucket.route_item_ids else [bucket.route_id],
+                token_ids=list(bucket.token_ids),
+                route_ranks=list(bucket.route_ranks) if bucket.route_ranks else [0],
+                payload_row_offset=payload_offset,
+                payload_row_count=rows,
+                metadata_row_offset=metadata_offset,
+                metadata_row_count=rows,
+                receive_row_offset=0,
+                receive_metadata_row_offset=0,
+                return_origin_rank=int(bucket.origin_rank),
+            )
+            source_segments[source_rank].append(segment)
+            destination_segments[int(bucket.destination_rank)].append(segment)
+            send_splits_by_source[source_rank][int(bucket.destination_rank)] += rows
+            recv_splits_by_destination[int(bucket.destination_rank)][source_rank] += rows
+            payload_offset += rows
+            metadata_offset += rows
+
+    normalized_destination_segments: dict[int, list[CanonicalRoundSegment]] = {rank: [] for rank in range(world_size)}
+    for destination_rank in range(world_size):
+        offset = 0
+        metadata_offset = 0
+        ordered: list[CanonicalRoundSegment] = []
+        for source_rank in range(world_size):
+            ordered.extend(
+                sorted(
+                    [segment for segment in destination_segments[destination_rank] if segment.source_rank == source_rank],
+                    key=lambda item: (
+                        item.destination_rank,
+                        item.payload_row_offset,
+                        item.bucket_id,
+                    ),
+                )
+            )
+        for segment in ordered:
+            normalized = CanonicalRoundSegment(
+                round_index=segment.round_index,
+                source_rank=segment.source_rank,
+                destination_rank=segment.destination_rank,
+                expert_id=segment.expert_id,
+                bucket_id=segment.bucket_id,
+                route_item_ids=list(segment.route_item_ids),
+                token_ids=list(segment.token_ids),
+                route_ranks=list(segment.route_ranks),
+                payload_row_offset=segment.payload_row_offset,
+                payload_row_count=segment.payload_row_count,
+                metadata_row_offset=segment.metadata_row_offset,
+                metadata_row_count=segment.metadata_row_count,
+                receive_row_offset=offset,
+                receive_metadata_row_offset=metadata_offset,
+                return_origin_rank=segment.return_origin_rank,
+            )
+            normalized_destination_segments[destination_rank].append(normalized)
+            offset += segment.payload_row_count
+            metadata_offset += segment.metadata_row_count
+    return {
+        "round_index": round_index,
+        "source_segments": source_segments,
+        "destination_segments": normalized_destination_segments,
+        "send_splits_by_source": send_splits_by_source,
+        "recv_splits_by_destination": recv_splits_by_destination,
+    }
+
+
+def _pack_round_payload_and_metadata(
+    rank: int,
+    round_layout: dict[str, Any],
+    execution_cache: ExecutionCache,
+    bucket_lookup: dict[str, WorkloadBucket],
+    hidden_dim: int,
+    metadata_width: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[dict[str, Any]], list[dict[str, Any]]]:
+    source_segments: list[CanonicalRoundSegment] = list(round_layout["source_segments"][rank])
+    send_splits = list(round_layout["send_splits_by_source"][rank])
+    payload_segments: list[torch.Tensor] = []
+    metadata_segments: list[torch.Tensor] = []
+    metadata_records: list[dict[str, Any]] = []
+    packing_metadata: list[dict[str, Any]] = []
+    for segment in source_segments:
+        bucket = bucket_lookup[segment.bucket_id]
+        payload = execution_cache.payload_by_bucket_id[segment.bucket_id]
+        metadata = execution_cache.metadata_by_bucket_id[segment.bucket_id]
+        if int(payload.shape[0]) != int(segment.payload_row_count):
+            raise RuntimeError(f"payload rows mismatch for bucket {segment.bucket_id}: {payload.shape[0]} vs {segment.payload_row_count}")
+        if int(metadata.shape[0]) != int(segment.metadata_row_count):
+            raise RuntimeError(f"metadata rows mismatch for bucket {segment.bucket_id}: {metadata.shape[0]} vs {segment.metadata_row_count}")
+        payload_segments.append(payload)
+        metadata_segments.append(metadata)
+        meta_dict = _build_bucket_metadata_dict(
+            bucket,
+            int(segment.payload_row_count),
+        )
+        metadata_records.append(meta_dict)
+        packing_metadata.append(
+            {
+                "bucket_id": bucket.bucket_id,
+                "route_id": bucket.route_id,
+                "route_item_ids": list(meta_dict["route_item_ids"]),
+                "origin_rank": int(bucket.origin_rank),
+                "destination_rank": int(bucket.destination_rank),
+                "expert_id": int(bucket.expert_id),
+                "rows": int(segment.payload_row_count),
+                "bytes": int(segment.payload_row_count * hidden_dim * 2),
+                "token_ids": list(bucket.token_ids),
+            }
+        )
+    if payload_segments:
+        payload_tensor = torch.cat(payload_segments, dim=0)
+        metadata_tensor = torch.cat(metadata_segments, dim=0)
+    else:
+        payload_tensor = torch.zeros((0, hidden_dim), device=device, dtype=torch.float16)
+        metadata_tensor = torch.zeros((0, metadata_width), device=device, dtype=torch.int32)
+    if sum(send_splits) != int(payload_tensor.shape[0]) or int(payload_tensor.shape[0]) != int(metadata_tensor.shape[0]):
+        raise RuntimeError("canonical source packing produced inconsistent rows")
+    return payload_tensor, metadata_tensor, torch.tensor(send_splits, dtype=torch.int64, device=device), metadata_records, packing_metadata
 
 
 def _pack_return_segments(
@@ -794,6 +963,62 @@ def _pack_return_segments(
         else torch.zeros((0, result_payload.shape[1]), device=result_payload.device, dtype=result_payload.dtype)
     )
     return packed_payload, send_splits, packed_metadata
+
+
+def _pack_return_payload_and_metadata(
+    result_payload: torch.Tensor,
+    result_metadata: torch.Tensor,
+    received_metadata: list[dict[str, Any]],
+    world_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, list[int], list[dict[str, Any]]]:
+    if int(result_payload.shape[0]) != int(result_metadata.shape[0]):
+        raise RuntimeError("return payload and metadata row count mismatch")
+    grouped_payload: dict[int, list[torch.Tensor]] = {rank: [] for rank in range(world_size)}
+    grouped_metadata_tensors: dict[int, list[torch.Tensor]] = {rank: [] for rank in range(world_size)}
+    grouped_metadata_dicts: dict[int, list[dict[str, Any]]] = {rank: [] for rank in range(world_size)}
+    offset = 0
+    for item in received_metadata:
+        rows = int(item["rows"])
+        origin_rank = int(item["origin_rank"])
+        grouped_payload[origin_rank].append(result_payload[offset : offset + rows])
+        grouped_metadata_tensors[origin_rank].append(result_metadata[offset : offset + rows])
+        grouped_metadata_dicts[origin_rank].append(dict(item))
+        offset += rows
+    if offset != int(result_payload.shape[0]):
+        raise RuntimeError("return metadata rows do not cover result rows")
+    packed_payload_parts: list[torch.Tensor] = []
+    packed_metadata_parts: list[torch.Tensor] = []
+    packed_metadata_dicts: list[dict[str, Any]] = []
+    send_splits: list[int] = []
+    for origin_rank in range(world_size):
+        dict_items = grouped_metadata_dicts[origin_rank]
+        tensor_items = grouped_metadata_tensors[origin_rank]
+        payload_items = grouped_payload[origin_rank]
+        rows = sum(int(item["rows"]) for item in dict_items)
+        send_splits.append(rows)
+        if rows:
+            if rows != sum(int(tensor.shape[0]) for tensor in tensor_items):
+                raise RuntimeError("return metadata tensor rows do not match dict rows")
+            if rows != sum(int(tensor.shape[0]) for tensor in payload_items):
+                raise RuntimeError("return payload tensor rows do not match dict rows")
+            packed_payload_parts.append(torch.cat(payload_items, dim=0) if len(payload_items) > 1 else payload_items[0])
+            packed_metadata_parts.append(torch.cat(tensor_items, dim=0) if len(tensor_items) > 1 else tensor_items[0])
+            packed_metadata_dicts.extend(dict_items)
+    if sum(send_splits) != int(result_payload.shape[0]):
+        raise RuntimeError("return send splits do not match result payload rows")
+    packed_payload = (
+        torch.cat(packed_payload_parts, dim=0)
+        if packed_payload_parts
+        else torch.zeros((0, result_payload.shape[1]), device=result_payload.device, dtype=result_payload.dtype)
+    )
+    packed_metadata = (
+        torch.cat(packed_metadata_parts, dim=0)
+        if packed_metadata_parts
+        else torch.zeros((0, result_metadata.shape[1]), device=result_metadata.device, dtype=result_metadata.dtype)
+    )
+    if int(packed_payload.shape[0]) != int(packed_metadata.shape[0]):
+        raise RuntimeError("packed return payload/metadata rows mismatch")
+    return packed_payload, packed_metadata, send_splits, packed_metadata_dicts
 
 
 def _run_local_compute(
@@ -857,22 +1082,36 @@ def _return_to_origin(
     rank: int,
     world_size: int,
     result_payload: torch.Tensor,
+    result_metadata: torch.Tensor,
     origin_metadata: list[dict[str, Any]],
     hidden_dim: int,
-) -> tuple[torch.Tensor, torch.Tensor, list[int], list[int]]:
-    packed_payload, send_splits, packed_metadata = _pack_return_segments(result_payload, origin_metadata, world_size)
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int], list[int], list[dict[str, Any]]]:
+    metadata_width = int(result_metadata.shape[1]) if result_metadata.ndim == 2 else 0
+    packed_payload, packed_metadata_tensor, send_splits, packed_metadata = _pack_return_payload_and_metadata(
+        result_payload,
+        result_metadata,
+        origin_metadata,
+        world_size,
+    )
     return_counts = torch.tensor(send_splits, dtype=torch.int64, device=result_payload.device)
     recv_return_rows = _exchange_sizes(return_counts)
     recv_splits = recv_return_rows.tolist()
     recv_total = int(sum(recv_splits))
     recv_back = torch.empty((recv_total, hidden_dim), device=result_payload.device, dtype=result_payload.dtype)
+    recv_metadata = torch.empty((recv_total, metadata_width), device=result_metadata.device, dtype=result_metadata.dtype)
     dist.all_to_all_single(
         recv_back.reshape(-1),
         packed_payload.reshape(-1),
         output_split_sizes=[int(value) * hidden_dim for value in recv_splits],
         input_split_sizes=[int(value) * hidden_dim for value in send_splits],
     )
-    return recv_back, recv_return_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits]
+    dist.all_to_all_single(
+        recv_metadata.reshape(-1),
+        packed_metadata_tensor.reshape(-1),
+        output_split_sizes=[int(value) * metadata_width for value in recv_splits],
+        input_split_sizes=[int(value) * metadata_width for value in send_splits],
+    )
+    return recv_back, recv_metadata, recv_return_rows, [int(v) for v in send_splits], [int(v) for v in recv_splits], packed_metadata
 
 
 def _calc_release_rounds(release_order: list[str], round_size: int) -> list[list[str]]:
@@ -946,6 +1185,31 @@ def _all_gather_object(value: Any) -> list[Any]:
     return gathered
 
 
+def _rank_phase_log(
+    artifact_dir: str,
+    rank: int,
+    phase: str,
+    round_index: int,
+    *,
+    rows: int = 0,
+    send_splits: list[int] | None = None,
+    recv_splits: list[int] | None = None,
+) -> None:
+    target = Path(artifact_dir) / "logs"
+    target.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": time.time(),
+        "rank": rank,
+        "phase": phase,
+        "round": round_index,
+        "rows": int(rows),
+        "send_splits": list(send_splits or []),
+        "recv_splits": list(recv_splits or []),
+    }
+    with (target / f"rank{rank}.log").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -969,6 +1233,8 @@ def preallocate_execution_cache(
         if bucket.origin_rank != rank:
             continue
         rows = bucket.payload_rows if not correctness_mode else max(1, bucket.token_count)
+        route_item_ids = list(bucket.route_item_ids) if bucket.route_item_ids else [bucket.route_id]
+        route_ranks = list(bucket.route_ranks) if bucket.route_ranks else [0 for _ in route_item_ids]
         if correctness_mode:
             payload = torch.zeros((rows, plan.hidden_dim), device=device, dtype=torch.float16)
             if plan.hidden_dim > 0:
@@ -989,12 +1255,15 @@ def preallocate_execution_cache(
             payload = torch.randn((rows, plan.hidden_dim), device=device, dtype=torch.float16, generator=generator)
         payload_by_bucket_id[bucket.bucket_id] = payload
         metadata = torch.zeros((rows, 6), device=device, dtype=torch.int32)
-        metadata[:, 0] = torch.tensor([int(bucket.token_ids[min(index, len(bucket.token_ids) - 1)]) for index in range(rows)], device=device, dtype=torch.int32)
-        metadata[:, 1] = torch.arange(rows, device=device, dtype=torch.int32)
+        token_rows = [int(bucket.token_ids[min(index, len(bucket.token_ids) - 1)]) for index in range(rows)]
+        route_row_indices = [int(index) for index in range(rows)]
+        route_rank_rows = [int(route_ranks[min(index, len(route_ranks) - 1)]) for index in range(rows)]
+        metadata[:, 0] = torch.tensor(token_rows, device=device, dtype=torch.int32)
+        metadata[:, 1] = torch.tensor(route_row_indices, device=device, dtype=torch.int32)
         metadata[:, 2] = int(bucket.origin_rank)
         metadata[:, 3] = int(bucket.destination_rank)
         metadata[:, 4] = int(bucket.expert_id)
-        metadata[:, 5] = int(sum(ord(ch) for ch in bucket.route_id) % (1 << 30))
+        metadata[:, 5] = torch.tensor(route_rank_rows, device=device, dtype=torch.int32)
         metadata_by_bucket_id[bucket.bucket_id] = metadata
     expert_weight1: dict[int, torch.Tensor] = {}
     expert_weight2: dict[int, torch.Tensor] = {}
@@ -1031,33 +1300,48 @@ def _received_metadata_for_rank(
 
 
 def _planned_received_metadata_for_rank(
-    round_buckets: list[WorkloadBucket],
+    round_layout: dict[str, Any],
+    bucket_lookup: dict[str, WorkloadBucket],
     destination_rank: int,
-    *,
-    correctness_mode: bool,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for bucket in round_buckets:
-        if bucket.destination_rank != destination_rank:
-            continue
-        rows = bucket.payload_rows if not correctness_mode else max(1, bucket.token_count)
-        items.append(
+    for segment in round_layout["destination_segments"][destination_rank]:
+        bucket = bucket_lookup[segment.bucket_id]
+        items.append(_build_bucket_metadata_dict(bucket, int(segment.payload_row_count)))
+    return items
+
+
+def _metadata_tensor_to_dicts(
+    metadata_tensor: torch.Tensor,
+    planned_metadata: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = int(metadata_tensor.shape[0])
+    if rows != sum(int(item["rows"]) for item in planned_metadata):
+        raise RuntimeError("metadata tensor rows do not match planned metadata rows")
+    metadata_cpu = metadata_tensor.cpu().tolist() if rows else []
+    decoded: list[dict[str, Any]] = []
+    cursor = 0
+    for item in planned_metadata:
+        item_rows = int(item["rows"])
+        slice_rows = metadata_cpu[cursor : cursor + item_rows]
+        if len(slice_rows) != item_rows:
+            raise RuntimeError("metadata tensor row slicing mismatch")
+        route_item_ids = list(item.get("route_item_ids", [item.get("route_id", "")]))
+        route_ranks = list(item.get("route_ranks", [0 for _ in route_item_ids]))
+        token_ids = [int(row[0]) for row in slice_rows]
+        decoded.append(
             {
-                "bucket_id": bucket.bucket_id,
-                "route_id": bucket.route_id,
-                "origin_rank": bucket.origin_rank,
-                "destination_rank": bucket.destination_rank,
-                "rows": rows,
-                "destination_id": bucket.destination_id,
-                "expert_id": bucket.expert_id,
-                "estimated_service_units": bucket.estimated_service_units,
-                "token_count": bucket.token_count,
-                "token_ids": list(bucket.token_ids),
-                "token_positions": list(bucket.token_positions),
-                "payload_bytes": rows * bucket.hidden_dim * 2,
+                **item,
+                "token_ids": token_ids,
+                "route_item_ids": route_item_ids,
+                "route_ranks": route_ranks,
+                "metadata_rows": [list(map(int, row)) for row in slice_rows],
             }
         )
-    return items
+        cursor += item_rows
+    if cursor != rows:
+        raise RuntimeError("metadata tensor decoding did not consume all rows")
+    return decoded
 
 
 def build_global_dispatch_plan(
@@ -1204,11 +1488,18 @@ def run_policy_on_plan(
     return_manifest: list[dict[str, Any]] = []
     origin_verified_manifest: list[dict[str, Any]] = []
     used_python_metadata_gather = False
+    _rank_phase_log(protocol.artifact_dir, rank, "preallocate", -1)
 
     for round_index, round_ids in enumerate(release_rounds):
         round_buckets = [lookup[bucket_id] for bucket_id in round_ids]
         local_origin_buckets = [bucket for bucket in round_buckets if bucket.origin_rank == rank]
         local_destination_buckets = [bucket for bucket in round_buckets if bucket.destination_rank == rank]
+        round_layout = build_canonical_round_layout(
+            round_buckets,
+            world_size,
+            correctness_mode=execution_cache.correctness_mode,
+            round_index=round_index,
+        )
         planned_rows_matrix, planned_bytes_matrix = _planned_round_matrix(
             round_buckets,
             world_size,
@@ -1217,53 +1508,17 @@ def run_policy_on_plan(
         )
         pack_start = torch.cuda.Event(enable_timing=True)
         pack_end = torch.cuda.Event(enable_timing=True)
+        _rank_phase_log(protocol.artifact_dir, rank, "dispatch_payload", round_index)
         pack_start.record()
-        send_rows = torch.zeros(world_size, dtype=torch.int64, device=device)
-        metadata: list[dict[str, Any]] = []
-        packing_metadata: list[dict[str, Any]] = []
-        ordered_tensors: list[torch.Tensor] = []
-        for bucket in local_origin_buckets:
-            rows = bucket.payload_rows if not execution_cache.correctness_mode else max(1, bucket.token_count)
-            tensor = execution_cache.payload_by_bucket_id[bucket.bucket_id]
-            ordered_tensors.append(tensor)
-            send_rows[bucket.destination_rank] += rows
-            metadata.append(
-                {
-                    "bucket_id": bucket.bucket_id,
-                    "route_id": bucket.route_id,
-                    "origin_rank": bucket.origin_rank,
-                    "destination_rank": bucket.destination_rank,
-                    "rows": rows,
-                    "destination_id": bucket.destination_id,
-                    "expert_id": bucket.expert_id,
-                    "estimated_service_units": bucket.estimated_service_units,
-                    "token_count": bucket.token_count,
-                    "token_ids": list(bucket.token_ids),
-                    "token_positions": list(bucket.token_positions),
-                    "payload_bytes": bucket.payload_bytes,
-                }
-            )
-            packing_metadata.append(
-                {
-                    "bucket_id": bucket.bucket_id,
-                    "route_id": bucket.route_id,
-                    "origin_rank": bucket.origin_rank,
-                    "destination_rank": bucket.destination_rank,
-                    "rows": rows,
-                    "bytes": rows * plan.hidden_dim * 2,
-                    "token_count": bucket.token_count,
-                    "token_ids": list(bucket.token_ids),
-                }
-            )
-        if ordered_tensors:
-            payload = torch.cat(
-                [tensor for target_rank in range(world_size) for tensor, bucket in [
-                    (execution_cache.payload_by_bucket_id[b.bucket_id], b) for b in local_origin_buckets if b.destination_rank == target_rank
-                ]],
-                dim=0,
-            )
-        else:
-            payload = torch.zeros((0, plan.hidden_dim), device=device, dtype=torch.float16)
+        payload, metadata_tensor, send_rows, metadata, packing_metadata = _pack_round_payload_and_metadata(
+            rank,
+            round_layout,
+            execution_cache,
+            lookup,
+            plan.hidden_dim,
+            6,
+            device,
+        )
         pack_end.record()
         torch.cuda.synchronize(device)
         pack_time_ms = float(pack_start.elapsed_time(pack_end))
@@ -1279,22 +1534,32 @@ def run_policy_on_plan(
         dispatch_end = torch.cuda.Event(enable_timing=True)
         dispatch_start.record()
         recv_payload, recv_rows, planned_send_splits, actual_recv_splits = _all_to_all_variable(payload, send_rows, plan.hidden_dim)
+        _rank_phase_log(
+            protocol.artifact_dir,
+            rank,
+            "dispatch_metadata",
+            round_index,
+            rows=int(metadata_tensor.shape[0]),
+            send_splits=planned_send_splits,
+            recv_splits=actual_recv_splits,
+        )
+        recv_metadata_tensor, recv_metadata_rows, metadata_send_splits, metadata_recv_splits = _all_to_all_metadata_variable(
+            metadata_tensor,
+            send_rows,
+            6,
+        )
         dispatch_end.record()
         torch.cuda.synchronize(device)
         dispatch_time_ms = float(dispatch_start.elapsed_time(dispatch_end))
+        if [int(value) for value in recv_metadata_rows.tolist()] != [int(value) for value in recv_rows.tolist()]:
+            raise RuntimeError("metadata recv rows do not match payload recv rows")
+        if metadata_send_splits != planned_send_splits or metadata_recv_splits != actual_recv_splits:
+            raise RuntimeError("metadata splits do not match payload splits")
         recv_rows_total += int(recv_rows.sum().item())
         received_tokens += sum(bucket.token_count for bucket in local_destination_buckets)
         control_metadata_start = time.perf_counter()
-        if execution_cache.correctness_mode:
-            used_python_metadata_gather = True
-            all_source_metadata = _all_gather_object(metadata)
-            received_metadata = _received_metadata_for_rank(all_source_metadata, rank)
-        else:
-            received_metadata = _planned_received_metadata_for_rank(
-                round_buckets,
-                rank,
-                correctness_mode=execution_cache.correctness_mode,
-            )
+        planned_received_metadata = _planned_received_metadata_for_rank(round_layout, lookup, rank)
+        received_metadata = _metadata_tensor_to_dicts(recv_metadata_tensor, planned_received_metadata)
         total_control_metadata_ms += (time.perf_counter() - control_metadata_start) * 1000.0
         if sum(int(item["rows"]) for item in received_metadata) != int(recv_rows.sum().item()):
             raise RuntimeError("received metadata rows do not match received payload rows")
@@ -1335,6 +1600,7 @@ def run_policy_on_plan(
                 f"{planned_rows_matrix} vs {actual_dispatch_rows_matrix}"
             )
 
+        _rank_phase_log(protocol.artifact_dir, rank, "destination_compute", round_index, rows=int(recv_payload.shape[0]))
         compute_result, local_compute_time_ms, expert_records = _run_expert_grouped_compute(
             recv_payload,
             received_metadata,
@@ -1343,13 +1609,25 @@ def run_policy_on_plan(
 
         return_start = torch.cuda.Event(enable_timing=True)
         return_end = torch.cuda.Event(enable_timing=True)
+        _rank_phase_log(protocol.artifact_dir, rank, "return_payload", round_index)
         return_start.record()
-        returned, return_rows, planned_return_splits, actual_return_recv_splits = _return_to_origin(
-            rank, world_size, compute_result, received_metadata, plan.hidden_dim
+        returned, returned_metadata_tensor, return_rows, planned_return_splits, actual_return_recv_splits, packed_return_metadata = _return_to_origin(
+            rank, world_size, compute_result, recv_metadata_tensor, received_metadata, plan.hidden_dim
         )
         return_end.record()
         torch.cuda.synchronize(device)
         return_time_ms = float(return_start.elapsed_time(return_end))
+        _rank_phase_log(
+            protocol.artifact_dir,
+            rank,
+            "return_metadata",
+            round_index,
+            rows=int(returned_metadata_tensor.shape[0]),
+            send_splits=planned_return_splits,
+            recv_splits=actual_return_recv_splits,
+        )
+        if int(returned.shape[0]) != int(returned_metadata_tensor.shape[0]):
+            raise RuntimeError("returned payload and metadata row count mismatch")
 
         gathered_return_splits = _all_gather_object(planned_return_splits)
         actual_return_rows_matrix = [[int(value) for value in row] for row in gathered_return_splits]
@@ -1368,7 +1646,7 @@ def run_policy_on_plan(
             raise RuntimeError("returned rows do not match origin-owned payload rows")
         if execution_cache.correctness_mode:
             for item in received_metadata:
-                for row_index, token_id in enumerate(item["token_ids"][: max(1, len(item["token_ids"]))]):
+                for row_index, token_id in enumerate(item["token_ids"]):
                     return_manifest.append(
                         {
                             "round": round_index,
@@ -1380,20 +1658,26 @@ def run_policy_on_plan(
                             "return_row_index": row_index,
                         }
                     )
-            for bucket in local_origin_buckets:
-                for row_index, token_id in enumerate(bucket.token_ids[: max(1, len(bucket.token_ids))]):
+            verified_metadata = _metadata_tensor_to_dicts(
+                returned_metadata_tensor,
+                [_build_bucket_metadata_dict(bucket, _bucket_effective_rows(bucket, correctness_mode=execution_cache.correctness_mode)) for bucket in local_origin_buckets],
+            )
+            _rank_phase_log(protocol.artifact_dir, rank, "manifest_verify", round_index, rows=len(verified_metadata))
+            for item in verified_metadata:
+                for row_index, token_id in enumerate(item["token_ids"]):
                     origin_verified_manifest.append(
                         {
                             "round": round_index,
-                            "route_item_id": bucket.route_id,
+                            "route_item_id": item["route_id"],
                             "token_id": int(token_id),
-                            "origin_rank": int(bucket.origin_rank),
-                            "destination_rank": int(bucket.destination_rank),
-                            "expert_id": int(bucket.expert_id),
+                            "origin_rank": int(item["origin_rank"]),
+                            "destination_rank": int(item["destination_rank"]),
+                            "expert_id": int(item["expert_id"]),
                             "verified_row_index": row_index,
                         }
                     )
         sync_wall_start = time.perf_counter()
+        _rank_phase_log(protocol.artifact_dir, rank, "cleanup", round_index)
         dist.barrier()
         total_sync_ms += (time.perf_counter() - sync_wall_start) * 1000.0
 
@@ -1469,6 +1753,8 @@ def run_policy_on_plan(
                 "round_bucket_details": per_bucket,
                 "planned_send_splits_rows": [int(value) for value in send_rows.tolist()],
                 "actual_send_splits_rows": list(planned_send_splits),
+                "metadata_send_splits_rows": list(metadata_send_splits),
+                "metadata_recv_splits_rows": list(metadata_recv_splits),
                 "planned_return_splits_rows": [int(value) for value in planned_return_splits],
                 "actual_return_splits_rows": [int(value) for value in actual_return_recv_splits],
                 "planned_dispatch_rows_matrix": planned_rows_matrix,
@@ -1516,6 +1802,7 @@ def run_policy_on_plan(
         }
     )
     global_completion_ms = max(float(item["local_completion_ms"]) for item in gathered_rank_records)
+    _rank_phase_log(protocol.artifact_dir, rank, "manifest_gather", -1, rows=len(origin_verified_manifest))
     barrier_wait_ms = max(0.0, global_completion_ms - (total_pack_ms + total_dispatch_ms + total_compute_ms + total_return_ms + total_sync_ms))
     total_bytes = sum(sum(row) for row in total_dispatch_bytes_matrix)
     remote_bytes = _off_diagonal_sum(total_dispatch_bytes_matrix)
@@ -1546,6 +1833,10 @@ def run_policy_on_plan(
         "sent_bytes": sent_rows_total * plan.hidden_dim * 2,
         "rounds_participated": len(round_records),
     }
+    gathered_dispatch_manifest = _all_gather_object(dispatch_manifest)
+    gathered_receive_manifest = _all_gather_object(receive_manifest)
+    gathered_return_manifest = _all_gather_object(return_manifest)
+    gathered_origin_verified_manifest = _all_gather_object(origin_verified_manifest)
     return {
         "plan_id": plan.plan_id,
         "strategy": strategy,
@@ -1572,10 +1863,10 @@ def run_policy_on_plan(
         "return_total_ms": total_return_ms,
         "control_metadata_ms": total_control_metadata_ms,
         "sync_total_ms": total_sync_ms,
-        "dispatch_route_manifest": dispatch_manifest,
-        "receive_route_manifest": receive_manifest,
-        "return_route_manifest": return_manifest,
-        "origin_verified_manifest": origin_verified_manifest,
+        "dispatch_route_manifest": [item for items in gathered_dispatch_manifest for item in items],
+        "receive_route_manifest": [item for items in gathered_receive_manifest for item in items],
+        "return_route_manifest": [item for items in gathered_return_manifest for item in items],
+        "origin_verified_manifest": [item for items in gathered_origin_verified_manifest for item in items],
         "barrier_wait_ms": barrier_wait_ms,
         "total_communication_bytes": rank_record["received_bytes"] + rank_record["sent_bytes"],
         "total_gpu_compute_time_ms": total_compute_ms,

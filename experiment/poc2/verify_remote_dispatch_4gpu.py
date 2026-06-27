@@ -134,6 +134,7 @@ def main() -> int:
         if rank == 0:
             artifact_dir = Path(protocol.artifact_dir)
             artifact_dir.mkdir(parents=True, exist_ok=True)
+            expected_route_item_count = sum(len(bucket.route_item_ids) if bucket.route_item_ids else 1 for bucket in plan.bucket_workloads)
             summary = {
                 "communication_semantics_valid": result["communication_semantics_valid"],
                 "dispatch_bytes_matrix": result["dispatch_bytes_matrix"],
@@ -141,6 +142,11 @@ def main() -> int:
                 "remote_byte_ratio": result["remote_byte_ratio"],
                 "decision_hash": result["decision_hash"],
                 "used_python_metadata_gather": result["used_python_metadata_gather"],
+                "expected_route_item_count": expected_route_item_count,
+                "dispatch_route_item_count": len(result["dispatch_route_manifest"]),
+                "receive_route_item_count": len(result["receive_route_manifest"]),
+                "return_route_item_count": len(result["return_route_manifest"]),
+                "verified_route_item_count": len(result["origin_verified_manifest"]),
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
