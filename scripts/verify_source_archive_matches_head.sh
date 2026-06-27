@@ -35,7 +35,9 @@ fi
   echo "# RouterSense source package manifest"
   while IFS= read -r relpath; do
     sha256sum "$ROOT/$relpath"
-  done < <(git ls-files | sort)
+  done < <(
+    git ls-files | sort | grep -Ev '^(outputs|artifacts|logs)(/|$)|(^|/)\.pytest_cache(/|$)|(^|/)__pycache__(/|$)|(^|/).*\.log$|(^|/).*\.jsonl$|(^|/).*\.npy$|(^|/).*\.npz$|(^|/).*\.pt$|(^|/).*\.pth$|(^|/).*\.safetensors$|(^|/)\.cache(/|$)|(^|/)venv(/|$)|(^|/)\.venv(/|$)'
+  )
 } > "$TMP_SHA"
 
 if ! diff -u "$TMP_SHA" "$TMP_DIR/PACKAGE_MANIFEST.sha256" >/dev/null; then
