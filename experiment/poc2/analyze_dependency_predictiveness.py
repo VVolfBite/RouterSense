@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense_poc2.distributed_runtime import WorkloadPlan
-from routesense_poc2.stress import dependency_predictiveness_gate, oracle_minimax_round_packer
+from routesense_poc2.stress import dependency_predictiveness_gate, lookahead_greedy_round_packer
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         calibration = plans[:split_index]
         evaluation = plans[split_index:]
         gate = dependency_predictiveness_gate(calibration, evaluation, target_rank=args.target_rank)
-        oracle = oracle_minimax_round_packer(evaluation[0] if evaluation else plans[0], args.round_size)
+        oracle = lookahead_greedy_round_packer(evaluation[0] if evaluation else plans[0], args.round_size)
         scenarios.append(
             {
                 "snapshot_path": str(snapshot_path),
@@ -61,4 +61,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

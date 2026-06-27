@@ -31,14 +31,15 @@ if [[ "$ARCHIVE_COMMIT" != "$HEAD_COMMIT" ]]; then
   exit 1
 fi
 
-{
+(
+  cd "$ROOT"
   echo "# RouterSense source package manifest"
   while IFS= read -r relpath; do
-    sha256sum "$ROOT/$relpath"
+    sha256sum "$relpath"
   done < <(
     git ls-files | sort | grep -Ev '^(outputs|artifacts|logs)(/|$)|(^|/)\.pytest_cache(/|$)|(^|/)__pycache__(/|$)|(^|/).*\.log$|(^|/).*\.jsonl$|(^|/).*\.npy$|(^|/).*\.npz$|(^|/).*\.pt$|(^|/).*\.pth$|(^|/).*\.safetensors$|(^|/)\.cache(/|$)|(^|/)venv(/|$)|(^|/)\.venv(/|$)'
   )
-} > "$TMP_SHA"
+) > "$TMP_SHA"
 
 if ! diff -u "$TMP_SHA" "$TMP_DIR/PACKAGE_MANIFEST.sha256" >/dev/null; then
   echo "verify_source_archive_matches_head.sh: PACKAGE_MANIFEST.sha256 does not match HEAD tree" >&2

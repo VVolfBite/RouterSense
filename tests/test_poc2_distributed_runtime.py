@@ -678,6 +678,52 @@ def test_evaluate_release_rounds_is_single_source_of_truth():
     assert left.per_round == right.per_round
 
 
+def test_strategy_entry_points_reuse_single_evaluator():
+    placement = build_placement_map(4, 4, "balanced")
+    plan = _stress_plan("eval-entry", 0, placement)
+    fifo_rounds = release_rounds_for_order(
+        [bucket.bucket_id for bucket in plan.bucket_workloads],
+        2,
+    )
+    fifo_eval = evaluate_release_rounds(plan, fifo_rounds, RuntimeState(), strategy="fifo")
+    lookahead = lookahead_greedy_round_packer(plan, 2)
+    exact = exact_round_packer(plan, 2)
+    assert fifo_eval.objective == max(item["objective"] for item in fifo_eval.per_round)
+    assert lookahead["objective"] == lookahead["evaluation"].objective
+    assert exact["objective"] == exact["evaluation"].objective
+
+
+def test_projected_totals_do_not_change_round_increment_components():
+    baseline = BucketRecord(
+        bucket_id="base",
+        origin_rank=0,
+        destination_id=1,
+        destination_rank=1,
+        expert_id=1,
+        arrival_index=0,
+        token_count=2,
+        payload_rows=4,
+        payload_bytes=256,
+        source_outbound_pending_bytes=128.0,
+        destination_inbound_pending_bytes=128.0,
+        flow_pending_bytes=128.0,
+        return_flow_pending_bytes=64.0,
+        rank_compute_queue_rows=8.0,
+        expert_pending_rows=8.0,
+    )
+    inflated = copy.deepcopy(baseline)
+    inflated.bucket_id = "inflated"
+    inflated.source_outbound_pending_bytes = 8192.0
+    inflated.destination_inbound_pending_bytes = 8192.0
+    inflated.flow_pending_bytes = 8192.0
+    inflated.return_flow_pending_bytes = 4096.0
+    inflated.rank_compute_queue_rows = 256.0
+    inflated.expert_pending_rows = 256.0
+    _, base_components = _round_pressure_objective([baseline], RuntimeState())
+    _, inflated_components = _round_pressure_objective([inflated], RuntimeState())
+    assert base_components["round_increment_components"] == inflated_components["round_increment_components"]
+
+
 def test_source_arrival_jitter_does_not_depend_on_destination_rank():
     left = WorkloadBucket(
         bucket_id="a",

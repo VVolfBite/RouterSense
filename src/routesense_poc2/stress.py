@@ -620,8 +620,11 @@ def lookahead_greedy_round_packer(plan: WorkloadPlan, round_size: int) -> dict[s
     diagnostics = evaluate_release_rounds(plan, release_rounds, None, strategy="lookahead-greedy")
     return {
         "release_rounds": release_rounds,
+        "evaluation": diagnostics,
         "pressure": diagnostics.per_round,
         "peak_bottleneck_pressure": diagnostics.objective,
+        "objective": diagnostics.objective,
+        "optimality_proven": False,
         "diagnostic_kind": "lookahead-greedy-upper-heuristic",
     }
 
@@ -637,10 +640,13 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
         diagnostics = evaluate_release_rounds(plan, grouped_rounds, None, strategy="best-known-grouped")
         return {
             "release_rounds": grouped_rounds,
+            "evaluation": diagnostics,
             "pressure": diagnostics.per_round,
             "peak_bottleneck_pressure": diagnostics.objective,
+            "objective": diagnostics.objective,
             "diagnostic_kind": "best-known-grouped",
             "optimality_gap_known": False,
+            "optimality_proven": False,
         }
 
     best_rounds: list[list[str]] | None = None
@@ -677,10 +683,13 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
     diagnostics = evaluate_release_rounds(plan, release_rounds, None, strategy="exact")
     return {
         "release_rounds": release_rounds,
+        "evaluation": diagnostics,
         "pressure": diagnostics.per_round,
         "peak_bottleneck_pressure": diagnostics.objective,
+        "objective": diagnostics.objective,
         "diagnostic_kind": "exact" if len(buckets) <= 12 else "best-known-grouped",
         "optimality_gap_known": len(buckets) <= 12,
+        "optimality_proven": len(buckets) <= 12,
     }
 
 
@@ -746,7 +755,7 @@ def scenario_admissibility(
                 "plan_id": plan.plan_id,
                 "fifo_pressure": fifo_pressure,
                 "random_pressure": random_pressure,
-                "strong_state_sort_pressure": float(strong_sort["round_pressure"]),
+                "strong_state_sort_pressure": float(strong_sort.objective),
                 "strong_state_packer_pressure": float(strong_pack["round_pressure_score"]),
                 "lookahead_greedy_pressure": lookahead_pressure,
                 "exact_or_best_known_pressure": exact_pressure,

@@ -21,8 +21,10 @@ hf_cache/
 .cache/
 **/.cache/
 
-# Keep generated outputs tracked for PoC1
-!!outputs/**
+# Runtime artifacts kept on server but excluded from source-truth closure
+artifacts/
+outputs/*
+!outputs/.gitkeep
 
 # Experiment outputs and logs
 outputs_*/
