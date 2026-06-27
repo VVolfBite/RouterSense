@@ -352,6 +352,15 @@ class RouteItemMetadata:
         }
 
 
+@dataclass
+class RoundEvaluation:
+    strategy: str
+    objective: float
+    round_count: int
+    per_round: list[dict[str, Any]]
+    release_rounds: list[list[str]]
+
+
 def dependency_score_for_bucket(bucket: WorkloadBucket) -> float:
     return (
         0.25 * bucket.source_coverage
@@ -674,6 +683,44 @@ def _round_pressure_objective(
     return objective, components
 
 
+def evaluate_release_rounds(
+    plan: WorkloadPlan,
+    release_rounds: list[list[str]],
+    runtime_state: RuntimeState | None = None,
+    *,
+    strategy: str = "unknown",
+) -> RoundEvaluation:
+    bucket_lookup = {bucket.bucket_id: bucket for bucket in plan.bucket_workloads}
+    per_round: list[dict[str, Any]] = []
+    for round_index, bucket_ids in enumerate(release_rounds):
+        round_buckets = [bucket_lookup[bucket_id] for bucket_id in bucket_ids]
+        objective, components = _round_pressure_objective(round_buckets, runtime_state)
+        per_round.append(
+            {
+                "round_index": round_index,
+                "bucket_ids": list(bucket_ids),
+                "objective": float(objective),
+                "round_pressure_components": {
+                    key: float(value) for key, value in components["round_pressure_components"].items()
+                },
+                "historical_baseline_components": components["historical_baseline_components"],
+                "round_increment_components": components["round_increment_components"],
+                "whole_batch_projected_totals": components["whole_batch_projected_totals"],
+                "scarcity_components": components["scarcity_components"],
+                "fragmentation_components": components["fragmentation_components"],
+                "normalization_constants": components["normalization_constants"],
+            }
+        )
+    objective = max((item["objective"] for item in per_round), default=0.0)
+    return RoundEvaluation(
+        strategy=strategy,
+        objective=float(objective),
+        round_count=len(release_rounds),
+        per_round=per_round,
+        release_rounds=[list(item) for item in release_rounds],
+    )
+
+
 def _greedy_minimax_round_pack(
     buckets: list[WorkloadBucket | BucketRecord],
     *,
@@ -683,6 +730,39 @@ def _greedy_minimax_round_pack(
     arrival_jitter_mode: str = "none",
     oracle: bool = False,
 ) -> dict[str, Any]:
+    def _record_to_workload(item: WorkloadBucket | BucketRecord) -> WorkloadBucket:
+        if isinstance(item, WorkloadBucket):
+            return item
+        return WorkloadBucket(
+            bucket_id=item.bucket_id,
+            route_id=item.route_item_ids[0] if item.route_item_ids else item.bucket_id,
+            token_ids=[],
+            token_positions=[],
+            origin_rank=item.origin_rank,
+            destination_id=item.destination_id,
+            destination_rank=item.destination_rank,
+            expert_id=item.expert_id,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=item.token_count,
+            payload_rows=item.payload_rows,
+            hidden_dim=0,
+            intermediate_dim=0,
+            estimated_service_units=item.estimated_service_units,
+            payload_bytes=item.payload_bytes,
+            source_count=item.source_count,
+            source_coverage=item.source_coverage,
+            coactive_peer_degree=item.coactive_peer_degree,
+            coactive_event_density=item.coactive_event_density,
+            position_spread=item.position_spread,
+            bridge_score=item.bridge_score,
+            route_share=item.route_share,
+            density_over_mean=item.density_over_mean,
+            size_norm=item.size_norm,
+            inverse_size_rank_norm=item.inverse_size_rank_norm,
+            is_hot_bucket=item.is_hot_bucket,
+        )
+
     materialized = list(buckets)
     if materialized and isinstance(materialized[0], WorkloadBucket):
         candidate_buckets = _with_arrival_jitter(materialized, mode=arrival_jitter_mode, seed=policy_seed)
@@ -691,6 +771,21 @@ def _greedy_minimax_round_pack(
     remaining = list(candidate_buckets)
     rounds: list[list[WorkloadBucket | BucketRecord]] = []
     effective_state = runtime_state if runtime_state is not None else EMPTY_RUNTIME_STATE
+    eval_plan = WorkloadPlan(
+        plan_id="candidate",
+        model_key="candidate",
+        seed=policy_seed,
+        microbatch_id=0,
+        layer_id=0,
+        layer_path="candidate",
+        hidden_dim=0,
+        intermediate_dim=0,
+        placement_policy="candidate",
+        origin_sharding="round-robin",
+        placement_mapping=[],
+        bucket_workloads=[_record_to_workload(item) for item in materialized],
+        routing_summary={},
+    )
     while remaining:
         current_round: list[WorkloadBucket] = []
         while remaining and len(current_round) < max(1, int(round_size)):
@@ -698,7 +793,14 @@ def _greedy_minimax_round_pack(
             best_key: tuple[float, float, int, str] | None = None
             for bucket in remaining:
                 trial_round = current_round + [bucket]
-                objective, components = _round_pressure_objective(trial_round, effective_state)
+                trial_eval = evaluate_release_rounds(
+                    eval_plan,
+                    [[item.bucket_id for item in trial_round]],
+                    effective_state,
+                    strategy="candidate",
+                )
+                objective = trial_eval.objective
+                components = trial_eval.per_round[0]
                 imbalance_focus = max(
                     components["round_pressure_components"]["max_destination_inbound_bytes_norm"],
                     components["round_pressure_components"]["max_source_outbound_bytes_norm"],
@@ -726,27 +828,12 @@ def _greedy_minimax_round_pack(
         rounds.append(sorted(current_round, key=_stable_bucket_order_key))
     release_rounds = [[bucket.bucket_id for bucket in round_buckets] for round_buckets in rounds]
     release_order = [bucket_id for round_ids in release_rounds for bucket_id in round_ids]
-    round_diagnostics = []
-    for round_index, round_buckets in enumerate(rounds):
-        objective, components = _round_pressure_objective(round_buckets, effective_state)
-        round_diagnostics.append(
-            {
-                "round_index": round_index,
-                "bucket_ids": [bucket.bucket_id for bucket in round_buckets],
-                "objective": float(objective),
-                "round_pressure_components": {
-                    key: float(value) for key, value in components["round_pressure_components"].items()
-                },
-                "historical_baseline_components": components["historical_baseline_components"],
-                "round_increment_components": components["round_increment_components"],
-                "normalization_constants": components["normalization_constants"],
-            }
-        )
+    evaluation = evaluate_release_rounds(eval_plan, release_rounds, effective_state, strategy="strong-state-packer")
     return {
         "release_order": release_order,
         "release_rounds": release_rounds,
-        "round_diagnostics": round_diagnostics,
-        "round_pressure_score": max((float(item["objective"]) for item in round_diagnostics), default=0.0),
+        "round_diagnostics": evaluation.per_round,
+        "round_pressure_score": evaluation.objective,
     }
 
 

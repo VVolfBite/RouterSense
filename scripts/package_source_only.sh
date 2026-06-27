@@ -6,6 +6,8 @@ OUT="${1:-/root/autodl-tmp/RouterSense.TAR.GZ}"
 TMP_LIST="$(mktemp)"
 TMP_TAR_LIST="$(mktemp)"
 TMP_MANIFEST="$(mktemp)"
+TMP_TREE_SHA="$(mktemp)"
+TMP_COMMIT="$(mktemp)"
 TMP_STAGE_DIR="$(mktemp -d)"
 
 REQUIRED_FILES=(
@@ -17,7 +19,7 @@ REQUIRED_FILES=(
 )
 
 cleanup() {
-  rm -f "$TMP_LIST" "$TMP_TAR_LIST" "$TMP_MANIFEST"
+  rm -f "$TMP_LIST" "$TMP_TAR_LIST" "$TMP_MANIFEST" "$TMP_TREE_SHA" "$TMP_COMMIT"
   rm -rf "$TMP_STAGE_DIR"
 }
 trap cleanup EXIT
@@ -41,9 +43,13 @@ done
     sha256sum "$path"
   done < "$TMP_LIST"
 } > "$TMP_MANIFEST"
+git rev-parse HEAD > "$TMP_COMMIT"
+sha256sum "$TMP_MANIFEST" | awk '{print $1}' > "$TMP_TREE_SHA"
 cp "$TMP_MANIFEST" "$TMP_STAGE_DIR/PACKAGE_MANIFEST.sha256"
+cp "$TMP_COMMIT" "$TMP_STAGE_DIR/SOURCE_COMMIT.txt"
+cp "$TMP_TREE_SHA" "$TMP_STAGE_DIR/SOURCE_TREE_SHA256.txt"
 
-tar -czf "$OUT" -T "$TMP_LIST" -C "$TMP_STAGE_DIR" PACKAGE_MANIFEST.sha256
+tar -czf "$OUT" -T "$TMP_LIST" -C "$TMP_STAGE_DIR" PACKAGE_MANIFEST.sha256 SOURCE_COMMIT.txt SOURCE_TREE_SHA256.txt
 tar -tzf "$OUT" > "$TMP_TAR_LIST"
 
 if grep -E '(^|/)(outputs|artifacts|logs)(/|$)|\.pytest_cache/|__pycache__/|\.log$|\.jsonl$|\.npy$|\.npz$|\.pt$|\.pth$|\.safetensors$|(^|/)\.cache(/|$)|(^|/)venv(/|$)|(^|/)\.venv(/|$)' "$TMP_TAR_LIST" >/dev/null; then
@@ -59,8 +65,15 @@ for required in "${REQUIRED_FILES[@]}"; do
   fi
 done
 
-if ! grep -Fx "PACKAGE_MANIFEST.sha256" "$TMP_TAR_LIST" >/dev/null; then
-  echo "package_source_only.sh: archive is missing PACKAGE_MANIFEST.sha256" >&2
+for required in PACKAGE_MANIFEST.sha256 SOURCE_COMMIT.txt SOURCE_TREE_SHA256.txt; do
+  if ! grep -Fx "$required" "$TMP_TAR_LIST" >/dev/null; then
+    echo "package_source_only.sh: archive is missing $required" >&2
+    exit 1
+  fi
+done
+
+if ! cmp -s "$TMP_COMMIT" <(tar -xOzf "$OUT" SOURCE_COMMIT.txt); then
+  echo "package_source_only.sh: SOURCE_COMMIT.txt does not match git HEAD" >&2
   exit 1
 fi
 

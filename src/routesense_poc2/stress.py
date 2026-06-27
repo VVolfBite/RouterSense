@@ -22,6 +22,7 @@ from .distributed_runtime import (
     WorkloadBucket,
     WorkloadPlan,
     dependency_score_for_bucket,
+    evaluate_release_rounds,
     random_order,
     release_rounds_for_order,
     strong_state_score_for_bucket,
@@ -616,11 +617,11 @@ def lookahead_greedy_round_packer(plan: WorkloadPlan, round_size: int) -> dict[s
         round_rank_penalty[selected_round][bucket.destination_rank] = round_rank_penalty[selected_round].get(bucket.destination_rank, 0.0) + float(bucket.payload_bytes)
         round_expert_penalty[selected_round][bucket.expert_id] = round_expert_penalty[selected_round].get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
     release_rounds = [[bucket.bucket_id for bucket in round_buckets] for round_buckets in rounds if round_buckets]
-    diagnostics = _round_pressure_from_rounds(plan, release_rounds)
+    diagnostics = evaluate_release_rounds(plan, release_rounds, None, strategy="lookahead-greedy")
     return {
         "release_rounds": release_rounds,
-        "pressure": diagnostics["rounds"],
-        "peak_bottleneck_pressure": diagnostics["round_pressure"],
+        "pressure": diagnostics.per_round,
+        "peak_bottleneck_pressure": diagnostics.objective,
         "diagnostic_kind": "lookahead-greedy-upper-heuristic",
     }
 
@@ -633,11 +634,11 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
             for index in range(0, len(buckets), round_size)
         ]
         grouped_rounds = [[bucket.bucket_id for bucket in group] for group in grouped]
-        diagnostics = _round_pressure_from_rounds(plan, grouped_rounds)
+        diagnostics = evaluate_release_rounds(plan, grouped_rounds, None, strategy="best-known-grouped")
         return {
             "release_rounds": grouped_rounds,
-            "pressure": diagnostics["rounds"],
-            "peak_bottleneck_pressure": diagnostics["round_pressure"],
+            "pressure": diagnostics.per_round,
+            "peak_bottleneck_pressure": diagnostics.objective,
             "diagnostic_kind": "best-known-grouped",
             "optimality_gap_known": False,
         }
@@ -648,8 +649,8 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
     def search(remaining: list[WorkloadBucket], current: list[list[str]]) -> None:
         nonlocal best_rounds, best_pressure
         if not remaining:
-            diagnostics = _round_pressure_from_rounds(plan, current)
-            pressure = float(diagnostics["round_pressure"])
+            diagnostics = evaluate_release_rounds(plan, current, None, strategy="exact")
+            pressure = float(diagnostics.objective)
             if pressure < best_pressure:
                 best_pressure = pressure
                 best_rounds = [list(round_ids) for round_ids in current]
@@ -663,8 +664,8 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
             for subset in combinations(candidate_pool, extra_count):
                 chosen = [first, *subset]
                 round_ids = [bucket.bucket_id for bucket in sorted(chosen, key=_stable_bucket_order_key)]
-                diagnostics = _round_pressure_from_rounds(plan, current + [round_ids])
-                pressure = float(diagnostics["round_pressure"])
+                diagnostics = evaluate_release_rounds(plan, current + [round_ids], None, strategy="exact")
+                pressure = float(diagnostics.objective)
                 if pressure > best_pressure:
                     continue
                 used = {bucket.bucket_id for bucket in chosen}
@@ -673,42 +674,13 @@ def exact_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
 
     search(buckets, [])
     release_rounds = best_rounds or [[bucket.bucket_id for bucket in buckets]]
-    diagnostics = _round_pressure_from_rounds(plan, release_rounds)
+    diagnostics = evaluate_release_rounds(plan, release_rounds, None, strategy="exact")
     return {
         "release_rounds": release_rounds,
-        "pressure": diagnostics["rounds"],
-        "peak_bottleneck_pressure": diagnostics["round_pressure"],
+        "pressure": diagnostics.per_round,
+        "peak_bottleneck_pressure": diagnostics.objective,
         "diagnostic_kind": "exact" if len(buckets) <= 12 else "best-known-grouped",
         "optimality_gap_known": len(buckets) <= 12,
-    }
-
-
-def _round_pressure_from_rounds(plan: WorkloadPlan, release_rounds: list[list[str]]) -> dict[str, Any]:
-    bucket_lookup = {bucket.bucket_id: bucket for bucket in plan.bucket_workloads}
-    rows = []
-    pressure_values = []
-    for round_index, bucket_ids in enumerate(release_rounds):
-        round_buckets = [bucket_lookup[bucket_id] for bucket_id in bucket_ids]
-        objective, components = _round_pressure_objective(round_buckets, None)
-        diagnostic = {
-            "round_index": round_index,
-            "bucket_ids": bucket_ids,
-            "objective": float(objective),
-            "round_pressure_components": {
-                key: float(value) for key, value in components["round_pressure_components"].items()
-            },
-            "historical_baseline_components": components["historical_baseline_components"],
-            "round_increment_components": components["round_increment_components"],
-            "whole_batch_projected_totals": components["whole_batch_projected_totals"],
-            "scarcity_components": components["scarcity_components"],
-            "fragmentation_components": components["fragmentation_components"],
-            "normalization_constants": components["normalization_constants"],
-        }
-        rows.append(diagnostic)
-        pressure_values.append(float(diagnostic.get("objective", 0.0)))
-    return {
-        "rounds": rows,
-        "round_pressure": max(pressure_values) if pressure_values else 0.0,
     }
 
 
@@ -732,9 +704,9 @@ def scenario_admissibility(
     for plan in plans:
         fifo_order = [bucket.bucket_id for bucket in sorted(plan.bucket_workloads, key=_stable_bucket_order_key)]
         fifo_rounds = release_rounds_for_order(fifo_order, round_size)
-        fifo = _round_pressure_from_rounds(plan, fifo_rounds)
+        fifo = evaluate_release_rounds(plan, fifo_rounds, None, strategy="fifo")
         random_rounds = release_rounds_for_order(random_order([bucket.bucket_id for bucket in plan.bucket_workloads], seed + plan.microbatch_id), round_size)
-        random_diag = _round_pressure_from_rounds(plan, random_rounds)
+        random_diag = evaluate_release_rounds(plan, random_rounds, None, strategy="random-order")
         strong_sort_order = [
             bucket.bucket_id
             for bucket in sorted(
@@ -742,7 +714,7 @@ def scenario_admissibility(
                 key=lambda bucket: (-strong_state_score_for_bucket(bucket, None),) + _stable_bucket_order_key(bucket),
             )
         ]
-        strong_sort = _round_pressure_from_rounds(plan, release_rounds_for_order(strong_sort_order, round_size))
+        strong_sort = evaluate_release_rounds(plan, release_rounds_for_order(strong_sort_order, round_size), None, strategy="strong-state-sort")
         strong_pack = _greedy_minimax_round_pack(
             plan.bucket_workloads,
             round_size=round_size,
@@ -753,8 +725,8 @@ def scenario_admissibility(
         )
         lookahead = lookahead_greedy_round_packer(plan, round_size)
         exact = exact_round_packer(plan, round_size)
-        fifo_pressure = float(fifo["round_pressure"])
-        random_pressure = float(random_diag["round_pressure"])
+        fifo_pressure = float(fifo.objective)
+        random_pressure = float(random_diag.objective)
         lookahead_pressure = float(lookahead["peak_bottleneck_pressure"])
         exact_pressure = float(exact["peak_bottleneck_pressure"])
         oracle_gap_vs_fifo = (fifo_pressure - exact_pressure) / max(fifo_pressure, 1e-9)

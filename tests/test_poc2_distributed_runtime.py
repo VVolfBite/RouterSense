@@ -8,6 +8,7 @@ from routesense_poc2.distributed_runtime import (
     canonical_global_plan_hash,
     canonical_global_plan_payload,
     decode_metadata_tensor_rows,
+    evaluate_release_rounds,
     expected_route_item_manifest,
     GlobalDispatchPlan,
     GlobalRuntimeState,
@@ -48,7 +49,6 @@ from routesense_poc2.distributed_runtime import (
     update_global_runtime_state,
 )
 from routesense_poc2.stress import (
-    _round_pressure_from_rounds,
     build_burst_episode_schedule,
     choose_skewed_placement,
     dependency_predictiveness_gate,
@@ -666,6 +666,16 @@ def test_fragmentation_metric_distinguishes_flow_diversity():
     _, same_components = _round_pressure_objective(same_flow, RuntimeState())
     _, diverse_components = _round_pressure_objective(diverse, RuntimeState())
     assert diverse_components["round_pressure_components"]["flow_fragmentation_penalty_norm"] > same_components["round_pressure_components"]["flow_fragmentation_penalty_norm"]
+
+
+def test_evaluate_release_rounds_is_single_source_of_truth():
+    placement = build_placement_map(4, 4, "balanced")
+    plan = _stress_plan("eval", 0, placement)
+    rounds = [[plan.bucket_workloads[0].bucket_id, plan.bucket_workloads[1].bucket_id], [plan.bucket_workloads[2].bucket_id, plan.bucket_workloads[3].bucket_id]]
+    left = evaluate_release_rounds(plan, rounds, RuntimeState(), strategy="a")
+    right = evaluate_release_rounds(plan, rounds, RuntimeState(), strategy="b")
+    assert left.objective == right.objective
+    assert left.per_round == right.per_round
 
 
 def test_source_arrival_jitter_does_not_depend_on_destination_rank():
@@ -1553,7 +1563,7 @@ def test_exact_round_packer_not_worse_than_heuristics():
     placement = build_placement_map(4, 4, "balanced")
     plan = _stress_plan("exact", 0, placement)
     fifo_rounds = release_rounds_for_order([bucket.bucket_id for bucket in plan.bucket_workloads], 2)
-    fifo_pressure = _round_pressure_from_rounds(plan, fifo_rounds)["round_pressure"]
+    fifo_pressure = evaluate_release_rounds(plan, fifo_rounds, None, strategy="fifo").objective
     lookahead = lookahead_greedy_round_packer(plan, 2)
     exact = exact_round_packer(plan, 2)
     assert exact["peak_bottleneck_pressure"] <= fifo_pressure
