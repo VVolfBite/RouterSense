@@ -102,6 +102,7 @@ class WorkloadBucket:
     size_norm: float
     inverse_size_rank_norm: float
     is_hot_bucket: bool
+    route_item_indices: list[int] = field(default_factory=list)
     route_item_ids: list[str] = field(default_factory=list)
     route_ranks: list[int] = field(default_factory=list)
 
@@ -114,6 +115,7 @@ class WorkloadBucket:
         return BucketRecord(
             bucket_id=self.bucket_id,
             route_item_ids=[self.route_id],
+            route_item_indices=list(self.route_item_indices),
             origin_rank=self.origin_rank,
             destination_id=self.destination_id,
             destination_rank=self.destination_rank,
@@ -218,6 +220,7 @@ class GlobalRuntimeState:
     rank_return_time_ms: dict[int, float] = field(default_factory=dict)
     rank_local_completion_time_ms: dict[int, float] = field(default_factory=dict)
     global_completion_time_ms: float = 0.0
+    state_semantics: str = "historical_plus_projected"
     batch_index: int = 0
 
     def to_scheduler_state(self) -> RuntimeState:
@@ -481,16 +484,20 @@ def apply_placement(bucket_records: list[BucketRecord], placement: list[Placemen
 
 
 def assign_origin_rank(token_id: int, token_count: int, world_size: int, mode: str) -> int:
+    raise RuntimeError("assign_origin_rank(token_id, ...) is deprecated; use assign_origin_rank_from_ordinal")
+
+
+def assign_origin_rank_from_ordinal(token_ordinal: int, token_count: int, world_size: int, mode: str) -> int:
     normalized = str(mode).strip().lower()
     if world_size <= 1:
         return 0
     if normalized == "round-robin":
-        return int(token_id) % world_size
+        return int(token_ordinal) % world_size
     if normalized == "contiguous":
         if token_count <= 0:
             return 0
         shard_size = max(1, math.ceil(token_count / world_size))
-        return min(world_size - 1, int(token_id) // shard_size)
+        return min(world_size - 1, int(token_ordinal) // shard_size)
     raise ValueError(f"unsupported origin sharding mode: {mode}")
 
 
@@ -509,6 +516,33 @@ def build_workload_plan(
     if not route_items:
         raise RuntimeError("routing payload is missing route_items; cannot build origin-aware workload plan")
     token_count = len(token_ids)
+    token_ordinals = {int(token_id): index for index, token_id in enumerate(sorted(set(int(token_id) for token_id in token_ids)))}
+    route_tuples = sorted(
+        [
+            (
+                int(routing["layer_id"]),
+                int(microbatch_id),
+                int(route["token_pos"]),
+                int(route["token_id"]),
+                int(route["route_rank"]),
+                int(route["expert_id"]),
+                str(route["route_id"]),
+            )
+            for route in route_items
+        ]
+    )
+    route_item_index_map = {
+        (
+            layer_id,
+            mb_id,
+            token_pos,
+            token_id,
+            route_rank,
+            expert_id,
+            route_id,
+        ): index
+        for index, (layer_id, mb_id, token_pos, token_id, route_rank, expert_id, route_id) in enumerate(route_tuples)
+    }
     grouped: dict[tuple[int, int, int], dict[str, Any]] = {}
     bucket_workloads: list[WorkloadBucket] = []
     bucket_record_map = {bucket.destination_id: bucket for bucket in routing["bucket_records"]}
@@ -516,36 +550,69 @@ def build_workload_plan(
         expert_id = int(route["expert_id"])
         token_id = int(route["token_id"])
         destination_rank = int(placement_map.get(expert_id, expert_id % config.world_size))
-        origin_rank = assign_origin_rank(token_id, token_count, config.world_size, config.origin_sharding)
+        token_ordinal = int(token_ordinals[token_id])
+        origin_rank = assign_origin_rank_from_ordinal(token_ordinal, token_count, config.world_size, config.origin_sharding)
+        route_tuple = (
+            int(routing["layer_id"]),
+            int(microbatch_id),
+            int(route["token_pos"]),
+            token_id,
+            int(route["route_rank"]),
+            expert_id,
+            str(route["route_id"]),
+        )
+        route_item_index = int(route_item_index_map[route_tuple])
         key = (origin_rank, destination_rank, expert_id)
         token_pos = int(route["token_pos"])
         current = grouped.setdefault(
             key,
             {
-                "token_ids": [],
-                "token_positions": [],
-                "route_ids": [],
-                "route_ranks": [],
+                "route_tuples": [],
             },
         )
-        current["token_ids"].append(token_id)
-        current["token_positions"].append(token_pos)
-        current["route_ids"].append(str(route["route_id"]))
-        current["route_ranks"].append(int(route["route_rank"]))
+        current["route_tuples"].append(
+            {
+                "route_item_index": route_item_index,
+                "token_id": token_id,
+                "token_pos": token_pos,
+                "route_rank": int(route["route_rank"]),
+                "expert_id": expert_id,
+                "route_id": str(route["route_id"]),
+            }
+        )
 
-    ordered_groups = sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0], item[0][2], min(item[1]["token_positions"])))
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            item[0][1],
+            item[0][0],
+            item[0][2],
+            min(int(value["token_pos"]) for value in item[1]["route_tuples"]),
+        ),
+    )
     for index, ((origin_rank, destination_rank, expert_id), item) in enumerate(ordered_groups):
+        route_tuple_items = sorted(
+            item["route_tuples"],
+            key=lambda value: (
+                int(value["token_pos"]),
+                int(value["token_id"]),
+                int(value["route_rank"]),
+                int(value["expert_id"]),
+                int(value["route_item_index"]),
+            ),
+        )
         base_bucket = bucket_record_map[expert_id]
-        token_ids_in_bucket = sorted(item["token_ids"])
-        token_positions = sorted(item["token_positions"])
+        token_ids_in_bucket = [int(value["token_id"]) for value in route_tuple_items]
+        token_positions = [int(value["token_pos"]) for value in route_tuple_items]
         token_count_in_bucket = len(token_ids_in_bucket)
         payload_rows = max(1, int(round(token_count_in_bucket * max(1.0, config.compute_scale))))
         payload_bytes = payload_rows * hidden_dim * 2
-        route_suffix = "_".join(item["route_ids"][:2])
+        route_suffix = "_".join(str(value["route_id"]) for value in route_tuple_items[:2])
         bucket_workloads.append(
             WorkloadBucket(
                 bucket_id=f"mb{microbatch_id}_o{origin_rank}_d{destination_rank}_e{expert_id}_{index}",
                 route_id=route_suffix,
+                route_item_indices=[int(value["route_item_index"]) for value in route_tuple_items],
                 token_ids=token_ids_in_bucket,
                 token_positions=token_positions,
                 origin_rank=origin_rank,
@@ -571,21 +638,23 @@ def build_workload_plan(
                 size_norm=base_bucket.size_norm,
                 inverse_size_rank_norm=1.0 - (index / max(1, len(ordered_groups) - 1)) if ordered_groups else 0.0,
                 is_hot_bucket=token_count_in_bucket > 1,
-                route_item_ids=list(item["route_ids"]),
-                route_ranks=list(item["route_ranks"]),
+                route_item_ids=[str(value["route_id"]) for value in route_tuple_items],
+                route_ranks=[int(value["route_rank"]) for value in route_tuple_items],
             )
         )
 
     token_origin_summary: dict[int, list[int]] = {}
+    token_origin_detail: dict[str, dict[str, int]] = {}
     for token_id in token_ids:
-        rank = assign_origin_rank(int(token_id), token_count, config.world_size, config.origin_sharding)
+        ordinal = int(token_ordinals[int(token_id)])
+        rank = assign_origin_rank_from_ordinal(ordinal, token_count, config.world_size, config.origin_sharding)
         token_origin_summary.setdefault(rank, []).append(int(token_id))
+        token_origin_detail[str(token_id)] = {"token_id": int(token_id), "token_ordinal": ordinal, "origin_rank": rank}
 
     routing_summary = dict(routing["routing_summary"])
     routing_summary["origin_sharding"] = config.origin_sharding
-    routing_summary["token_to_origin_rank"] = {
-        str(token_id): assign_origin_rank(int(token_id), token_count, config.world_size, config.origin_sharding) for token_id in token_ids
-    }
+    routing_summary["token_to_origin_rank"] = {str(token_id): value["origin_rank"] for token_id, value in token_origin_detail.items()}
+    routing_summary["token_origin_rank_detail"] = token_origin_detail
     routing_summary["token_origin_rank_summary"] = {str(rank): values for rank, values in token_origin_summary.items()}
 
     return WorkloadPlan(
@@ -750,12 +819,14 @@ def _bucket_effective_rows(bucket: WorkloadBucket, *, correctness_mode: bool) ->
 
 def _build_bucket_metadata_dict(bucket: WorkloadBucket, rows: int) -> dict[str, Any]:
     route_item_ids = list(bucket.route_item_ids) if bucket.route_item_ids else [bucket.route_id]
+    route_item_indices = list(bucket.route_item_indices) if bucket.route_item_indices else [0 for _ in route_item_ids]
     route_ranks = list(bucket.route_ranks) if bucket.route_ranks else [0 for _ in route_item_ids]
     token_ids = list(bucket.token_ids)
     return {
         "bucket_id": bucket.bucket_id,
         "route_id": bucket.route_id,
         "route_item_ids": route_item_ids,
+        "route_item_indices": route_item_indices,
         "route_ranks": route_ranks,
         "origin_rank": int(bucket.origin_rank),
         "destination_rank": int(bucket.destination_rank),
@@ -1210,6 +1281,125 @@ def _rank_phase_log(
         handle.write(json.dumps(payload) + "\n")
 
 
+def _policy_feature_contract(strategy: str) -> dict[str, Any]:
+    contracts = {
+        "fifo": {
+            "allowed_feature_groups": ["arrival_index"],
+            "actual_feature_names_read": ["arrival_index"],
+            "forbidden_feature_names_checked": ["dependency_features", "runtime_state", "payload_bytes"],
+        },
+        "random-order": {
+            "allowed_feature_groups": ["random_seed", "bucket_ids"],
+            "actual_feature_names_read": ["policy_seed", "bucket_id"],
+            "forbidden_feature_names_checked": ["dependency_features", "runtime_state", "payload_bytes"],
+        },
+        "state-only": {
+            "allowed_feature_groups": ["global_state", "payload_shape", "placement", "projected_load", "service_history"],
+            "actual_feature_names_read": [
+                "destination_pending_work",
+                "destination_queue_depth",
+                "rank_backlog_work",
+                "rank_queue_depth",
+                "destination_hotness",
+                "destination_latency_history",
+                "payload_rows",
+                "payload_bytes",
+            ],
+            "forbidden_feature_names_checked": [
+                "source_coverage",
+                "coactive_peer_degree",
+                "coactive_event_density",
+                "position_spread",
+                "bridge_score",
+            ],
+        },
+        "strong-state": {
+            "allowed_feature_groups": ["source_pressure", "destination_pressure", "flow_pressure", "return_pressure", "expert_pressure", "history"],
+            "actual_feature_names_read": [
+                "source_outbound_pending_bytes",
+                "destination_inbound_pending_bytes",
+                "flow_pending_bytes",
+                "return_flow_pending_bytes",
+                "rank_compute_queue_rows",
+                "expert_pending_rows",
+                "rank_dispatch_time_ms",
+                "rank_compute_time_ms",
+                "rank_return_time_ms",
+                "payload_rows",
+                "payload_bytes",
+            ],
+            "forbidden_feature_names_checked": [
+                "source_coverage",
+                "coactive_peer_degree",
+                "coactive_event_density",
+                "position_spread",
+                "bridge_score",
+            ],
+        },
+        "dependency-only": {
+            "allowed_feature_groups": ["dependency_features"],
+            "actual_feature_names_read": [
+                "source_coverage",
+                "coactive_peer_degree",
+                "coactive_event_density",
+                "position_spread",
+                "bridge_score",
+            ],
+            "forbidden_feature_names_checked": [
+                "source_outbound_pending_bytes",
+                "destination_inbound_pending_bytes",
+                "flow_pending_bytes",
+                "return_flow_pending_bytes",
+            ],
+        },
+        "full": {
+            "allowed_feature_groups": ["state_features", "dependency_features"],
+            "actual_feature_names_read": [
+                "state_only_score",
+                "dependency_only_score",
+            ],
+            "forbidden_feature_names_checked": [],
+        },
+    }
+    return contracts.get(strategy, {"allowed_feature_groups": [], "actual_feature_names_read": [], "forbidden_feature_names_checked": []})
+
+
+def benchmark_preflight(protocol: ProtocolConfig, plan: WorkloadPlan, execution_cache: ExecutionCache) -> dict[str, Any]:
+    gpu_processes = []
+    try:
+        result = subprocess.check_output(
+            ["nvidia-smi", "--query-compute-apps=pid,process_name,gpu_uuid,used_memory", "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if result:
+            gpu_processes = [line.strip() for line in result.splitlines() if line.strip()]
+    except Exception:
+        gpu_processes = []
+    if len(gpu_processes) > protocol.world_size:
+        raise RuntimeError(f"benchmark preflight failed: unexpected GPU compute processes detected: {gpu_processes}")
+    first_bucket = plan.bucket_workloads[0] if plan.bucket_workloads else None
+    payload_checksum = None
+    metadata_checksum = None
+    weight_checksum = None
+    if first_bucket is not None and first_bucket.bucket_id in execution_cache.payload_by_bucket_id:
+        payload_checksum = float(execution_cache.payload_by_bucket_id[first_bucket.bucket_id].sum().item())
+        metadata_checksum = int(execution_cache.metadata_by_bucket_id[first_bucket.bucket_id].sum().item())
+    if execution_cache.expert_weight1:
+        expert_id = sorted(execution_cache.expert_weight1)[0]
+        weight_checksum = float(execution_cache.expert_weight1[expert_id].sum().item() + execution_cache.expert_weight2[expert_id].sum().item())
+    return {
+        "payload_checksum": payload_checksum,
+        "metadata_checksum": metadata_checksum,
+        "expert_weight_checksum": weight_checksum,
+        "used_python_metadata_gather_expected": False,
+        "legacy_payload_function_allowed": False,
+        "gpu_processes": gpu_processes,
+        "metric_semantics_version": "poc2.5-final",
+        "state_semantics": "historical_plus_projected",
+    }
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1234,6 +1424,7 @@ def preallocate_execution_cache(
             continue
         rows = bucket.payload_rows if not correctness_mode else max(1, bucket.token_count)
         route_item_ids = list(bucket.route_item_ids) if bucket.route_item_ids else [bucket.route_id]
+        route_item_indices = list(bucket.route_item_indices) if bucket.route_item_indices else list(range(rows))
         route_ranks = list(bucket.route_ranks) if bucket.route_ranks else [0 for _ in route_item_ids]
         if correctness_mode:
             payload = torch.zeros((rows, plan.hidden_dim), device=device, dtype=torch.float16)
@@ -1256,7 +1447,7 @@ def preallocate_execution_cache(
         payload_by_bucket_id[bucket.bucket_id] = payload
         metadata = torch.zeros((rows, 6), device=device, dtype=torch.int32)
         token_rows = [int(bucket.token_ids[min(index, len(bucket.token_ids) - 1)]) for index in range(rows)]
-        route_row_indices = [int(index) for index in range(rows)]
+        route_row_indices = [int(route_item_indices[min(index, len(route_item_indices) - 1)]) for index in range(rows)]
         route_rank_rows = [int(route_ranks[min(index, len(route_ranks) - 1)]) for index in range(rows)]
         metadata[:, 0] = torch.tensor(token_rows, device=device, dtype=torch.int32)
         metadata[:, 1] = torch.tensor(route_row_indices, device=device, dtype=torch.int32)
@@ -1327,6 +1518,7 @@ def _metadata_tensor_to_dicts(
         if len(slice_rows) != item_rows:
             raise RuntimeError("metadata tensor row slicing mismatch")
         route_item_ids = list(item.get("route_item_ids", [item.get("route_id", "")]))
+        route_item_indices = list(item.get("route_item_indices", [0 for _ in route_item_ids]))
         route_ranks = list(item.get("route_ranks", [0 for _ in route_item_ids]))
         token_ids = [int(row[0]) for row in slice_rows]
         decoded.append(
@@ -1334,6 +1526,7 @@ def _metadata_tensor_to_dicts(
                 **item,
                 "token_ids": token_ids,
                 "route_item_ids": route_item_ids,
+                "route_item_indices": route_item_indices,
                 "route_ranks": route_ranks,
                 "metadata_rows": [list(map(int, row)) for row in slice_rows],
             }
@@ -1355,17 +1548,34 @@ def build_global_dispatch_plan(
     if dist.get_rank() != 0:
         raise RuntimeError("only rank0 may generate a global dispatch plan")
     scheduler_state = global_state.to_scheduler_state()
+    planned_source_outbound: dict[int, float] = {}
+    planned_destination_inbound: dict[int, float] = {}
+    planned_flow_pending: dict[str, float] = {}
+    planned_return_flow: dict[str, float] = {}
+    planned_rank_compute_rows: dict[int, float] = {}
+    planned_expert_rows: dict[int, float] = {}
+    for bucket in plan.bucket_workloads:
+        planned_source_outbound[bucket.origin_rank] = planned_source_outbound.get(bucket.origin_rank, 0.0) + float(bucket.payload_bytes)
+        planned_destination_inbound[bucket.destination_rank] = planned_destination_inbound.get(bucket.destination_rank, 0.0) + float(bucket.payload_bytes)
+        planned_flow_pending[_make_flow_key(bucket.origin_rank, bucket.destination_rank)] = (
+            planned_flow_pending.get(_make_flow_key(bucket.origin_rank, bucket.destination_rank), 0.0) + float(bucket.payload_bytes)
+        )
+        planned_return_flow[_make_flow_key(bucket.destination_rank, bucket.origin_rank)] = (
+            planned_return_flow.get(_make_flow_key(bucket.destination_rank, bucket.origin_rank), 0.0) + float(bucket.payload_bytes)
+        )
+        planned_rank_compute_rows[bucket.destination_rank] = planned_rank_compute_rows.get(bucket.destination_rank, 0.0) + float(bucket.payload_rows)
+        planned_expert_rows[bucket.expert_id] = planned_expert_rows.get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
     bucket_records = []
     for bucket in plan.bucket_workloads:
         record = bucket.to_scheduler_record()
         flow_key = f"{bucket.origin_rank}->{bucket.destination_rank}"
         return_key = f"{bucket.destination_rank}->{bucket.origin_rank}"
-        record.source_outbound_pending_bytes = float(global_state.source_outbound_pending_bytes.get(bucket.origin_rank, 0.0))
-        record.destination_inbound_pending_bytes = float(global_state.destination_inbound_pending_bytes.get(bucket.destination_rank, 0.0))
-        record.flow_pending_bytes = float(global_state.flow_pending_bytes.get(flow_key, 0.0))
-        record.return_flow_pending_bytes = float(global_state.return_flow_pending_bytes.get(return_key, 0.0))
-        record.rank_compute_queue_rows = float(global_state.rank_compute_queue_rows.get(bucket.destination_rank, 0.0))
-        record.expert_pending_rows = float(global_state.expert_pending_rows.get(bucket.expert_id, 0.0))
+        record.source_outbound_pending_bytes = float(planned_source_outbound.get(bucket.origin_rank, 0.0))
+        record.destination_inbound_pending_bytes = float(planned_destination_inbound.get(bucket.destination_rank, 0.0))
+        record.flow_pending_bytes = float(planned_flow_pending.get(flow_key, 0.0))
+        record.return_flow_pending_bytes = float(planned_return_flow.get(return_key, 0.0))
+        record.rank_compute_queue_rows = float(planned_rank_compute_rows.get(bucket.destination_rank, 0.0))
+        record.expert_pending_rows = float(planned_expert_rows.get(bucket.expert_id, 0.0))
         record.estimated_dispatch_cost = bucket.payload_bytes / float(1 << 20)
         record.estimated_compute_cost = float(bucket.payload_rows)
         record.estimated_return_cost = bucket.payload_bytes / float(1 << 20)
@@ -1570,10 +1780,12 @@ def run_policy_on_plan(
                         {
                             "round": round_index,
                             "route_item_id": item["route_id"],
+                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
                             "token_id": int(token_id),
                             "origin_rank": int(item["origin_rank"]),
                             "destination_rank": int(item["destination_rank"]),
                             "expert_id": int(item["expert_id"]),
+                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "dispatch_row_index": row_index,
                         }
                     )
@@ -1583,10 +1795,12 @@ def run_policy_on_plan(
                         {
                             "round": round_index,
                             "route_item_id": item["route_id"],
+                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
                             "token_id": int(token_id),
                             "origin_rank": int(item["origin_rank"]),
                             "destination_rank": int(item["destination_rank"]),
                             "expert_id": int(item["expert_id"]),
+                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "receive_row_index": row_index,
                         }
                     )
@@ -1651,10 +1865,12 @@ def run_policy_on_plan(
                         {
                             "round": round_index,
                             "route_item_id": item["route_id"],
+                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
                             "token_id": int(token_id),
                             "origin_rank": int(item["origin_rank"]),
                             "destination_rank": int(item["destination_rank"]),
                             "expert_id": int(item["expert_id"]),
+                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "return_row_index": row_index,
                         }
                     )
@@ -1669,10 +1885,12 @@ def run_policy_on_plan(
                         {
                             "round": round_index,
                             "route_item_id": item["route_id"],
+                            "route_item_index": int(item["route_item_indices"][min(row_index, len(item["route_item_indices"]) - 1)]),
                             "token_id": int(token_id),
                             "origin_rank": int(item["origin_rank"]),
                             "destination_rank": int(item["destination_rank"]),
                             "expert_id": int(item["expert_id"]),
+                            "route_rank": int(item["route_ranks"][min(row_index, len(item["route_ranks"]) - 1)]),
                             "verified_row_index": row_index,
                         }
                     )
@@ -1825,7 +2043,7 @@ def run_policy_on_plan(
         "rank": rank,
         "rank_pack_time_ms": total_pack_ms,
         "rank_busy_time_ms": total_dispatch_ms + total_compute_ms + total_return_ms,
-        "rank_idle_time_ms": barrier_wait_ms,
+        "rank_idle_time_ms": 0.0,
         "rank_completion_time_ms": local_completion_ms,
         "received_tokens": received_tokens,
         "sent_tokens": sent_tokens,
@@ -1863,14 +2081,16 @@ def run_policy_on_plan(
         "return_total_ms": total_return_ms,
         "control_metadata_ms": total_control_metadata_ms,
         "sync_total_ms": total_sync_ms,
+        "metric_semantics_version": "poc2.5-final",
         "dispatch_route_manifest": [item for items in gathered_dispatch_manifest for item in items],
         "receive_route_manifest": [item for items in gathered_receive_manifest for item in items],
         "return_route_manifest": [item for items in gathered_return_manifest for item in items],
         "origin_verified_manifest": [item for items in gathered_origin_verified_manifest for item in items],
-        "barrier_wait_ms": barrier_wait_ms,
+        "barrier_wait_ms_deprecated": barrier_wait_ms,
         "total_communication_bytes": rank_record["received_bytes"] + rank_record["sent_bytes"],
         "total_gpu_compute_time_ms": total_compute_ms,
         "throughput_tokens_per_s": (sent_tokens / (global_completion_ms / 1000.0)) if global_completion_ms > 0 else 0.0,
+        "policy_feature_provenance": _policy_feature_contract(strategy),
     }
 
 
@@ -1911,22 +2131,10 @@ def update_global_runtime_state(
     rank_pending: dict[int, float] = {}
     queue_depth: dict[int, int] = {}
     rank_queue: dict[int, int] = {}
-    source_outbound: dict[int, int] = {}
-    destination_inbound: dict[int, int] = {}
-    flow_pending: dict[str, int] = {}
     expert_pending: dict[int, int] = {}
     rank_compute_queue_rows: dict[int, int] = {}
     for bucket_id in global_plan.release_order:
         bucket = lookup[bucket_id]
-        pending_dest[bucket.destination_id] = pending_dest.get(bucket.destination_id, 0.0) + float(bucket.estimated_service_units)
-        rank_pending[bucket.destination_rank] = rank_pending.get(bucket.destination_rank, 0.0) + float(bucket.estimated_service_units)
-        queue_depth[bucket.destination_id] = queue_depth.get(bucket.destination_id, 0) + 1
-        rank_queue[bucket.destination_rank] = rank_queue.get(bucket.destination_rank, 0) + 1
-        source_outbound[bucket.origin_rank] = source_outbound.get(bucket.origin_rank, 0) + int(bucket.payload_bytes)
-        destination_inbound[bucket.destination_rank] = destination_inbound.get(bucket.destination_rank, 0) + int(bucket.payload_bytes)
-        flow_pending[_make_flow_key(bucket.origin_rank, bucket.destination_rank)] = (
-            flow_pending.get(_make_flow_key(bucket.origin_rank, bucket.destination_rank), 0) + int(bucket.payload_bytes)
-        )
         expert_pending[bucket.expert_id] = expert_pending.get(bucket.expert_id, 0) + int(bucket.payload_rows)
         rank_compute_queue_rows[bucket.destination_rank] = rank_compute_queue_rows.get(bucket.destination_rank, 0) + int(bucket.payload_rows)
         next_state.destination_hotness[bucket.destination_id] = min(
@@ -1937,14 +2145,10 @@ def update_global_runtime_state(
     next_state.destination_queue_depth = queue_depth
     next_state.rank_backlog_work = rank_pending
     next_state.rank_queue_depth = rank_queue
-    next_state.source_outbound_pending_bytes = source_outbound
-    next_state.destination_inbound_pending_bytes = destination_inbound
-    next_state.flow_pending_bytes = flow_pending
-    return_flow_pending: dict[str, int] = {}
-    for bucket in lookup.values():
-        key = _make_flow_key(bucket.destination_rank, bucket.origin_rank)
-        return_flow_pending[key] = return_flow_pending.get(key, 0) + int(bucket.payload_bytes)
-    next_state.return_flow_pending_bytes = return_flow_pending
+    next_state.source_outbound_pending_bytes = {}
+    next_state.destination_inbound_pending_bytes = {}
+    next_state.flow_pending_bytes = {}
+    next_state.return_flow_pending_bytes = {}
     next_state.expert_pending_rows = expert_pending
     next_state.rank_compute_queue_rows = rank_compute_queue_rows
     next_state.global_completion_time_ms = max(float(item["local_completion_ms"]) for item in gathered_rank_records)
@@ -1972,14 +2176,13 @@ def aggregate_repetition_records(records: list[dict[str, Any]], state_meaningful
         dispatch = [item["dispatch_total_ms"] for item in items]
         compute = [item["compute_total_ms"] for item in items]
         returned = [item["return_total_ms"] for item in items]
-        barrier = [item["barrier_wait_ms"] for item in items]
         summary_by_strategy[strategy] = {
             "sample_count": len(items),
             "end_to_end_batch_completion_ms": _stats(completion),
             "dispatch_total_ms": _stats(dispatch),
             "compute_total_ms": _stats(compute),
             "return_total_ms": _stats(returned),
-            "barrier_wait_ms": _stats(barrier),
+            "barrier_wait_ms_deprecated": _stats([item.get("barrier_wait_ms_deprecated", 0.0) for item in items]),
             "throughput_tokens_per_s": _stats([item["throughput_tokens_per_s"] for item in items]),
         }
 

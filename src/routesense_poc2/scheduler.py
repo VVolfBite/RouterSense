@@ -12,6 +12,7 @@ class BucketRecord:
     arrival_index: int
     token_count: int
     route_item_ids: list[str] = field(default_factory=list)
+    route_item_indices: list[int] = field(default_factory=list)
     origin_rank: int = 0
     expert_id: int = 0
     payload_rows: int = 0

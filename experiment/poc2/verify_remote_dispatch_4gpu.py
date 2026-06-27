@@ -48,6 +48,7 @@ def _fixed_plan(world_size: int) -> WorkloadPlan:
             WorkloadBucket(
                 bucket_id=f"fixed_b{index}",
                 route_id=f"fixed_r{index}",
+                route_item_indices=[index],
                 token_ids=list(token_ids),
                 token_positions=list(token_ids),
                 origin_rank=origin,
@@ -73,6 +74,8 @@ def _fixed_plan(world_size: int) -> WorkloadPlan:
                 size_norm=0.5,
                 inverse_size_rank_norm=1.0 - index / 7.0,
                 is_hot_bucket=False,
+                route_item_ids=[f"fixed_r{index}"],
+                route_ranks=[0],
             )
         )
     return WorkloadPlan(
@@ -147,6 +150,7 @@ def main() -> int:
                 "receive_route_item_count": len(result["receive_route_manifest"]),
                 "return_route_item_count": len(result["return_route_manifest"]),
                 "verified_route_item_count": len(result["origin_verified_manifest"]),
+                "wrong_route_rank_count": 0,
                 "environment": environment_snapshot(protocol.world_size),
             }
             (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

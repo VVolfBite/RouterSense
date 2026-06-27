@@ -48,3 +48,31 @@ def test_dependency_only_can_overrule_size():
     ]
     decision = scheduler.build_decision(SchedulerInput("dependency-only", 0, 0, "layer", buckets, state))
     assert decision.release_order[0] == "small_high_dep"
+
+
+def test_strong_state_ignores_dependency_features():
+    from routesense_poc2.distributed_runtime import strong_state_score_for_bucket
+
+    state = RuntimeState(
+        source_outbound_pending_bytes={0: 1024.0},
+        destination_inbound_pending_bytes={0: 2048.0},
+        flow_pending_bytes={"0->0": 512.0},
+        return_flow_pending_bytes={"0->0": 512.0},
+        rank_compute_queue_rows={0: 32.0},
+        expert_pending_rows={0: 32.0},
+    )
+    left = _make_bucket("b0", 0, 0, 4, 0.1)
+    right = _make_bucket("b1", 0, 0, 4, 0.9)
+    right.source_coverage = 0.99
+    right.coactive_event_density = 0.99
+    assert strong_state_score_for_bucket(left, state) == strong_state_score_for_bucket(right, state)
+
+
+def test_dependency_only_ignores_runtime_state():
+    scheduler = create_scheduler("dependency-only")
+    bucket = _make_bucket("b0", 0, 0, 4, 0.5)
+    left = RuntimeState(source_outbound_pending_bytes={0: 0.0}, destination_inbound_pending_bytes={0: 0.0})
+    right = RuntimeState(source_outbound_pending_bytes={0: 1e6}, destination_inbound_pending_bytes={0: 1e6})
+    left_decision = scheduler.build_decision(SchedulerInput("dependency-only", 0, 0, "layer", [bucket], left))
+    right_decision = scheduler.build_decision(SchedulerInput("dependency-only", 0, 0, "layer", [bucket], right))
+    assert left_decision.bucket_decisions[0].selected_score == right_decision.bucket_decisions[0].selected_score

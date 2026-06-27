@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from routesense_poc2.distributed_runtime import (
+    benchmark_preflight,
     build_canonical_round_layout,
     GlobalRuntimeState,
     PlacementEntry,
@@ -16,7 +17,7 @@ from routesense_poc2.distributed_runtime import (
     _planned_round_matrix,
     _paired,
     _position_effects,
-    assign_origin_rank,
+    assign_origin_rank_from_ordinal,
     build_global_dispatch_plan,
     build_workload_plan,
     dependency_score_for_bucket,
@@ -140,10 +141,10 @@ def test_hotspot_mapping_concentrates_prefix_experts():
 
 
 def test_assign_origin_rank_round_robin_and_contiguous():
-    assert assign_origin_rank(0, 8, 4, "round-robin") == 0
-    assert assign_origin_rank(5, 8, 4, "round-robin") == 1
-    assert assign_origin_rank(0, 8, 4, "contiguous") == 0
-    assert assign_origin_rank(7, 8, 4, "contiguous") == 3
+    assert assign_origin_rank_from_ordinal(0, 8, 4, "round-robin") == 0
+    assert assign_origin_rank_from_ordinal(5, 8, 4, "round-robin") == 1
+    assert assign_origin_rank_from_ordinal(0, 8, 4, "contiguous") == 0
+    assert assign_origin_rank_from_ordinal(7, 8, 4, "contiguous") == 3
 
 
 def test_build_workload_plan_preserves_origin_and_route_identity():
@@ -163,10 +164,10 @@ def test_build_workload_plan_preserves_origin_and_route_identity():
             BucketRecord(bucket_id="dest2", destination_id=2, destination_rank=2, arrival_index=1, token_count=2, token_positions=[0, 1]),
         ],
         "route_items": [
-            {"route_id": "r0", "token_id": 0, "token_pos": 0, "route_rank": 0, "expert_id": 1},
-            {"route_id": "r1", "token_id": 1, "token_pos": 1, "route_rank": 0, "expert_id": 2},
+            {"route_id": "r0", "token_id": 11, "token_pos": 0, "route_rank": 0, "expert_id": 1},
+            {"route_id": "r1", "token_id": 23, "token_pos": 1, "route_rank": 0, "expert_id": 2},
         ],
-        "routing_summary": {"token_ids": [0, 1]},
+        "routing_summary": {"token_ids": [11, 23]},
     }
     placement = [PlacementEntry(expert_id=1, destination_rank=1), PlacementEntry(expert_id=2, destination_rank=2)]
     plan = build_workload_plan(
@@ -180,6 +181,91 @@ def test_build_workload_plan_preserves_origin_and_route_identity():
     assert {bucket.origin_rank for bucket in plan.bucket_workloads} == {0, 1}
     assert {bucket.route_id for bucket in plan.bucket_workloads} == {"r0", "r1"}
     assert plan.origin_sharding == "round-robin"
+    assert sorted(index for bucket in plan.bucket_workloads for index in bucket.route_item_indices) == [0, 1]
+
+
+def test_build_workload_plan_preserves_topk_route_tuple_alignment():
+    protocol = ProtocolConfig(
+        model_key="olmoe",
+        model_path="/tmp/model",
+        output_dir="/tmp/out",
+        artifact_dir="/tmp/art",
+        world_size=2,
+        origin_sharding="round-robin",
+    )
+    routing = {
+        "layer_id": 0,
+        "layer_path": "layer0",
+        "bucket_records": [
+            BucketRecord(bucket_id="dest1", destination_id=1, destination_rank=1, arrival_index=0, token_count=2, token_positions=[4, 7]),
+            BucketRecord(bucket_id="dest2", destination_id=2, destination_rank=0, arrival_index=1, token_count=2, token_positions=[4, 7]),
+        ],
+        "route_items": [
+            {"route_id": "r_topk_1", "token_id": 100, "token_pos": 7, "route_rank": 1, "expert_id": 2},
+            {"route_id": "r_topk_0", "token_id": 100, "token_pos": 7, "route_rank": 0, "expert_id": 1},
+        ],
+        "routing_summary": {"token_ids": [100]},
+    }
+    placement = [PlacementEntry(expert_id=1, destination_rank=1), PlacementEntry(expert_id=2, destination_rank=0)]
+    plan = build_workload_plan(
+        config=protocol,
+        microbatch_id=0,
+        routing=routing,
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement=placement,
+    )
+    route_pairs = sorted(
+        (
+            bucket.route_item_indices[0],
+            bucket.route_item_ids[0],
+            bucket.route_ranks[0],
+            bucket.expert_id,
+            bucket.token_ids[0],
+        )
+        for bucket in plan.bucket_workloads
+    )
+    assert route_pairs[0][2:] == (0, 1, 100)
+    assert route_pairs[1][2:] == (1, 2, 100)
+
+
+def test_contiguous_origin_sharding_uses_token_ordinal_not_token_id():
+    protocol = ProtocolConfig(
+        model_key="olmoe",
+        model_path="/tmp/model",
+        output_dir="/tmp/out",
+        artifact_dir="/tmp/art",
+        world_size=2,
+        origin_sharding="contiguous",
+    )
+    routing = {
+        "layer_id": 0,
+        "layer_path": "layer0",
+        "bucket_records": [
+            BucketRecord(bucket_id="dest1", destination_id=1, destination_rank=1, arrival_index=0, token_count=4, token_positions=[9, 1, 7, 3]),
+        ],
+        "route_items": [
+            {"route_id": "r0", "token_id": 42, "token_pos": 9, "route_rank": 0, "expert_id": 1},
+            {"route_id": "r1", "token_id": 100, "token_pos": 1, "route_rank": 0, "expert_id": 1},
+            {"route_id": "r2", "token_id": 7, "token_pos": 7, "route_rank": 0, "expert_id": 1},
+            {"route_id": "r3", "token_id": 55, "token_pos": 3, "route_rank": 0, "expert_id": 1},
+        ],
+        "routing_summary": {"token_ids": [42, 100, 7, 55]},
+    }
+    placement = [PlacementEntry(expert_id=1, destination_rank=1)]
+    plan = build_workload_plan(
+        config=protocol,
+        microbatch_id=0,
+        routing=routing,
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement=placement,
+    )
+    detail = plan.routing_summary["token_origin_rank_detail"]
+    assert detail["7"]["origin_rank"] == 0
+    assert detail["42"]["origin_rank"] == 0
+    assert detail["55"]["origin_rank"] == 1
+    assert detail["100"]["origin_rank"] == 1
 
 
 def test_total_dispatch_matrix_invariant_across_policy_orders():
@@ -554,6 +640,10 @@ def test_global_completion_uses_max_rank_completion():
         ],
     )
     assert updated.global_completion_time_ms == 5.0
+    assert updated.source_outbound_pending_bytes == {}
+    assert updated.destination_inbound_pending_bytes == {}
+    assert updated.flow_pending_bytes == {}
+    assert updated.return_flow_pending_bytes == {}
 
 
 def test_global_runtime_state_default_to_scheduler_state():
@@ -803,3 +893,70 @@ def test_metadata_tensor_decoding_matches_planned_rows():
     tensor = torch.tensor([[7, 0, 0, 1, 3, 0], [8, 1, 0, 1, 3, 0]], dtype=torch.int32)
     decoded = _metadata_tensor_to_dicts(tensor, planned)
     assert decoded[0]["token_ids"] == [7, 8]
+
+
+def test_benchmark_preflight_reports_stable_contract():
+    import torch
+
+    plan = WorkloadPlan(
+        plan_id="p0",
+        model_key="olmoe",
+        seed=1,
+        microbatch_id=0,
+        layer_id=0,
+        layer_path="layer",
+        hidden_dim=8,
+        intermediate_dim=16,
+        placement_policy="balanced",
+        origin_sharding="round-robin",
+        placement_mapping=[PlacementEntry(expert_id=0, destination_rank=0)],
+        bucket_workloads=[
+            WorkloadBucket(
+                bucket_id="b0",
+                route_id="r0",
+                route_item_indices=[0],
+                token_ids=[0],
+                token_positions=[0],
+                origin_rank=0,
+                destination_id=0,
+                destination_rank=0,
+                expert_id=0,
+                layer_id=0,
+                microbatch_id=0,
+                token_count=1,
+                payload_rows=1,
+                hidden_dim=8,
+                intermediate_dim=16,
+                estimated_service_units=1.0,
+                payload_bytes=16,
+                source_count=1,
+                source_coverage=0.1,
+                coactive_peer_degree=0.1,
+                coactive_event_density=0.1,
+                position_spread=0.1,
+                bridge_score=0.1,
+                route_share=0.1,
+                density_over_mean=0.1,
+                size_norm=0.1,
+                inverse_size_rank_norm=1.0,
+                is_hot_bucket=False,
+                route_item_ids=["r0"],
+                route_ranks=[0],
+            )
+        ],
+        routing_summary={},
+    )
+    cache = type(
+        "Cache",
+        (),
+        {
+            "payload_by_bucket_id": {"b0": torch.ones((1, 8), dtype=torch.float16)},
+            "metadata_by_bucket_id": {"b0": torch.ones((1, 6), dtype=torch.int32)},
+            "expert_weight1": {0: torch.ones((16, 8), dtype=torch.float16)},
+            "expert_weight2": {0: torch.ones((8, 16), dtype=torch.float16)},
+        },
+    )()
+    protocol = ProtocolConfig(model_key="olmoe", model_path="/tmp", output_dir="/tmp/out", artifact_dir="/tmp/art")
+    preflight = benchmark_preflight(protocol, plan, cache)  # type: ignore[arg-type]
+    assert preflight["used_python_metadata_gather_expected"] is False
+    assert preflight["legacy_payload_function_allowed"] is False
