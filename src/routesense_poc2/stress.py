@@ -20,6 +20,12 @@ from .distributed_runtime import (
     WorkloadBucket,
     WorkloadPlan,
     dependency_score_for_bucket,
+    random_order,
+    release_rounds_for_order,
+    strong_state_score_for_bucket,
+    _greedy_minimax_round_pack,
+    _round_pressure_objective,
+    _stable_bucket_order_key,
 )
 
 
@@ -575,63 +581,148 @@ def _spearman(left: list[float], right: list[float]) -> float:
 
 
 def oracle_minimax_round_packer(plan: WorkloadPlan, round_size: int) -> dict[str, Any]:
-    if round_size <= 0:
-        round_size = max(1, len(plan.bucket_workloads))
     buckets = sorted(
         plan.bucket_workloads,
         key=lambda bucket: (
-            -(bucket.payload_bytes + bucket.payload_rows * 8.0),
+            -float(bucket.payload_bytes + bucket.payload_rows * 32),
             bucket.destination_rank,
             bucket.origin_rank,
+            bucket.expert_id,
             bucket.bucket_id,
         ),
     )
-    round_count = max(1, math.ceil(len(buckets) / round_size))
+    round_count = max(1, math.ceil(len(buckets) / max(1, round_size)))
     rounds: list[list[WorkloadBucket]] = [[] for _ in range(round_count)]
-    round_rank_bytes = [[0 for _ in range(4)] for _ in range(round_count)]
-    round_source_bytes = [[0 for _ in range(4)] for _ in range(round_count)]
-    round_expert_rows: list[dict[int, int]] = [dict() for _ in range(round_count)]
+    round_bytes = [0.0 for _ in range(round_count)]
+    round_rows = [0.0 for _ in range(round_count)]
+    round_rank_penalty: list[dict[int, float]] = [dict() for _ in range(round_count)]
+    round_expert_penalty: list[dict[int, float]] = [dict() for _ in range(round_count)]
     for bucket in buckets:
-        candidate_scores = []
+        candidates = []
         for round_index in range(round_count):
-            if len(rounds[round_index]) >= round_size:
+            if len(rounds[round_index]) >= max(1, round_size):
                 continue
-            dest_peak = max(
-                round_rank_bytes[round_index][bucket.destination_rank] + bucket.payload_bytes,
-                max(round_rank_bytes[round_index]),
+            bytes_penalty = round_bytes[round_index] + float(bucket.payload_bytes)
+            rows_penalty = round_rows[round_index] + float(bucket.payload_rows)
+            rank_penalty = round_rank_penalty[round_index].get(bucket.destination_rank, 0.0) + float(bucket.payload_bytes)
+            expert_penalty = round_expert_penalty[round_index].get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
+            candidates.append((max(bytes_penalty, rows_penalty * 64.0, rank_penalty, expert_penalty * 64.0), round_index))
+        _, selected_round = min(candidates)
+        rounds[selected_round].append(bucket)
+        round_bytes[selected_round] += float(bucket.payload_bytes)
+        round_rows[selected_round] += float(bucket.payload_rows)
+        round_rank_penalty[selected_round][bucket.destination_rank] = round_rank_penalty[selected_round].get(bucket.destination_rank, 0.0) + float(bucket.payload_bytes)
+        round_expert_penalty[selected_round][bucket.expert_id] = round_expert_penalty[selected_round].get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
+    release_rounds = [[bucket.bucket_id for bucket in round_buckets] for round_buckets in rounds if round_buckets]
+    diagnostics = _round_pressure_from_rounds(plan, release_rounds)
+    return {
+        "release_rounds": release_rounds,
+        "pressure": diagnostics["rounds"],
+        "peak_bottleneck_pressure": diagnostics["round_pressure"],
+    }
+
+
+def _round_pressure_from_rounds(plan: WorkloadPlan, release_rounds: list[list[str]]) -> dict[str, Any]:
+    bucket_lookup = {bucket.bucket_id: bucket for bucket in plan.bucket_workloads}
+    rows = []
+    pressure_values = []
+    for round_index, bucket_ids in enumerate(release_rounds):
+        round_buckets = [bucket_lookup[bucket_id] for bucket_id in bucket_ids]
+        objective, components = _round_pressure_objective(round_buckets, None)
+        diagnostic = {
+            "round_index": round_index,
+            "bucket_ids": bucket_ids,
+            "objective": float(objective),
+            "round_pressure_components": {
+                key: float(value) for key, value in components["round_pressure_components"].items()
+            },
+            "historical_baseline_components": components["historical_baseline_components"],
+            "round_increment_components": components["round_increment_components"],
+            "normalization_constants": components["normalization_constants"],
+        }
+        rows.append(diagnostic)
+        pressure_values.append(float(diagnostic.get("objective", 0.0)))
+    return {
+        "rounds": rows,
+        "round_pressure": max(pressure_values) if pressure_values else 0.0,
+    }
+
+
+def _non_schedulable_mega_bucket(plan: WorkloadPlan, round_size: int) -> bool:
+    if not plan.bucket_workloads:
+        return False
+    total_bytes = sum(bucket.payload_bytes for bucket in plan.bucket_workloads)
+    heaviest = max(plan.bucket_workloads, key=lambda bucket: bucket.payload_bytes)
+    has_alternative = sum(1 for bucket in plan.bucket_workloads if bucket.destination_rank != heaviest.destination_rank or bucket.expert_id != heaviest.expert_id) >= 2
+    return bool(heaviest.payload_bytes >= 0.5 * max(1, total_bytes) and (not has_alternative or round_size <= 1))
+
+
+def scenario_admissibility(
+    plans: list[WorkloadPlan],
+    *,
+    round_size: int,
+    seed: int,
+) -> dict[str, Any]:
+    per_plan = []
+    schedulable_votes = 0
+    for plan in plans:
+        fifo_order = [bucket.bucket_id for bucket in sorted(plan.bucket_workloads, key=_stable_bucket_order_key)]
+        fifo_rounds = release_rounds_for_order(fifo_order, round_size)
+        fifo = _round_pressure_from_rounds(plan, fifo_rounds)
+        random_rounds = release_rounds_for_order(random_order([bucket.bucket_id for bucket in plan.bucket_workloads], seed + plan.microbatch_id), round_size)
+        random_diag = _round_pressure_from_rounds(plan, random_rounds)
+        strong_sort_order = [
+            bucket.bucket_id
+            for bucket in sorted(
+                plan.bucket_workloads,
+                key=lambda bucket: (-strong_state_score_for_bucket(bucket, None),) + _stable_bucket_order_key(bucket),
             )
-            source_peak = max(
-                round_source_bytes[round_index][bucket.origin_rank] + bucket.payload_bytes,
-                max(round_source_bytes[round_index]),
-            )
-            expert_peak = max(
-                round_expert_rows[round_index].get(bucket.expert_id, 0) + bucket.payload_rows,
-                max(round_expert_rows[round_index].values(), default=0),
-            )
-            candidate_scores.append((max(dest_peak, source_peak, expert_peak * 2), round_index))
-        _, best_round = min(candidate_scores)
-        rounds[best_round].append(bucket)
-        round_rank_bytes[best_round][bucket.destination_rank] += int(bucket.payload_bytes)
-        round_source_bytes[best_round][bucket.origin_rank] += int(bucket.payload_bytes)
-        round_expert_rows[best_round][bucket.expert_id] = round_expert_rows[best_round].get(bucket.expert_id, 0) + int(bucket.payload_rows)
-    pressure = []
-    for round_index, buckets_in_round in enumerate(rounds):
-        pressure.append(
+        ]
+        strong_sort = _round_pressure_from_rounds(plan, release_rounds_for_order(strong_sort_order, round_size))
+        strong_pack = _greedy_minimax_round_pack(
+            plan.bucket_workloads,
+            round_size=round_size,
+            runtime_state=None,
+            policy_seed=seed + plan.microbatch_id,
+            arrival_jitter_mode=str(plan.routing_summary.get("arrival_jitter_mode", "none")),
+            oracle=False,
+        )
+        oracle = oracle_minimax_round_packer(plan, round_size)
+        fifo_pressure = float(fifo["round_pressure"])
+        random_pressure = float(random_diag["round_pressure"])
+        oracle_pressure = float(oracle["peak_bottleneck_pressure"])
+        oracle_gap_vs_fifo = (fifo_pressure - oracle_pressure) / max(fifo_pressure, 1e-9)
+        oracle_gap_vs_random = (random_pressure - oracle_pressure) / max(random_pressure, 1e-9)
+        mega_bucket = _non_schedulable_mega_bucket(plan, round_size)
+        alternative_flows = len({(bucket.destination_rank, bucket.expert_id) for bucket in plan.bucket_workloads}) >= 2
+        schedulable = bool(
+            oracle_gap_vs_fifo >= 0.15
+            and oracle_gap_vs_random >= 0.10
+            and not mega_bucket
+            and alternative_flows
+        )
+        if schedulable:
+            schedulable_votes += 1
+        per_plan.append(
             {
-                "round_index": round_index,
-                "bucket_ids": [bucket.bucket_id for bucket in buckets_in_round],
-                "max_destination_inbound_bytes": max(round_rank_bytes[round_index]) if round_rank_bytes[round_index] else 0,
-                "max_source_outbound_bytes": max(round_source_bytes[round_index]) if round_source_bytes[round_index] else 0,
-                "max_expert_rows": max(round_expert_rows[round_index].values(), default=0),
+                "plan_id": plan.plan_id,
+                "fifo_pressure": fifo_pressure,
+                "random_pressure": random_pressure,
+                "strong_state_sort_pressure": float(strong_sort["round_pressure"]),
+                "strong_state_packer_pressure": float(strong_pack["round_pressure_score"]),
+                "oracle_pressure": oracle_pressure,
+                "oracle_gap_vs_fifo": oracle_gap_vs_fifo,
+                "oracle_gap_vs_random": oracle_gap_vs_random,
+                "mega_bucket_dominated": mega_bucket,
+                "alternative_flow_count": len({(bucket.destination_rank, bucket.expert_id) for bucket in plan.bucket_workloads}),
+                "schedulable": schedulable,
             }
         )
     return {
-        "release_rounds": [[bucket.bucket_id for bucket in buckets_in_round] for buckets_in_round in rounds],
-        "pressure": pressure,
-        "peak_bottleneck_pressure": max(
-            max(item["max_destination_inbound_bytes"], item["max_source_outbound_bytes"], item["max_expert_rows"] * 2)
-            for item in pressure
-        ) if pressure else 0.0,
+        "per_plan": per_plan,
+        "schedulable": bool(per_plan) and schedulable_votes >= max(1, len(per_plan) // 2),
+        "round_size": round_size,
+        "schedulable_fraction": (schedulable_votes / len(per_plan)) if per_plan else 0.0,
     }
 
 
@@ -648,4 +739,3 @@ def save_plan_snapshot_bundle(path: str | Path, plans: list[WorkloadPlan], manif
         ),
         encoding="utf-8",
     )
-

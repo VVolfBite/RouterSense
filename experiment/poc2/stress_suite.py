@@ -24,6 +24,7 @@ from routesense_poc2.stress import (
     hash_json,
     plan_rank_metrics,
     placement_hash,
+    scenario_admissibility,
     save_plan_snapshot_bundle,
     scenario_manifest,
     scenario_trace_bundle_hash,
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--world-size", type=int, default=4)
     parser.add_argument("--target-rank", type=int, default=2)
     parser.add_argument("--origin-sharding", choices=["contiguous", "round-robin"], default="round-robin")
+    parser.add_argument("--arrival-jitter", choices=["none", "mild", "moderate"], default="none")
+    parser.add_argument("--release-round-size", type=int, default=4)
     args = parser.parse_args(argv)
 
     protocol = ProtocolConfig(
@@ -95,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         phase_source_plans, episode_rows = build_burst_episode_schedule(remapped_eval, target_rank=target_rank)
         phase_lookup = {row["source_plan_id"]: row["phase"] for row in episode_rows}
         episode_plans = clone_episode_plans(phase_source_plans, placement, scenario_id=f"{scenario_id}_episode", phase_lookup=phase_lookup)
+        for plan in episode_plans:
+            plan.routing_summary["arrival_jitter_mode"] = args.arrival_jitter
         scenario_info = scenario_manifest(
             scenario_id=scenario_id,
             plans=episode_plans,
@@ -102,11 +107,17 @@ def main(argv: list[str] | None = None) -> int:
             episode_rows=episode_rows,
             target_rank=target_rank,
         )
+        scenario_info["scenario_admissibility"] = scenario_admissibility(
+            episode_plans,
+            round_size=args.release_round_size,
+            seed=args.seed,
+        )
         scenario_info["strength_target_range"] = TARGET_SKEW_RANGES[strength]
         scenario_info["placement_policy"] = strength
         scenario_info["observed_skew_metrics"] = observed
         scenario_info["calibration_plan_ids"] = [plan.plan_id for plan in calibration]
         scenario_info["evaluation_plan_ids"] = [plan.plan_id for plan in evaluation]
+        scenario_info["arrival_jitter_mode"] = args.arrival_jitter
         scenario_rows.append(scenario_info)
         snapshot_path = artifact_dir / f"{scenario_id}_plan_snapshot.json"
         save_plan_snapshot_bundle(
@@ -176,4 +187,3 @@ def create_workload_plans_local(protocol: ProtocolConfig):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

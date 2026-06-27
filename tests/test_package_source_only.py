@@ -14,3 +14,13 @@ def test_package_source_only_excludes_runtime_dirs(tmp_path):
     assert "artifacts/" not in listing
     assert ".pytest_cache/" not in listing
     assert "__pycache__/" not in listing
+    assert "src/routesense_poc2/stress.py" in listing
+    assert "experiment/poc2/stress_suite.py" in listing
+    assert "experiment/poc2/analyze_dependency_predictiveness.py" in listing
+    assert "experiment/poc2/analyze_stress_results.py" in listing
+    assert "docs/poc2_stress_suite_contract.md" in listing
+    assert "PACKAGE_MANIFEST.sha256" in listing
+
+    manifest = subprocess.check_output(["tar", "-xOzf", str(archive), "PACKAGE_MANIFEST.sha256"], text=True)
+    assert "src/routesense_poc2/stress.py" in manifest
+    assert "experiment/poc2/stress_suite.py" in manifest

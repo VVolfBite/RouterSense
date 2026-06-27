@@ -21,11 +21,15 @@ from .scheduler import BucketRecord, RuntimeState, SchedulerInput, create_schedu
 
 
 PLACEMENT_POLICIES = {"modulo", "balanced", "hotspot"}
+EMPTY_RUNTIME_STATE = RuntimeState()
 STRATEGIES = [
     "fifo",
     "random-order",
     "state-only",
     "strong-state",
+    "strong-state-sort",
+    "strong-state-packer",
+    "oracle-minimax-packer",
     "lina-inspired",
     "dependency-only",
     "shuffled-dependency",
@@ -265,6 +269,8 @@ class GlobalDispatchPlan:
     decision_hash: str
     scheduler_state_snapshot: dict[str, Any]
     scheduler_decision: dict[str, Any]
+    round_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    round_pressure_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -272,6 +278,30 @@ class GlobalDispatchPlan:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GlobalDispatchPlan":
         return cls(**payload)
+
+
+def canonical_global_plan_payload(plan: GlobalDispatchPlan) -> dict[str, Any]:
+    return {
+        "plan_id": plan.plan_id,
+        "workload_plan_id": plan.workload_plan_id,
+        "policy_name": plan.policy_name,
+        "policy_seed": plan.policy_seed,
+        "microbatch_id": plan.microbatch_id,
+        "release_order": list(plan.release_order),
+        "release_rounds": [list(item) for item in plan.release_rounds],
+        "total_dispatch_matrix": [list(row) for row in plan.total_dispatch_matrix],
+        "per_round_dispatch_matrices": [
+            [list(row) for row in matrix] for matrix in plan.per_round_dispatch_matrices
+        ],
+        "scheduler_state_snapshot": dict(plan.scheduler_state_snapshot),
+        "scheduler_decision": dict(plan.scheduler_decision),
+        "round_diagnostics": list(plan.round_diagnostics),
+        "round_pressure_score": float(plan.round_pressure_score),
+    }
+
+
+def canonical_global_plan_hash(plan: GlobalDispatchPlan) -> str:
+    return _hash_payload(canonical_global_plan_payload(plan))
 
 
 @dataclass
@@ -409,6 +439,237 @@ def strong_state_score_for_bucket(bucket: WorkloadBucket, runtime_state: Runtime
         - 0.05 * expert_queue_norm
         - 0.03 * history_norm
     )
+
+
+def _bucket_projected_state_features(bucket: WorkloadBucket | BucketRecord, runtime_state: RuntimeState | None = None) -> dict[str, float]:
+    flow_key = f"{bucket.origin_rank}->{bucket.destination_rank}"
+    return_key = f"{bucket.destination_rank}->{bucket.origin_rank}"
+    runtime_state = runtime_state if runtime_state is not None else EMPTY_RUNTIME_STATE
+    source_outbound = max(float(getattr(bucket, "source_outbound_pending_bytes", 0.0)), float(runtime_state.source_outbound_pending_bytes.get(bucket.origin_rank, 0.0)))
+    destination_inbound = max(float(getattr(bucket, "destination_inbound_pending_bytes", 0.0)), float(runtime_state.destination_inbound_pending_bytes.get(bucket.destination_rank, 0.0)))
+    flow_pending = max(float(getattr(bucket, "flow_pending_bytes", 0.0)), float(runtime_state.flow_pending_bytes.get(flow_key, 0.0)))
+    return_flow = max(float(getattr(bucket, "return_flow_pending_bytes", 0.0)), float(runtime_state.return_flow_pending_bytes.get(return_key, 0.0)))
+    rank_compute_rows = max(float(getattr(bucket, "rank_compute_queue_rows", 0.0)), float(runtime_state.rank_compute_queue_rows.get(bucket.destination_rank, 0.0)))
+    expert_pending_rows = max(float(getattr(bucket, "expert_pending_rows", 0.0)), float(runtime_state.expert_pending_rows.get(bucket.expert_id, 0.0)))
+    dispatch_history = float(runtime_state.rank_dispatch_time_ms.get(bucket.origin_rank, 0.0))
+    compute_history = float(runtime_state.rank_compute_time_ms.get(bucket.destination_rank, 0.0))
+    return_history = float(runtime_state.rank_return_time_ms.get(bucket.destination_rank, 0.0))
+    return {
+        "source_outbound_pending_bytes": source_outbound,
+        "destination_inbound_pending_bytes": destination_inbound,
+        "flow_pending_bytes": flow_pending,
+        "return_flow_pending_bytes": return_flow,
+        "rank_compute_queue_rows": rank_compute_rows,
+        "expert_pending_rows": expert_pending_rows,
+        "dispatch_history_ms": dispatch_history,
+        "compute_history_ms": compute_history,
+        "return_history_ms": return_history,
+    }
+
+
+def _stable_bucket_order_key(bucket: WorkloadBucket | BucketRecord) -> tuple[int, str]:
+    token_anchor = min(getattr(bucket, "token_positions", []) or [0])
+    return (int(getattr(bucket, "arrival_index", token_anchor)), str(bucket.bucket_id))
+
+
+def _arrival_jitter_offset(bucket: WorkloadBucket, *, mode: str, seed: int) -> int:
+    normalized = str(mode).strip().lower()
+    if normalized == "none":
+        return 0
+    scale = {"mild": 3, "moderate": 7}.get(normalized)
+    if scale is None:
+        raise ValueError(f"unsupported source arrival jitter mode: {mode}")
+    first_token_ordinal = min(bucket.token_positions) if bucket.token_positions else 0
+    jitter_seed = hash((seed, bucket.origin_rank, bucket.microbatch_id, first_token_ordinal))
+    rng = random.Random(jitter_seed)
+    return int(rng.randint(0, scale))
+
+
+def _with_arrival_jitter(
+    buckets: list[WorkloadBucket],
+    *,
+    mode: str,
+    seed: int,
+) -> list[WorkloadBucket]:
+    if mode == "none":
+        return list(buckets)
+    adjusted = [WorkloadBucket(**asdict(bucket)) for bucket in buckets]
+    ordered = sorted(
+        adjusted,
+        key=lambda bucket: (
+            bucket.origin_rank,
+            bucket.microbatch_id,
+            min(bucket.token_positions) if bucket.token_positions else 0,
+            bucket.bucket_id,
+        ),
+    )
+    for index, bucket in enumerate(ordered):
+        bucket.arrival_index = index + _arrival_jitter_offset(bucket, mode=mode, seed=seed)
+    return sorted(ordered, key=_stable_bucket_order_key)
+
+
+def _pack_rounds_from_order(bucket_ids: list[str], round_size: int) -> list[list[str]]:
+    normalized = max(1, int(round_size))
+    return [bucket_ids[index : index + normalized] for index in range(0, len(bucket_ids), normalized)]
+
+
+def _round_pressure_components(
+    round_buckets: list[WorkloadBucket | BucketRecord],
+    runtime_state: RuntimeState | None = None,
+) -> dict[str, Any]:
+    source_increment: dict[int, float] = {}
+    destination_increment: dict[int, float] = {}
+    flow_increment: dict[str, float] = {}
+    expert_increment: dict[int, float] = {}
+    rank_increment: dict[int, float] = {}
+    fragment_count = 0.0
+    total_payload_bytes = float(sum(max(1, int(bucket.payload_bytes)) for bucket in round_buckets))
+    total_payload_rows = float(sum(max(1, int(bucket.payload_rows)) for bucket in round_buckets))
+    total_flow_bytes = float(sum(max(1, int(bucket.payload_bytes)) for bucket in round_buckets))
+    runtime_state = runtime_state if runtime_state is not None else EMPTY_RUNTIME_STATE
+    for bucket in round_buckets:
+        source_increment[bucket.origin_rank] = source_increment.get(bucket.origin_rank, 0.0) + float(bucket.payload_bytes)
+        destination_increment[bucket.destination_rank] = destination_increment.get(bucket.destination_rank, 0.0) + float(bucket.payload_bytes)
+        flow_key = f"{bucket.origin_rank}->{bucket.destination_rank}"
+        flow_increment[flow_key] = flow_increment.get(flow_key, 0.0) + float(bucket.payload_bytes)
+        expert_increment[bucket.expert_id] = expert_increment.get(bucket.expert_id, 0.0) + float(bucket.payload_rows)
+        rank_increment[bucket.destination_rank] = rank_increment.get(bucket.destination_rank, 0.0) + float(bucket.payload_rows)
+        if bucket.origin_rank != bucket.destination_rank:
+            fragment_count += 1.0
+
+    historical_source = {int(key): float(value) for key, value in runtime_state.source_outbound_pending_bytes.items()}
+    historical_destination = {int(key): float(value) for key, value in runtime_state.destination_inbound_pending_bytes.items()}
+    historical_flow = {str(key): float(value) for key, value in runtime_state.flow_pending_bytes.items()}
+    historical_expert = {int(key): float(value) for key, value in runtime_state.expert_pending_rows.items()}
+    historical_rank = {int(key): float(value) for key, value in runtime_state.rank_compute_queue_rows.items()}
+    historical_return = {str(key): float(value) for key, value in runtime_state.return_flow_pending_bytes.items()}
+
+    source_totals = {key: historical_source.get(key, 0.0) + source_increment.get(key, 0.0) for key in set(historical_source) | set(source_increment)}
+    destination_totals = {key: historical_destination.get(key, 0.0) + destination_increment.get(key, 0.0) for key in set(historical_destination) | set(destination_increment)}
+    flow_totals = {
+        key: historical_flow.get(key, 0.0) + flow_increment.get(key, 0.0)
+        for key in set(historical_flow) | set(flow_increment)
+    }
+    expert_totals = {key: historical_expert.get(key, 0.0) + expert_increment.get(key, 0.0) for key in set(historical_expert) | set(expert_increment)}
+    rank_totals = {key: historical_rank.get(key, 0.0) + rank_increment.get(key, 0.0) for key in set(historical_rank) | set(rank_increment)}
+
+    normalization = {
+        "bytes": max(total_payload_bytes, 1.0),
+        "rows": max(total_payload_rows, 1.0),
+        "flow_bytes": max(total_flow_bytes, 1.0),
+    }
+    return {
+        "round_increment_components": {
+            "source_outbound_bytes": source_increment,
+            "destination_inbound_bytes": destination_increment,
+            "flow_bytes": flow_increment,
+            "expert_rows": expert_increment,
+            "rank_compute_rows": rank_increment,
+            "return_flow_bytes": historical_return,
+        },
+        "historical_baseline_components": {
+            "source_outbound_bytes": historical_source,
+            "destination_inbound_bytes": historical_destination,
+            "flow_bytes": historical_flow,
+            "expert_rows": historical_expert,
+            "rank_compute_rows": historical_rank,
+            "return_flow_bytes": historical_return,
+        },
+        "round_pressure_components": {
+            "max_source_outbound_bytes_norm": max(source_totals.values(), default=0.0) / normalization["bytes"],
+            "max_destination_inbound_bytes_norm": max(destination_totals.values(), default=0.0) / normalization["bytes"],
+            "max_flow_bytes_norm": max(flow_totals.values(), default=0.0) / normalization["flow_bytes"],
+            "max_expert_rows_norm": max(expert_totals.values(), default=0.0) / normalization["rows"],
+            "max_rank_compute_rows_norm": max(rank_totals.values(), default=0.0) / normalization["rows"],
+            "split_fragmentation_penalty_norm": fragment_count / max(1.0, float(len(round_buckets))),
+        },
+        "normalization_constants": normalization,
+    }
+
+
+def _round_pressure_objective(
+    round_buckets: list[WorkloadBucket | BucketRecord],
+    runtime_state: RuntimeState | None = None,
+) -> tuple[float, dict[str, float]]:
+    components = _round_pressure_components(round_buckets, runtime_state)
+    objective = sum(float(value) for value in components["round_pressure_components"].values())
+    return objective, components
+
+
+def _greedy_minimax_round_pack(
+    buckets: list[WorkloadBucket | BucketRecord],
+    *,
+    round_size: int,
+    runtime_state: RuntimeState | None,
+    policy_seed: int,
+    arrival_jitter_mode: str = "none",
+    oracle: bool = False,
+) -> dict[str, Any]:
+    materialized = list(buckets)
+    if materialized and isinstance(materialized[0], WorkloadBucket):
+        candidate_buckets = _with_arrival_jitter(materialized, mode=arrival_jitter_mode, seed=policy_seed)
+    else:
+        candidate_buckets = sorted(materialized, key=_stable_bucket_order_key)
+    remaining = list(candidate_buckets)
+    rounds: list[list[WorkloadBucket | BucketRecord]] = []
+    effective_state = runtime_state if runtime_state is not None else EMPTY_RUNTIME_STATE
+    while remaining:
+        current_round: list[WorkloadBucket] = []
+        while remaining and len(current_round) < max(1, int(round_size)):
+            best_bucket: WorkloadBucket | BucketRecord | None = None
+            best_key: tuple[float, float, int, str] | None = None
+            for bucket in remaining:
+                trial_round = current_round + [bucket]
+                objective, components = _round_pressure_objective(trial_round, effective_state)
+                imbalance_focus = max(
+                    components["round_pressure_components"]["max_destination_inbound_bytes_norm"],
+                    components["round_pressure_components"]["max_source_outbound_bytes_norm"],
+                    components["round_pressure_components"]["max_flow_bytes_norm"],
+                    components["round_pressure_components"]["max_expert_rows_norm"],
+                    components["round_pressure_components"]["max_rank_compute_rows_norm"],
+                )
+                if oracle:
+                    future_bytes = sum(float(other.payload_bytes) for other in remaining if other.bucket_id != bucket.bucket_id and other.destination_rank == bucket.destination_rank)
+                    future_rows = sum(float(other.payload_rows) for other in remaining if other.bucket_id != bucket.bucket_id and other.expert_id == bucket.expert_id)
+                    objective += future_bytes / max(1.0, sum(float(item.payload_bytes) for item in remaining))
+                    objective += future_rows / max(1.0, sum(float(item.payload_rows) for item in remaining))
+                key = (
+                    float(objective),
+                    float(imbalance_focus),
+                    int(getattr(bucket, "arrival_index", 0)),
+                    str(bucket.bucket_id),
+                )
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_bucket = bucket
+            assert best_bucket is not None
+            current_round.append(best_bucket)
+            remaining = [bucket for bucket in remaining if bucket.bucket_id != best_bucket.bucket_id]
+        rounds.append(sorted(current_round, key=_stable_bucket_order_key))
+    release_rounds = [[bucket.bucket_id for bucket in round_buckets] for round_buckets in rounds]
+    release_order = [bucket_id for round_ids in release_rounds for bucket_id in round_ids]
+    round_diagnostics = []
+    for round_index, round_buckets in enumerate(rounds):
+        objective, components = _round_pressure_objective(round_buckets, effective_state)
+        round_diagnostics.append(
+            {
+                "round_index": round_index,
+                "bucket_ids": [bucket.bucket_id for bucket in round_buckets],
+                "objective": float(objective),
+                "round_pressure_components": {
+                    key: float(value) for key, value in components["round_pressure_components"].items()
+                },
+                "historical_baseline_components": components["historical_baseline_components"],
+                "round_increment_components": components["round_increment_components"],
+                "normalization_constants": components["normalization_constants"],
+            }
+        )
+    return {
+        "release_order": release_order,
+        "release_rounds": release_rounds,
+        "round_diagnostics": round_diagnostics,
+        "round_pressure_score": max((float(item["objective"]) for item in round_diagnostics), default=0.0),
+    }
 
 
 def lina_inspired_score_for_bucket(bucket: WorkloadBucket, runtime_state: RuntimeState | None = None) -> float:
@@ -1840,10 +2101,14 @@ def build_global_dispatch_plan(
         layer_path=plan.layer_path,
         bucket_records=bucket_records,
         runtime_state=scheduler_state,
-        metadata={"plan_id": plan.plan_id},
+        metadata={
+            "plan_id": plan.plan_id,
+            "release_round_size": protocol.release_round_size,
+            "arrival_jitter_mode": plan.routing_summary.get("arrival_jitter_mode", "none"),
+        },
     )
     decision = _build_policy_decision(strategy, scheduler_input, plan, scheduler_state, repetition_index)
-    release_rounds = _calc_release_rounds(decision.release_order, protocol.release_round_size)
+    release_rounds = [list(item) for item in getattr(decision, "release_rounds", _calc_release_rounds(decision.release_order, protocol.release_round_size))]
     lookup = _bucket_lookup(plan)
     per_round_dispatch_matrices = []
     total_dispatch_matrix = _matrix_zeros(protocol.world_size)
@@ -1857,20 +2122,7 @@ def build_global_dispatch_plan(
         )
         per_round_dispatch_matrices.append(rows_matrix)
         total_dispatch_matrix = _sum_matrix(total_dispatch_matrix, rows_matrix)
-    plan_payload = {
-        "workload_plan_id": plan.plan_id,
-        "policy_name": strategy,
-        "policy_seed": plan.seed + repetition_index,
-        "microbatch_id": plan.microbatch_id,
-        "release_order": list(decision.release_order),
-        "release_rounds": [list(item) for item in release_rounds],
-        "total_dispatch_matrix": total_dispatch_matrix,
-        "per_round_dispatch_matrices": per_round_dispatch_matrices,
-        "scheduler_state_snapshot": global_state.to_dict(),
-        "scheduler_decision": decision.to_dict(),
-    }
-    decision_hash = _hash_payload(plan_payload)
-    return GlobalDispatchPlan(
+    plan_payload = GlobalDispatchPlan(
         plan_id=f"{plan.plan_id}_{strategy}_rep{repetition_index}",
         workload_plan_id=plan.plan_id,
         policy_name=strategy,
@@ -1880,10 +2132,14 @@ def build_global_dispatch_plan(
         release_rounds=[list(item) for item in release_rounds],
         total_dispatch_matrix=total_dispatch_matrix,
         per_round_dispatch_matrices=per_round_dispatch_matrices,
-        decision_hash=decision_hash,
+        decision_hash="",
         scheduler_state_snapshot=global_state.to_dict(),
         scheduler_decision=decision.to_dict(),
+        round_diagnostics=list(getattr(decision, "round_diagnostics", [])),
+        round_pressure_score=float(getattr(decision, "round_pressure_score", 0.0)),
     )
+    plan_payload.decision_hash = canonical_global_plan_hash(plan_payload)
+    return plan_payload
 
 
 def broadcast_global_dispatch_plan(global_plan: GlobalDispatchPlan | None) -> GlobalDispatchPlan:
@@ -1892,20 +2148,7 @@ def broadcast_global_dispatch_plan(global_plan: GlobalDispatchPlan | None) -> Gl
     if payloads[0] is None:
         raise RuntimeError("global dispatch plan broadcast failed")
     plan = GlobalDispatchPlan.from_dict(payloads[0])
-    local_hash = _hash_payload(
-        {
-            "workload_plan_id": plan.workload_plan_id,
-            "policy_name": plan.policy_name,
-            "policy_seed": plan.policy_seed,
-            "microbatch_id": plan.microbatch_id,
-            "release_order": plan.release_order,
-            "release_rounds": plan.release_rounds,
-            "total_dispatch_matrix": plan.total_dispatch_matrix,
-            "per_round_dispatch_matrices": plan.per_round_dispatch_matrices,
-            "scheduler_state_snapshot": plan.scheduler_state_snapshot,
-            "scheduler_decision": plan.scheduler_decision,
-        }
-    )
+    local_hash = canonical_global_plan_hash(plan)
     gathered = _all_gather_object(local_hash)
     if any(item != plan.decision_hash for item in gathered):
         raise RuntimeError(f"global dispatch plan hash mismatch across ranks: {gathered} vs {plan.decision_hash}")
@@ -2710,6 +2953,32 @@ def _build_policy_decision(
     buckets = plan.bucket_workloads
     if strategy in {"fifo", "state-only", "dependency-only", "full"}:
         return create_scheduler(strategy).build_decision(scheduler_input)
+    if strategy == "strong-state-sort":
+        ordered = _order_by_score(
+            buckets,
+            lambda bucket: strong_state_score_for_bucket(bucket, runtime_state),
+        )
+        return _decision_from_order(strategy, scheduler_input, ordered)
+    if strategy == "strong-state-packer":
+        packed = _greedy_minimax_round_pack(
+            buckets,
+            round_size=scheduler_input.metadata.get("release_round_size", 4),
+            runtime_state=runtime_state,
+            policy_seed=plan.seed + repetition_index,
+            arrival_jitter_mode=str(scheduler_input.metadata.get("arrival_jitter_mode", "none")),
+            oracle=False,
+        )
+        return _decision_from_rounds(strategy, scheduler_input, packed["release_rounds"], packed)
+    if strategy == "oracle-minimax-packer":
+        packed = _greedy_minimax_round_pack(
+            buckets,
+            round_size=scheduler_input.metadata.get("release_round_size", 4),
+            runtime_state=runtime_state,
+            policy_seed=plan.seed + repetition_index,
+            arrival_jitter_mode=str(scheduler_input.metadata.get("arrival_jitter_mode", "none")),
+            oracle=True,
+        )
+        return _decision_from_rounds(strategy, scheduler_input, packed["release_rounds"], packed)
     if strategy == "random-order":
         ordered = random_order([bucket.bucket_id for bucket in buckets], plan.seed + repetition_index)
         return _decision_from_order(strategy, scheduler_input, ordered)
@@ -2767,6 +3036,15 @@ def _decision_from_order(strategy: str, scheduler_input: SchedulerInput, release
         rank_service_order=rank_service_order,
         bucket_decisions=ordered,
     )
+
+
+def _decision_from_rounds(strategy: str, scheduler_input: SchedulerInput, release_rounds: list[list[str]], packed: dict[str, Any]) -> Any:
+    release_order = [bucket_id for round_ids in release_rounds for bucket_id in round_ids]
+    decision = _decision_from_order(strategy, scheduler_input, release_order)
+    setattr(decision, "release_rounds", [list(round_ids) for round_ids in release_rounds])
+    setattr(decision, "round_diagnostics", list(packed.get("round_diagnostics", [])))
+    setattr(decision, "round_pressure_score", float(packed.get("round_pressure_score", 0.0)))
+    return decision
 
 
 def environment_snapshot(world_size: int) -> dict[str, Any]:

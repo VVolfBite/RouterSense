@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import copy
+
 from routesense_poc2.distributed_runtime import (
     benchmark_preflight,
     build_canonical_round_layout,
+    canonical_global_plan_hash,
+    canonical_global_plan_payload,
     decode_metadata_tensor_rows,
     expected_route_item_manifest,
+    GlobalDispatchPlan,
     GlobalRuntimeState,
     PlacementEntry,
     WorkloadBucket,
@@ -22,6 +27,7 @@ from routesense_poc2.distributed_runtime import (
     _position_effects,
     assign_origin_rank_from_ordinal,
     build_global_dispatch_plan,
+    broadcast_global_dispatch_plan,
     build_workload_plan,
     dependency_score_for_bucket,
     available_audit_strategies,
@@ -37,6 +43,7 @@ from routesense_poc2.distributed_runtime import (
     shuffled_dependency_order,
     strong_state_score_for_bucket,
     lina_inspired_score_for_bucket,
+    _greedy_minimax_round_pack,
     update_global_runtime_state,
 )
 from routesense_poc2.stress import (
@@ -86,7 +93,8 @@ def test_counterbalanced_orders_rotate():
 def test_resolve_strategy_orders_randomized_has_right_count():
     orders = resolve_strategy_orders("randomized", 3, 42)
     assert len(orders) == 3
-    assert all(len(order) == 9 for order in orders)
+    assert all(len(order) == len(orders[0]) for order in orders)
+    assert len(orders[0]) >= 9
 
 
 def test_state_meaningful_flag():
@@ -487,6 +495,141 @@ def test_strong_state_changes_with_global_flow_fields():
     assert strong_state_score_for_bucket(base, low) != strong_state_score_for_bucket(base, high)
 
 
+def test_strong_state_sort_defect_projected_bucket_fields_do_not_change_score():
+    runtime_state = RuntimeState()
+    base = WorkloadBucket(
+        bucket_id="x",
+        route_id="rx",
+        token_ids=[0],
+        token_positions=[0],
+        origin_rank=0,
+        destination_id=0,
+        destination_rank=1,
+        expert_id=2,
+        layer_id=0,
+        microbatch_id=0,
+        token_count=4,
+        payload_rows=4,
+        hidden_dim=64,
+        intermediate_dim=128,
+        estimated_service_units=2.0,
+        payload_bytes=4 * 64 * 2,
+        source_count=2,
+        source_coverage=0.1,
+        coactive_peer_degree=0.1,
+        coactive_event_density=0.1,
+        position_spread=0.1,
+        bridge_score=0.1,
+        route_share=0.4,
+        density_over_mean=0.5,
+        size_norm=0.6,
+        inverse_size_rank_norm=0.7,
+        is_hot_bucket=False,
+    )
+    mutated = copy.deepcopy(base)
+    mutated.flow_pending_bytes = float(1 << 20)
+    mutated.destination_inbound_pending_bytes = float(1 << 20)
+    assert strong_state_score_for_bucket(base, runtime_state) == strong_state_score_for_bucket(mutated, runtime_state)
+
+
+def test_strong_state_packer_changes_choice_with_projected_pressure_not_dependency():
+    buckets = [
+        BucketRecord(
+            bucket_id="hot",
+            route_item_ids=["r0"],
+            route_item_indices=[0],
+            origin_rank=0,
+            destination_id=3,
+            destination_rank=1,
+            expert_id=3,
+            arrival_index=0,
+            token_count=1,
+            payload_rows=4,
+            payload_bytes=512,
+            source_coverage=0.0,
+            coactive_peer_degree=0.0,
+            coactive_event_density=0.0,
+            position_spread=0.0,
+            bridge_score=0.0,
+            route_share=0.2,
+            density_over_mean=0.2,
+            size_norm=0.3,
+            inverse_size_rank_norm=0.6,
+            flow_pending_bytes=float(1 << 20),
+            destination_inbound_pending_bytes=float(1 << 20),
+        ),
+        BucketRecord(
+            bucket_id="cool",
+            route_item_ids=["r1"],
+            route_item_indices=[1],
+            origin_rank=1,
+            destination_id=4,
+            destination_rank=0,
+            expert_id=4,
+            arrival_index=1,
+            token_count=1,
+            payload_rows=4,
+            payload_bytes=512,
+            source_coverage=0.9,
+            coactive_peer_degree=0.9,
+            coactive_event_density=0.9,
+            position_spread=0.9,
+            bridge_score=0.9,
+            route_share=0.2,
+            density_over_mean=0.2,
+            size_norm=0.3,
+            inverse_size_rank_norm=0.6,
+        ),
+    ]
+    packed = _greedy_minimax_round_pack(buckets, round_size=1, runtime_state=RuntimeState(), policy_seed=7, arrival_jitter_mode="none", oracle=False)
+    assert set(packed["release_order"]) == {"hot", "cool"}
+    dep_mutated = [copy.deepcopy(bucket) for bucket in buckets]
+    dep_mutated[0].source_coverage = 0.99
+    dep_mutated[0].coactive_peer_degree = 0.99
+    dep_mutated[0].bridge_score = 0.99
+    dep_mutated[1].source_coverage = 0.01
+    dep_mutated[1].coactive_peer_degree = 0.01
+    dep_mutated[1].bridge_score = 0.01
+    packed_dep = _greedy_minimax_round_pack(dep_mutated, round_size=1, runtime_state=RuntimeState(), policy_seed=7, arrival_jitter_mode="none", oracle=False)
+    assert packed_dep["release_order"] == packed["release_order"]
+
+
+def test_source_arrival_jitter_does_not_depend_on_destination_rank():
+    left = WorkloadBucket(
+        bucket_id="a",
+        route_id="ra",
+        token_ids=[0],
+        token_positions=[5],
+        origin_rank=1,
+        destination_id=1,
+        destination_rank=0,
+        expert_id=1,
+        layer_id=0,
+        microbatch_id=2,
+        token_count=1,
+        payload_rows=1,
+        hidden_dim=64,
+        intermediate_dim=128,
+        estimated_service_units=1.0,
+        payload_bytes=128,
+        source_count=1,
+        source_coverage=0.0,
+        coactive_peer_degree=0.0,
+        coactive_event_density=0.0,
+        position_spread=0.0,
+        bridge_score=0.0,
+        route_share=0.1,
+        density_over_mean=0.1,
+        size_norm=0.1,
+        inverse_size_rank_norm=0.1,
+        is_hot_bucket=False,
+    )
+    right = WorkloadBucket(**{**left.__dict__, "destination_rank": 3, "destination_id": 9, "expert_id": 9})
+    packed_left = _greedy_minimax_round_pack([left], round_size=1, runtime_state=RuntimeState(), policy_seed=11, arrival_jitter_mode="moderate", oracle=False)
+    packed_right = _greedy_minimax_round_pack([right], round_size=1, runtime_state=RuntimeState(), policy_seed=11, arrival_jitter_mode="moderate", oracle=False)
+    assert packed_left["release_order"] == packed_right["release_order"]
+
+
 def test_paired_matches_by_key_and_flags_distribution_asymmetry():
     left = [
         {"repetition_index": 0, "microbatch_id": 0, "plan_id": "p0", "end_to_end_batch_completion_ms": -10.0, "strategy": "a", "strategy_order": ["a", "b"]},
@@ -630,6 +773,74 @@ def test_non_rank0_may_not_generate_global_dispatch_plan():
             pass
     finally:
         runtime.dist.get_rank = original
+
+
+def test_global_dispatch_plan_round_diagnostics_survive_dict_roundtrip():
+    plan = GlobalDispatchPlan(
+        plan_id="p",
+        workload_plan_id="w",
+        policy_name="strong-state-packer",
+        policy_seed=1,
+        microbatch_id=0,
+        release_order=["b0"],
+        release_rounds=[["b0"]],
+        total_dispatch_matrix=[[1]],
+        per_round_dispatch_matrices=[[[1]]],
+        decision_hash="abc",
+        scheduler_state_snapshot={"x": 1},
+        scheduler_decision={"y": 2},
+        round_diagnostics=[{"round_index": 0, "objective": 1.25}],
+        round_pressure_score=1.25,
+    )
+    cloned = GlobalDispatchPlan.from_dict(plan.to_dict())
+    assert cloned.round_diagnostics == [{"round_index": 0, "objective": 1.25}]
+    assert cloned.round_pressure_score == 1.25
+    assert canonical_global_plan_hash(cloned) == canonical_global_plan_hash(plan)
+
+
+def test_global_dispatch_plan_hash_changes_with_round_diagnostics_and_pressure():
+    plan = GlobalDispatchPlan(
+        plan_id="p",
+        workload_plan_id="w",
+        policy_name="strong-state-packer",
+        policy_seed=1,
+        microbatch_id=0,
+        release_order=["b0"],
+        release_rounds=[["b0"]],
+        total_dispatch_matrix=[[1]],
+        per_round_dispatch_matrices=[[[1]]],
+        decision_hash="",
+        scheduler_state_snapshot={"x": 1},
+        scheduler_decision={"y": 2},
+        round_diagnostics=[{"round_index": 0, "objective": 1.25}],
+        round_pressure_score=1.25,
+    )
+    plan.decision_hash = canonical_global_plan_hash(plan)
+    mutated_diag = GlobalDispatchPlan.from_dict(plan.to_dict())
+    mutated_diag.round_diagnostics = [{"round_index": 0, "objective": 2.25}]
+    mutated_pressure = GlobalDispatchPlan.from_dict(plan.to_dict())
+    mutated_pressure.round_pressure_score = 2.25
+    assert canonical_global_plan_hash(mutated_diag) != plan.decision_hash
+    assert canonical_global_plan_hash(mutated_pressure) != plan.decision_hash
+
+
+def test_canonical_global_plan_payload_excludes_decision_hash():
+    plan = GlobalDispatchPlan(
+        plan_id="p",
+        workload_plan_id="w",
+        policy_name="fifo",
+        policy_seed=1,
+        microbatch_id=0,
+        release_order=["b0"],
+        release_rounds=[["b0"]],
+        total_dispatch_matrix=[[1]],
+        per_round_dispatch_matrices=[[[1]]],
+        decision_hash="abc",
+        scheduler_state_snapshot={},
+        scheduler_decision={},
+    )
+    payload = canonical_global_plan_payload(plan)
+    assert "decision_hash" not in payload
 
 
 def test_global_dispatch_plan_hash_is_stable():
@@ -1070,6 +1281,7 @@ def test_metadata_tensor_to_dicts_fails_on_tampered_destination():
 
 
 def test_benchmark_preflight_reports_stable_contract():
+    import os
     import torch
 
     plan = WorkloadPlan(
@@ -1131,7 +1343,13 @@ def test_benchmark_preflight_reports_stable_contract():
         },
     )()
     protocol = ProtocolConfig(model_key="olmoe", model_path="/tmp", output_dir="/tmp/out", artifact_dir="/tmp/art")
-    preflight = benchmark_preflight(protocol, plan, cache)  # type: ignore[arg-type]
+    preflight = benchmark_preflight(
+        protocol,
+        plan,
+        cache,
+        allowed_pids=[os.getpid()],
+        allowed_cmd_substrings=["python"],
+    )  # type: ignore[arg-type]
     assert preflight["used_python_metadata_gather_expected"] is False
     assert preflight["legacy_payload_function_allowed"] is False
 

@@ -38,6 +38,7 @@ from routesense_poc2.distributed_runtime import (
 
 
 SANITY_STRATEGIES = ["fifo", "random-order", "strong-state", "full"]
+STATE_PACKER_STAGE_B_STRATEGIES = ["fifo", "random-order", "strong-state-packer"]
 
 
 MODEL_PATHS = {
@@ -133,10 +134,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         plans, workload_manifest = create_workload_plans(protocol)
         active_strategies = list(protocol.audit_strategy_subset or SANITY_STRATEGIES)
-        if active_strategies != SANITY_STRATEGIES:
-            raise RuntimeError(f"sanity benchmark only allows {SANITY_STRATEGIES}, got {active_strategies}")
-        if protocol.repetitions % 4 != 0:
-            raise RuntimeError("sanity benchmark requires repetitions to be a multiple of 4")
+        if active_strategies not in (SANITY_STRATEGIES, STATE_PACKER_STAGE_B_STRATEGIES):
+            raise RuntimeError(
+                f"sanity benchmark only allows {SANITY_STRATEGIES} or {STATE_PACKER_STAGE_B_STRATEGIES}, got {active_strategies}"
+            )
+        if protocol.repetitions % len(active_strategies) != 0:
+            raise RuntimeError("sanity benchmark requires repetitions to be a multiple of the active strategy count")
         warmup_orders = counterbalanced_orders(active_strategies, protocol.warmup_repetitions)
         measured_orders = resolve_strategy_orders(
             protocol.strategy_order_mode,
