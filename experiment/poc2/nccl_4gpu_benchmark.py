@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-plan-id", type=str, default=None)
     parser.add_argument("--plan-snapshot-path", type=str, default=None)
     parser.add_argument("--strategy-subset", nargs="+", default=None)
+    parser.add_argument("--origin-sharding", choices=["contiguous", "round-robin"], default="round-robin")
     args = parser.parse_args(argv)
     regime_defaults = _regime_defaults(args.regime)
 
@@ -116,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             audit_plan_id=args.audit_plan_id,
             audit_strategy_subset=args.strategy_subset,
             plan_snapshot_path=args.plan_snapshot_path,
+            origin_sharding=args.origin_sharding,
         )
         plans, workload_manifest = create_workload_plans(protocol)
         active_strategies = list(protocol.audit_strategy_subset or STRATEGIES)
@@ -164,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                     "hidden_dim_scale": protocol.hidden_dim_scale,
                     "intermediate_scale": protocol.intermediate_scale,
                     "release_round_size": protocol.release_round_size,
+                    "origin_sharding": protocol.origin_sharding,
                     "audit_plan_id": protocol.audit_plan_id,
                     "plan_snapshot_path": str(plan_snapshot),
                     "strategy_subset": active_strategies,
@@ -175,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                     "dispatch_backend": "torch.distributed.all_to_all_single",
                     "return_backend": "torch.distributed.all_to_all_single",
                     "expert_compute": "rank-local expert-like MLP",
+                    "origin_sharding": protocol.origin_sharding,
                     "strategy_order_mode": protocol.strategy_order_mode,
                     "benchmark_entrypoint": "experiment/poc2/nccl_4gpu_benchmark.py",
                     "policies": active_strategies,

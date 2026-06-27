@@ -4,9 +4,13 @@ from routesense_poc2.distributed_runtime import (
     PlacementEntry,
     WorkloadBucket,
     WorkloadPlan,
+    ProtocolConfig,
     _go_no_go,
+    _planned_round_matrix,
     _paired,
     _position_effects,
+    assign_origin_rank,
+    build_workload_plan,
     dependency_score_for_bucket,
     available_audit_strategies,
     apply_placement,
@@ -79,17 +83,26 @@ def test_workload_plan_roundtrip_dict():
         hidden_dim=128,
         intermediate_dim=256,
         placement_policy="balanced",
+        origin_sharding="round-robin",
         placement_mapping=[PlacementEntry(expert_id=0, destination_rank=0)],
         bucket_workloads=[
             WorkloadBucket(
                 bucket_id="b0",
+                route_id="r0",
+                token_ids=[0, 1],
+                token_positions=[0, 1],
+                origin_rank=0,
                 destination_id=0,
                 destination_rank=0,
+                expert_id=0,
+                layer_id=1,
+                microbatch_id=0,
                 token_count=2,
                 payload_rows=2,
                 hidden_dim=128,
                 intermediate_dim=256,
                 estimated_service_units=2.0,
+                payload_bytes=512,
                 source_count=2,
                 source_coverage=0.5,
                 coactive_peer_degree=0.1,
@@ -116,17 +129,134 @@ def test_hotspot_mapping_concentrates_prefix_experts():
     assert set(first_half).issubset({0, 1})
 
 
+def test_assign_origin_rank_round_robin_and_contiguous():
+    assert assign_origin_rank(0, 8, 4, "round-robin") == 0
+    assert assign_origin_rank(5, 8, 4, "round-robin") == 1
+    assert assign_origin_rank(0, 8, 4, "contiguous") == 0
+    assert assign_origin_rank(7, 8, 4, "contiguous") == 3
+
+
+def test_build_workload_plan_preserves_origin_and_route_identity():
+    protocol = ProtocolConfig(
+        model_key="olmoe",
+        model_path="/tmp/model",
+        output_dir="/tmp/out",
+        artifact_dir="/tmp/art",
+        world_size=4,
+        origin_sharding="round-robin",
+    )
+    routing = {
+        "layer_id": 0,
+        "layer_path": "layer0",
+        "bucket_records": [
+            BucketRecord(bucket_id="dest1", destination_id=1, destination_rank=1, arrival_index=0, token_count=2, token_positions=[0, 1]),
+            BucketRecord(bucket_id="dest2", destination_id=2, destination_rank=2, arrival_index=1, token_count=2, token_positions=[0, 1]),
+        ],
+        "route_items": [
+            {"route_id": "r0", "token_id": 0, "token_pos": 0, "route_rank": 0, "expert_id": 1},
+            {"route_id": "r1", "token_id": 1, "token_pos": 1, "route_rank": 0, "expert_id": 2},
+        ],
+        "routing_summary": {"token_ids": [0, 1]},
+    }
+    placement = [PlacementEntry(expert_id=1, destination_rank=1), PlacementEntry(expert_id=2, destination_rank=2)]
+    plan = build_workload_plan(
+        config=protocol,
+        microbatch_id=0,
+        routing=routing,
+        hidden_dim=64,
+        intermediate_dim=128,
+        placement=placement,
+    )
+    assert {bucket.origin_rank for bucket in plan.bucket_workloads} == {0, 1}
+    assert {bucket.route_id for bucket in plan.bucket_workloads} == {"r0", "r1"}
+    assert plan.origin_sharding == "round-robin"
+
+
+def test_total_dispatch_matrix_invariant_across_policy_orders():
+    buckets = [
+        WorkloadBucket(
+            bucket_id="b0",
+            route_id="r0",
+            token_ids=[0],
+            token_positions=[0],
+            origin_rank=0,
+            destination_id=3,
+            destination_rank=1,
+            expert_id=3,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=2,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=2.0,
+            payload_bytes=256,
+            source_count=2,
+            source_coverage=0.2,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.0,
+            bridge_score=0.1,
+            route_share=0.2,
+            density_over_mean=0.3,
+            size_norm=0.4,
+            inverse_size_rank_norm=1.0,
+            is_hot_bucket=False,
+        ),
+        WorkloadBucket(
+            bucket_id="b1",
+            route_id="r1",
+            token_ids=[1],
+            token_positions=[1],
+            origin_rank=1,
+            destination_id=2,
+            destination_rank=0,
+            expert_id=2,
+            layer_id=0,
+            microbatch_id=0,
+            token_count=1,
+            payload_rows=3,
+            hidden_dim=64,
+            intermediate_dim=128,
+            estimated_service_units=2.0,
+            payload_bytes=384,
+            source_count=2,
+            source_coverage=0.2,
+            coactive_peer_degree=0.1,
+            coactive_event_density=0.1,
+            position_spread=0.0,
+            bridge_score=0.1,
+            route_share=0.2,
+            density_over_mean=0.3,
+            size_norm=0.4,
+            inverse_size_rank_norm=0.5,
+            is_hot_bucket=False,
+        ),
+    ]
+    fifo_rows, _ = _planned_round_matrix(buckets, 2, 64)
+    reordered_rows, _ = _planned_round_matrix([buckets[1], buckets[0]], 2, 64)
+    assert fifo_rows == reordered_rows
+
+
 def test_shuffled_dependency_preserves_distribution_changes_assignment():
     buckets = [
         WorkloadBucket(
             bucket_id=f"b{i}",
+            route_id=f"r{i}",
+            token_ids=[i],
+            token_positions=[i],
+            origin_rank=i % 2,
             destination_id=i,
             destination_rank=i % 2,
+            expert_id=i,
+            layer_id=0,
+            microbatch_id=0,
             token_count=2 + i,
             payload_rows=2 + i,
             hidden_dim=64,
             intermediate_dim=128,
             estimated_service_units=1.0 + i,
+            payload_bytes=(2 + i) * 64 * 2,
             source_count=1,
             source_coverage=0.1 * i,
             coactive_peer_degree=0.2 * i,
@@ -152,13 +282,21 @@ def test_strong_state_and_lina_scores_do_not_depend_on_dependency_fields_when_st
     state = RuntimeState(rank_backlog_work={0: 2.0}, rank_queue_depth={0: 1}, destination_hotness={0: 3.0})
     left = WorkloadBucket(
         bucket_id="x",
+        route_id="rx",
+        token_ids=[0],
+        token_positions=[0],
+        origin_rank=0,
         destination_id=0,
         destination_rank=0,
+        expert_id=0,
+        layer_id=0,
+        microbatch_id=0,
         token_count=4,
         payload_rows=4,
         hidden_dim=64,
         intermediate_dim=128,
         estimated_service_units=2.0,
+        payload_bytes=4 * 64 * 2,
         source_count=2,
         source_coverage=0.1,
         coactive_peer_degree=0.1,
@@ -234,17 +372,26 @@ def test_plan_snapshot_roundtrip(tmp_path):
         hidden_dim=64,
         intermediate_dim=128,
         placement_policy="balanced",
+        origin_sharding="round-robin",
         placement_mapping=[PlacementEntry(expert_id=0, destination_rank=0)],
         bucket_workloads=[
             WorkloadBucket(
                 bucket_id="b0",
+                route_id="r0",
+                token_ids=[0, 1, 2, 3],
+                token_positions=[0, 1, 2, 3],
+                origin_rank=0,
                 destination_id=0,
                 destination_rank=0,
+                expert_id=0,
+                layer_id=0,
+                microbatch_id=0,
                 token_count=4,
                 payload_rows=4,
                 hidden_dim=64,
                 intermediate_dim=128,
                 estimated_service_units=2.0,
+                payload_bytes=4 * 64 * 2,
                 source_count=1,
                 source_coverage=0.1,
                 coactive_peer_degree=0.1,

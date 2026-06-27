@@ -290,6 +290,7 @@ def _mock_microbatch_routing(config: RunnerConfig, prompts: list[str], microbatc
         layer_id=0,
         layer_path="mock.layers.0.moe",
         token_routes=token_routes,
+        token_ids=list(range(len(token_routes))),
         world_size=config.world_size,
     )
 
@@ -341,18 +342,27 @@ def _real_microbatch_routing(
     top_k = int(config.top_k or getattr(model.config, "num_experts_per_tok", 0) or 2)
     top_k = max(1, min(top_k, expert_count))
     token_routes: list[list[int]] = []
+    token_ids: list[int] = []
+    token_values: list[int] = []
+    token_owner_batch_positions: list[tuple[int, int]] = []
     for batch_index in range(batch_size):
         valid_tokens = int(attention_mask[batch_index].sum().item())
         for token_pos in range(max(1, valid_tokens - 1)):
             probabilities = torch.softmax(layer_router_logits[batch_index, token_pos], dim=-1)
             experts = torch.topk(probabilities, top_k).indices.tolist()
             token_routes.append([int(item) for item in experts])
+            token_ids.append(len(token_ids))
+            token_values.append(int(input_ids[batch_index, token_pos].item()))
+            token_owner_batch_positions.append((batch_index, token_pos))
     return _build_routing_artifacts(
         model_key=config.model_key,
         microbatch_id=microbatch_id,
         layer_id=layer_id,
         layer_path=_default_layer_path(layer_id),
         token_routes=token_routes,
+        token_ids=token_ids,
+        token_values=token_values,
+        token_owner_batch_positions=token_owner_batch_positions,
         world_size=config.world_size,
     )
 
@@ -364,10 +374,24 @@ def _build_routing_artifacts(
     layer_path: str,
     token_routes: list[list[int]],
     world_size: int,
+    token_ids: list[int] | None = None,
+    token_values: list[int] | None = None,
+    token_owner_batch_positions: list[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
+    normalized_token_ids = token_ids or list(range(len(token_routes)))
+    if len(normalized_token_ids) != len(token_routes):
+        raise RuntimeError("token_ids length does not match token_routes length")
+    normalized_token_values = token_values or normalized_token_ids
+    if len(normalized_token_values) != len(token_routes):
+        raise RuntimeError("token_values length does not match token_routes length")
+    normalized_positions = token_owner_batch_positions or [(0, index) for index in range(len(token_routes))]
+    if len(normalized_positions) != len(token_routes):
+        raise RuntimeError("token_owner_batch_positions length does not match token_routes length")
+
     bucket_positions: dict[int, list[int]] = {}
     coactive_destinations: dict[int, set[int]] = {}
     coactive_event_counts: dict[int, int] = {}
+    route_items: list[dict[str, Any]] = []
     active_destinations = sorted({int(dest) for row in token_routes for dest in row})
     max_width = max((len(row) for row in token_routes), default=1)
     total_routes = sum(len(row) for row in token_routes)
@@ -377,6 +401,26 @@ def _build_routing_artifacts(
             bucket_positions.setdefault(destination_id, []).append(token_pos)
             coactive_destinations.setdefault(destination_id, set()).update(peers - {destination_id})
             coactive_event_counts[destination_id] = coactive_event_counts.get(destination_id, 0) + len(peers - {destination_id})
+        token_id = int(normalized_token_ids[token_pos])
+        token_value = int(normalized_token_values[token_pos])
+        batch_index, prompt_token_pos = normalized_positions[token_pos]
+        for route_rank, destination_id in enumerate(row):
+            route_items.append(
+                {
+                    "route_id": f"mb{microbatch_id}_tok{token_id}_r{route_rank}_e{int(destination_id)}",
+                    "token_id": token_id,
+                    "token_value": token_value,
+                    "token_pos": token_pos,
+                    "batch_index": int(batch_index),
+                    "prompt_token_pos": int(prompt_token_pos),
+                    "route_rank": int(route_rank),
+                    "expert_id": int(destination_id),
+                    "destination_id": int(destination_id),
+                    "layer_id": int(layer_id),
+                    "layer_path": layer_path,
+                    "microbatch_id": int(microbatch_id),
+                }
+            )
 
     bucket_sizes = {destination_id: len(positions) for destination_id, positions in bucket_positions.items()}
     max_bucket_size = max(bucket_sizes.values(), default=1)
@@ -437,6 +481,10 @@ def _build_routing_artifacts(
         "active_destinations": active_destinations,
         "total_selected_routes": total_routes,
         "source_destination_matrix": token_routes,
+        "token_ids": normalized_token_ids,
+        "token_values": normalized_token_values,
+        "token_owner_batch_positions": [[int(a), int(b)] for a, b in normalized_positions],
+        "route_items": route_items,
         "bucket_count": len(bucket_records),
         "buckets": [record.to_dict() for record in bucket_records],
     }
@@ -446,6 +494,7 @@ def _build_routing_artifacts(
         "active_destinations": active_destinations,
         "bucket_records": bucket_records,
         "bucket_map": bucket_map,
+        "route_items": route_items,
         "routing_summary": routing_summary,
     }
 
