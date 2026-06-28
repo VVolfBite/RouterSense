@@ -37,7 +37,10 @@ fi
   while IFS= read -r relpath; do
     sha256sum "$relpath"
   done < <(
-    git ls-files | sort | grep -Ev '^(outputs|artifacts|logs)(/|$)|(^|/)\.pytest_cache(/|$)|(^|/)__pycache__(/|$)|(^|/).*\.log$|(^|/).*\.jsonl$|(^|/).*\.npy$|(^|/).*\.npz$|(^|/).*\.pt$|(^|/).*\.pth$|(^|/).*\.safetensors$|(^|/)\.cache(/|$)|(^|/)venv(/|$)|(^|/)\.venv(/|$)'
+    {
+      git ls-files
+      printf '%s\n' PACKAGE_MANIFEST.sha256 SOURCE_COMMIT.txt SOURCE_TREE_SHA256.txt
+    } | sort | grep -Ev '^(outputs|artifacts|logs)(/|$)|(^|/)\.pytest_cache(/|$)|(^|/)__pycache__(/|$)|(^|/).*\.log$|(^|/).*\.jsonl$|(^|/).*\.npy$|(^|/).*\.npz$|(^|/).*\.pt$|(^|/).*\.pth$|(^|/).*\.safetensors$|(^|/)\.cache(/|$)|(^|/)venv(/|$)|(^|/)\.venv(/|$)'
   )
 ) > "$TMP_SHA"
 
