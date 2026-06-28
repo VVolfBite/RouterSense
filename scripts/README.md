@@ -1,18 +1,12 @@
 # Scripts Layer
 
-`scripts/` is now a compatibility and platform-utility layer.
+`scripts/` is a compatibility and utility layer for the repository root.
 
-Primary POC1 experiment entrypoints live in:
+Use it for:
 
-```text
-experiment/poc1/
-```
+- source packaging and archive verification;
+- environment preflight and install helpers;
+- thin wrappers that keep historical entrypoints runnable during migration.
 
-Use `scripts/` for:
-
-- legacy wrappers such as `trace_one_token.py` and `run_action.py`
-- platform smoke scripts such as `run_poc1_linux.sh` and `run_poc1_windows.ps1`
-- environment and preflight utilities such as `setup_env.sh` and `preflight_gpu.py`
-- implementation helpers still reused by thin experiment wrappers, such as `summarize_trace_batch.py` and `analyze_proxy_scores.py`
-
-Do not add new main experiment entrypoints here. Add new POC1 experiment commands under `experiment/poc1/`, and keep `scripts/` as thin compatibility glue unless a platform utility really belongs here.
+Do not add new mainline RouteSense code here. Formal implementation lives under `RS/`.
+Legacy POC1/POC2 wrappers stay here only if they are needed for reproducibility or compatibility.

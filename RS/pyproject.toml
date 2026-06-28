@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "routesense"
+version = "0.2.0"
+description = "RouteSense: dependency-aware release scheduling for distributed MoE inference."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+gpu = [
+  "torch",
+  "transformers",
+  "accelerate",
+  "safetensors"
+]
+dev = [
+  "pytest",
+  "numpy",
+  "pyyaml"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["RS/src"]
+testpaths = ["RS/tests"]

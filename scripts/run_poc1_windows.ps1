@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 $RuntimePython = $VenvPython
-$Requirements = Join-Path $Root "requirements-gpu.txt"
+$Requirements = Join-Path $Root "legacy/shared/requirements-gpu.txt"
 $ResolvedOutputDir = Join-Path $Root $OutputDir
 
 Set-Location $Root

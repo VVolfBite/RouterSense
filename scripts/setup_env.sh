@@ -14,7 +14,7 @@ source "$ROOT_DIR/.venv/bin/activate"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 
 "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
-"$PYTHON_BIN" -m pip install -r "$ROOT_DIR/requirements-gpu.txt"
+"$PYTHON_BIN" -m pip install -r "$ROOT_DIR/legacy/shared/requirements-gpu.txt"
 
 "$PYTHON_BIN" - <<'PY'
 import importlib
