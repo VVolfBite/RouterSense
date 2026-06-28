@@ -1,0 +1,6 @@
+torch
+transformers
+accelerate
+safetensors
+pyyaml
+

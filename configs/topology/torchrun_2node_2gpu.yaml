@@ -1,0 +1,10 @@
+{
+  "cluster_name": "rs-phase0b",
+  "nnodes": 2,
+  "nproc_per_node": 2,
+  "master_port_future": 29500,
+  "interface_hint": "",
+  "controller_node_rank": 0,
+  "executor_node_rank": 1
+}
+

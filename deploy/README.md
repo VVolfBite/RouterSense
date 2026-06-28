@@ -1,24 +1,20 @@
 # Deploy
 
-Deployment-facing entrypoints live here. They are intentionally thin wrappers around the existing platform scripts so the project can move toward a clearer layout without breaking known-good commands.
+Deployment-facing entrypoints live here for RS Phase 0B. The active control-plane flow is two-host and dry-run first.
 
-Linux server smoke / trace flow:
+Recommended checks:
 
 ```bash
-bash deploy/run_poc1_linux.sh
+bash deploy/scripts/check_cluster_access.sh
+bash deploy/scripts/check_repo_parity.sh
+bash deploy/scripts/launch_remote.sh
 ```
 
-Windows local smoke flow:
+Single-GPU executor smoke:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\run_poc1_windows.ps1 -UseCurrentPython -ModelId model\OLMoE
+```bash
+python experiments/deployment/single_gpu_olmoe_smoke.py
+python experiments/deployment/single_gpu_router_trace_smoke.py
 ```
 
-The underlying compatibility scripts are still in `scripts/`:
-
-- `scripts/run_poc1_linux.sh`
-- `scripts/run_poc1_windows.ps1`
-- `scripts/setup_env.sh`
-- `scripts/preflight_gpu.py`
-
-These deployment flows validate environment setup and real trace export. They do not run real ablation, adapter patching, or a full runtime scheduler.
+The phase 0B scripts do not claim multi-node expert parallel and do not start NCCL dispatch.

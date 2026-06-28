@@ -1,0 +1,29 @@
+{
+  "cluster_name": "rs-phase0b",
+  "controller": {
+    "host": "autodl-106-openai-proxy",
+    "ssh_user": "root",
+    "role": "control",
+    "node_rank_future": 0,
+    "ssh_host": "connect.cqa1.seetacloud.com",
+    "ssh_port": 14613
+  },
+  "executor": {
+    "host": "autodl-105-openai-proxy",
+    "ssh_user": "root",
+    "role": "gpu_executor",
+    "node_rank_future": 1,
+    "ssh_host": "connect.cqa1.seetacloud.com",
+    "ssh_port": 44961
+  },
+  "paths": {
+    "remote_rs_root": "/root/autodl-tmp/RouterSense",
+    "model_cache": "/root/autodl-tmp/models"
+  },
+  "network": {
+    "master_port_future": 29500,
+    "probe_port": 29600,
+    "interface_hint": ""
+  }
+}
+

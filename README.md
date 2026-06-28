@@ -1,12 +1,12 @@
 # RouteSense POC1
 
-RouteSense POC1 is a MoE inference systems prototype. The current mainline is **lossless dependency-aware scheduling**: keep the model output semantics and Top-K routing unchanged, but use router-visible batch structure before communication to identify likely short-board buckets or destinations.
+RouteSense is a MoE systems prototype. POC1/POC2 remain frozen as research artifacts; the active deployment line is **RS Phase 0B**, which brings up real single-GPU OLMoE inference and router-trace capture on the executor host, while the control host manages inventory, launch contracts, and log collection.
 
-This repository is now past the local trace bring-up stage. The local evidence is still proxy-level evidence, not final runtime proof.
+The phase 0B work is intentionally conservative: it does not claim multi-node expert parallel, does not change router output, and does not add a scheduler benchmark.
 
 ## Current Status
 
-Completed:
+Completed historical artifacts:
 
 - Real OLMoE router trace export.
 - Real `batch_routing_summary`.
@@ -17,38 +17,53 @@ Completed:
 - Proxy result verification.
 - Windows smoke test.
 
-Explicitly not completed:
+Active phase 0B work:
 
-- Real single-route ablation.
-- Adapter / route patch integration.
-- Full runtime scheduler.
-- Server-scale experiments.
+- Two-host inventory templates.
+- Dry-run repo/model sync scripts.
+- Single-GPU OLMoE text inference smoke.
+- Single-GPU real router-trace smoke.
+- Future 2-node x 2-GPU launch contract dry-run.
 
-The current local conclusion is:
+Explicitly not completed in phase 0B:
 
-- Dependency-aware and full proxies remain worth pursuing.
-- `critical_bucket_proxy_v2` keeps the pseudo ground truth more load-centric than v1, and still shows dependency/full ahead of state-only.
-- On the latest local 48-prompt x 3-layer batch, top-1 hit rates under v2 are roughly: state `0.9236`, dependency `0.9722`, full `0.9861`.
-- `layer_15` is currently the most useful layer to prioritize for the next decision-level experiments, while `layer_0` is not a good place to spend much effort.
-- These are proxy results. They support continuing the mainline, but do not replace runtime validation.
+- Multi-node expert parallel.
+- Cross-node NCCL dispatch.
+- Scheduler performance benchmark.
+- Adapter patching or ablation.
+
 
 ## Important Entrypoints
 
-Current experiment entrypoints live under `experiment/poc1/`. Older `scripts/` entrypoints are kept as compatibility wrappers, platform smoke scripts, or implementation helpers reused by the thin experiment wrappers.
+Current experiment entrypoints live under `experiment/poc1/` and `experiments/deployment/`. Older `scripts/` entrypoints are kept as compatibility wrappers, platform smoke scripts, or implementation helpers reused by the thin experiment wrappers.
 
 Directory responsibilities:
 
-- `src/routesense_poc1/`: core library logic for config, model loading, trace extraction, schemas, and serialization.
+- `src/routesense_poc1/`: frozen POC1 core library logic for config, model loading, trace extraction, schemas, and serialization.
+- `src/routesense/`: formal deployment-side package for phase 0B runtime, trace, topology, and artifact helpers.
 - `experiment/poc1/`: main POC1 experiment entrypoints.
-- `deploy/`: deployment-facing wrappers and new-machine run notes.
+- `experiments/deployment/`: phase 0B deployment smoke and trace entrypoints.
+- `deploy/`: control-plane inventory, dry-run scripts, and remote launch contracts.
 - `scripts/`: legacy compatibility layer and platform utilities; do not add new main experiments here.
 - `docs/`: result templates, metric notes, and project documentation.
 - `tests/`: regression tests for the current code contracts.
 
-Single real trace:
+Single real trace (POC1 historical):
 
 ```bash
 python experiment/poc1/trace_single.py --text "The history of science is a story of" --layer auto --model-id model/OLMoE
+```
+
+Phase 0B single-GPU OLMoE smoke:
+
+```bash
+python experiments/deployment/single_gpu_olmoe_smoke.py
+```
+
+Phase 0B real router trace smoke:
+
+```bash
+python experiments/deployment/single_gpu_router_trace_smoke.py
 ```
 
 Compatibility action entry:
@@ -130,20 +145,20 @@ For the current local phase, start with:
 - `outputs/poc1_proxy_compare/critical_bucket_proxy_summary.json`
 - `outputs/poc1_proxy_compare/proxy_result_verification.json`
 
-## Linux Default Flow
+## Phase 0B Deployment Flow
 
 ```bash
-bash deploy/run_poc1_linux.sh
+bash deploy/scripts/check_cluster_access.sh
+bash deploy/scripts/check_repo_parity.sh
+bash deploy/scripts/launch_remote.sh
 ```
 
-The Linux script keeps the flow conservative:
+The phase 0B flow is deliberately conservative:
 
-1. setup environment
-2. preflight
-3. inspect status
-4. real trace
-
-It does not run ablation by default because real route ablation is not implemented yet.
+1. validate control-plane reachability
+2. verify repository parity
+3. dry-run the future 2-node launch contract
+4. run single-GPU OLMoE smoke and router-trace smoke on the executor host when GPU access is available
 
 ## Compatibility Scripts
 
@@ -170,6 +185,8 @@ The repository ignores model weights, Hugging Face caches, local outputs, logs, 
 ## Source Packaging
 
 Use `scripts/package_source_only.sh` to create a delivery archive. The source package intentionally excludes `outputs/`, `artifacts/`, logs, caches, model files, and benchmark results. Runtime results stay on the server working directory or in separate result archives; they should not be mixed into the source tarball.
+
+The current source package includes the formal `src/routesense/`, `deploy/`, `configs/`, `experiments/deployment/`, `docs/`, and `tests/` pieces needed for phase 0B.
 
 ## POC2 Runtime Audit
 
