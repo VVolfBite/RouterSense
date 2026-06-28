@@ -41,8 +41,6 @@ fi
   )
 ) > "$TMP_SHA"
 
-sed -i '1i# RouterSense source package manifest' "$TMP_SHA"
-
 if ! diff -u "$TMP_SHA" "$TMP_DIR/PACKAGE_MANIFEST.sha256" >/dev/null; then
   echo "verify_source_archive_matches_head.sh: PACKAGE_MANIFEST.sha256 does not match HEAD tree" >&2
   exit 1
