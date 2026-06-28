@@ -1,29 +1,28 @@
-{
-  "cluster_name": "rs-phase0b",
-  "controller": {
-    "host": "autodl-106-openai-proxy",
-    "ssh_user": "root",
-    "role": "control",
-    "node_rank_future": 0,
-    "ssh_host": "connect.cqa1.seetacloud.com",
-    "ssh_port": 14613
-  },
-  "executor": {
-    "host": "autodl-105-openai-proxy",
-    "ssh_user": "root",
-    "role": "gpu_executor",
-    "node_rank_future": 1,
-    "ssh_host": "connect.cqa1.seetacloud.com",
-    "ssh_port": 44961
-  },
-  "paths": {
-    "remote_rs_root": "/root/autodl-tmp/RouterSense",
-    "model_cache": "/root/autodl-tmp/models"
-  },
-  "network": {
-    "master_port_future": 29500,
-    "probe_port": 29600,
-    "interface_hint": ""
-  }
-}
-
+cluster_name: rs-2node-ep
+nodes:
+  - name: node0
+    host: NODE0_HOST
+    port: 22
+    ssh_user: SSH_USER
+    node_rank: 0
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /ABSOLUTE/PATH/TO/RS
+      model_cache: /ABSOLUTE/PATH/TO/MODEL_CACHE
+      artifact_root: /ABSOLUTE/PATH/TO/ARTIFACTS
+  - name: node1
+    host: NODE1_HOST
+    port: 22
+    ssh_user: SSH_USER
+    node_rank: 1
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /ABSOLUTE/PATH/TO/RS
+      model_cache: /ABSOLUTE/PATH/TO/MODEL_CACHE
+      artifact_root: /ABSOLUTE/PATH/TO/ARTIFACTS
+rendezvous:
+  master_node: node0
+  master_port: 29500
+  backend: c10d

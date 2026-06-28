@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
+APPLY=false
+for arg in "$@"; do
+  [[ "$arg" == "--apply" ]] && APPLY=true
+done
 
 python - "$INVENTORY" <<'PY'
 from __future__ import annotations

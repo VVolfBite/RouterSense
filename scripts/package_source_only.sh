@@ -102,6 +102,7 @@ case "$SCOPE" in
       "RS/src/routesense/runtime/single_gpu.py"
       "RS/src/routesense/trace/olmoe_router_trace.py"
       "RS/src/routesense/topology/inventory.py"
+      "RS/src/routesense/topology/paths.py"
       "RS/src/routesense/evaluation/artifacts.py"
       "RS/deploy/README.md"
       "RS/deploy/inventory/README.md"

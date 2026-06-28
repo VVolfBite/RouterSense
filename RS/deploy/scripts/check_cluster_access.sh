@@ -4,50 +4,61 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
-PROBE_PORT="${PROBE_PORT:-29600}"
 
-python - "$INVENTORY" "$PROBE_PORT" <<'PY'
+python - "$INVENTORY" <<'PY'
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
-from routesense.topology import inventory_summary, load_inventory
+from routesense.topology import inventory_cli_summary, load_inventory
 
 inventory = load_inventory(Path(sys.argv[1]))
-probe_port = int(sys.argv[2])
-summary = inventory_summary(inventory)
+summary = inventory_cli_summary(inventory)
+password = os.environ.get("RSSH_PASSWORD") or os.environ.get("SSHPASS") or "Helloworld1!"
 
-def tcp_probe(host: str, port: int) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=5):
-            return True
-    except OSError:
-        return False
+def ssh(node, command: str) -> str:
+    cmd = [
+        "sshpass",
+        "-p",
+        password,
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=20",
+        "-p",
+        str(getattr(node, "port")),
+        f'{getattr(node, "ssh_user")}@{getattr(node, "host")}',
+        command,
+    ]
+    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
 
-def ssh_probe(host: dict[str, object]) -> dict[str, object]:
-    ssh_host = host.get("ssh_host") or host["host"]
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-    if host.get("ssh_port") is not None:
-        cmd.extend(["-p", str(host["ssh_port"])])
-    cmd.append(f'{host["ssh_user"]}@{ssh_host}')
-    cmd.append("hostname && python3 -V && git rev-parse --short HEAD")
+def remote_root(node_name: str) -> str:
+    value = summary["resolved_paths"].get(f"{node_name}_remote_rs_root")
+    if not value:
+        raise RuntimeError(f"missing remote root for {node_name}")
+    return str(value)
+
+payload = {"inventory": summary}
+for node in inventory.nodes:
     try:
-        out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
-        return {"ok": True, "output": out.strip()}
+        payload[f"{node.name}_ssh"] = {
+            "ok": True,
+            "output": ssh(node, f"cd {remote_root(node.name)} && hostname && python3 -V && git rev-parse HEAD"),
+        }
     except subprocess.CalledProcessError as exc:
-        return {"ok": False, "output": exc.output.strip()}
+        payload[f"{node.name}_ssh"] = {"ok": False, "output": exc.output.strip()}
 
-payload = {
-    "inventory": summary,
-    "controller_ssh": ssh_probe(summary["controller"]),
-    "executor_ssh": ssh_probe(summary["executor"]),
-    "controller_tcp_to_probe": tcp_probe(summary["controller"].get("ssh_host") or summary["controller"]["host"], probe_port),
-    "executor_tcp_to_probe": tcp_probe(summary["executor"].get("ssh_host") or summary["executor"]["host"], probe_port),
+payload["tcp_probe"] = {
+    "node_count": len(inventory.nodes),
+    "status": "deferred_until_remote_listener_is_enabled",
 }
 print(json.dumps(payload, indent=2))
 PY
-

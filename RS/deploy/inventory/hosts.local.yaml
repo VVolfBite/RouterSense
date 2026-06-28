@@ -1,0 +1,28 @@
+cluster_name: rs-2node-ep
+nodes:
+  - name: node0
+    host: connect.cqa1.seetacloud.com
+    port: 14613
+    ssh_user: root
+    node_rank: 0
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /root/autodl-tmp/RouterSense
+      model_cache: /root/autodl-tmp/models
+      artifact_root: /root/autodl-tmp/RouterSense/artifacts
+  - name: node1
+    host: connect.cqa1.seetacloud.com
+    port: 44961
+    ssh_user: root
+    node_rank: 1
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /root/autodl-tmp/RouterSense
+      model_cache: /root/autodl-tmp/models
+      artifact_root: /root/autodl-tmp/RouterSense/artifacts
+rendezvous:
+  master_node: node0
+  master_port: 29500
+  backend: c10d

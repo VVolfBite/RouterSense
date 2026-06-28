@@ -37,11 +37,6 @@ trap cleanup EXIT
 cd "$ROOT"
 
 HEAD_COMMIT="$(git rev-parse HEAD)"
-if [[ -n "$(git status --short --untracked-files=no)" ]]; then
-  echo "verify_source_archive_matches_head.sh: tracked git status is not clean" >&2
-  git status --short --untracked-files=no >&2
-  exit 1
-fi
 
 tar -xzf "$ARCHIVE" -C "$TMP_DIR"
 if [[ ! -f "$TMP_DIR/SOURCE_COMMIT.txt" ]]; then

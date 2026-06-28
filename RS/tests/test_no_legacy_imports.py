@@ -4,10 +4,11 @@ from pathlib import Path
 
 
 def test_rs_mainline_dirs_have_no_legacy_imports():
+    root = Path(__file__).resolve().parents[2]
     roots = [
-        Path('/root/autodl-tmp/RouterSense/RS/src'),
-        Path('/root/autodl-tmp/RouterSense/RS/deploy'),
-        Path('/root/autodl-tmp/RouterSense/RS/experiments'),
+        root / "RS" / "src",
+        root / "RS" / "deploy",
+        root / "RS" / "experiments",
     ]
     forbidden = ('routesense_poc1', 'routesense_poc2', 'legacy.poc1', 'legacy.poc2', 'experiment.poc1', 'experiment.poc2')
     skip_names = {'test_no_legacy_imports.py', 'test_package_source_only.py'}
