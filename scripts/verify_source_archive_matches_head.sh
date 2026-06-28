@@ -27,12 +27,10 @@ if [[ -z "$ARCHIVE" ]]; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-TMP_EXPECTED="$(mktemp)"
-TMP_ACTUAL="$(mktemp)"
-
+TMP_EXPECTED_ARCHIVE="$(mktemp --suffix=.tar.gz)"
 cleanup() {
   rm -rf "$TMP_DIR"
-  rm -f "$TMP_EXPECTED" "$TMP_ACTUAL"
+  rm -f "$TMP_EXPECTED_ARCHIVE"
 }
 trap cleanup EXIT
 
@@ -56,54 +54,13 @@ if [[ "$ARCHIVE_COMMIT" != "$HEAD_COMMIT" ]]; then
   exit 1
 fi
 
-python - "$SCOPE" > "$TMP_EXPECTED" <<'PY'
-import hashlib
-import subprocess
-import sys
-from pathlib import Path
-
-scope = sys.argv[1]
-paths = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
-blocked_prefixes = (
-    "artifacts/", "outputs/", "logs/", ".pytest_cache/", "__pycache__/",
-    "model_cache/", "hf_cache/", ".cache/", "venv/", ".venv/", "deploy/logs/",
-)
-blocked_suffixes = (".log", ".jsonl", ".npy", ".npz", ".pt", ".pth", ".safetensors")
-keep = []
-for path in sorted(paths):
-    if path in {'RS/artifacts/.gitkeep', 'RS/outputs/.gitkeep', 'RS/deploy/logs/.gitkeep'}:
-        continue
-    if any(path.startswith(prefix) for prefix in blocked_prefixes):
-        continue
-    if any(path.endswith(suffix) for suffix in blocked_suffixes):
-        continue
-    if scope == "mainline":
-        if path.startswith(("legacy/poc1/", "legacy/poc2/", "experiment/poc1/", "experiment/poc2/", "src/routesense_poc1/", "src/routesense_poc2/")):
-            continue
-        if path in {"configs/poc1.yaml", "docs/poc2_correctness_audit.md", "docs/poc2_simulation_contract.md", "docs/poc2_stress_suite_contract.md", "deploy/run_poc1_linux.sh", "deploy/run_poc1_windows.ps1", "scripts/run_poc1.sh", "scripts/run_poc1_linux.sh", "scripts/run_poc1_windows.ps1", "scripts/trace_one_token.py", "scripts/run_action.py"}:
-            continue
-    keep.append(path)
-print("# RouterSense source package manifest")
-root = Path('.').resolve()
-for rel in keep:
-    data = (root / rel).read_bytes()
-    print(f"{hashlib.sha256(data).hexdigest()}  {rel}")
-PY
-
-python - "$TMP_DIR/PACKAGE_MANIFEST.sha256" > "$TMP_ACTUAL" <<'PY'
-from pathlib import Path
-import sys
-print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')
-PY
-
-if ! diff -u "$TMP_EXPECTED" "$TMP_ACTUAL" >/dev/null; then
+bash "$ROOT/scripts/package_source_only.sh" --scope "$SCOPE" "$TMP_EXPECTED_ARCHIVE" >/dev/null
+if ! cmp -s <(tar -xOzf "$TMP_EXPECTED_ARCHIVE" PACKAGE_MANIFEST.sha256) <(tar -xOzf "$ARCHIVE" PACKAGE_MANIFEST.sha256); then
   echo "verify_source_archive_matches_head.sh: PACKAGE_MANIFEST.sha256 does not match HEAD tree" >&2
-  diff -u "$TMP_EXPECTED" "$TMP_ACTUAL" >&2 || true
+  diff -u <(tar -xOzf "$TMP_EXPECTED_ARCHIVE" PACKAGE_MANIFEST.sha256) <(tar -xOzf "$ARCHIVE" PACKAGE_MANIFEST.sha256) >&2 || true
   exit 1
 fi
-
-TREE_SHA="$(sha256sum "$TMP_DIR/PACKAGE_MANIFEST.sha256" | awk '{print $1}')"
-if [[ "$TREE_SHA" != "$(cat "$TMP_DIR/SOURCE_TREE_SHA256.txt")" ]]; then
+if ! cmp -s <(tar -xOzf "$TMP_EXPECTED_ARCHIVE" SOURCE_TREE_SHA256.txt) <(tar -xOzf "$ARCHIVE" SOURCE_TREE_SHA256.txt); then
   echo "verify_source_archive_matches_head.sh: SOURCE_TREE_SHA256.txt does not match manifest hash" >&2
   exit 1
 fi
