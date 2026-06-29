@@ -46,3 +46,25 @@ Current interpretation:
 
 - This archive is intentionally committed under `archive/` for analysis convenience.
 - The original raw runtime outputs remain under `legacy/poc1/outputs/` on the server but are not the preferred handoff location.
+
+
+## Calibration update
+
+A lightweight learned combination was added after the first archive snapshot.
+
+Current result on `local_prompt_poc_0924`:
+- selected feature subset: `['topk_rank']`
+- validation MAE: `0.0330`
+- test MAE: `0.0672`
+- test R^2: `-0.0383`
+
+Strategy-level effect after enabling `calibrated`:
+- calibrated mean delta_nll: `-0.00879`
+- calibrated median delta_nll: `-0.00171`
+- calibrated p95 delta_nll: `0.19141`
+
+Interpretation:
+- the current learned combination does beat the zero baseline in mean terms,
+  but it is not yet clearly strong or stable;
+- the learned search did not discover a richer routing-context combination here,
+  and instead fell back to `topk_rank` as the best small feature subset under document-held-out validation.
