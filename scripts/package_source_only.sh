@@ -33,6 +33,13 @@ else
     --exclude='.pytest_cache' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
+    --exclude='legacy/**/outputs' \
+    --exclude='legacy/**/outputs/*' \
+    --exclude='legacy/**/artifacts' \
+    --exclude='legacy/**/artifacts/*' \
+    --exclude='legacy/**/logs' \
+    --exclude='legacy/**/logs/*' \
+    --exclude='legacy/**/*.log' \
     --exclude='RS/deploy/inventory/hosts.local.yaml' \
     --exclude='RS/artifacts/*' --exclude='!RS/artifacts/.gitkeep' \
     --exclude='RS/outputs/*' --exclude='!RS/outputs/.gitkeep' \
