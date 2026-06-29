@@ -29,3 +29,20 @@ PYTHONPATH=legacy/poc1/src python -m routesense_poc1.cli ablate --config legacy/
 ```
 
 Only after the smoke ablation succeeds should the `poc.yaml` configuration be attempted.
+
+
+## Next Recommended Configs
+
+Long-context and multi-domain follow-up configs are now prepared:
+
+```bash
+PYTHONPATH=legacy/poc1/src python -m routesense_poc1.cli run-all --config legacy/poc1/configs/code_long.yaml --output-dir legacy/poc1/outputs/code_long_0924
+PYTHONPATH=legacy/poc1/src python -m routesense_poc1.cli run-all --config legacy/poc1/configs/math_long.yaml --output-dir legacy/poc1/outputs/math_long_0924
+PYTHONPATH=legacy/poc1/src python -m routesense_poc1.cli run-all --config legacy/poc1/configs/dialog_long.yaml --output-dir legacy/poc1/outputs/dialog_long_0924
+PYTHONPATH=legacy/poc1/src python -m routesense_poc1.cli run-all --config legacy/poc1/configs/all_layers_code.yaml --output-dir legacy/poc1/outputs/all_layers_code_0924
+```
+
+These configs are intended for the next GPU-backed refinement round:
+- long context (`context_length=256`)
+- multi-domain comparison (`code`, `math`, `dialog`)
+- all-layer sampling (`num_moe_layers=16`)

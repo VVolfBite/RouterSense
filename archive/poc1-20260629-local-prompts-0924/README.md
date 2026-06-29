@@ -111,3 +111,12 @@ Interpretation:
 
 Expert aggregation highlights a few experts with much higher positive mean delta_nll than the background set, including expert ids `40`, `39`, `29`, `56`, and `12` in this run.
 This suggests expert identity effects may matter more than fine-grained routing weights under the current prompt mix.
+
+
+## Follow-up configs prepared
+
+The next GPU-backed refinement round now has ready-to-run configs:
+- `legacy/poc1/configs/code_long.yaml`
+- `legacy/poc1/configs/math_long.yaml`
+- `legacy/poc1/configs/dialog_long.yaml`
+- `legacy/poc1/configs/all_layers_code.yaml`
