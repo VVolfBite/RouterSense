@@ -16,6 +16,7 @@ PoC1 tests whether routing context can predict realized criticality measured by 
 - CPU-side scaffolding is in place.
 - Real GPU validation is still required for the intervention path.
 - The next hardware-backed gate is a single-GPU smoke on `allenai/OLMoE-1B-7B-0924`.
+- The smoke config now supports a local prompt file so the main path does not depend on HuggingFace dataset availability.
 
 ## Recommended GPU Smoke Order
 

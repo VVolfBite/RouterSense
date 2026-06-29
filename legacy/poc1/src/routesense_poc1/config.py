@@ -34,6 +34,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ])
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--model-path", type=str, default=None)
+    parser.add_argument("--prompt-file", type=str, default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -50,6 +51,8 @@ def build_config(args: argparse.Namespace | None = None) -> RunConfig:
         config.run_id = args.run_id
     if args.model_path is not None:
         config.model_path = args.model_path
+    if args.prompt_file is not None:
+        config.prompt_file = args.prompt_file
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.seed is not None:
