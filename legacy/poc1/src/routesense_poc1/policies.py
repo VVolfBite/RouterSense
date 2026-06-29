@@ -2,8 +2,20 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
+from math import fabs
 
 from .schemas import AblationRecord
+
+
+SINGLE_FACTOR_STRATEGIES = {
+    "router_probability_min",
+    "effective_gate_weight_min",
+    "router_logit_min",
+    "topk_rank_max",
+    "top1_top2_gap_min",
+    "routing_entropy_max",
+    "abs_router_logit_min",
+}
 
 
 def select_deferrable_expert(
@@ -20,6 +32,20 @@ def select_deferrable_expert(
         return random.Random(seed).choice(list(records)).expert_id
     if strategy == "raw_routing":
         return min(records, key=lambda record: (record.effective_gate_weight, record.topk_rank)).expert_id
+    if strategy == "router_probability_min":
+        return min(records, key=lambda record: (record.router_probability, record.topk_rank)).expert_id
+    if strategy == "effective_gate_weight_min":
+        return min(records, key=lambda record: (record.effective_gate_weight, record.topk_rank)).expert_id
+    if strategy == "router_logit_min":
+        return min(records, key=lambda record: (record.router_logit, record.topk_rank)).expert_id
+    if strategy == "topk_rank_max":
+        return max(records, key=lambda record: (record.topk_rank, -record.effective_gate_weight)).expert_id
+    if strategy == "top1_top2_gap_min":
+        return min(records, key=lambda record: (record.top1_top2_gap, record.topk_rank)).expert_id
+    if strategy == "routing_entropy_max":
+        return max(records, key=lambda record: (record.routing_entropy, -record.topk_rank)).expert_id
+    if strategy == "abs_router_logit_min":
+        return min(records, key=lambda record: (fabs(record.router_logit), record.topk_rank)).expert_id
     if strategy == "oracle":
         return min(records, key=lambda record: (record.delta_nll, record.topk_rank)).expert_id
     if strategy == "calibrated":
@@ -44,4 +70,3 @@ def _records_to_features(records: Sequence[AblationRecord]) -> list[list[float]]
         ]
         for record in records
     ]
-
