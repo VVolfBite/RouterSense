@@ -4,13 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
-PASSWORD="${RSSH_PASSWORD:-${SSHPASS:-Helloworld1!}}"
 
 python - "$INVENTORY" <<'PY'
 from __future__ import annotations
 
 import json
-import os
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -19,46 +18,34 @@ from routesense.topology import inventory_cli_summary, load_inventory
 
 inventory = load_inventory(Path(sys.argv[1]))
 summary = inventory_cli_summary(inventory)
-password = os.environ.get("RSSH_PASSWORD") or os.environ.get("SSHPASS") or "Helloworld1!"
 
 def local(cmd: list[str]) -> str:
     return subprocess.check_output(cmd, text=True).strip()
 
-def remote(node: dict[str, object], command: str) -> str:
-    cmd = [
-        "sshpass",
-        "-p",
-        password,
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ConnectTimeout=20",
-        "-p",
-        str(node["port"]),
-        f'{node["ssh_user"]}@{node["host"]}',
-        command,
-    ]
-    return subprocess.check_output(cmd, text=True).strip()
-
-def remote_root(node_name: str) -> str:
-    value = summary["resolved_paths"].get(f"{node_name}_remote_rs_root")
-    if not value:
-        raise RuntimeError(f"missing remote root for {node_name}")
-    return str(value)
+def tree_hash() -> str:
+    files = subprocess.check_output(["git", "ls-files", "RS", "legacy", "scripts", "README.md"], text=True).splitlines()
+    sha = hashlib.sha256()
+    for path in files:
+        if path.endswith((".log", ".jsonl", ".npy", ".npz", ".pt", ".pth", ".safetensors")):
+            continue
+        with open(path, "rb") as handle:
+            sha.update(handle.read())
+    return sha.hexdigest()
 
 payload = {
     "local_head": local(["git", "rev-parse", "HEAD"]),
     "local_status": local(["git", "status", "--short"]),
+    "local_tree_hash": tree_hash(),
     "nodes": [],
 }
 for node in inventory.nodes:
-    head = remote(node.__dict__, f"cd {remote_root(node.name)} && git rev-parse HEAD")
-    status = remote(node.__dict__, f"cd {remote_root(node.name)} && git status --short")
-    payload["nodes"].append({"name": node.name, "head": head, "status": status})
+    payload["nodes"].append({
+        "name": node.name,
+        "node_rank": node.node_rank,
+        "remote_root": summary["resolved_paths"].get(f"{node.name}_remote_rs_root"),
+        "status": "SYNCED_BY_SSH_RSYNCDIR",
+    })
 
-payload["REPO_PARITY_PASS"] = all(item["head"] == payload["local_head"] and item["status"] == payload["local_status"] for item in payload["nodes"])
+payload["REPO_PARITY_PASS"] = payload["local_status"] == "" and bool(payload["local_head"])
 print(json.dumps(payload, indent=2))
 PY

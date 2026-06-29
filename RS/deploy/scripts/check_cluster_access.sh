@@ -19,7 +19,9 @@ from routesense.topology import inventory_cli_summary, load_inventory
 
 inventory = load_inventory(Path(sys.argv[1]))
 summary = inventory_cli_summary(inventory)
-password = os.environ.get("RSSH_PASSWORD") or os.environ.get("SSHPASS") or "Helloworld1!"
+password = os.environ.get("RSSH_PASSWORD") or os.environ.get("SSHPASS")
+if not password:
+    raise RuntimeError("missing SSH password; set RSSH_PASSWORD or SSHPASS")
 
 def ssh(node, command: str) -> str:
     cmd = [

@@ -64,6 +64,7 @@ model_cache/
 !deploy/inventory/README.md
 !deploy/inventory/hosts.example.yaml
 !deploy/inventory/hosts.local.yaml.example
+deploy/inventory/hosts.local.yaml
 !deploy/scripts/
 !deploy/scripts/*.sh
 !deploy/scripts/*.py

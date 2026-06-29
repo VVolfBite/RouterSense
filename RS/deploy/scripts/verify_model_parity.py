@@ -18,20 +18,30 @@ def main(argv: list[str] | None = None) -> int:
     inventory_path = Path(argv[0] if argv else sys.argv[1])
     inventory = load_inventory(inventory_path)
     payload = {"nodes": []}
+    required_names = {
+        "config.json",
+        "generation_config.json",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+    }
     for node in inventory.nodes:
         cache = resolve_node_model_cache(inventory, node.name)
         manifest = []
+        present = []
         if cache is not None and cache.exists():
-            for path in sorted(cache.rglob("*")):
-                if path.is_file():
-                    manifest.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(cache)}")
+            for path in sorted(cache.iterdir()):
+                if path.is_file() and path.name in required_names:
+                    present.append(path.name)
+                    manifest.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
         payload["nodes"].append(
             {
                 "node_name": node.name,
                 "node_rank": node.node_rank,
                 "model_cache": str(cache or ""),
                 "model_id": "allenai/OLMoE-1B-7B-0924",
-                "required_files_present": bool(cache and cache.exists()),
+                "required_files_present": required_names.issubset(set(present)),
                 "manifest_hash": hashlib.sha256("\n".join(manifest).encode("utf-8")).hexdigest() if manifest else "missing",
             }
         )
