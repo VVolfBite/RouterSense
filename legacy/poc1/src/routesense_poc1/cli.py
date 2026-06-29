@@ -1,108 +1,114 @@
 from __future__ import annotations
 
-import logging
-from pathlib import Path
+import json
 
-from .config import build_config, ensure_output_dir, parse_args
+from .ablation import run_ablation
+from .analysis import analyze_records, write_report
+from .calibration import evaluate_calibrator, train_calibrator
+from .config import build_config, ensure_output_dir, finalize_config, parse_args
+from .data import load_and_prepare_data
+from .environment import run_doctor
 from .model_loader import load_olmoe_model
-from .router_trace import build_batch_routing_summary, collect_router_trace
-from .schemas import RunConfig
+from .moe_inspect import discover_moe_layers
+from .schemas import AblationRecord
 from .serialization import save_json
-from .utils import ensure_directory
+from .trace import collect_routing_context
 
 
-logger = logging.getLogger(__name__)
+def _collect_trace_rows(config) -> list[dict]:
+    model, tokenizer = load_olmoe_model(config)
+    windows = load_and_prepare_data(config, tokenizer)
+    moe_layers = discover_moe_layers(model, config.num_moe_layers)
+    rows: list[dict] = []
+    for window in windows:
+        for moe_layer in moe_layers:
+            rows.extend(
+                context.to_dict()
+                for context in collect_routing_context(
+                    model=model,
+                    tokenizer=tokenizer,
+                    window=window,
+                    moe_layer=moe_layer,
+                    run_id=config.run_id,
+                )
+            )
+    return rows
 
 
-def _write_config_snapshot(config: RunConfig, output_dir: Path) -> None:
+def run_command(command: str, config) -> int:
+    output_dir = ensure_output_dir(config.output_dir)
     save_json(config.to_dict(), output_dir / "config.json")
 
-
-def _write_goal(output_dir: Path, title: str, body: str) -> None:
-    (output_dir / "goal.md").write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
-
-
-def run_inspect_model(config: RunConfig) -> int:
-    output_dir = ensure_output_dir(config.output_dir)
-    _write_config_snapshot(config, output_dir)
-    ensure_directory("logs")
-    logger.info("真实 OLMoE trace 主线已接入 run_action.py trace / trace_one_token.py。")
-    logger.info("inspect 入口当前仍未实现真实模型结构导出。")
-    save_json(
-        {
-            "status": "not_implemented",
-            "completed_mainline": ["real_router_trace"],
-            "message": "真实 router trace 已完成主线接入；inspect 仍是未完成入口，当前不会假装导出真实模型结构。",
-        },
-        output_dir / "environment.json",
-    )
-    save_json(
-        {
-            "status": "not_implemented",
-            "completed_mainline": ["real_router_trace"],
-            "message": "inspect 未完成。请使用 scripts/run_action.py trace 或 scripts/trace_one_token.py 生成真实 trace 输出。",
-        },
-        output_dir / "model_inspection.json",
-    )
-    save_json(
-        {
-            "status": "not_implemented",
-            "message": "adapter/inspect 仍未完成；当前完成的是真实 OLMoE router trace 导出链路。",
-        },
-        output_dir / "adapter_status.json",
-    )
-    return 0
-
-
-def run_trace_one_token(config: RunConfig) -> int:
-    output_dir = ensure_output_dir(config.output_dir)
-    _write_config_snapshot(config, output_dir)
-    _write_goal(
-        output_dir,
-        "POC1 Trace Single",
-        "Validate real OLMoE loading and export one real router trace plus a minimal batch routing summary.",
-    )
-    ensure_directory("logs")
-    if config.mock:
-        trace = collect_router_trace(model=None, tokenizer=None, text=config.text, layer_path=config.layer, use_mock=True)
-        mock_trace_payload = trace.to_dict()
-        mock_trace_payload["status"] = "mock"
-        mock_trace_payload["is_mock"] = True
-        save_json(mock_trace_payload, output_dir / "mock_one_sample_trace.json")
-        save_json(trace.to_dict(), output_dir / "one_sample_trace.json")
-        save_json(build_batch_routing_summary(trace).to_dict(), output_dir / "batch_routing_summary.json")
+    if command == "doctor":
+        save_json(run_doctor(config), output_dir / "environment.json")
         return 0
-    model, tokenizer = load_olmoe_model(config)
-    trace = collect_router_trace(model=model, tokenizer=tokenizer, text=config.text, layer_path=config.layer, use_mock=False)
-    save_json(trace.to_dict(), output_dir / "one_sample_trace.json")
-    save_json(build_batch_routing_summary(trace).to_dict(), output_dir / "batch_routing_summary.json")
-    return 0
 
+    if command == "prepare-data":
+        model, tokenizer = load_olmoe_model(config)
+        windows = load_and_prepare_data(config, tokenizer)
+        save_json([window.to_dict() for window in windows], output_dir / "selected_windows.json")
+        return 0
 
-def run_ablate_one_route(config: RunConfig) -> int:
-    output_dir = ensure_output_dir(config.output_dir)
-    _write_config_snapshot(config, output_dir)
-    ensure_directory("logs")
-    logger.info("真实 OLMoE trace 主线已完成；真实 route ablation 尚未实现。")
-    save_json(
-        {
-            "status": "not_implemented",
-            "completed_mainline": ["real_router_trace"],
-            "message": "真实 route ablation 尚未实现。当前项目状态是：trace 已真实跑通，ablate 仍明确未完成。",
-        },
-        output_dir / "ablation_not_run.json",
-    )
-    return 0
+    if command == "inspect-model":
+        model, _ = load_olmoe_model(config)
+        moe_layers = discover_moe_layers(model, config.num_moe_layers)
+        save_json([layer.to_dict() for layer in moe_layers], output_dir / "moe_layers.json")
+        return 0
 
+    if command == "collect-trace":
+        save_json(_collect_trace_rows(config), output_dir / "router_trace.json")
+        return 0
 
-def main(argv: list[str] | None = None, command: str | None = None) -> int:
-    args = parse_args(argv)
-    config = build_config(args)
-    if command == "trace":
-        return run_trace_one_token(config)
     if command == "ablate":
-        return run_ablate_one_route(config)
-    return run_inspect_model(config)
+        model, tokenizer = load_olmoe_model(config)
+        windows = load_and_prepare_data(config, tokenizer)
+        moe_layers = discover_moe_layers(model, config.num_moe_layers)
+        records = run_ablation(
+            config=config,
+            model=model,
+            tokenizer=tokenizer,
+            windows=windows,
+            moe_layers=moe_layers,
+            output_dir=output_dir,
+            resume=config.resume,
+        )
+        save_json([record.to_dict() for record in records], output_dir / "ablation_results.json")
+        return 0
+
+    if command == "calibrate":
+        payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
+        records = [AblationRecord(**row) for row in payload]
+        calibrator = train_calibrator(records, config, output_dir)
+        metrics = evaluate_calibrator(calibrator, records)
+        save_json(metrics, output_dir / "calibration_metrics.json")
+        return 0
+
+    if command == "analyze":
+        payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
+        records = [AblationRecord(**row) for row in payload]
+        summary = analyze_records(records)
+        save_json(summary, output_dir / "summary.json")
+        write_report(summary, output_dir / "report.md")
+        return 0
+
+    if command == "run-all":
+        run_command("doctor", config)
+        run_command("prepare-data", config)
+        run_command("inspect-model", config)
+        run_command("collect-trace", config)
+        run_command("ablate", config)
+        if config.enable_calibration:
+            run_command("calibrate", config)
+        run_command("analyze", config)
+        return 0
+
+    raise ValueError(f"unsupported command: {command}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    config = finalize_config(build_config(args))
+    return run_command(args.command, config)
 
 
 if __name__ == "__main__":

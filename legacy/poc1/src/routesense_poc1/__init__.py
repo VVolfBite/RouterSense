@@ -1,63 +1,26 @@
-"""routesense_poc1 package."""
+"""Legacy PoC1 package for real route ablation experiments."""
 
-from .adapter_registry import MoERouteAdapter, UnsupportedOLMoEAdapter, get_adapter_for_layer
-from .config import build_config, ensure_output_dir, load_config, parse_args
+from .config import build_config, ensure_output_dir, finalize_config, load_config, parse_args
+from .intervention import RouteAblationContext, RoutePatchError, verify_intervention_correctness
 from .metrics import next_token_nll
-from .model_inspector import inspect_model, select_middle_moe_layer
 from .model_loader import ModelLoadError, load_olmoe_model
-from .route_patch import (
-    MoERouteAdapter,
-    MockRouteAblationContext,
-    RoutingState,
-    RouteAblationContext,
-    RoutePatchError,
-    UnsupportedOLMoEAdapter,
-)
-from .output_archive import archive_previous_outputs
-from .router_trace import MockRouterTraceProvider, collect_router_trace
-from .schemas import (
-    AblationResult,
-    CorrectnessCheckResult,
-    EnvironmentInfo,
-    MoELayerInfo,
-    RouterTrace,
-    RouteSnapshot,
-    RunConfig,
-)
-from .serialization import load_json, save_json
-from .utils import ensure_directory, stable_hash
+from .schemas import AblationRecord, MoELayerSpec, RoutingContext, RunConfig, Window
 
 __all__ = [
-    "AblationResult",
-    "CorrectnessCheckResult",
-    "archive_previous_outputs",
-    "EnvironmentInfo",
-    "MoELayerInfo",
+    "AblationRecord",
     "ModelLoadError",
-    "MoERouteAdapter",
-    "MockRouterTraceProvider",
-    "MockRouteAblationContext",
-    "MoERouteAdapter",
-    "RoutingState",
+    "MoELayerSpec",
     "RouteAblationContext",
     "RoutePatchError",
-    "UnsupportedOLMoEAdapter",
-    "get_adapter_for_layer",
-    "UnsupportedOLMoEAdapter",
-    "RouteSnapshot",
-    "RouterTrace",
+    "RoutingContext",
     "RunConfig",
+    "Window",
     "build_config",
-    "collect_router_trace",
-    "ensure_directory",
     "ensure_output_dir",
-    "inspect_model",
+    "finalize_config",
     "load_config",
-    "load_json",
     "load_olmoe_model",
     "next_token_nll",
     "parse_args",
-    "save_json",
-    "select_middle_moe_layer",
-    "stable_hash",
+    "verify_intervention_correctness",
 ]
