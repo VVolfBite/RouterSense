@@ -27,6 +27,10 @@ hf_cache/
 artifacts/
 outputs/*
 !outputs/.gitkeep
+archive/*
+!archive/.gitkeep
+!archive/*/
+!archive/*/**
 
 # Experiment outputs and logs
 outputs_*/

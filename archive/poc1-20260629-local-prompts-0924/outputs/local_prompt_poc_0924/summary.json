@@ -1,0 +1,53 @@
+{
+  "pairwise_ranking_accuracy": 0.47835926449787836,
+  "pairwise_total": 3535,
+  "strategies": {
+    "full": {
+      "mean_delta_nll": 0.0,
+      "median_delta_nll": 0.0,
+      "p95_delta_nll": 0.0,
+      "deferrable_ratio": {
+        "0.01": 1.0,
+        "0.05": 1.0,
+        "0.1": 1.0
+      },
+      "num_groups": 128
+    },
+    "random": {
+      "mean_delta_nll": 0.00778806209564209,
+      "median_delta_nll": 0.0026702880859375,
+      "p95_delta_nll": 0.087890625,
+      "deferrable_ratio": {
+        "0.01": 0.625,
+        "0.05": 0.90625,
+        "0.1": 0.9609375
+      },
+      "num_groups": 128
+    },
+    "raw_routing": {
+      "mean_delta_nll": 0.011797428131103516,
+      "median_delta_nll": 0.000640869140625,
+      "p95_delta_nll": 0.0859375,
+      "deferrable_ratio": {
+        "0.01": 0.7109375,
+        "0.05": 0.90625,
+        "0.1": 0.9609375
+      },
+      "num_groups": 128
+    },
+    "oracle": {
+      "mean_delta_nll": -0.07844018936157227,
+      "median_delta_nll": -0.03173828125,
+      "p95_delta_nll": -0.001129150390625,
+      "deferrable_ratio": {
+        "0.01": 0.9921875,
+        "0.05": 1.0,
+        "0.1": 1.0
+      },
+      "num_groups": 128
+    }
+  },
+  "notes": {
+    "quality_constrained_deferrable_ratio_semantics": "ratio of window-layer groups where one selected route stays within epsilon delta_nll"
+  }
+}
