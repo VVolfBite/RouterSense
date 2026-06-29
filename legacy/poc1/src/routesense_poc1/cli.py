@@ -80,14 +80,20 @@ def run_command(command: str, config) -> int:
         payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
         records = [AblationRecord(**row) for row in payload]
         calibrator = train_calibrator(records, config, output_dir)
-        metrics = evaluate_calibrator(calibrator, records)
+        metrics = evaluate_calibrator(calibrator, records, output_dir=output_dir)
         save_json(metrics, output_dir / "calibration_metrics.json")
         return 0
 
     if command == "analyze":
+        calibrator = None
         payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
         records = [AblationRecord(**row) for row in payload]
-        summary = analyze_records(records)
+        calibrator_path = output_dir / "calibrator.joblib"
+        if calibrator_path.exists():
+            import joblib
+
+            calibrator = joblib.load(calibrator_path)
+        summary = analyze_records(records, calibrator=calibrator)
         save_json(summary, output_dir / "summary.json")
         write_report(summary, output_dir / "report.md")
         return 0
