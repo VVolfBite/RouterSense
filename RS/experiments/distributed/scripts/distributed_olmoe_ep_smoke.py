@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -13,6 +14,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense.runtime import load_model_and_tokenizer, run_single_gpu_text_inference
+from routesense.runtime.distributed_ep.adapter.runner import (
+    DistributedRunnerConfig,
+    build_distributed_runner_plan,
+    simulate_rank_execution,
+)
 from routesense.trace import collect_olmoe_router_trace, summarize_router_trace
 
 
@@ -46,11 +52,35 @@ def main(argv: list[str] | None = None) -> int:
         precision=args.precision,
         device_index=args.device_index,
     )
+    runner_config = DistributedRunnerConfig(world_size=4, node_rank=0, model_id=args.model_id, origin_rank=0)
+    runner_plan = build_distributed_runner_plan(
+        model=model,
+        trace=trace,
+        config=runner_config,
+        rank=0,
+        host=socket.gethostname(),
+        gpu_name="cuda:0",
+    )
+    simulated = simulate_rank_execution(
+        runner_plan.dispatch_plans,
+        rank=0,
+        bytes_per_row=int(runner_plan.adapter["hidden_size"]) * 2,
+    )
     payload = {
         "inventory": args.inventory,
         "trace_summary": summary,
         "reference": reference.to_dict(),
-        "status": "PLACEHOLDER_PHASE0C_ENTRYPOINT_REPLACED_WITH_SINGLE_GPU_REFERENCE",
+        "distributed_runner_config": runner_config.to_dict(),
+        "runner_plan": {
+            "adapter": runner_plan.adapter,
+            "placement": runner_plan.placement,
+            "residency": runner_plan.residency,
+            "dispatch_summary": runner_plan.dispatch_summary,
+            "dispatch_plans": [plan.to_dict() for plan in runner_plan.dispatch_plans],
+            "manifest": runner_plan.manifest,
+        },
+        "simulated_rank0_execution": simulated,
+        "status": "PHASE0C_PRE_GPU_EXECUTION_PLAN_READY",
     }
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)

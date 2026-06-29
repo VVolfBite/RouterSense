@@ -26,23 +26,32 @@ def _snapshot() -> dict[str, object]:
 
     def run_all_reduce(size: int) -> dict[str, object]:
         tensor = torch.arange(size, device=device, dtype=torch.float32) + rank
-        expected = tensor.clone()
         dist.all_reduce(tensor)
-        expected = expected * world_size
+        expected = torch.arange(size, device=device, dtype=torch.float32) * world_size + sum(range(world_size))
         return {"size": size, "ok": bool(torch.allclose(tensor, expected))}
 
     def run_all_gather(size: int) -> dict[str, object]:
         tensor = torch.arange(size, device=device, dtype=torch.float32) + rank
         gathered = [torch.zeros_like(tensor) for _ in range(world_size)]
         dist.all_gather(gathered, tensor)
-        ok = len(gathered) == world_size and all(chunk.shape == tensor.shape for chunk in gathered)
+        ok = len(gathered) == world_size and all(
+            torch.allclose(chunk, torch.arange(size, device=device, dtype=torch.float32) + source_rank)
+            for source_rank, chunk in enumerate(gathered)
+        )
         return {"size": size, "ok": ok}
 
     def run_all_to_all(size: int) -> dict[str, object]:
         send = torch.arange(size * world_size, device=device, dtype=torch.float32).reshape(world_size, size) + rank * 1000
         recv = torch.zeros_like(send)
         dist.all_to_all_single(recv, send)
-        ok = bool(recv.shape == send.shape)
+        expected = torch.stack(
+            [
+                torch.arange(size, device=device, dtype=torch.float32) + source_rank * 1000 + rank * size
+                for source_rank in range(world_size)
+            ],
+            dim=0,
+        )
+        ok = bool(recv.shape == send.shape and torch.allclose(recv, expected))
         return {"size": size, "ok": ok}
 
     results["all_reduce"] = [run_all_reduce(256), run_all_reduce(16384), run_all_reduce(262144)]

@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense.runtime import load_model_and_tokenizer
+from routesense.runtime.distributed_ep.adapter.olmoe_adapter import probe_olmoe_adapter_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,25 +29,27 @@ def main(argv: list[str] | None = None) -> int:
         precision=args.precision,
         device_index=args.device_index,
     )
+    adapter = probe_olmoe_adapter_config(model)
     moe_layer = model.model.layers[0].mlp
     experts = moe_layer.experts
     router = moe_layer.gate
     probe = {
-        "model_class": model.__class__.__name__,
+        "model_class": adapter.model_class,
         "moe_block_class": moe_layer.__class__.__name__,
         "router_module_path": "model.layers[*].mlp.gate",
         "router_output_fields": ["router_logits", "router_scores", "router_indices"],
         "num_moe_layers": len(model.model.layers),
-        "num_experts": int(model.config.num_experts),
-        "top_k": int(model.config.num_experts_per_tok),
-        "hidden_size": int(model.config.hidden_size),
-        "intermediate_size": int(model.config.intermediate_size),
+        "num_experts": adapter.num_experts,
+        "top_k": adapter.top_k,
+        "hidden_size": adapter.hidden_size,
+        "intermediate_size": adapter.intermediate_size,
         "expert_parameter_names": [name for name, _ in experts.named_parameters()],
         "expert_parameter_shapes": {name: list(param.shape) for name, param in experts.named_parameters()},
         "packed_experts": True,
         "single_expert_weight_formula": "gate_up_proj[expert_id] and down_proj[expert_id] with silu(gate) * up",
         "source": source,
         "gate_weight_shape": list(router.weight.shape),
+        "adapter": adapter.to_dict(),
     }
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
