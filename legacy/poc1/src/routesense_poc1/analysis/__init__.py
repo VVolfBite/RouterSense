@@ -7,6 +7,7 @@ from .conditional_analysis import (
     split_by_top1_dominance,
 )
 from .layer_analysis import analyze_by_expert, analyze_by_layer, analyze_oracle_subset, compute_rank_layer_heatmap
+from .offline_summary import write_offline_summary
 from .policies import select_deferrable_expert
 from .plotting import plot_deferrable_ratio, plot_policy_delta_nll, plot_ranking_accuracy
 
@@ -26,5 +27,6 @@ __all__ = [
     "split_by_delta_magnitude",
     "split_by_top1_dominance",
     "train_calibrator",
+    "write_offline_summary",
     "write_report",
 ]

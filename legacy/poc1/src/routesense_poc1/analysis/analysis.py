@@ -7,6 +7,13 @@ from typing import Callable
 
 from ..core.features import FEATURE_EXTRACTORS, FEATURE_ORIENTATION
 from ..core.schemas import AblationRecord
+from .conditional_analysis import (
+    analyze_expert_specialization,
+    split_by_context_entropy,
+    split_by_delta_magnitude,
+    split_by_top1_dominance,
+)
+from .layer_analysis import analyze_by_expert, analyze_by_layer, analyze_oracle_subset, compute_rank_layer_heatmap
 from .policies import SINGLE_FACTOR_STRATEGIES, select_deferrable_expert
 
 
@@ -174,6 +181,16 @@ def analyze_records(records: list[AblationRecord], calibrator=None) -> dict:
         "pairwise_total": raw_pairwise["pairwise_total"],
         "strategies": strategy_summary,
         "routing_factor_diagnostics": factor_diagnostics,
+        "layer_analysis": analyze_by_layer(records),
+        "expert_analysis": analyze_by_expert(records),
+        "oracle_subset_analysis": analyze_oracle_subset(records, top_k=32),
+        "rank_layer_heatmap": compute_rank_layer_heatmap(records),
+        "conditional_analysis": {
+            "context_entropy": split_by_context_entropy(records),
+            "top1_dominance": split_by_top1_dominance(records),
+            "delta_magnitude": split_by_delta_magnitude(records, threshold=0.05),
+            "expert_specialization": analyze_expert_specialization(records),
+        },
         "routing_factor_strategy_subset": {
             strategy: strategy_summary[strategy]
             for strategy in strategy_summary
@@ -216,6 +233,35 @@ def write_report(summary: dict, path: Path) -> None:
             f"- {feature_name}: pearson={payload['pearson_with_delta_nll']}, "
             f"spearman={payload['spearman_with_delta_nll']}, "
             f"pairwise={pairwise['accuracy']}"
+        )
+    conditional = summary.get("conditional_analysis", {})
+    if conditional:
+        lines.extend(["", "## Conditional Diagnostics", ""])
+        entropy = conditional.get("context_entropy", {})
+        if entropy:
+            lines.append(
+                f"- high_entropy pairwise={entropy.get('high_entropy', {}).get('pairwise_accuracy')}, "
+                f"low_entropy pairwise={entropy.get('low_entropy', {}).get('pairwise_accuracy')}"
+            )
+        gap = conditional.get("top1_dominance", {})
+        if gap:
+            lines.append(
+                f"- small_gap pairwise={gap.get('small_gap', {}).get('pairwise_accuracy')}, "
+                f"large_gap pairwise={gap.get('large_gap', {}).get('pairwise_accuracy')}"
+            )
+        magnitude = conditional.get("delta_magnitude", {})
+        if magnitude:
+            lines.append(
+                f"- large_magnitude pairwise={magnitude.get('large_magnitude_groups', {}).get('pairwise_accuracy')}, "
+                f"small_magnitude pairwise={magnitude.get('small_magnitude_groups', {}).get('pairwise_accuracy')}"
+            )
+    oracle_subset = summary.get("oracle_subset_analysis")
+    if oracle_subset:
+        lines.extend(["", "## Oracle Subset", ""])
+        lines.append(
+            f"- top32 oracle subset pairwise={oracle_subset.get('pairwise_accuracy')}, "
+            f"oracle_mean_delta={oracle_subset.get('oracle_mean_delta_nll')}, "
+            f"random_mean_delta={oracle_subset.get('random_mean_delta_nll')}"
         )
     lines.extend(
         [

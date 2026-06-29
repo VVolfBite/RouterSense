@@ -91,7 +91,13 @@ def run_command(command: str, config) -> int:
         if calibrator_path.exists():
             import joblib
 
-            calibrator = joblib.load(calibrator_path)
+            try:
+                calibrator = joblib.load(calibrator_path)
+            except ModuleNotFoundError as exc:
+                print(
+                    f"[analyze] skipping incompatible calibrator artifact at {calibrator_path}: {exc}",
+                    flush=True,
+                )
         summary = analyze_records(records, calibrator=calibrator)
         save_json(summary, output_dir / "summary.json")
         write_report(summary, output_dir / "report.md")
