@@ -1,0 +1,18 @@
+{
+  "low_entropy": {
+    "pairwise_accuracy": 0.4458850056369786,
+    "pairwise_total": 1774,
+    "pairwise_correct": 791,
+    "pairwise_tie_skips": 18,
+    "num_records": 512,
+    "num_groups": 64
+  },
+  "high_entropy": {
+    "pairwise_accuracy": 0.511641113003975,
+    "pairwise_total": 1761,
+    "pairwise_correct": 901,
+    "pairwise_tie_skips": 31,
+    "num_records": 512,
+    "num_groups": 64
+  }
+}

@@ -46,3 +46,18 @@ These configs are intended for the next GPU-backed refinement round:
 - long context (`context_length=256`)
 - multi-domain comparison (`code`, `math`, `dialog`)
 - all-layer sampling (`num_moe_layers=16`)
+
+
+## Batch Runner
+
+For the next GPU-backed refinement round, a simple batch runner is available:
+
+```bash
+bash legacy/poc1/scripts/run_refine_batch.sh
+```
+
+It runs:
+- code_long
+- math_long
+- dialog_long
+- all_layers_code

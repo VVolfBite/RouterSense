@@ -120,3 +120,16 @@ The next GPU-backed refinement round now has ready-to-run configs:
 - `legacy/poc1/configs/math_long.yaml`
 - `legacy/poc1/configs/dialog_long.yaml`
 - `legacy/poc1/configs/all_layers_code.yaml`
+
+
+## Conditional analysis update
+
+Additional subgroup diagnostics on the current 1024-record run show:
+- `high_entropy` groups: pairwise accuracy `0.5116`
+- `low_entropy` groups: pairwise accuracy `0.4459`
+- `small_gap` groups: pairwise accuracy `0.5023`
+- `large_gap` groups: pairwise accuracy `0.4551`
+- `large_magnitude` groups: pairwise accuracy `0.4132`
+
+Current interpretation:
+- routing signal, if present, is more likely to appear when the router is uncertain (`high_entropy`, `small_gap`) rather than when it is highly confident.
