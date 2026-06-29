@@ -1,0 +1,7 @@
+model_id: allenai/OLMoE-1B-7B-0125
+precision: fp16
+num_windows: 8
+context_length: 64
+num_moe_layers: 3
+seed: 42
+enable_calibration: false

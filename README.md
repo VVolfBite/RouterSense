@@ -6,7 +6,9 @@ RouteSense is a distributed MoE scheduling and deployment project. The current m
 
 - `RS/src/routesense/`: formal runtime, trace, topology, oracle, and evaluation code.
 - `RS/deploy/`: inventory, dry-run launch contracts, and deployment scripts.
-- `RS/experiments/deployment/`: single-GPU smoke and trace entrypoints.
+- `RS/experiments/prerun/`: single-GPU smoke, architecture probe, and router trace entrypoints.
+- `RS/experiments/distributed/`: distributed bring-up scripts.
+- `RS/experiments/ablation/`: reserved real ablation configs and scripts.
 - `RS/configs/`: model and topology configuration.
 - `RS/tests/`: deployment-side regression tests.
 
@@ -20,5 +22,4 @@ The legacy trees are preserved for reference and reproducibility. They are not t
 
 ## Current Phase
 
-Phase 0B validates real single-GPU OLMoE loading and router trace capture on the executor host, while the control host maintains inventory and dry-run launch contracts. No scheduler benchmark is part of this phase.
-
+The current RS mainline is being refactored toward real distributed OLMoE expert-parallel bring-up. Legacy POC1/POC2 are archived references only and are not part of deployment or runtime mainline execution.

@@ -48,7 +48,7 @@ temp/
 .DS_Store
 Thumbs.db
 
-# Phase 0B deployment runtime artifacts
+# RS runtime artifacts
 artifacts/deployment/
 outputs/deployment/
 deploy/logs/*
@@ -56,7 +56,7 @@ deploy/logs/*
 model_cache/
 *.pid
 
-# Phase 0B tracked deployment exceptions
+# RS tracked exceptions
 !configs/model/olmoe_1b_7b_instruct.yaml
 !configs/topology/
 !configs/topology/torchrun_2node_2gpu.yaml
@@ -68,30 +68,12 @@ deploy/inventory/hosts.local.yaml
 !deploy/scripts/
 !deploy/scripts/*.sh
 !deploy/scripts/*.py
-!experiments/deployment/
-!experiments/deployment/*.py
-!docs/router_trace_schema.md
-!src/routesense/
-!src/routesense/**
-
-# Phase 0B tracked deployment exceptions
-!configs/model/
-!configs/model/olmoe_1b_7b_instruct.yaml
-!configs/topology/
-!configs/topology/torchrun_2node_2gpu.yaml
-!deploy/env/
-!deploy/env/requirements-gpu.txt
-!deploy/logs/
-!deploy/logs/.gitkeep
-!deploy/inventory/
-!deploy/inventory/README.md
-!deploy/inventory/hosts.example.yaml
-!deploy/inventory/hosts.local.yaml.example
-!deploy/scripts/
-!deploy/scripts/*.sh
-!deploy/scripts/*.py
-!experiments/deployment/
-!experiments/deployment/*.py
+!experiments/prerun/
+!experiments/prerun/*.py
+!experiments/distributed/
+!experiments/distributed/**/*.py
+!experiments/ablation/
+!experiments/ablation/**/*.yaml
 !docs/router_trace_schema.md
 !src/routesense/
 !src/routesense/**

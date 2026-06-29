@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .local_test.inference import (
+from .inference import (
     SingleGPUInferenceResult,
     gpu_environment_snapshot,
     load_model_and_tokenizer,

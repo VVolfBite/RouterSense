@@ -12,8 +12,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense.runtime import load_model_and_tokenizer
-from routesense.trace import collect_olmoe_router_trace, summarize_router_trace
 from routesense.topology import load_inventory, resolve_inventory_path, resolve_node_model_cache
+from routesense.trace import collect_olmoe_router_trace, summarize_router_trace
 
 
 def main(argv: list[str] | None = None) -> int:
