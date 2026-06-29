@@ -4,7 +4,6 @@ import json
 
 from .ablation import run_ablation
 from .analysis import analyze_records, write_report
-from .calibration import evaluate_calibrator, train_calibrator
 from .config import build_config, ensure_output_dir, finalize_config, parse_args
 from .data import load_and_prepare_data
 from .environment import run_doctor
@@ -76,6 +75,8 @@ def run_command(command: str, config) -> int:
         return 0
 
     if command == "calibrate":
+        from .calibration import evaluate_calibrator, train_calibrator
+
         payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
         records = [AblationRecord(**row) for row in payload]
         calibrator = train_calibrator(records, config, output_dir)

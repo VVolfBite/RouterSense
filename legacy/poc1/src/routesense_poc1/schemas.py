@@ -8,7 +8,8 @@ from typing import Any
 
 @dataclass
 class RunConfig:
-    model_id: str = "allenai/OLMoE-1B-7B-0125"
+    model_id: str = "allenai/OLMoE-1B-7B-0924"
+    model_path: str | None = "/root/autodl-tmp/models/OLMoE-1B-7B-0924"
     precision: str = "fp16"
     device_map: str = "balanced"
     max_memory: dict[str | int, str] | None = None

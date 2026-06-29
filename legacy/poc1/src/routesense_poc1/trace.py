@@ -20,7 +20,14 @@ def collect_routing_context(
     with torch.inference_mode():
         outputs = model(input_ids=input_ids, output_router_logits=True, return_dict=True, use_cache=False)
     baseline_nll = next_token_nll(outputs.logits, input_ids)
-    router_logits = outputs.router_logits[moe_layer.layer_index][window.target_pos].detach().float()
+    layer_router_logits = outputs.router_logits[moe_layer.layer_index].detach().float()
+    if layer_router_logits.ndim == 3:
+        token_router_logits = layer_router_logits[0]
+    elif layer_router_logits.ndim == 2:
+        token_router_logits = layer_router_logits
+    else:
+        raise RuntimeError(f"unexpected router logits shape: {tuple(layer_router_logits.shape)}")
+    router_logits = token_router_logits[window.target_pos]
     probs = torch.softmax(router_logits, dim=-1)
     top_weights, top_indices = torch.topk(probs, k=moe_layer.top_k, dim=-1)
     if moe_layer.norm_topk_prob:

@@ -1,0 +1,14 @@
+{
+  "model_id": "allenai/OLMoE-1B-7B-0924",
+  "model_path": "/root/autodl-tmp/models/OLMoE-1B-7B-0924",
+  "text": "The history of science is a story of scientific inquiry and discovery",
+  "layer_id": 8,
+  "layer_path": "model.layers.8.mlp",
+  "token_pos": 10,
+  "expert_rank": 0,
+  "expert_id": 18,
+  "baseline_nll": 1.126953125,
+  "ablated_nll": 0.931640625,
+  "delta_nll": -0.1953125,
+  "status": "manual_prompt_ablation_smoke_pass"
+}

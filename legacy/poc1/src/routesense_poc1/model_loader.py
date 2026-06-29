@@ -43,11 +43,12 @@ def load_olmoe_model(config: RunConfig):
     if config.max_memory:
         model_kwargs["max_memory"] = _filter_available_cuda_max_memory(config.max_memory, torch.cuda.device_count())
 
+    source = config.model_path or config.model_id
     try:
-        model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+        model = AutoModelForCausalLM.from_pretrained(source, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(source)
     except Exception as exc:  # pragma: no cover - depends on remote/local model availability
-        raise ModelLoadError(f"failed to load OLMoE model '{config.model_id}': {exc}") from exc
+        raise ModelLoadError(f"failed to load OLMoE model '{source}': {exc}") from exc
     if hasattr(model, "config"):
         model.config.output_router_logits = True
     return model, tokenizer

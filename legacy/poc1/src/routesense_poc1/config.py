@@ -33,6 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "run-all",
     ])
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -47,6 +48,8 @@ def build_config(args: argparse.Namespace | None = None) -> RunConfig:
         return finalize_config(config)
     if args.run_id is not None:
         config.run_id = args.run_id
+    if args.model_path is not None:
+        config.model_path = args.model_path
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.seed is not None:
