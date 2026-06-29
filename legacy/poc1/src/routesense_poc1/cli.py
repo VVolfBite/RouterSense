@@ -22,15 +22,16 @@ def _collect_trace_rows(config) -> list[dict]:
     rows: list[dict] = []
     for window in windows:
         for moe_layer in moe_layers:
+            contexts, _baseline_nll = collect_routing_context(
+                model=model,
+                tokenizer=tokenizer,
+                window=window,
+                moe_layer=moe_layer,
+                run_id=config.run_id,
+            )
             rows.extend(
                 context.to_dict()
-                for context in collect_routing_context(
-                    model=model,
-                    tokenizer=tokenizer,
-                    window=window,
-                    moe_layer=moe_layer,
-                    run_id=config.run_id,
-                )
+                for context in contexts
             )
     return rows
 
