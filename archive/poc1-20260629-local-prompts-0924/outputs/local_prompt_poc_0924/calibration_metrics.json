@@ -2,6 +2,7 @@
   "selected_feature_names": [
     "topk_rank"
   ],
+  "selected_feature_family": "routing_only",
   "selection_metric": "validation_mae",
   "selection_score": 0.033022097322546115,
   "train_metrics": {
@@ -10,7 +11,8 @@
     "num_records": 704,
     "feature_names": [
       "topk_rank"
-    ]
+    ],
+    "feature_family": "routing_only"
   },
   "validation_metrics": {
     "mae": 0.032479597534201,
@@ -18,7 +20,8 @@
     "num_records": 160,
     "feature_names": [
       "topk_rank"
-    ]
+    ],
+    "feature_family": "routing_only"
   },
   "test_metrics": {
     "mae": 0.0672027033105634,
@@ -26,7 +29,8 @@
     "num_records": 160,
     "feature_names": [
       "topk_rank"
-    ]
+    ],
+    "feature_family": "routing_only"
   },
   "train_document_ids": [
     0,
@@ -71,6 +75,7 @@
       "feature_names": [
         "topk_rank"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.033022097322546115,
       "validation_r2": 0.02146585404396184,
       "test_mae": 0.06774009684704052,
@@ -81,8 +86,49 @@
     },
     {
       "feature_names": [
+        "topk_rank"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.033022097322546115,
+      "validation_r2": 0.02146585404396184,
+      "test_mae": 0.06774009684704052,
+      "test_r2": -0.03928812632608181,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.033332957737519,
+      "validation_r2": 0.030105358886007183,
+      "test_mae": 0.0698035262524856,
+      "test_r2": -0.038840190732101654,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "layer_id"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.033835107683402144,
+      "validation_r2": 0.01049531651945168,
+      "test_mae": 0.06728733625282537,
+      "test_r2": -0.036930277365956554,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
         "routing_entropy"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.037661384620342006,
       "validation_r2": -0.08915042816328267,
       "test_mae": 0.07042364916264007,
@@ -95,6 +141,7 @@
       "feature_names": [
         "abs_router_logit"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.03812065528276772,
       "validation_r2": -0.1545160916604793,
       "test_mae": 0.07358677701586386,
@@ -107,6 +154,7 @@
       "feature_names": [
         "router_logit"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.039278100532495905,
       "validation_r2": -0.275832082261694,
       "test_mae": 0.07360663896236194,
@@ -120,6 +168,7 @@
         "effective_gate_weight",
         "routing_entropy"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.03935888591507699,
       "validation_r2": -0.1803672170493189,
       "test_mae": 0.07761306955774387,
@@ -133,6 +182,7 @@
         "router_probability",
         "routing_entropy"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.03935888591507699,
       "validation_r2": -0.1803672170493189,
       "test_mae": 0.07761306955774387,
@@ -143,8 +193,52 @@
     },
     {
       "feature_names": [
+        "expert_id"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.03942757083001574,
+      "validation_r2": -0.1964289088071285,
+      "test_mae": 0.07022417780859783,
+      "test_r2": -0.042635902689416305,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "layer_id",
+        "expert_id"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.03981956083551402,
+      "validation_r2": -0.17923057819358235,
+      "test_mae": 0.07236293251716103,
+      "test_r2": -0.042806873132107404,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "effective_gate_weight",
+        "routing_entropy",
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04038124380710932,
+      "validation_r2": -0.26803778718358284,
+      "test_mae": 0.07821718886693524,
+      "test_r2": -0.08691853081476864,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
         "effective_gate_weight"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.04060123061861311,
       "validation_r2": -0.2773444762153898,
       "test_mae": 0.07334174979844643,
@@ -157,6 +251,7 @@
       "feature_names": [
         "router_probability"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.04060123061861311,
       "validation_r2": -0.2773444762153898,
       "test_mae": 0.07334174979844643,
@@ -170,6 +265,7 @@
         "effective_gate_weight",
         "topk_rank"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.040827074033915486,
       "validation_r2": -0.24123095025670183,
       "test_mae": 0.07506785894094029,
@@ -183,6 +279,7 @@
         "router_probability",
         "topk_rank"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.040827074033915486,
       "validation_r2": -0.24123095025670183,
       "test_mae": 0.07506785894094029,
@@ -197,6 +294,7 @@
         "top1_top2_gap",
         "routing_entropy"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.04105653049724135,
       "validation_r2": -0.49507382541649303,
       "test_mae": 0.078212468128695,
@@ -211,6 +309,7 @@
         "top1_top2_gap",
         "routing_entropy"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.04105653049724135,
       "validation_r2": -0.49507382541649303,
       "test_mae": 0.078212468128695,
@@ -225,6 +324,7 @@
         "abs_router_logit",
         "topk_rank"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.041121322886875956,
       "validation_r2": -0.2651229964330084,
       "test_mae": 0.07872655491808996,
@@ -239,6 +339,7 @@
         "router_logit",
         "topk_rank"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.041669534951783924,
       "validation_r2": -0.3151632489052958,
       "test_mae": 0.08019195722907016,
@@ -253,6 +354,37 @@
         "topk_rank",
         "expert_id"
       ],
+      "feature_family": "state_like",
+      "validation_mae": 0.04170590980313608,
+      "validation_r2": -0.21713902941622343,
+      "test_mae": 0.0772636981646573,
+      "test_r2": -0.023950694453706678,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "effective_gate_weight",
+        "topk_rank",
+        "expert_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04170590980313608,
+      "validation_r2": -0.21713902941622343,
+      "test_mae": 0.0772636981646573,
+      "test_r2": -0.023950694453706678,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "router_probability",
+        "topk_rank",
+        "expert_id"
+      ],
+      "feature_family": "combined",
       "validation_mae": 0.04170590980313608,
       "validation_r2": -0.21713902941622343,
       "test_mae": 0.0772636981646573,
@@ -265,6 +397,7 @@
       "feature_names": [
         "top1_top2_gap"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.04231390335781615,
       "validation_r2": -0.39852451810584455,
       "test_mae": 0.07166435524183581,
@@ -279,6 +412,7 @@
         "topk_rank",
         "layer_id"
       ],
+      "feature_family": "state_like",
       "validation_mae": 0.04319882514774111,
       "validation_r2": -0.39578202669109874,
       "test_mae": 0.07727147514778675,
@@ -290,8 +424,84 @@
     {
       "feature_names": [
         "effective_gate_weight",
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04319882514774111,
+      "validation_r2": -0.39578202669109874,
+      "test_mae": 0.07727147514778675,
+      "test_r2": -0.062388800751106865,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "router_probability",
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04319882514774111,
+      "validation_r2": -0.39578202669109874,
+      "test_mae": 0.07727147514778675,
+      "test_r2": -0.062388800751106865,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "abs_router_logit",
+        "topk_rank",
+        "expert_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04342115783016098,
+      "validation_r2": -0.3772241029196659,
+      "test_mae": 0.07860269412430212,
+      "test_r2": -0.10926829339410826,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "topk_rank",
+        "expert_id"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.04419893056936618,
+      "validation_r2": -0.4314297846600055,
+      "test_mae": 0.07620050316939156,
+      "test_r2": -0.06145675889680158,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "router_probability",
+        "top1_top2_gap",
+        "topk_rank",
+        "expert_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.044695859770789395,
+      "validation_r2": -0.44067911058162124,
+      "test_mae": 0.07521391324759315,
+      "test_r2": -0.04199116617557963,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    {
+      "feature_names": [
+        "effective_gate_weight",
         "top1_top2_gap"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.0457236364722342,
       "validation_r2": -0.5520021155393025,
       "test_mae": 0.07486764799328047,
@@ -305,6 +515,7 @@
         "router_probability",
         "top1_top2_gap"
       ],
+      "feature_family": "routing_only",
       "validation_mae": 0.0457236364722342,
       "validation_r2": -0.5520021155393025,
       "test_mae": 0.07486764799328047,
@@ -312,6 +523,66 @@
       "train_records": 704,
       "validation_records": 160,
       "test_records": 160
+    },
+    {
+      "feature_names": [
+        "effective_gate_weight",
+        "top1_top2_gap",
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04786841273641656,
+      "validation_r2": -0.6478899329174932,
+      "test_mae": 0.07728219332137638,
+      "test_r2": -0.06727261014190367,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
     }
-  ]
+  ],
+  "family_best_feature_sets": {
+    "routing_only": {
+      "feature_names": [
+        "topk_rank"
+      ],
+      "feature_family": "routing_only",
+      "validation_mae": 0.033022097322546115,
+      "validation_r2": 0.02146585404396184,
+      "test_mae": 0.06774009684704052,
+      "test_r2": -0.03928812632608181,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    "state_like": {
+      "feature_names": [
+        "topk_rank"
+      ],
+      "feature_family": "state_like",
+      "validation_mae": 0.033022097322546115,
+      "validation_r2": 0.02146585404396184,
+      "test_mae": 0.06774009684704052,
+      "test_r2": -0.03928812632608181,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    },
+    "combined": {
+      "feature_names": [
+        "effective_gate_weight",
+        "routing_entropy",
+        "topk_rank",
+        "layer_id"
+      ],
+      "feature_family": "combined",
+      "validation_mae": 0.04038124380710932,
+      "validation_r2": -0.26803778718358284,
+      "test_mae": 0.07821718886693524,
+      "test_r2": -0.08691853081476864,
+      "train_records": 704,
+      "validation_records": 160,
+      "test_records": 160
+    }
+  }
 }

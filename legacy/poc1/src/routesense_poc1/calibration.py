@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
-from statistics import mean
 
 import joblib
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -24,14 +22,14 @@ FEATURE_COLUMNS: dict[str, callable] = {
     "expert_id": lambda record: float(record.expert_id),
 }
 
-BASE_FEATURE_SUBSETS: list[tuple[str, ...]] = [
+ROUTING_ONLY_SUBSETS: list[tuple[str, ...]] = [
     ("effective_gate_weight",),
     ("router_probability",),
+    ("router_logit",),
+    ("abs_router_logit",),
     ("topk_rank",),
     ("top1_top2_gap",),
     ("routing_entropy",),
-    ("router_logit",),
-    ("abs_router_logit",),
     ("effective_gate_weight", "topk_rank"),
     ("effective_gate_weight", "top1_top2_gap"),
     ("effective_gate_weight", "routing_entropy"),
@@ -42,15 +40,42 @@ BASE_FEATURE_SUBSETS: list[tuple[str, ...]] = [
     ("router_probability", "top1_top2_gap", "routing_entropy"),
     ("effective_gate_weight", "router_logit", "topk_rank"),
     ("effective_gate_weight", "abs_router_logit", "topk_rank"),
+]
+
+STATE_LIKE_SUBSETS: list[tuple[str, ...]] = [
+    ("topk_rank",),
+    ("layer_id",),
+    ("expert_id",),
+    ("topk_rank", "layer_id"),
+    ("topk_rank", "expert_id"),
+    ("layer_id", "expert_id"),
     ("effective_gate_weight", "topk_rank", "layer_id"),
     ("effective_gate_weight", "topk_rank", "expert_id"),
 ]
+
+COMBINED_SUBSETS: list[tuple[str, ...]] = [
+    ("effective_gate_weight", "topk_rank", "layer_id"),
+    ("effective_gate_weight", "topk_rank", "expert_id"),
+    ("router_probability", "topk_rank", "layer_id"),
+    ("router_probability", "topk_rank", "expert_id"),
+    ("effective_gate_weight", "top1_top2_gap", "topk_rank", "layer_id"),
+    ("router_probability", "top1_top2_gap", "topk_rank", "expert_id"),
+    ("effective_gate_weight", "routing_entropy", "topk_rank", "layer_id"),
+    ("abs_router_logit", "topk_rank", "expert_id"),
+]
+
+FEATURE_FAMILY_SUBSETS: dict[str, list[tuple[str, ...]]] = {
+    "routing_only": ROUTING_ONLY_SUBSETS,
+    "state_like": STATE_LIKE_SUBSETS,
+    "combined": COMBINED_SUBSETS,
+}
 
 
 @dataclass
 class CalibratorBundle:
     model: HistGradientBoostingRegressor
     feature_names: list[str]
+    feature_family: str
     train_document_ids: list[int]
     validation_document_ids: list[int]
     test_document_ids: list[int]
@@ -110,12 +135,14 @@ def evaluate_calibrator_bundle(bundle: CalibratorBundle, records: list[AblationR
         "r2": float(r2_score(targets, predictions)),
         "num_records": len(records),
         "feature_names": bundle.feature_names,
+        "feature_family": bundle.feature_family,
     }
 
 
 def _evaluate_feature_subset(
     records: list[AblationRecord],
     feature_names: list[str],
+    feature_family: str,
     seed: int,
     train_ids: list[int],
     valid_ids: list[int],
@@ -129,6 +156,7 @@ def _evaluate_feature_subset(
         CalibratorBundle(
             model=model,
             feature_names=list(feature_names),
+            feature_family="candidate",
             train_document_ids=train_ids,
             validation_document_ids=valid_ids,
             test_document_ids=test_ids,
@@ -141,6 +169,7 @@ def _evaluate_feature_subset(
         CalibratorBundle(
             model=model,
             feature_names=list(feature_names),
+            feature_family="candidate",
             train_document_ids=train_ids,
             validation_document_ids=valid_ids,
             test_document_ids=test_ids,
@@ -151,6 +180,7 @@ def _evaluate_feature_subset(
     )
     return {
         "feature_names": list(feature_names),
+        "feature_family": feature_family,
         "validation_mae": validation_metrics["mae"],
         "validation_r2": validation_metrics["r2"],
         "test_mae": test_metrics["mae"],
@@ -163,18 +193,23 @@ def _evaluate_feature_subset(
 
 def train_calibrator(records: list[AblationRecord], config, output_dir: Path) -> CalibratorBundle:
     train_ids, valid_ids, test_ids = _split_document_ids(records)
-    candidate_subsets = list(dict.fromkeys(BASE_FEATURE_SUBSETS))
-    candidate_results = [
-        _evaluate_feature_subset(
-            records=records,
-            feature_names=list(feature_names),
-            seed=config.seed,
-            train_ids=train_ids,
-            valid_ids=valid_ids,
-            test_ids=test_ids,
-        )
-        for feature_names in candidate_subsets
-    ]
+    candidate_results = []
+    for feature_family, subsets in FEATURE_FAMILY_SUBSETS.items():
+        for feature_names in list(dict.fromkeys(subsets)):
+            candidate_results.append(
+                _evaluate_feature_subset(
+                    records=records,
+                    feature_names=list(feature_names),
+                    feature_family=feature_family,
+                    seed=config.seed,
+                    train_ids=train_ids,
+                    valid_ids=valid_ids,
+                    test_ids=test_ids,
+                )
+            )
+    family_best: dict[str, dict] = {}
+    for row in sorted(candidate_results, key=lambda row: (row["validation_mae"], -row["validation_r2"], len(row["feature_names"]))):
+        family_best.setdefault(row["feature_family"], row)
     candidate_results.sort(key=lambda row: (row["validation_mae"], -row["validation_r2"], len(row["feature_names"])))
     best = candidate_results[0]
     full_train_records = _filter_records(records, train_ids + valid_ids)
@@ -182,6 +217,7 @@ def train_calibrator(records: list[AblationRecord], config, output_dir: Path) ->
     bundle = CalibratorBundle(
         model=model,
         feature_names=list(best["feature_names"]),
+        feature_family=str(best["feature_family"]),
         train_document_ids=train_ids,
         validation_document_ids=valid_ids,
         test_document_ids=test_ids,
@@ -190,6 +226,7 @@ def train_calibrator(records: list[AblationRecord], config, output_dir: Path) ->
     )
     joblib.dump(bundle, output_dir / "calibrator.joblib")
     joblib.dump(candidate_results, output_dir / "calibration_candidates.joblib")
+    joblib.dump(family_best, output_dir / "calibration_family_best.joblib")
     return bundle
 
 
@@ -199,6 +236,7 @@ def evaluate_calibrator(bundle: CalibratorBundle, records: list[AblationRecord],
     test_records = _filter_records(records, bundle.test_document_ids)
     metrics = {
         "selected_feature_names": bundle.feature_names,
+        "selected_feature_family": bundle.feature_family,
         "selection_metric": bundle.selection_metric,
         "selection_score": bundle.selection_score,
         "train_metrics": evaluate_calibrator_bundle(bundle, train_records),
@@ -211,4 +249,5 @@ def evaluate_calibrator(bundle: CalibratorBundle, records: list[AblationRecord],
     if output_dir is not None:
         candidate_results = joblib.load(output_dir / "calibration_candidates.joblib")
         metrics["candidate_feature_sets"] = candidate_results
+        metrics["family_best_feature_sets"] = joblib.load(output_dir / "calibration_family_best.joblib")
     return metrics

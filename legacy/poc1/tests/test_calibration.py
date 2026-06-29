@@ -38,7 +38,9 @@ def test_calibration_train_and_evaluate(tmp_path: Path) -> None:
     bundle = train_calibrator(records, RunConfig(seed=7), tmp_path)
     metrics = evaluate_calibrator(bundle, records, output_dir=tmp_path)
     assert bundle.feature_names
+    assert bundle.feature_family in {"routing_only", "state_like", "combined"}
     assert "candidate_feature_sets" in metrics
+    assert "family_best_feature_sets" in metrics
     assert metrics["train_metrics"]["num_records"] > 0
     assert metrics["validation_metrics"]["num_records"] > 0
     assert metrics["test_metrics"]["num_records"] > 0

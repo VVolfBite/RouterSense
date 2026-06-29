@@ -68,3 +68,26 @@ Interpretation:
   but it is not yet clearly strong or stable;
 - the learned search did not discover a richer routing-context combination here,
   and instead fell back to `topk_rank` as the best small feature subset under document-held-out validation.
+
+
+## Family-wise feature search update
+
+Feature search is now split into three families:
+- `routing_only`
+- `state_like`
+- `combined`
+
+Current best subsets on `local_prompt_poc_0924`:
+- routing_only: `['topk_rank']`
+- state_like: `['topk_rank']`
+- combined: `['effective_gate_weight', 'routing_entropy', 'topk_rank', 'layer_id']`
+
+Validation comparison:
+- routing_only validation MAE: `0.0330`
+- state_like validation MAE: `0.0330`
+- combined validation MAE: `0.0404`
+
+Current interpretation:
+- the present data does not show a clear advantage from adding more routing-context factors;
+- both routing-only and state-like search collapse to the same strongest simple observable, `topk_rank`;
+- combined features currently overfit relative to the simpler baseline.
