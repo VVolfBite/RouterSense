@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from routesense.runtime.distributed_ep.adapter.expert_store import plan_local_expert_ids, summarize_residency
-from routesense.runtime.distributed_ep.adapter.olmoe_adapter import build_dispatch_plan_from_trace
+from routesense.runtime.distributed_ep.adapter.expert_store import extract_local_expert_weights
+from routesense.runtime.distributed_ep.adapter.olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts
 from routesense.runtime.distributed_ep.core.collective import CollectiveOps
 from routesense.runtime.distributed_ep.core.correctness import summarize_dispatch_plans
 from routesense.runtime.distributed_ep.core.placement import PlacementStrategy
 from routesense.runtime.distributed_ep.core.worker_loop import WorkerLoop
+import torch
 
 
 def test_round_robin_placement_balanced():
@@ -94,3 +96,34 @@ def test_residency_summary_is_physically_sharded():
     residency = summarize_residency([1, 3], local_parameter_count=1024)
     assert residency.weight_residency_mode == "physically_sharded_experts"
     assert residency.non_owner_parameter_count == 0
+
+
+def test_extract_local_expert_weights_slices_expected_experts():
+    class DummyExperts:
+        def __init__(self):
+            self.gate_up_proj = torch.arange(4 * 6 * 3, dtype=torch.float32).reshape(4, 6, 3)
+            self.down_proj = torch.arange(4 * 3 * 3, dtype=torch.float32).reshape(4, 3, 3)
+            self.act_fn = torch.nn.functional.silu
+
+    weights = extract_local_expert_weights(DummyExperts(), [1, 3])
+    assert weights.local_expert_ids == [1, 3]
+    assert list(weights.gate_up_proj.shape) == [2, 6, 3]
+    assert list(weights.down_proj.shape) == [2, 3, 3]
+
+
+def test_execute_local_experts_returns_expected_shape():
+    class DummyExperts:
+        def __init__(self):
+            self.gate_up_proj = torch.ones((2, 4, 2), dtype=torch.float32)
+            self.down_proj = torch.ones((2, 2, 2), dtype=torch.float32)
+            self.act_fn = torch.nn.functional.silu
+
+    weights = extract_local_expert_weights(DummyExperts(), [0, 1])
+    route_items = [
+        type("RouteItemLike", (), {"expert_id": 0, "routing_weight": 0.5})(),
+        type("RouteItemLike", (), {"expert_id": 1, "routing_weight": 0.25})(),
+    ]
+    hidden_states = torch.ones((2, 2), dtype=torch.float32)
+    output = execute_local_experts(hidden_states, route_items, weights)
+    assert list(output.shape) == [2, 2]
+    assert torch.all(output >= 0)

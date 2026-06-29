@@ -8,8 +8,13 @@ from ..core.correctness import summarize_dispatch_plans
 from ..core.manifest import DispatchPlan, DistributedManifest
 from ..core.placement import PlacementStrategy
 from ..core.worker_loop import WorkerLoop
-from .expert_store import count_local_expert_parameters, plan_local_expert_ids, summarize_residency
-from .olmoe_adapter import build_dispatch_plan_from_trace, probe_olmoe_adapter_config
+from .expert_store import (
+    count_local_expert_parameters,
+    extract_local_expert_weights,
+    plan_local_expert_ids,
+    summarize_residency,
+)
+from .olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts, probe_olmoe_adapter_config
 
 
 @dataclass
@@ -30,6 +35,7 @@ class DistributedRunnerPlan:
     residency: dict[str, Any]
     dispatch_summary: dict[str, Any]
     dispatch_plans: list[DispatchPlan]
+    local_expert_weights: dict[str, Any]
     manifest: dict[str, Any]
 
 
@@ -49,6 +55,7 @@ def build_distributed_runner_plan(
     experts_module = getattr(model.model.layers[0].mlp, "experts", None)
     local_parameter_count = count_local_expert_parameters(experts_module, local_expert_ids)
     residency = summarize_residency(local_expert_ids, local_parameter_count=local_parameter_count)
+    local_weights = extract_local_expert_weights(experts_module, local_expert_ids)
 
     dispatch_plans = _build_layer_dispatch_plans(
         trace=trace,
@@ -70,6 +77,7 @@ def build_distributed_runner_plan(
         residency=residency.to_dict(),
         dispatch_summary=summarize_dispatch_plans(dispatch_plans),
         dispatch_plans=dispatch_plans,
+        local_expert_weights=local_weights.to_dict(),
         manifest=manifest.to_dict(),
     )
 
@@ -85,6 +93,15 @@ def simulate_rank_execution(plans: list[DispatchPlan], *, rank: int, bytes_per_r
         "collectives": [asdict(record) for record in collective.records],
         "worker_state": asdict(worker.state),
     }
+
+
+def simulate_local_expert_forward(
+    *,
+    hidden_states,
+    route_items,
+    local_weights,
+):
+    return execute_local_experts(hidden_states, route_items, local_weights)
 
 
 def _build_layer_dispatch_plans(

@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             "residency": runner_plan.residency,
             "dispatch_summary": runner_plan.dispatch_summary,
             "dispatch_plans": [plan.to_dict() for plan in runner_plan.dispatch_plans],
+            "local_expert_weights": runner_plan.local_expert_weights,
             "manifest": runner_plan.manifest,
         },
         "simulated_rank0_execution": simulated,

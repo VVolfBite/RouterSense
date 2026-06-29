@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import torch
+import torch.nn.functional as F
+
 from ..core.manifest import DispatchPlan, DispatchShard, RouteItem
+from .expert_store import LocalExpertWeights
 
 
 @dataclass
@@ -65,3 +69,37 @@ def build_dispatch_plan_from_trace(
         )
         shard.route_items.append(route_item)
     return DispatchPlan(layer_id=layer_id, world_size=world_size, shards=list(shard_map.values()))
+
+
+def execute_local_experts(
+    hidden_states: torch.Tensor,
+    route_items: list[RouteItem],
+    local_weights: LocalExpertWeights,
+) -> torch.Tensor:
+    if hidden_states.ndim != 2:
+        raise ValueError(f"hidden_states must be rank-2, got {tuple(hidden_states.shape)}")
+    if hidden_states.shape[0] != len(route_items):
+        raise ValueError("hidden_states rows must match route_items length")
+    if hidden_states.shape[0] == 0:
+        return hidden_states.new_empty((0, local_weights.hidden_dim))
+
+    output = torch.zeros(
+        (hidden_states.shape[0], local_weights.hidden_dim),
+        dtype=hidden_states.dtype,
+        device=hidden_states.device,
+    )
+    local_index_by_expert = {expert_id: index for index, expert_id in enumerate(local_weights.local_expert_ids)}
+    for row_index, route_item in enumerate(route_items):
+        local_index = local_index_by_expert.get(route_item.expert_id)
+        if local_index is None:
+            raise RuntimeError(f"expert {route_item.expert_id} is not resident on this rank")
+        current_state = hidden_states[row_index : row_index + 1]
+        gate_up = local_weights.gate_up_proj[local_index]
+        down = local_weights.down_proj[local_index]
+        gate_up_value = F.linear(current_state, gate_up)
+        gate, up = gate_up_value.chunk(2, dim=-1)
+        current_hidden = F.silu(gate) * up
+        current_hidden = F.linear(current_hidden, down)
+        current_hidden = current_hidden * route_item.routing_weight
+        output[row_index] = current_hidden[0].to(output.dtype)
+    return output
