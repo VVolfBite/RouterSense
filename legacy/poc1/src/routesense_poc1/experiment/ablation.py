@@ -4,10 +4,10 @@ import json
 import time
 from pathlib import Path
 
-from .intervention import RouteAblationContext
-from .metrics import next_token_nll
-from .schemas import AblationRecord, MoELayerSpec, Window
-from .trace import collect_routing_context
+from ..core.schemas import AblationRecord, MoELayerSpec, Window
+from ..runtime.intervention import RouteAblationContext
+from ..runtime.metrics import next_token_nll
+from ..runtime.trace import collect_routing_context
 
 
 def _load_completed_pairs(checkpoint_path: Path) -> set[tuple[int, int, int]]:
@@ -46,11 +46,8 @@ def run_ablation(
 
     for window_index, window in enumerate(windows, start=1):
         for moe_layer in moe_layers:
-            contexts = collect_routing_context(model, tokenizer, window, moe_layer, config.run_id)
+            contexts, baseline_nll = collect_routing_context(model, tokenizer, window, moe_layer, config.run_id)
             input_ids = torch.tensor([window.input_ids], device=model.device)
-            with torch.inference_mode():
-                baseline_outputs = model(input_ids=input_ids, use_cache=False, output_router_logits=True)
-            baseline_nll = next_token_nll(baseline_outputs.logits, input_ids)
             for context in contexts:
                 key = (context.window_id, context.layer_id, context.topk_rank)
                 if key in completed:
@@ -90,4 +87,3 @@ def run_ablation(
         eta = avg * max(total_windows - window_index, 0)
         print(f"[ablation] {window_index}/{total_windows} avg={avg:.2f}s eta={eta:.2f}s", flush=True)
     return records
-

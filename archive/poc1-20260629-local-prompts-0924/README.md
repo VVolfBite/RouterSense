@@ -91,3 +91,23 @@ Current interpretation:
 - the present data does not show a clear advantage from adding more routing-context factors;
 - both routing-only and state-like search collapse to the same strongest simple observable, `topk_rank`;
 - combined features currently overfit relative to the simpler baseline.
+
+
+## Offline layer/expert analysis update
+
+Additional offline analysis was run on the existing 1024 ablation records.
+
+Observed sampled layers:
+- `layer_ids = [0, 5, 10, 15]`
+
+Oracle-focused subset (`top_k=32` hardest groups by oracle delta):
+- pairwise accuracy: `0.4104`
+- oracle mean delta_nll: `-0.2324`
+- random mean delta_nll: `-0.0100`
+
+Interpretation:
+- even in the oracle-most-separated subset, router-based pairwise ordering does not improve;
+- there is large oracle headroom, but the current routing-context signal still does not recover it.
+
+Expert aggregation highlights a few experts with much higher positive mean delta_nll than the background set, including expert ids `40`, `39`, `29`, `56`, and `12` in this run.
+This suggests expert identity effects may matter more than fine-grained routing weights under the current prompt mix.

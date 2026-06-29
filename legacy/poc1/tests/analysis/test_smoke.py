@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from routesense_poc1.analysis import analyze_records, write_report
-from routesense_poc1.schemas import AblationRecord
+from routesense_poc1.core.schemas import AblationRecord
 
 
 def _fake_record(expert_id: int, delta_nll: float) -> AblationRecord:

@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from routesense_poc1.metrics import next_token_nll
+from routesense_poc1.runtime.metrics import next_token_nll
 
 
 def test_nll_basic() -> None:

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import inspect
 from typing import Any
 
-from .schemas import MoELayerSpec
+from ..core.schemas import MoELayerSpec
 
 
 def discover_moe_layers(model: Any, num_moe_layers: int) -> list[MoELayerSpec]:

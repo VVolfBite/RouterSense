@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from routesense_poc1.intervention import RouteAblationContext
+from routesense_poc1.runtime.intervention import RouteAblationContext
 
 
 @pytest.mark.skip(reason="requires real OLMoE model and GPU runtime")

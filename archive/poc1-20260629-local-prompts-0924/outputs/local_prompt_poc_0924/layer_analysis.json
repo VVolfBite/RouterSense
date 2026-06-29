@@ -1,0 +1,38 @@
+{
+  "0": {
+    "pairwise_accuracy": 0.49195402298850577,
+    "pairwise_total": 870,
+    "pairwise_tie_skips": 26,
+    "mean_delta_nll": 0.0058487653732299805,
+    "median_delta_nll": 0.001312255859375,
+    "num_records": 256,
+    "num_groups": 32
+  },
+  "5": {
+    "pairwise_accuracy": 0.5186020293122886,
+    "pairwise_total": 887,
+    "pairwise_tie_skips": 9,
+    "mean_delta_nll": 0.018085241317749023,
+    "median_delta_nll": 0.00201416015625,
+    "num_records": 256,
+    "num_groups": 32
+  },
+  "10": {
+    "pairwise_accuracy": 0.5168918918918919,
+    "pairwise_total": 888,
+    "pairwise_tie_skips": 8,
+    "mean_delta_nll": 0.009100794792175293,
+    "median_delta_nll": 0.0017242431640625,
+    "num_records": 256,
+    "num_groups": 32
+  },
+  "15": {
+    "pairwise_accuracy": 0.38764044943820225,
+    "pairwise_total": 890,
+    "pairwise_tie_skips": 6,
+    "mean_delta_nll": -0.0018825531005859375,
+    "median_delta_nll": -0.0137939453125,
+    "num_records": 256,
+    "num_groups": 32
+  }
+}

@@ -5,7 +5,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from .schemas import RunConfig, Window
+from ..core.schemas import RunConfig, Window
 
 
 def _build_window_records(tokenized_documents: list[tuple[int, list[int]]], config: RunConfig) -> list[Window]:

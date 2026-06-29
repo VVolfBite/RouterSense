@@ -5,8 +5,9 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Callable
 
+from ..core.features import FEATURE_EXTRACTORS, FEATURE_ORIENTATION
+from ..core.schemas import AblationRecord
 from .policies import SINGLE_FACTOR_STRATEGIES, select_deferrable_expert
-from .schemas import AblationRecord
 
 
 STRATEGIES = [
@@ -23,19 +24,6 @@ STRATEGIES = [
     "calibrated",
     "oracle",
 ]
-
-FEATURES: dict[str, Callable[[AblationRecord], float]] = {
-    "effective_gate_weight": lambda record: float(record.effective_gate_weight),
-    "router_probability": lambda record: float(record.router_probability),
-    "router_logit": lambda record: float(record.router_logit),
-    "abs_router_logit": lambda record: abs(float(record.router_logit)),
-    "topk_rank": lambda record: float(record.topk_rank),
-    "top1_top2_gap": lambda record: float(record.top1_top2_gap),
-    "routing_entropy": lambda record: float(record.routing_entropy),
-    "layer_id": lambda record: float(record.layer_id),
-    "expert_id": lambda record: float(record.expert_id),
-}
-
 
 def _rankdata(values: list[float]) -> list[float]:
     pairs = sorted((value, index) for index, value in enumerate(values))
@@ -97,10 +85,10 @@ def _compute_pairwise_accuracy(
     correct = 0
     skipped_ties = 0
     for group_records in grouped.values():
-        truth_order = sorted(group_records, key=lambda record: (record.delta_nll, record.topk_rank))
+        truth_order = sorted(group_records, key=lambda record: (record.delta_nll, record.expert_id))
         predicted_order = sorted(
             group_records,
-            key=lambda record: (feature_fn(record), record.topk_rank),
+            key=lambda record: (feature_fn(record), record.expert_id),
             reverse=reverse,
         )
         predicted_index = {id(record): index for index, record in enumerate(predicted_order)}
@@ -138,18 +126,7 @@ def _strategy_summary(deltas: list[float], epsilons: list[float]) -> dict:
 def _factor_diagnostics(records: list[AblationRecord], grouped: dict[tuple[int, int], list[AblationRecord]]) -> dict:
     delta_values = [record.delta_nll for record in records]
     diagnostics: dict[str, dict] = {}
-    orientation = {
-        "effective_gate_weight": False,
-        "router_probability": False,
-        "router_logit": False,
-        "abs_router_logit": False,
-        "topk_rank": True,
-        "top1_top2_gap": False,
-        "routing_entropy": True,
-        "layer_id": False,
-        "expert_id": False,
-    }
-    for feature_name, feature_fn in FEATURES.items():
+    for feature_name, feature_fn in FEATURE_EXTRACTORS.items():
         feature_values = [feature_fn(record) for record in records]
         diagnostics[feature_name] = {
             "pearson_with_delta_nll": _pearson(feature_values, delta_values),
@@ -157,7 +134,7 @@ def _factor_diagnostics(records: list[AblationRecord], grouped: dict[tuple[int, 
             "group_pairwise": _compute_pairwise_accuracy(
                 grouped=grouped,
                 feature_fn=feature_fn,
-                reverse=orientation.get(feature_name, False),
+                reverse=FEATURE_ORIENTATION.get(feature_name, False),
             ),
         }
     return diagnostics
@@ -189,7 +166,8 @@ def analyze_records(records: list[AblationRecord], calibrator=None) -> dict:
         strategy_summary[strategy] = _strategy_summary(deltas, epsilons)
 
     factor_diagnostics = _factor_diagnostics(records, grouped)
-    raw_pairwise = factor_diagnostics["effective_gate_weight"]["group_pairwise"]
+    primary_feature = "router_probability" if "router_probability" in factor_diagnostics else next(iter(factor_diagnostics))
+    raw_pairwise = factor_diagnostics[primary_feature]["group_pairwise"]
 
     result = {
         "pairwise_ranking_accuracy": raw_pairwise["accuracy"],

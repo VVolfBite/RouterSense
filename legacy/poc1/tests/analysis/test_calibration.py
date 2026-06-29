@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from routesense_poc1.calibration import evaluate_calibrator, train_calibrator
-from routesense_poc1.schemas import AblationRecord, RunConfig
+from routesense_poc1.analysis.calibration import evaluate_calibrator, train_calibrator
+from routesense_poc1.core.schemas import AblationRecord, RunConfig
 
 
 def _record(document_id: int, window_id: int, expert_id: int, delta_nll: float) -> AblationRecord:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
-from math import fabs
 
-from .schemas import AblationRecord
+from ..core.features import FEATURE_EXTRACTORS
+from ..core.schemas import AblationRecord
 
 
 SINGLE_FACTOR_STRATEGIES = {
@@ -31,7 +31,7 @@ def select_deferrable_expert(
     if strategy == "random":
         return random.Random(seed).choice(list(records)).expert_id
     if strategy == "raw_routing":
-        return min(records, key=lambda record: (record.effective_gate_weight, record.topk_rank)).expert_id
+        return min(records, key=lambda record: (record.router_probability, record.topk_rank)).expert_id
     if strategy == "router_probability_min":
         return min(records, key=lambda record: (record.router_probability, record.topk_rank)).expert_id
     if strategy == "effective_gate_weight_min":
@@ -45,7 +45,7 @@ def select_deferrable_expert(
     if strategy == "routing_entropy_max":
         return max(records, key=lambda record: (record.routing_entropy, -record.topk_rank)).expert_id
     if strategy == "abs_router_logit_min":
-        return min(records, key=lambda record: (fabs(record.router_logit), record.topk_rank)).expert_id
+        return min(records, key=lambda record: (abs(record.router_logit), record.topk_rank)).expert_id
     if strategy == "oracle":
         return min(records, key=lambda record: (record.delta_nll, record.topk_rank)).expert_id
     if strategy == "calibrated":
@@ -64,27 +64,19 @@ def _records_to_features(
     records: Sequence[AblationRecord],
     feature_names: Sequence[str] | None = None,
 ) -> list[list[float]]:
-    names = list(feature_names or [
-        "effective_gate_weight",
-        "router_probability",
-        "topk_rank",
-        "top1_top2_gap",
-        "routing_entropy",
-        "layer_id",
-        "expert_id",
-    ])
-    feature_map = {
-        "effective_gate_weight": lambda record: record.effective_gate_weight,
-        "router_probability": lambda record: record.router_probability,
-        "topk_rank": lambda record: float(record.topk_rank),
-        "top1_top2_gap": lambda record: record.top1_top2_gap,
-        "routing_entropy": lambda record: record.routing_entropy,
-        "layer_id": lambda record: float(record.layer_id),
-        "expert_id": lambda record: float(record.expert_id),
-        "router_logit": lambda record: record.router_logit,
-        "abs_router_logit": lambda record: fabs(record.router_logit),
-    }
+    names = list(
+        feature_names
+        or [
+            "effective_gate_weight",
+            "router_probability",
+            "topk_rank",
+            "top1_top2_gap",
+            "routing_entropy",
+            "layer_id",
+            "expert_id",
+        ]
+    )
     return [
-        [float(feature_map[name](record)) for name in names]
+        [float(FEATURE_EXTRACTORS[name](record)) for name in names]
         for record in records
     ]

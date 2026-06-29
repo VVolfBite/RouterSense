@@ -7,20 +7,8 @@ import joblib
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 
-from .schemas import AblationRecord
-
-
-FEATURE_COLUMNS: dict[str, callable] = {
-    "effective_gate_weight": lambda record: float(record.effective_gate_weight),
-    "router_probability": lambda record: float(record.router_probability),
-    "topk_rank": lambda record: float(record.topk_rank),
-    "top1_top2_gap": lambda record: float(record.top1_top2_gap),
-    "routing_entropy": lambda record: float(record.routing_entropy),
-    "router_logit": lambda record: float(record.router_logit),
-    "abs_router_logit": lambda record: abs(float(record.router_logit)),
-    "layer_id": lambda record: float(record.layer_id),
-    "expert_id": lambda record: float(record.expert_id),
-}
+from ..core.features import FEATURE_EXTRACTORS
+from ..core.schemas import AblationRecord
 
 ROUTING_ONLY_SUBSETS: list[tuple[str, ...]] = [
     ("effective_gate_weight",),
@@ -84,7 +72,7 @@ class CalibratorBundle:
 
 
 def _feature_matrix(records: list[AblationRecord], feature_names: list[str]) -> list[list[float]]:
-    return [[FEATURE_COLUMNS[name](record) for name in feature_names] for record in records]
+    return [[FEATURE_EXTRACTORS[name](record) for name in feature_names] for record in records]
 
 
 def _split_document_ids(records: list[AblationRecord]) -> tuple[list[int], list[int], list[int]]:

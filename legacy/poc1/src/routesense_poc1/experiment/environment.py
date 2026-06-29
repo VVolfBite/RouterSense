@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import platform
 from importlib.metadata import version
-from pathlib import Path
 from typing import Any
 
-from .schemas import EnvironmentInfo, RunConfig
+from ..core.schemas import EnvironmentInfo, RunConfig
 
 
 def run_doctor(config: RunConfig) -> dict[str, Any]:
     import torch  # type: ignore
 
     cuda_available = bool(torch.cuda.is_available())
-    if config.precision.lower() in {"bf16", "bfloat16"}:
-        config.precision = "fp16"
     info = EnvironmentInfo(
         python_version=platform.python_version(),
         torch_version=getattr(torch, "__version__", "unknown"),

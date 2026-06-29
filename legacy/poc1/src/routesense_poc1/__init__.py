@@ -1,13 +1,37 @@
 """Legacy PoC1 package for real route ablation experiments."""
 
-from .config import build_config, ensure_output_dir, finalize_config, load_config, parse_args
-from .intervention import RouteAblationContext, RoutePatchError, verify_intervention_correctness
-from .metrics import next_token_nll
-from .model_loader import ModelLoadError, load_olmoe_model
-from .schemas import AblationRecord, MoELayerSpec, RoutingContext, RunConfig, Window
+from .analysis import analyze_records, evaluate_calibrator, select_deferrable_expert, train_calibrator, write_report
+from .core import (
+    AblationRecord,
+    EnvironmentInfo,
+    FEATURE_EXTRACTORS,
+    FEATURE_ORIENTATION,
+    Manifest,
+    MoELayerSpec,
+    RoutingContext,
+    RunConfig,
+    Window,
+    load_json,
+    save_json,
+)
+from .experiment import build_config, ensure_output_dir, finalize_config, load_config, parse_args, run_ablation, run_doctor
+from .runtime import (
+    ModelLoadError,
+    RouteAblationContext,
+    RoutePatchError,
+    collect_routing_context,
+    discover_moe_layers,
+    load_olmoe_model,
+    next_token_nll,
+    verify_intervention_correctness,
+)
 
 __all__ = [
     "AblationRecord",
+    "EnvironmentInfo",
+    "FEATURE_EXTRACTORS",
+    "FEATURE_ORIENTATION",
+    "Manifest",
     "ModelLoadError",
     "MoELayerSpec",
     "RouteAblationContext",
@@ -15,12 +39,23 @@ __all__ = [
     "RoutingContext",
     "RunConfig",
     "Window",
+    "analyze_records",
     "build_config",
+    "collect_routing_context",
+    "discover_moe_layers",
     "ensure_output_dir",
+    "evaluate_calibrator",
     "finalize_config",
     "load_config",
+    "load_json",
     "load_olmoe_model",
     "next_token_nll",
     "parse_args",
+    "run_ablation",
+    "run_doctor",
+    "save_json",
+    "select_deferrable_expert",
+    "train_calibrator",
     "verify_intervention_correctness",
+    "write_report",
 ]

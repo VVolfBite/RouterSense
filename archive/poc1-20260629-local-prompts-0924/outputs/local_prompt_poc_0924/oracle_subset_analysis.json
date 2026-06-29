@@ -1,0 +1,8 @@
+{
+  "selected_group_count": 32,
+  "pairwise_accuracy": 0.41037204058624577,
+  "pairwise_total": 887,
+  "pairwise_tie_skips": 9,
+  "oracle_mean_delta_nll": -0.23235702514648438,
+  "random_mean_delta_nll": -0.010039806365966797
+}

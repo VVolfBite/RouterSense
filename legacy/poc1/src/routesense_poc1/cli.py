@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import json
 
-from .ablation import run_ablation
-from .analysis import analyze_records, write_report
-from .config import build_config, ensure_output_dir, finalize_config, parse_args
-from .data import load_and_prepare_data
-from .environment import run_doctor
-from .model_loader import load_olmoe_model
-from .moe_inspect import discover_moe_layers
-from .schemas import AblationRecord
-from .serialization import save_json
-from .trace import collect_routing_context
+from .analysis.analysis import analyze_records, write_report
+from .analysis.calibration import evaluate_calibrator, train_calibrator
+from .core.schemas import AblationRecord
+from .core.serialization import save_json
+from .experiment.ablation import run_ablation
+from .experiment.config import build_config, ensure_output_dir, finalize_config, parse_args
+from .experiment.data import load_and_prepare_data
+from .experiment.environment import run_doctor
+from .runtime.model_loader import load_olmoe_model
+from .runtime.moe_inspect import discover_moe_layers
+from .runtime.trace import collect_routing_context
 
 
 def _collect_trace_rows(config) -> list[dict]:
@@ -75,8 +76,6 @@ def run_command(command: str, config) -> int:
         return 0
 
     if command == "calibrate":
-        from .calibration import evaluate_calibrator, train_calibrator
-
         payload = json.loads((output_dir / "ablation_results.json").read_text(encoding="utf-8"))
         records = [AblationRecord(**row) for row in payload]
         calibrator = train_calibrator(records, config, output_dir)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .metrics import next_token_nll
-from .schemas import MoELayerSpec, RoutingContext, RunConfig, Window
+from ..core.schemas import MoELayerSpec, RoutingContext, Window
 
 
 def collect_routing_context(
@@ -12,7 +12,7 @@ def collect_routing_context(
     window: Window,
     moe_layer: MoELayerSpec,
     run_id: str,
-) -> list[RoutingContext]:
+) -> tuple[list[RoutingContext], float]:
     import torch  # type: ignore
 
     device = next(model.parameters()).device
@@ -54,4 +54,4 @@ def collect_routing_context(
                 baseline_nll=baseline_nll,
             )
         )
-    return contexts
+    return contexts, baseline_nll

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .schemas import RunConfig
+from ..core.schemas import RunConfig
 
 
 class ModelLoadError(RuntimeError):

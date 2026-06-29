@@ -6,10 +6,10 @@ from pathlib import Path
 
 import yaml
 
-from .schemas import RunConfig
+from ..core.schemas import RunConfig
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "poc1.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "poc.yaml"
 
 
 def load_config(path: str | None = None) -> RunConfig:

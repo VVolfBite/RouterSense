@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from routesense_poc1.analysis import analyze_records
-from routesense_poc1.schemas import AblationRecord
+from routesense_poc1.core.schemas import AblationRecord
 
 
 def _record(
@@ -95,7 +95,7 @@ def test_analyze_records_emits_factor_diagnostics() -> None:
     assert summary["pairwise_total"] > 0
 
 
-def test_raw_routing_and_gate_weight_min_match() -> None:
+def test_raw_routing_and_router_probability_min_match() -> None:
     records = [
         _record(
             window_id=0,
@@ -125,5 +125,5 @@ def test_raw_routing_and_gate_weight_min_match() -> None:
     summary = analyze_records(records)
     assert (
         summary["strategies"]["raw_routing"]["mean_delta_nll"]
-        == summary["strategies"]["effective_gate_weight_min"]["mean_delta_nll"]
+        == summary["strategies"]["router_probability_min"]["mean_delta_nll"]
     )
