@@ -91,7 +91,8 @@
 跨层预测的真正核心价值是**多层联合调度的决策质量提升**: 从per-layer greedy(每层独立最优)到multi-layer global optimal(看到未来3层流量后做全局最优)。典型场景: Layer i和Layer i+2都打到GPU_0, greedy可能让GPU_0在Layer i被打满, 到i+2时还在消化上一批; 联合规划可在Layer i就有意识整节奏。
 
 **POC资产利用**: ⚠️ 中
-- POC1 trace只有192条(3层MoE)，偏小
+- OLMoE-1B-7B-0924-Instruct 实测为 16 个返回 router logits 的 MoE/router-active layers，不是先前假设的 3-4 层
+- 因此跨层预测与联合调度的状态空间、ILP 复杂度和门限都必须按 16 层重估
 - POC1 ablation有4层MoE数据可补充
 - POC2 GlobalDispatchPlan可扩展为multi-layer plan
 - 需额外验证OLMoE跨层相关性

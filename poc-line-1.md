@@ -9,7 +9,7 @@
 | 维度 | 原版 | 修订版 | 变更原因 |
 |---|---|---|---|
 | trace 采集 | 单 token（token_pos=23） | 全序列所有 token position | 单 token 构建的 traffic matrix 极端稀疏，Gate 2 结论不可信 |
-| MoE 层覆盖 | ablation: 4层 (0,5,10,15)；trace: 3层 (0,8,15) | 全部 MoE 层（OLMoE 共 4 个 MoE 层: 0,5,10,15） | 层覆盖不全影响多层衰减分析 |
+| MoE 层覆盖 | ablation: 4层 (0,5,10,15)；trace: 3层 (0,8,15) | 全部 router-active 层（当前实测 OLMoE-1B-7B-0924-Instruct 返回 16 个 router layers） | 旧的 4 层假设与真实模型不符，需按 16 层重估 |
 | Gate 1 指标 | top-2 Jaccard ≥ 0.80 | top-K hit rate ≥ 0.60（主）+ weighted hit rate（辅） | Jaccard 在 64 experts + topK=8 下 ≈ 0.07，不 informative |
 | traffic matrix | 跨 window 人工聚合 | 同 prompt 内多 token 真实聚合 + 跨 window 聚合对照 | 跨 window 聚合不反映真实 batch 语义相关性 |
 | expert placement | 仅 round-robin | round-robin + skewed（hot expert 集中放置） | round-robin 人为平滑 skew，压缩 Oracle vs Greedy 差异 |
@@ -104,7 +104,7 @@ def collect_full_sequence_trace(
 ```
 
 **关键注意事项**：
-- OLMoE-1B-7B-0924 有 16 个 transformer layers，其中 4 个是 MoE 层（layer 0, 5, 10, 15）。`router_logits` 返回的是 MoE 层的 logits，所以 `len(router_logits_by_layer)` 应该是 4。需要在运行时确认。
+- 当前实现必须先运行 architecture probe。若 `router_logits` 返回 16 个 layer，则后续 Gate 1 / Gate 2 分析全部以 16 层为准，不再沿用 4 层假设。
 - 32 条 prompt × 每条约 30-50 tokens × 4 MoE layers × topK=8 = 约 30,000-50,000 条记录。数据量可控。
 - 输出文件用 JSONL 格式（一行一条记录），方便后续逐条处理。
 

@@ -65,7 +65,8 @@ def test_cross_layer_analysis_reports_expected_overlap():
         for topk_rank, (expert_id, weight) in enumerate([(0, 0.6), (1, 0.3), (2, 0.1)]):
             records.append(TraceRecord("req", "sample-0", token_position, 0, expert_id, topk_rank, weight, 8))
             records.append(TraceRecord("req", "sample-0", token_position, 5, expert_id, topk_rank, weight, 8))
-    report = analyze_cross_layer_correlation(records)
+    owner_by_expert = build_owner_by_expert(records, placement="round_robin", num_gpus=4)
+    report = analyze_cross_layer_correlation(records, owner_by_expert=owner_by_expert, num_gpus=4)
     assert report["gate1_decision"]["passed"] is True
     pair = report["layer_pair_summary"]["0->5"]
     assert pair["hit_rate"]["mean"] == 1.0
@@ -153,6 +154,7 @@ def test_oracle_schedule_improves_over_greedy():
     greedy = greedy_schedule_multi_layer(traffic, combine, 4)
     oracle = oracle_schedule_multi_layer(traffic, combine, 4)
     assert oracle <= greedy
+    assert oracle >= 0.0
 
 
 def test_simulate_oracle_vs_greedy_returns_gate2_summary():
@@ -174,3 +176,18 @@ def test_simulate_oracle_vs_greedy_returns_gate2_summary():
     assert "summary" in report
     assert "gate2_decision" in report["summary"]
     assert len(report["results"]) == len(batches)
+
+
+def test_batch_rank_correlation_uses_placement():
+    from routesense.evaluation.poc_line1 import TraceRecord, build_batch_rank_correlation
+
+    records = [
+        TraceRecord("req", "sample-0", 0, 0, 10, 0, 0.8, 8),
+        TraceRecord("req", "sample-0", 0, 1, 20, 0, 0.8, 8),
+        TraceRecord("req", "sample-0", 1, 0, 11, 0, 0.8, 8),
+        TraceRecord("req", "sample-0", 1, 1, 21, 0, 0.8, 8),
+    ]
+    owner_by_expert = {10: 3, 11: 3, 20: 1, 21: 1}
+    report = build_batch_rank_correlation(records, owner_by_expert=owner_by_expert, num_gpus=4)
+    assert "0->1" in report
+    assert report["0->1"]["count"] == 1

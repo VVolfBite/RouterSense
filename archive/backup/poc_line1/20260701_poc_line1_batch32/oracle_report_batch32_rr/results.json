@@ -1,0 +1,354 @@
+[
+  {
+    "batch_id": 0,
+    "sample_ids": [
+      "prompt-0"
+    ],
+    "token_count": 24,
+    "greedy_makespan": 3955.0,
+    "oracle_makespan": 3932.0,
+    "improvement_pct": 0.5815423514538559,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 1,
+    "sample_ids": [
+      "prompt-1"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2711.0,
+    "oracle_makespan": 2693.0,
+    "improvement_pct": 0.6639616377720399,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 2,
+    "sample_ids": [
+      "prompt-10"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 2004.0,
+    "oracle_makespan": 1986.0,
+    "improvement_pct": 0.8982035928143712,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 3,
+    "sample_ids": [
+      "prompt-11"
+    ],
+    "token_count": 20,
+    "greedy_makespan": 3297.0,
+    "oracle_makespan": 3264.0,
+    "improvement_pct": 1.0009099181073704,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 4,
+    "sample_ids": [
+      "prompt-12"
+    ],
+    "token_count": 8,
+    "greedy_makespan": 1333.0,
+    "oracle_makespan": 1333.0,
+    "improvement_pct": 0.0,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 5,
+    "sample_ids": [
+      "prompt-13"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2566.0,
+    "oracle_makespan": 2574.0,
+    "improvement_pct": -0.3117692907248636,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 6,
+    "sample_ids": [
+      "prompt-14"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2574.0,
+    "oracle_makespan": 2550.0,
+    "improvement_pct": 0.9324009324009324,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 7,
+    "sample_ids": [
+      "prompt-15"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2592.0,
+    "oracle_makespan": 2592.0,
+    "improvement_pct": 0.0,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 8,
+    "sample_ids": [
+      "prompt-16"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 2049.0,
+    "oracle_makespan": 2050.0,
+    "improvement_pct": -0.04880429477794046,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 9,
+    "sample_ids": [
+      "prompt-17"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2665.0,
+    "oracle_makespan": 2657.0,
+    "improvement_pct": 0.300187617260788,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 10,
+    "sample_ids": [
+      "prompt-18"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2699.0,
+    "oracle_makespan": 2676.0,
+    "improvement_pct": 0.8521674694331233,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 11,
+    "sample_ids": [
+      "prompt-19"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 2059.0,
+    "oracle_makespan": 2056.0,
+    "improvement_pct": 0.1457017969888295,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 12,
+    "sample_ids": [
+      "prompt-2"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2709.0,
+    "oracle_makespan": 2700.0,
+    "improvement_pct": 0.33222591362126247,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 13,
+    "sample_ids": [
+      "prompt-20"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2610.0,
+    "oracle_makespan": 2621.0,
+    "improvement_pct": -0.42145593869731796,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 14,
+    "sample_ids": [
+      "prompt-21"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2802.0,
+    "oracle_makespan": 2777.0,
+    "improvement_pct": 0.8922198429693077,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 15,
+    "sample_ids": [
+      "prompt-22"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2676.0,
+    "oracle_makespan": 2667.0,
+    "improvement_pct": 0.336322869955157,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 16,
+    "sample_ids": [
+      "prompt-23"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2672.0,
+    "oracle_makespan": 2676.0,
+    "improvement_pct": -0.14970059880239522,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 17,
+    "sample_ids": [
+      "prompt-24"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2733.0,
+    "oracle_makespan": 2710.0,
+    "improvement_pct": 0.8415660446395902,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 18,
+    "sample_ids": [
+      "prompt-25"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2639.0,
+    "oracle_makespan": 2619.0,
+    "improvement_pct": 0.757862826828344,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 19,
+    "sample_ids": [
+      "prompt-26"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 1912.0,
+    "oracle_makespan": 1884.0,
+    "improvement_pct": 1.4644351464435146,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 20,
+    "sample_ids": [
+      "prompt-27"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 1964.0,
+    "oracle_makespan": 1963.0,
+    "improvement_pct": 0.05091649694501018,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 21,
+    "sample_ids": [
+      "prompt-28"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2616.0,
+    "oracle_makespan": 2592.0,
+    "improvement_pct": 0.9174311926605505,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 22,
+    "sample_ids": [
+      "prompt-29"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2654.0,
+    "oracle_makespan": 2630.0,
+    "improvement_pct": 0.9042954031650339,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 23,
+    "sample_ids": [
+      "prompt-3"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2610.0,
+    "oracle_makespan": 2602.0,
+    "improvement_pct": 0.30651340996168586,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 24,
+    "sample_ids": [
+      "prompt-30"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 1946.0,
+    "oracle_makespan": 1930.0,
+    "improvement_pct": 0.8221993833504625,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 25,
+    "sample_ids": [
+      "prompt-31"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2708.0,
+    "oracle_makespan": 2702.0,
+    "improvement_pct": 0.22156573116691286,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 26,
+    "sample_ids": [
+      "prompt-4"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2707.0,
+    "oracle_makespan": 2694.0,
+    "improvement_pct": 0.4802364240857037,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 27,
+    "sample_ids": [
+      "prompt-5"
+    ],
+    "token_count": 12,
+    "greedy_makespan": 1896.0,
+    "oracle_makespan": 1897.0,
+    "improvement_pct": -0.05274261603375527,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 28,
+    "sample_ids": [
+      "prompt-6"
+    ],
+    "token_count": 20,
+    "greedy_makespan": 3224.0,
+    "oracle_makespan": 3198.0,
+    "improvement_pct": 0.8064516129032258,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 29,
+    "sample_ids": [
+      "prompt-7"
+    ],
+    "token_count": 20,
+    "greedy_makespan": 3384.0,
+    "oracle_makespan": 3363.0,
+    "improvement_pct": 0.6205673758865249,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 30,
+    "sample_ids": [
+      "prompt-8"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2605.0,
+    "oracle_makespan": 2593.0,
+    "improvement_pct": 0.46065259117082535,
+    "oracle_mode": "annealed_fallback"
+  },
+  {
+    "batch_id": 31,
+    "sample_ids": [
+      "prompt-9"
+    ],
+    "token_count": 16,
+    "greedy_makespan": 2741.0,
+    "oracle_makespan": 2717.0,
+    "improvement_pct": 0.8755928493250638,
+    "oracle_mode": "annealed_fallback"
+  }
+]

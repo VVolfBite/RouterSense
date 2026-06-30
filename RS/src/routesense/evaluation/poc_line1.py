@@ -145,7 +145,12 @@ def spearman_rank_correlation(x: list[float], y: list[float]) -> float:
     return _pearson(_rankdata(x), _rankdata(y))
 
 
-def analyze_cross_layer_correlation(records: list[TraceRecord]) -> dict[str, Any]:
+def analyze_cross_layer_correlation(
+    records: list[TraceRecord],
+    *,
+    owner_by_expert: dict[int, int] | None = None,
+    num_gpus: int = 4,
+) -> dict[str, Any]:
     if not records:
         return {
             "transition_records": [],
@@ -221,7 +226,11 @@ def analyze_cross_layer_correlation(records: list[TraceRecord]) -> dict[str, Any
             "num_tokens": len(rows),
         }
 
-    batch_rank_correlation = build_batch_rank_correlation(records)
+    batch_rank_correlation = build_batch_rank_correlation(
+        records,
+        owner_by_expert=owner_by_expert,
+        num_gpus=num_gpus,
+    )
     layer_pair_metrics = []
     for pair_key, payload in layer_pair_summary.items():
         rank_corr = batch_rank_correlation.get(pair_key, {}).get("spearman", 0.0)
@@ -243,11 +252,65 @@ def analyze_cross_layer_correlation(records: list[TraceRecord]) -> dict[str, Any
     reasons: list[str] = []
     if not gate1_pass:
         reasons.append("cross_layer_overlap_below_threshold")
+    per_prompt_gate1: dict[str, Any] = {}
+    for sample_id in sorted({record.sample_id for record in records}):
+        sample_records = [record for record in records if record.sample_id == sample_id]
+        sample_grouped = _group_records_by_sample_token_layer(sample_records)
+        sample_transition_rows: list[LayerTransitionStat] = []
+        sample_layer_pairs_seen: set[tuple[int, int]] = set()
+        sample_token_count = sample_token_counts.get(sample_id, 0)
+        for (row_sample_id, token_position, layer_id), source_records in sample_grouped.items():
+            if row_sample_id != sample_id:
+                continue
+            for candidate_key, target_records in sample_grouped.items():
+                target_sample, target_token, target_layer = candidate_key
+                if target_sample != sample_id or target_token != token_position or target_layer <= layer_id:
+                    continue
+                source_experts = {record.expert_id for record in source_records}
+                target_experts = {record.expert_id for record in target_records}
+                if not source_experts or not target_experts:
+                    continue
+                common = source_experts & target_experts
+                hit_rate = len(common) / max(1, min(len(source_experts), len(target_experts)))
+                source_weights = {record.expert_id: record.routing_weight for record in source_records}
+                target_weights = {record.expert_id: record.routing_weight for record in target_records}
+                weighted_hit_rate = sum((source_weights[expert] + target_weights[expert]) / 2.0 for expert in common)
+                sample_transition_rows.append(
+                    LayerTransitionStat(
+                        from_layer=layer_id,
+                        to_layer=target_layer,
+                        distance=target_layer - layer_id,
+                        token_bucket=_token_bucket(token_position, sample_token_count),
+                        hit_rate=hit_rate,
+                        weighted_hit_rate=weighted_hit_rate,
+                        sample_id=sample_id,
+                        token_position=token_position,
+                    )
+                )
+                sample_layer_pairs_seen.add((layer_id, target_layer))
+        pair_summary: dict[str, Any] = {}
+        for from_layer, to_layer in sorted(sample_layer_pairs_seen):
+            rows = [row for row in sample_transition_rows if row.from_layer == from_layer and row.to_layer == to_layer]
+            pair_summary[f"{from_layer}->{to_layer}"] = {
+                "hit_rate": _summary_stats([row.hit_rate for row in rows]),
+                "weighted_hit_rate": _summary_stats([row.weighted_hit_rate for row in rows]),
+                "num_tokens": len(rows),
+            }
+        per_prompt_gate1[sample_id] = {
+            "layer_pair_summary": pair_summary,
+            "batch_rank_correlation": {
+                key: value
+                for key, value in batch_rank_correlation.items()
+                if any(record.sample_id == sample_id for record in records)
+            },
+        }
+
     return {
         "transition_records": [row.to_dict() for row in transition_rows],
         "layer_pair_summary": layer_pair_summary,
         "distance_summary": distance_summary,
         "batch_rank_correlation": batch_rank_correlation,
+        "per_prompt_gate1": per_prompt_gate1,
         "gate1_decision": {
             "passed": gate1_pass,
             "pass_count": pass_count,
@@ -266,19 +329,25 @@ def _top2_records(records: list[TraceRecord]) -> list[TraceRecord]:
     return [record for record in records if record.topk_rank < 2]
 
 
-def build_batch_rank_correlation(records: list[TraceRecord]) -> dict[str, Any]:
+def build_batch_rank_correlation(
+    records: list[TraceRecord],
+    *,
+    owner_by_expert: dict[int, int] | None = None,
+    num_gpus: int = 4,
+) -> dict[str, Any]:
     grouped = _group_records_by_sample_token_layer(records)
     flow_vectors: dict[tuple[str, int], list[float]] = {}
     layer_ids = sorted({record.layer_id for record in records})
+    if owner_by_expert is None:
+        owner_by_expert = build_owner_by_expert(records, placement="round_robin", num_gpus=num_gpus)
     for sample_id in sorted({record.sample_id for record in records}):
-        sample_layer_ids = [layer_id for layer_id in layer_ids if (sample_id, 0, layer_id) or True]
         for layer_id in layer_ids:
-            vector = [0.0, 0.0, 0.0, 0.0]
+            vector = [0.0] * num_gpus
             sample_token_positions = sorted({record.token_position for record in records if record.sample_id == sample_id})
             for token_position in sample_token_positions:
                 layer_records = _top2_records(grouped.get((sample_id, token_position, layer_id), []))
                 for record in layer_records:
-                    vector[record.expert_id % 4] += 1.0
+                    vector[owner_by_expert[record.expert_id]] += 1.0
             flow_vectors[(sample_id, layer_id)] = vector
     result: dict[str, Any] = {}
     for sample_id in sorted({record.sample_id for record in records}):
@@ -403,39 +472,228 @@ def greedy_schedule_multi_layer(
     return max(gpu_earliest_start) if gpu_earliest_start else 0.0
 
 
+def schedule_single_layer_in_order(
+    traffic_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    gpu_earliest_start: list[float] | None = None,
+    chunk_order: list[tuple[int, int, int]] | None = None,
+) -> tuple[float, list[float]]:
+    if gpu_earliest_start is None:
+        gpu_earliest_start = [0.0] * num_gpus
+    if chunk_order is None:
+        chunk_order = []
+        for src in range(num_gpus):
+            for dst in range(num_gpus):
+                if src != dst and traffic_matrix[src][dst] > 0:
+                    chunk_order.append((int(traffic_matrix[src][dst]), src, dst))
+        chunk_order.sort(reverse=True)
+    gpu_available = list(gpu_earliest_start)
+    for size, src, dst in chunk_order:
+        start = max(gpu_available[src], gpu_available[dst])
+        end = start + float(size)
+        gpu_available[src] = end
+        gpu_available[dst] = end
+    return max(gpu_available) if gpu_available else 0.0, gpu_available
+
+
+def exact_schedule_single_layer(
+    traffic_matrix: list[list[int]],
+    num_gpus: int,
+    gpu_earliest_start: list[float] | None = None,
+) -> tuple[float, list[float]]:
+    try:
+        import numpy as np
+        import scipy.optimize as spo
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("scipy is required for exact oracle scheduling") from exc
+
+    if gpu_earliest_start is None:
+        gpu_earliest_start = [0.0] * num_gpus
+
+    chunks: list[tuple[int, int, int]] = []
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            if src != dst and traffic_matrix[src][dst] > 0:
+                chunks.append((int(traffic_matrix[src][dst]), src, dst))
+    if not chunks:
+        return max(gpu_earliest_start) if gpu_earliest_start else 0.0, list(gpu_earliest_start)
+
+    chunk_count = len(chunks)
+    makespan_index = chunk_count
+    variable_count = chunk_count + 1
+    bounds = [(0.0, None)] * variable_count
+    integrality = [0] * variable_count
+    c = [0.0] * variable_count
+    c[makespan_index] = 1.0
+    constraint_specs: list[tuple[dict[int, float], float]] = []
+    total_duration = float(sum(size for size, _, _ in chunks) + sum(gpu_earliest_start))
+    precedence_pairs: dict[tuple[int, int], int] = {}
+
+    def add_linear_ub(coeffs: dict[int, float], ub: float) -> None:
+        constraint_specs.append((dict(coeffs), ub))
+
+    for idx, (size, src, dst) in enumerate(chunks):
+        earliest = max(gpu_earliest_start[src], gpu_earliest_start[dst])
+        add_linear_ub({idx: -1.0}, -earliest)
+        add_linear_ub({idx: 1.0, makespan_index: -1.0}, -float(size))
+
+    pair_binary_offset = variable_count
+    for i in range(chunk_count):
+        for j in range(i + 1, chunk_count):
+            _, src_i, dst_i = chunks[i]
+            _, src_j, dst_j = chunks[j]
+            if {src_i, dst_i}.isdisjoint({src_j, dst_j}):
+                continue
+            precedence_pairs[(i, j)] = pair_binary_offset
+            pair_binary_offset += 1
+
+    if precedence_pairs:
+        c.extend([0.0] * len(precedence_pairs))
+        bounds.extend([(0.0, 1.0)] * len(precedence_pairs))
+        integrality.extend([1] * len(precedence_pairs))
+        variable_count = len(c)
+
+        for (i, j), binary_index in precedence_pairs.items():
+            dur_i = float(chunks[i][0])
+            dur_j = float(chunks[j][0])
+            add_linear_ub({i: 1.0, j: -1.0, binary_index: total_duration}, total_duration - dur_i)
+            add_linear_ub({j: 1.0, i: -1.0, binary_index: -total_duration}, -dur_j)
+
+    constraints: list[Any] = []
+    for coeffs, ub in constraint_specs:
+        row = np.zeros(variable_count, dtype=float)
+        for index, value in coeffs.items():
+            row[index] = value
+        constraints.append(spo.LinearConstraint(row, -math.inf, ub))
+
+    result = spo.milp(
+        c=c,
+        bounds=spo.Bounds([low for low, _ in bounds], [math.inf if high is None else high for _, high in bounds]),
+        integrality=integrality,
+        constraints=constraints,
+    )
+    if not result.success or result.x is None:
+        raise RuntimeError(f"exact single-layer MILP failed: {result.message}")
+    starts = result.x[:chunk_count]
+    gpu_available = list(gpu_earliest_start)
+    for start, (size, src, dst) in sorted(zip(starts, chunks, strict=False), key=lambda item: float(item[0])):
+        end = float(start) + float(size)
+        gpu_available[src] = max(gpu_available[src], end)
+        gpu_available[dst] = max(gpu_available[dst], end)
+    return float(result.x[makespan_index]), gpu_available
+
+
 def oracle_schedule_multi_layer(
     traffic_matrices: list[list[list[int]]],
     combine_matrices: list[list[list[int]]],
     num_gpus: int,
 ) -> float:
-    greedy = greedy_schedule_multi_layer(traffic_matrices, combine_matrices, num_gpus)
-    flatten_sizes = [sum(sum(row) for row in matrix) for matrix in traffic_matrices]
-    if not flatten_sizes:
-        return greedy
-    cross_layer_overlap_bonus = 0.0
-    for index in range(len(flatten_sizes) - 1):
-        curr = flatten_sizes[index]
-        nxt = flatten_sizes[index + 1]
-        overlap = min(curr, nxt) / max(curr, nxt, 1)
-        cross_layer_overlap_bonus += overlap * 0.08
-    bonus = min(0.35, cross_layer_overlap_bonus)
-    return max(0.0, greedy * (1.0 - bonus))
+    gpu_earliest_start = [0.0] * num_gpus
+    for dispatch_matrix, combine_matrix in zip(traffic_matrices, combine_matrices, strict=False):
+        _, after_dispatch = exact_schedule_single_layer(dispatch_matrix, num_gpus, gpu_earliest_start)
+        _, after_combine = exact_schedule_single_layer(combine_matrix, num_gpus, after_dispatch)
+        gpu_earliest_start = after_combine
+    return max(gpu_earliest_start) if gpu_earliest_start else 0.0
+
+
+def annealed_oracle_schedule_multi_layer(
+    traffic_matrices: list[list[list[int]]],
+    combine_matrices: list[list[list[int]]],
+    num_gpus: int,
+    *,
+    iterations: int = 200,
+) -> float:
+    chunk_orders: list[list[tuple[int, int, int]]] = []
+    for matrix in [*traffic_matrices, *combine_matrices]:
+        chunks: list[tuple[int, int, int]] = []
+        for src in range(num_gpus):
+            for dst in range(num_gpus):
+                if src != dst and matrix[src][dst] > 0:
+                    chunks.append((int(matrix[src][dst]), src, dst))
+        chunks.sort(reverse=True)
+        chunk_orders.append(chunks)
+
+    def evaluate(all_orders: list[list[tuple[int, int, int]]]) -> float:
+        gpu_state = [0.0] * num_gpus
+        order_index = 0
+        for dispatch_matrix, combine_matrix in zip(traffic_matrices, combine_matrices, strict=False):
+            _, gpu_state = schedule_single_layer_in_order(
+                dispatch_matrix,
+                num_gpus,
+                gpu_earliest_start=gpu_state,
+                chunk_order=all_orders[order_index],
+            )
+            order_index += 1
+            _, gpu_state = schedule_single_layer_in_order(
+                combine_matrix,
+                num_gpus,
+                gpu_earliest_start=gpu_state,
+                chunk_order=all_orders[order_index],
+            )
+            order_index += 1
+        return max(gpu_state) if gpu_state else 0.0
+
+    best_orders = [list(order) for order in chunk_orders]
+    best_value = evaluate(best_orders)
+    current_orders = [list(order) for order in best_orders]
+    current_value = best_value
+    temperature = max(1.0, best_value * 0.1)
+    for step in range(max(1, iterations)):
+        candidate_orders = [list(order) for order in current_orders]
+        mutated = False
+        for order in candidate_orders:
+            if len(order) < 2:
+                continue
+            i = step % len(order)
+            j = (step * 7 + 3) % len(order)
+            if i == j:
+                continue
+            order[i], order[j] = order[j], order[i]
+            mutated = True
+            break
+        if not mutated:
+            continue
+        candidate_value = evaluate(candidate_orders)
+        delta = candidate_value - current_value
+        accept = delta <= 0.0 or math.exp(-delta / max(temperature, 1e-6)) > 0.5
+        if accept:
+            current_orders = candidate_orders
+            current_value = candidate_value
+            if current_value < best_value:
+                best_orders = [list(order) for order in current_orders]
+                best_value = current_value
+        temperature *= 0.98
+    return best_value
 
 
 def simulate_oracle_vs_greedy(
     batches: list[dict[str, Any]],
     *,
     combine_scale_factor: float = 1.0,
+    exact_layer_limit: int = 4,
+    exact_chunk_limit: int = 16,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     improvements: list[float] = []
+    oracle_modes: list[str] = []
     for batch in batches:
         traffic_matrices = [layer["matrix"] for layer in batch["layers"]]
         combine_matrices = [combine_matrix_from_dispatch(matrix, combine_scale_factor) for matrix in traffic_matrices]
         greedy = greedy_schedule_multi_layer(traffic_matrices, combine_matrices, batch["num_gpus"])
-        oracle = oracle_schedule_multi_layer(traffic_matrices, combine_matrices, batch["num_gpus"])
+        max_chunks = 0
+        for matrix in [*traffic_matrices, *combine_matrices]:
+            chunk_count = sum(1 for src in range(batch["num_gpus"]) for dst in range(batch["num_gpus"]) if src != dst and matrix[src][dst] > 0)
+            max_chunks = max(max_chunks, chunk_count)
+        if len(traffic_matrices) <= exact_layer_limit and max_chunks <= exact_chunk_limit:
+            oracle = oracle_schedule_multi_layer(traffic_matrices, combine_matrices, batch["num_gpus"])
+            oracle_mode = "exact_milp"
+        else:
+            oracle = annealed_oracle_schedule_multi_layer(traffic_matrices, combine_matrices, batch["num_gpus"])
+            oracle_mode = "annealed_fallback"
         improvement_pct = 0.0 if greedy == 0.0 else ((greedy - oracle) / greedy) * 100.0
         improvements.append(improvement_pct)
+        oracle_modes.append(oracle_mode)
         results.append(
             {
                 "batch_id": batch["batch_id"],
@@ -444,6 +702,7 @@ def simulate_oracle_vs_greedy(
                 "greedy_makespan": greedy,
                 "oracle_makespan": oracle,
                 "improvement_pct": improvement_pct,
+                "oracle_mode": oracle_mode,
             }
         )
     mean_improvement = statistics.fmean(improvements) if improvements else 0.0
@@ -455,6 +714,7 @@ def simulate_oracle_vs_greedy(
             "median_improvement_pct": statistics.median(improvements) if improvements else 0.0,
             "max_improvement_pct": max(improvements) if improvements else 0.0,
             "min_improvement_pct": min(improvements) if improvements else 0.0,
+            "oracle_modes": sorted(set(oracle_modes)),
             "gate2_decision": {
                 "passed": gate2_pass,
                 "threshold_pct": 15.0,
@@ -467,4 +727,3 @@ def write_json(path: str | Path, payload: Any) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-

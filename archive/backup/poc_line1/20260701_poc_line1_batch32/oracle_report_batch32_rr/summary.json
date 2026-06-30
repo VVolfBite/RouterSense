@@ -1,0 +1,13 @@
+{
+  "mean_improvement_pct": 0.4838018028835379,
+  "median_improvement_pct": 0.5308893877697798,
+  "max_improvement_pct": 1.4644351464435146,
+  "min_improvement_pct": -0.42145593869731796,
+  "oracle_modes": [
+    "annealed_fallback"
+  ],
+  "gate2_decision": {
+    "passed": false,
+    "threshold_pct": 15.0
+  }
+}
