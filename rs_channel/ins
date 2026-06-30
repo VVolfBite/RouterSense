@@ -1,0 +1,202 @@
+# Instruction: POC-line1 Smoke 问题修正
+
+基于 `reply/20260701_poc_line1_smoke.md` 的 smoke report，结合代码审计，以下是需要修正的问题列表。
+
+**优先级从高到低排列。逐项执行，每项完成后 commit。**
+
+---
+
+## P0: Oracle 实现是启发式而非 ILP（致命）
+
+### 问题
+
+`poc_line1.py` 第 406-422 行的 `oracle_schedule_multi_layer` 不是真正的 Oracle 调度器。它用以下公式计算：
+
+```python
+cross_layer_overlap_bonus = sum(min(curr,nxt)/max(curr,nxt) * 0.08)
+bonus = min(0.35, cross_layer_overlap_bonus)
+return greedy * (1.0 - bonus)
+```
+
+这意味着：
+- 35% 改善是代码中硬编码的上限（`min(0.35, ...)`），不是真实优化结果
+- Gate 2 "通过"完全是人为构造，不是调度优化的证据
+- 任务文档（`poc_line1_i_task.md`）明确要求 ILP 精确求解（G=4,K=4 小规模）或 SA fallback
+
+### 修正
+
+实现真正的 Oracle 调度器：
+
+1. **ILP 精确求解**（优先，G=4, K≤16 的小规模 instance 可用 `scipy.optimize.milp` 或 `PuLP`）：
+   - 决策变量: `start_time[l][c] ∈ R+`，每个 chunk 的开始时间
+   - 约束: per-GPU half-duplex + 放宽的层间依赖（per-GPU 粒度）
+   - 目标: minimize makespan
+
+2. **如果 ILP 不可行**（16 层导致变量过多），使用 SA：
+   - 初始解: Greedy LPT 解
+   - 邻域操作 1: 交换同层两个 chunk 顺序
+   - 邻域操作 2: 跨层 chunk 交换（满足依赖约束前提下）
+   - 校准: 在小规模 instance 上与 Greedy 对比确认 gap
+
+3. **删除**当前的启发式 `oracle_schedule_multi_layer`，用真正的求解器替代
+
+4. 运行后对比：新 Oracle vs Greedy 的改善幅度是否仍然 ≥ 15%
+
+### 验证
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+python experiments/poc_line1/oracle_vs_greedy.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke/trace.jsonl \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/oracle_report_v2
+```
+
+---
+
+## P1: OLMoE 实际有 16 个 MoE 层而非 4 个
+
+### 问题
+
+任务文档假设 OLMoE-1B-7B-0924 有 4 个 MoE 层（layer 0, 5, 10, 15），但 smoke trace 返回 `moe_layer_count = 16`，`moe_layer_ids = [0..15]`。
+
+`discover_moe_layer_ids` 通过检查 `mlp.gate` 和 `mlp.experts` 属性来识别 MoE 层，如果所有 16 层都有这些属性，则模型确实是 full-MoE 架构。
+
+### 需要做的
+
+1. **确认模型架构**：在 trace 采集代码中增加一个诊断输出，打印每层的 `type(layer.mlp).__name__`，确认是否所有层都是 MoE 层还是混合架构（某些层是 dense MLP）
+
+2. **如果确实 16 层全是 MoE**：
+   - 更新任务文档（`poc_line1_i_task.md` 和 `new-directions.md`）中所有 "4 个 MoE 层" 的描述
+   - 重新评估 K=16 对 ILP 复杂度的影响（16 层 × 4 GPU × 3 chunk/GPU = 192 个 dispatch chunk + 192 combine chunk = 384 个变量，ILP 可能仍然可解）
+   - 更新 Gate 1 阈值校准：16 层连续 MoE 的跨层相关性模式与间隔 5 层的 4 MoE 层模型完全不同
+
+3. **如果只有部分层是 MoE（discover 有误）**：修复 `discover_moe_layer_ids` 的检测逻辑
+
+### 验证
+
+```bash
+python -c "
+from transformers import AutoModelForCausalLM
+m = AutoModelForCausalLM.from_pretrained('/root/autodl-tmp/models/OLMoE-1B-7B-0924', trust_remote_code=True)
+for i, layer in enumerate(m.model.layers):
+    mlp = getattr(layer, 'mlp', None)
+    mlp_type = type(mlp).__name__ if mlp else 'None'
+    has_gate = hasattr(mlp, 'gate') if mlp else False
+    has_experts = hasattr(mlp, 'experts') if mlp else False
+    print(f'Layer {i:2d}: mlp_type={mlp_type}, has_gate={has_gate}, has_experts={has_experts}')
+"
+```
+
+---
+
+## P2: 多条 prompt 批量采集与分析
+
+### 问题
+
+当前 smoke 只有 1 条 prompt（19 tokens）。Gate 1 hit_rate ≈ 11.18%（随机基线 12.5%）的结论可能不具统计代表性。
+
+### 需要做的
+
+1. **批量采集 32 条 prompt 的 trace**：使用 `theory_prompts_50.jsonl` 中的前 32 条（或全部 50 条）
+
+2. **批量分析脚本**：扩展 `cross_layer_analysis.py` 支持多 sample_id 输入，输出：
+   - 每个 prompt 的 Gate 1 pass/fail
+   - 跨 prompt 的 hit_rate 分布（mean, std, P25, P75）
+   - 判断 Gate 1 失败是稳定的还是 prompt-specific 的
+
+3. **运行命令**：
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+
+# 批量采集（循环 32 条 prompt）
+python experiments/poc_line1/full_sequence_trace.py \
+  --model-id allenai/OLMoE-1B-7B-0924-Instruct \
+  --model-path /root/autodl-tmp/models/OLMoE-1B-7B-0924 \
+  --prompts-path ../archive/poc1-20260629-local-prompts-0924/data/theory_prompts_50.jsonl \
+  --num-prompts 32 \
+  --output-dir artifacts/poc_line1/full_sequence_trace_batch
+
+# 批量分析
+python experiments/poc_line1/cross_layer_analysis.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_batch/trace.jsonl \
+  --output-dir artifacts/poc_line1/cross_layer_report_batch
+
+# 批量 Oracle vs Greedy
+python experiments/poc_line1/oracle_vs_greedy.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_batch/trace.jsonl \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/oracle_report_batch
+```
+
+4. **分析重点**：
+   - Gate 1 在 32 条 prompt 上的 pass/fail 分布
+   - hit_rate 的 prompt 间方差（如果 std 很大，说明某些 prompt 的跨层相关性高）
+   - 如果 Gate 1 稳定失败（所有 prompt 都 < 0.60），需要在 P3 层面重新评估
+
+---
+
+## P3: Gate 1 阈值需要基于 16 层架构重新校准
+
+### 问题
+
+当前阈值（hit_rate ≥ 0.60, weighted_hit_rate ≥ 0.45, rank_correlation ≥ 0.50）是基于 4 MoE 层（间隔 5 层）的假设设定的。如果实际有 16 个连续 MoE 层：
+
+- 相邻层（distance=1）的 expert 选择差异可能天然更大（每层都有独立的 router）
+- distance=1 的 hit_rate 可能稳定在 12-15%，而 distance=5 或更大的 hit_rate 反而可能更低
+- 需要重新评估"哪些层对之间有跨层预测价值"
+
+### 需要做的
+
+1. 在 P2 的批量分析结果出来后，绘制 hit_rate vs distance 曲线
+2. 如果 distance=1 的 hit_rate 稳定 < 0.20：
+   - 降低阈值到合理水平（比如 0.20），或
+   - 改为只在距离较大的层对之间（如 distance ≥ 4）分析跨层相关性
+   - 考虑将 MoE 层分组（每 4 层一组），组内共享 router prediction
+3. 报告 distance_summary 中各 distance 的 hit_rate 分布
+
+---
+
+## P4: rank correlation 实现问题
+
+### 问题
+
+`build_batch_rank_correlation` 中的 flow vector 维度固定为 4（GPU 数量），且只有 1 条 prompt 时 `count=1`，导致：
+- 4 维向量的 Spearman correlation 只能产生离散值（-1, -0.4, 0.2, 0.8 等）
+- 单 prompt 时 count=1 没有统计意义
+
+### 需要做的
+
+1. 在 P2 多 prompt 完成后，rank correlation 的 count 应等于 prompt 数量
+2. 确认 `build_batch_rank_correlation` 的逻辑：对每个 src_gpu 的 outbound flow vector 计算 Spearman，然后取平均
+3. 当前实现用 `expert_id % 4` 映射 GPU，这假设 round-robin placement。需要接受 placement 参数
+
+---
+
+## P5: 任务文档同步更新
+
+### 问题
+
+`poc_line1_i_task.md` 和 `new-directions.md` 中多处假设与实验结果不符：
+- "4 个 MoE 层 (0, 5, 10, 15)" → 需根据 P1 结论修正
+- "topK=8, 64 experts" 的 hit rate 随机基线 = 12.5%，需显式声明
+- Oracle 实现需要真正用 ILP/SA，不能是 heuristic
+
+### 需要做的
+
+1. P1 完成后，更新所有涉及 MoE 层数量和位置的描述
+2. P0 完成后，确认 Oracle 实现符合任务文档要求
+3. P2 完成后，根据结果调整 Gate 1 阈值和 Go/No-Go 决策标准
+
+---
+
+## 执行顺序
+
+```
+P0 (Oracle ILP)  →  P1 (16层确认)  →  P2 (批量采集)  →  P3 (阈值校准)  →  P4 (rank corr)  →  P5 (文档同步)
+```
+
+P0 和 P1 可以并行。P2 依赖 P0（用真正的 Oracle）和 P1（知道层结构）。P3-P5 依赖 P2 的结果。
+
+**不要 push。所有修正完成后本地 commit，等人工确认后再 push。**
