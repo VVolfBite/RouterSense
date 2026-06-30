@@ -4,10 +4,14 @@ from routesense.evaluation import (
     analyze_cross_layer_correlation,
     analyze_cross_layer_predictability,
     build_owner_by_expert,
+    build_predicted_traffic,
     build_same_prompt_batches,
     combine_matrix_from_dispatch,
     greedy_schedule_single_layer,
+    greedy_schedule_pairwise,
     oracle_schedule_multi_layer,
+    pairwise_oracle,
+    run_pairwise_analysis,
     simulate_oracle_vs_greedy,
     spearman_rank_correlation,
 )
@@ -232,3 +236,97 @@ def test_cross_layer_predictability_prefetch_accuracy():
     assert report["gate1_decision"]["passed"] is True
     pair = report["layer_pair_summary"]["0->1"]
     assert pair["prefetch_accuracy"]["mean"] == 1.0
+
+
+def test_build_predicted_traffic_uses_predicted_topk_layout():
+    from routesense.evaluation.poc_line1 import TraceRecord
+
+    grouped = {
+        ("sample-0", 0, 1): [TraceRecord("req", "sample-0", 0, 1, 0, 0, 1.0, 2)],
+        ("sample-0", 1, 1): [TraceRecord("req", "sample-0", 1, 1, 1, 0, 1.0, 2)],
+        ("sample-0", 2, 1): [TraceRecord("req", "sample-0", 2, 1, 2, 0, 1.0, 2)],
+        ("sample-0", 3, 1): [TraceRecord("req", "sample-0", 3, 1, 3, 0, 1.0, 2)],
+    }
+    predicted = {
+        "sample-0": {
+            (0, 1): [
+                [0, 1],
+                [1, 2],
+                [2, 3],
+                [3, 0],
+            ]
+        }
+    }
+    owner = {0: 0, 1: 1, 2: 2, 3: 3}
+    matrix = build_predicted_traffic(
+        sample_id="sample-0",
+        from_layer=0,
+        to_layer=1,
+        grouped_records=grouped,
+        predicted_topk_by_sample=predicted,
+        owner_by_expert=owner,
+        num_gpus=4,
+        topk=2,
+    )
+    assert matrix[0][0] == 1 and matrix[0][1] == 1
+    assert matrix[1][1] == 1 and matrix[1][2] == 1
+    assert matrix[2][2] == 1 and matrix[2][3] == 1
+    assert matrix[3][3] == 1 and matrix[3][0] == 1
+
+
+def test_pairwise_oracle_improves_or_matches_greedy():
+    dispatch = [
+        [0, 4, 0, 0],
+        [0, 0, 3, 0],
+        [0, 0, 0, 2],
+        [1, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 5, 0],
+        [2, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    greedy = greedy_schedule_pairwise(dispatch, combine, next_dispatch, 4)
+    oracle = pairwise_oracle(dispatch, combine, next_dispatch, 4)
+    assert oracle["makespan"] <= greedy
+    assert oracle["chunk_count"] > 0
+    assert oracle["schedule"]
+
+
+def test_run_pairwise_analysis_reports_gate2_summary():
+    from routesense.evaluation.poc_line1 import TraceRecord
+    import torch
+
+    records = []
+    for token_position, expert_pair in enumerate(((0, 1), (1, 2), (2, 3), (3, 0))):
+        records.append(TraceRecord("req", "sample-0", token_position, 0, expert_pair[0], 0, 0.8, 2))
+        records.append(TraceRecord("req", "sample-0", token_position, 0, expert_pair[1], 1, 0.2, 2))
+        records.append(TraceRecord("req", "sample-0", token_position, 1, expert_pair[0], 0, 0.8, 2))
+        records.append(TraceRecord("req", "sample-0", token_position, 1, expert_pair[1], 1, 0.2, 2))
+
+    hidden_states = {
+        "sample-0": {
+            0: torch.tensor([[[2.0, 0.0], [0.0, 2.0], [2.0, 0.0], [0.0, 2.0]]], dtype=torch.float32),
+            1: torch.tensor([[[2.0, 0.0], [0.0, 2.0], [2.0, 0.0], [0.0, 2.0]]], dtype=torch.float32),
+        }
+    }
+    gate_weights = {
+        "sample-0": {
+            0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+            1: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+        }
+    }
+    owner = {0: 0, 1: 1, 2: 2, 3: 3}
+    report = run_pairwise_analysis(
+        records,
+        hidden_states_by_sample=hidden_states,
+        gate_weights_by_sample=gate_weights,
+        owner_by_expert=owner,
+        num_gpus=4,
+        topk=2,
+    )
+    assert report["summary"]["pair_count"] == 1
+    assert "gate2_decision" in report["summary"]
+    assert len(report["results"]) == 1

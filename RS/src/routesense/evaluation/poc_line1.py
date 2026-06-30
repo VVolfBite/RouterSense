@@ -67,6 +67,18 @@ class GatePredictionStat:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class PairwiseChunk:
+    chunk_id: str
+    phase: int
+    size: int
+    src_gpu: int
+    dst_gpu: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def load_trace_jsonl(path: str | Path) -> list[TraceRecord]:
     records: list[TraceRecord] = []
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -175,6 +187,29 @@ def load_gate_weight_bundle(path: str | Path) -> dict[str, dict[int, torch.Tenso
         str(sample_id): {int(layer_id): tensor.float().cpu() for layer_id, tensor in layer_map.items()}
         for sample_id, layer_map in payload.items()
     }
+
+
+def _decode_predicted_topk_by_sample(
+    *,
+    hidden_states_by_sample: dict[str, dict[int, torch.Tensor]],
+    gate_weights_by_sample: dict[str, dict[int, torch.Tensor]],
+    topk: int,
+) -> dict[str, dict[tuple[int, int], list[list[int]]]]:
+    predicted: dict[str, dict[tuple[int, int], list[list[int]]]] = {}
+    for sample_id, sample_hidden in hidden_states_by_sample.items():
+        sample_gates = gate_weights_by_sample[sample_id]
+        sample_layer_ids = sorted(layer_id for layer_id in sample_hidden if layer_id in sample_gates)
+        sample_payload: dict[tuple[int, int], list[list[int]]] = {}
+        for idx in range(len(sample_layer_ids) - 1):
+            from_layer = sample_layer_ids[idx]
+            to_layer = sample_layer_ids[idx + 1]
+            hidden_from = sample_hidden[from_layer].squeeze(0)
+            gate_weight = sample_gates[to_layer]
+            predicted_logits = hidden_from @ gate_weight.T
+            predicted_topk = torch.topk(torch.softmax(predicted_logits, dim=-1), k=topk, dim=-1).indices
+            sample_payload[(from_layer, to_layer)] = predicted_topk.tolist()
+        predicted[sample_id] = sample_payload
+    return predicted
 
 
 def analyze_cross_layer_predictability(
@@ -556,6 +591,37 @@ def build_same_prompt_batches(
     return batches
 
 
+def build_predicted_traffic(
+    *,
+    sample_id: str,
+    from_layer: int,
+    to_layer: int,
+    grouped_records: dict[tuple[str, int, int], list[TraceRecord]],
+    predicted_topk_by_sample: dict[str, dict[tuple[int, int], list[list[int]]]],
+    owner_by_expert: dict[int, int],
+    num_gpus: int = 4,
+    topk: int = 8,
+) -> list[list[int]]:
+    token_positions = sorted(
+        token_position
+        for record_sample_id, token_position, layer_id in grouped_records
+        if record_sample_id == sample_id and layer_id == to_layer
+    )
+    token_count = (len(token_positions) // num_gpus) * num_gpus
+    token_positions = token_positions[:token_count]
+    matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
+    predicted_rows = predicted_topk_by_sample.get(sample_id, {}).get((from_layer, to_layer), [])
+    for token_position in token_positions:
+        if token_position >= len(predicted_rows):
+            continue
+        src_gpu = token_position % num_gpus
+        predicted_experts = predicted_rows[token_position][:topk]
+        for expert_id in predicted_experts:
+            dst_gpu = owner_by_expert[int(expert_id)]
+            matrix[src_gpu][dst_gpu] += 1
+    return matrix
+
+
 def greedy_schedule_single_layer(
     traffic_matrix: list[list[int]],
     num_gpus: int,
@@ -576,6 +642,18 @@ def greedy_schedule_single_layer(
         gpu_available[src] = end
         gpu_available[dst] = end
     return max(gpu_available) if gpu_available else 0.0, gpu_available
+
+
+def greedy_schedule_pairwise(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+) -> float:
+    _, after_dispatch = greedy_schedule_single_layer(dispatch_matrix, num_gpus)
+    _, after_combine = greedy_schedule_single_layer(combine_matrix, num_gpus, after_dispatch)
+    makespan, _ = greedy_schedule_single_layer(next_dispatch_matrix, num_gpus, after_combine)
+    return makespan
 
 
 def combine_matrix_from_dispatch(matrix: list[list[int]], scale: float = 1.0) -> list[list[int]]:
@@ -706,6 +784,138 @@ def exact_schedule_single_layer(
         gpu_available[src] = max(gpu_available[src], end)
         gpu_available[dst] = max(gpu_available[dst], end)
     return float(result.x[makespan_index]), gpu_available
+
+
+def _matrix_to_pairwise_chunks(
+    matrix: list[list[int]],
+    *,
+    phase: int,
+    num_gpus: int,
+) -> list[PairwiseChunk]:
+    chunks: list[PairwiseChunk] = []
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            size = int(matrix[src][dst])
+            if src == dst or size <= 0:
+                continue
+            chunks.append(
+                PairwiseChunk(
+                    chunk_id=f"phase{phase}_src{src}_dst{dst}",
+                    phase=phase,
+                    size=size,
+                    src_gpu=src,
+                    dst_gpu=dst,
+                )
+            )
+    return chunks
+
+
+def pairwise_oracle(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+) -> dict[str, Any]:
+    try:
+        import numpy as np
+        import scipy.optimize as spo
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("scipy is required for pairwise oracle scheduling") from exc
+
+    phase_chunks = [
+        *_matrix_to_pairwise_chunks(dispatch_matrix, phase=0, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(combine_matrix, phase=1, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(next_dispatch_matrix, phase=2, num_gpus=num_gpus),
+    ]
+    if not phase_chunks:
+        return {
+            "makespan": 0.0,
+            "schedule": [],
+            "chunk_count": 0,
+        }
+
+    chunk_count = len(phase_chunks)
+    makespan_index = chunk_count
+    variable_count = chunk_count + 1
+    bounds: list[tuple[float, float | None]] = [(0.0, None)] * variable_count
+    integrality = [0] * variable_count
+    c = [0.0] * variable_count
+    c[makespan_index] = 1.0
+    constraint_specs: list[tuple[dict[int, float], float]] = []
+
+    def add_linear_ub(coeffs: dict[int, float], ub: float) -> None:
+        constraint_specs.append((dict(coeffs), ub))
+
+    total_duration = float(sum(chunk.size for chunk in phase_chunks))
+    big_m = max(total_duration * 2.0, 1.0)
+    pair_binary_offset = variable_count
+    precedence_pairs: dict[tuple[int, int], int] = {}
+
+    for idx, chunk in enumerate(phase_chunks):
+        add_linear_ub({idx: 1.0, makespan_index: -1.0}, -float(chunk.size))
+
+    for i in range(chunk_count):
+        for j in range(i + 1, chunk_count):
+            chunk_i = phase_chunks[i]
+            chunk_j = phase_chunks[j]
+            shares_gpu = not {chunk_i.src_gpu, chunk_i.dst_gpu}.isdisjoint({chunk_j.src_gpu, chunk_j.dst_gpu})
+            if not shares_gpu:
+                continue
+            precedence_pairs[(i, j)] = pair_binary_offset
+            pair_binary_offset += 1
+
+    if precedence_pairs:
+        c.extend([0.0] * len(precedence_pairs))
+        bounds.extend([(0.0, 1.0)] * len(precedence_pairs))
+        integrality.extend([1] * len(precedence_pairs))
+        variable_count = len(c)
+        for (i, j), binary_index in precedence_pairs.items():
+            dur_i = float(phase_chunks[i].size)
+            dur_j = float(phase_chunks[j].size)
+            add_linear_ub({i: 1.0, j: -1.0, binary_index: big_m}, big_m - dur_i)
+            add_linear_ub({j: 1.0, i: -1.0, binary_index: -big_m}, -dur_j)
+
+    for i in range(chunk_count):
+        for j in range(chunk_count):
+            if phase_chunks[j].phase <= phase_chunks[i].phase:
+                continue
+            shares_gpu = not {phase_chunks[i].src_gpu, phase_chunks[i].dst_gpu}.isdisjoint(
+                {phase_chunks[j].src_gpu, phase_chunks[j].dst_gpu}
+            )
+            if not shares_gpu:
+                continue
+            add_linear_ub({i: 1.0, j: -1.0}, -float(phase_chunks[i].size))
+
+    constraints: list[Any] = []
+    for coeffs, ub in constraint_specs:
+        row = np.zeros(variable_count, dtype=float)
+        for index, value in coeffs.items():
+            row[index] = value
+        constraints.append(spo.LinearConstraint(row, -math.inf, ub))
+
+    result = spo.milp(
+        c=c,
+        bounds=spo.Bounds([low for low, _ in bounds], [math.inf if high is None else high for _, high in bounds]),
+        integrality=integrality,
+        constraints=constraints,
+    )
+    if not result.success or result.x is None:
+        raise RuntimeError(f"pairwise MILP failed: {result.message}")
+    starts = result.x[:chunk_count]
+    schedule = []
+    for start, chunk in sorted(zip(starts, phase_chunks, strict=False), key=lambda item: float(item[0])):
+        schedule.append(
+            {
+                **chunk.to_dict(),
+                "start": float(start),
+                "end": float(start) + float(chunk.size),
+            }
+        )
+    return {
+        "makespan": float(result.x[makespan_index]),
+        "schedule": schedule,
+        "chunk_count": chunk_count,
+    }
 
 
 def oracle_schedule_multi_layer(
@@ -844,6 +1054,123 @@ def simulate_oracle_vs_greedy(
                 "threshold_pct": 15.0,
             },
         },
+    }
+
+
+def run_pairwise_analysis(
+    records: list[TraceRecord],
+    *,
+    hidden_states_by_sample: dict[str, dict[int, torch.Tensor]],
+    gate_weights_by_sample: dict[str, dict[int, torch.Tensor]],
+    owner_by_expert: dict[int, int],
+    num_gpus: int = 4,
+    topk: int = 8,
+) -> dict[str, Any]:
+    grouped = _group_records_by_sample_token_layer(records)
+    predicted_topk_by_sample = _decode_predicted_topk_by_sample(
+        hidden_states_by_sample=hidden_states_by_sample,
+        gate_weights_by_sample=gate_weights_by_sample,
+        topk=topk,
+    )
+    sample_ids = sorted({record.sample_id for record in records})
+    layer_ids = sorted({record.layer_id for record in records})
+    results: list[dict[str, Any]] = []
+    predicted_improvements: list[float] = []
+    perfect_improvements: list[float] = []
+    traffic_correlations: list[float] = []
+
+    for sample_id in sample_ids:
+        for idx in range(len(layer_ids) - 1):
+            from_layer = layer_ids[idx]
+            to_layer = layer_ids[idx + 1]
+            actual_dispatch = build_same_prompt_batches(
+                [record for record in records if record.sample_id == sample_id and record.layer_id in {from_layer, to_layer}],
+                owner_by_expert=owner_by_expert,
+                num_gpus=num_gpus,
+            )
+            if not actual_dispatch:
+                continue
+            layer_map = {layer["layer_id"]: layer["matrix"] for layer in actual_dispatch[0]["layers"]}
+            if from_layer not in layer_map or to_layer not in layer_map:
+                continue
+            dispatch_matrix = layer_map[from_layer]
+            next_actual_matrix = layer_map[to_layer]
+            combine_matrix = combine_matrix_from_dispatch(dispatch_matrix, 1.0)
+            next_predicted_matrix = build_predicted_traffic(
+                sample_id=sample_id,
+                from_layer=from_layer,
+                to_layer=to_layer,
+                grouped_records=grouped,
+                predicted_topk_by_sample=predicted_topk_by_sample,
+                owner_by_expert=owner_by_expert,
+                num_gpus=num_gpus,
+                topk=topk,
+            )
+
+            greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            oracle_perfect = pairwise_oracle(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            oracle_predicted = pairwise_oracle(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            perfect_improvement_pct = (
+                0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect["makespan"]) / greedy_makespan) * 100.0
+            )
+            predicted_improvement_pct = (
+                0.0
+                if greedy_makespan == 0.0
+                else ((greedy_makespan - oracle_predicted["makespan"]) / greedy_makespan) * 100.0
+            )
+            flat_actual = [float(value) for row in next_actual_matrix for value in row]
+            flat_predicted = [float(value) for row in next_predicted_matrix for value in row]
+            traffic_corr = spearman_rank_correlation(flat_actual, flat_predicted)
+
+            perfect_improvements.append(perfect_improvement_pct)
+            predicted_improvements.append(predicted_improvement_pct)
+            traffic_correlations.append(traffic_corr)
+            results.append(
+                {
+                    "sample_id": sample_id,
+                    "layer_pair": f"{from_layer}->{to_layer}",
+                    "dispatch_matrix": dispatch_matrix,
+                    "combine_matrix": combine_matrix,
+                    "next_actual_matrix": next_actual_matrix,
+                    "next_predicted_matrix": next_predicted_matrix,
+                    "greedy_makespan": greedy_makespan,
+                    "oracle_perfect_makespan": oracle_perfect["makespan"],
+                    "oracle_predicted_makespan": oracle_predicted["makespan"],
+                    "perfect_improvement_pct": perfect_improvement_pct,
+                    "predicted_improvement_pct": predicted_improvement_pct,
+                    "traffic_correlation": traffic_corr,
+                    "oracle_perfect_chunk_count": oracle_perfect["chunk_count"],
+                    "oracle_predicted_chunk_count": oracle_predicted["chunk_count"],
+                    "oracle_perfect_schedule": oracle_perfect["schedule"],
+                    "oracle_predicted_schedule": oracle_predicted["schedule"],
+                }
+            )
+
+    predicted_vs_corr = (
+        spearman_rank_correlation(predicted_improvements, traffic_correlations)
+        if len(predicted_improvements) >= 2
+        else 0.0
+    )
+    summary = {
+        "pair_count": len(results),
+        "perfect_improvement_pct": _summary_stats(perfect_improvements),
+        "predicted_improvement_pct": _summary_stats(predicted_improvements),
+        "traffic_correlation": _summary_stats(traffic_correlations),
+        "predicted_improvement_vs_traffic_correlation": predicted_vs_corr,
+        "gate2_decision": {
+            "passed": (
+                _summary_stats(perfect_improvements)["mean"] >= 15.0
+                and _summary_stats(predicted_improvements)["mean"] >= 10.0
+            ),
+            "thresholds": {
+                "oracle_perfect_mean_improvement_pct": 15.0,
+                "oracle_predicted_mean_improvement_pct": 10.0,
+            },
+        },
+    }
+    return {
+        "results": results,
+        "summary": summary,
     }
 
 
