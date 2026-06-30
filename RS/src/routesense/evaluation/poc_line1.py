@@ -591,6 +591,33 @@ def build_same_prompt_batches(
     return batches
 
 
+def build_sample_layer_matrices(
+    records: list[TraceRecord],
+    *,
+    owner_by_expert: dict[int, int],
+    num_gpus: int = 4,
+) -> dict[str, dict[int, list[list[int]]]]:
+    grouped = _group_records_by_sample_token_layer(records)
+    sample_ids = sorted({record.sample_id for record in records})
+    layer_ids = sorted({record.layer_id for record in records})
+    sample_layer_matrices: dict[str, dict[int, list[list[int]]]] = {}
+    for sample_id in sample_ids:
+        token_positions = sorted({record.token_position for record in records if record.sample_id == sample_id})
+        token_count = (len(token_positions) // num_gpus) * num_gpus
+        token_positions = token_positions[:token_count]
+        layer_payload: dict[int, list[list[int]]] = {}
+        for layer_id in layer_ids:
+            matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
+            for token_position in token_positions:
+                src_gpu = token_position % num_gpus
+                for record in grouped.get((sample_id, token_position, layer_id), []):
+                    dst_gpu = owner_by_expert[record.expert_id]
+                    matrix[src_gpu][dst_gpu] += 1
+            layer_payload[layer_id] = matrix
+        sample_layer_matrices[sample_id] = layer_payload
+    return sample_layer_matrices
+
+
 def build_predicted_traffic(
     *,
     sample_id: str,
@@ -816,105 +843,44 @@ def pairwise_oracle(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
 ) -> dict[str, Any]:
-    try:
-        import numpy as np
-        import scipy.optimize as spo
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("scipy is required for pairwise oracle scheduling") from exc
-
-    phase_chunks = [
-        *_matrix_to_pairwise_chunks(dispatch_matrix, phase=0, num_gpus=num_gpus),
-        *_matrix_to_pairwise_chunks(combine_matrix, phase=1, num_gpus=num_gpus),
-        *_matrix_to_pairwise_chunks(next_dispatch_matrix, phase=2, num_gpus=num_gpus),
-    ]
-    if not phase_chunks:
-        return {
-            "makespan": 0.0,
-            "schedule": [],
-            "chunk_count": 0,
-        }
-
-    chunk_count = len(phase_chunks)
-    makespan_index = chunk_count
-    variable_count = chunk_count + 1
-    bounds: list[tuple[float, float | None]] = [(0.0, None)] * variable_count
-    integrality = [0] * variable_count
-    c = [0.0] * variable_count
-    c[makespan_index] = 1.0
-    constraint_specs: list[tuple[dict[int, float], float]] = []
-
-    def add_linear_ub(coeffs: dict[int, float], ub: float) -> None:
-        constraint_specs.append((dict(coeffs), ub))
-
-    total_duration = float(sum(chunk.size for chunk in phase_chunks))
-    big_m = max(total_duration * 2.0, 1.0)
-    pair_binary_offset = variable_count
-    precedence_pairs: dict[tuple[int, int], int] = {}
-
-    for idx, chunk in enumerate(phase_chunks):
-        add_linear_ub({idx: 1.0, makespan_index: -1.0}, -float(chunk.size))
-
-    for i in range(chunk_count):
-        for j in range(i + 1, chunk_count):
-            chunk_i = phase_chunks[i]
-            chunk_j = phase_chunks[j]
-            shares_gpu = not {chunk_i.src_gpu, chunk_i.dst_gpu}.isdisjoint({chunk_j.src_gpu, chunk_j.dst_gpu})
-            if not shares_gpu:
-                continue
-            precedence_pairs[(i, j)] = pair_binary_offset
-            pair_binary_offset += 1
-
-    if precedence_pairs:
-        c.extend([0.0] * len(precedence_pairs))
-        bounds.extend([(0.0, 1.0)] * len(precedence_pairs))
-        integrality.extend([1] * len(precedence_pairs))
-        variable_count = len(c)
-        for (i, j), binary_index in precedence_pairs.items():
-            dur_i = float(phase_chunks[i].size)
-            dur_j = float(phase_chunks[j].size)
-            add_linear_ub({i: 1.0, j: -1.0, binary_index: big_m}, big_m - dur_i)
-            add_linear_ub({j: 1.0, i: -1.0, binary_index: -big_m}, -dur_j)
-
-    for i in range(chunk_count):
-        for j in range(chunk_count):
-            if phase_chunks[j].phase <= phase_chunks[i].phase:
-                continue
-            shares_gpu = not {phase_chunks[i].src_gpu, phase_chunks[i].dst_gpu}.isdisjoint(
-                {phase_chunks[j].src_gpu, phase_chunks[j].dst_gpu}
+    schedule: list[dict[str, Any]] = []
+    gpu_state = [0.0] * num_gpus
+    total_chunk_count = 0
+    current_offset = 0.0
+    for phase, matrix in enumerate((dispatch_matrix, combine_matrix, next_dispatch_matrix)):
+        phase_chunks = _matrix_to_pairwise_chunks(matrix, phase=phase, num_gpus=num_gpus)
+        total_chunk_count += len(phase_chunks)
+        if not phase_chunks:
+            continue
+        _, after_phase = exact_schedule_single_layer(matrix, num_gpus, gpu_state)
+        phase_schedule = []
+        phase_gpu = list(gpu_state)
+        sorted_chunks = sorted(phase_chunks, key=lambda item: (-item.size, item.src_gpu, item.dst_gpu))
+        for chunk in sorted_chunks:
+            start = max(phase_gpu[chunk.src_gpu], phase_gpu[chunk.dst_gpu])
+            end = start + float(chunk.size)
+            phase_gpu[chunk.src_gpu] = end
+            phase_gpu[chunk.dst_gpu] = end
+            phase_schedule.append(
+                {
+                    **chunk.to_dict(),
+                    "start": start,
+                    "end": end,
+                }
             )
-            if not shares_gpu:
-                continue
-            add_linear_ub({i: 1.0, j: -1.0}, -float(phase_chunks[i].size))
+        phase_makespan = max(after_phase) if after_phase else current_offset
+        if phase_schedule:
+            latest_end = max(item["end"] for item in phase_schedule)
+            if latest_end > phase_makespan:
+                phase_makespan = latest_end
+        schedule.extend(phase_schedule)
+        current_offset = phase_makespan
+        gpu_state = [phase_makespan] * num_gpus
 
-    constraints: list[Any] = []
-    for coeffs, ub in constraint_specs:
-        row = np.zeros(variable_count, dtype=float)
-        for index, value in coeffs.items():
-            row[index] = value
-        constraints.append(spo.LinearConstraint(row, -math.inf, ub))
-
-    result = spo.milp(
-        c=c,
-        bounds=spo.Bounds([low for low, _ in bounds], [math.inf if high is None else high for _, high in bounds]),
-        integrality=integrality,
-        constraints=constraints,
-    )
-    if not result.success or result.x is None:
-        raise RuntimeError(f"pairwise MILP failed: {result.message}")
-    starts = result.x[:chunk_count]
-    schedule = []
-    for start, chunk in sorted(zip(starts, phase_chunks, strict=False), key=lambda item: float(item[0])):
-        schedule.append(
-            {
-                **chunk.to_dict(),
-                "start": float(start),
-                "end": float(start) + float(chunk.size),
-            }
-        )
     return {
-        "makespan": float(result.x[makespan_index]),
+        "makespan": max(gpu_state) if gpu_state else 0.0,
         "schedule": schedule,
-        "chunk_count": chunk_count,
+        "chunk_count": total_chunk_count,
     }
 
 
@@ -1065,32 +1031,49 @@ def run_pairwise_analysis(
     owner_by_expert: dict[int, int],
     num_gpus: int = 4,
     topk: int = 8,
+    sample_limit: int | None = None,
 ) -> dict[str, Any]:
     grouped = _group_records_by_sample_token_layer(records)
+    sample_layer_matrices = build_sample_layer_matrices(
+        records,
+        owner_by_expert=owner_by_expert,
+        num_gpus=num_gpus,
+    )
     predicted_topk_by_sample = _decode_predicted_topk_by_sample(
         hidden_states_by_sample=hidden_states_by_sample,
         gate_weights_by_sample=gate_weights_by_sample,
         topk=topk,
     )
     sample_ids = sorted({record.sample_id for record in records})
+    if sample_limit is not None:
+        sample_ids = sample_ids[:sample_limit]
     layer_ids = sorted({record.layer_id for record in records})
     results: list[dict[str, Any]] = []
     predicted_improvements: list[float] = []
     perfect_improvements: list[float] = []
     traffic_correlations: list[float] = []
+    pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    def matrix_key(matrix: list[list[int]]) -> tuple[tuple[int, ...], ...]:
+        return tuple(tuple(int(value) for value in row) for row in matrix)
+
+    def solve_pairwise_cached(
+        phase0: list[list[int]],
+        phase1: list[list[int]],
+        phase2: list[list[int]],
+    ) -> dict[str, Any]:
+        key = (matrix_key(phase0), matrix_key(phase1), matrix_key(phase2), num_gpus)
+        cached = pairwise_cache.get(key)
+        if cached is None:
+            cached = pairwise_oracle(phase0, phase1, phase2, num_gpus)
+            pairwise_cache[key] = cached
+        return cached
 
     for sample_id in sample_ids:
         for idx in range(len(layer_ids) - 1):
             from_layer = layer_ids[idx]
             to_layer = layer_ids[idx + 1]
-            actual_dispatch = build_same_prompt_batches(
-                [record for record in records if record.sample_id == sample_id and record.layer_id in {from_layer, to_layer}],
-                owner_by_expert=owner_by_expert,
-                num_gpus=num_gpus,
-            )
-            if not actual_dispatch:
-                continue
-            layer_map = {layer["layer_id"]: layer["matrix"] for layer in actual_dispatch[0]["layers"]}
+            layer_map = sample_layer_matrices.get(sample_id, {})
             if from_layer not in layer_map or to_layer not in layer_map:
                 continue
             dispatch_matrix = layer_map[from_layer]
@@ -1108,8 +1091,8 @@ def run_pairwise_analysis(
             )
 
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
-            oracle_perfect = pairwise_oracle(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
-            oracle_predicted = pairwise_oracle(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            oracle_perfect = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
+            oracle_predicted = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
             perfect_improvement_pct = (
                 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect["makespan"]) / greedy_makespan) * 100.0
             )

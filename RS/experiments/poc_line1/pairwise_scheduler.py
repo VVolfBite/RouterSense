@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--placement", type=str, default="round_robin", choices=["round_robin", "skewed"])
     parser.add_argument("--num-gpus", type=int, default=4)
     parser.add_argument("--topk", type=int, default=8)
+    parser.add_argument("--sample-limit", type=int, default=None)
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         owner_by_expert=owner_by_expert,
         num_gpus=args.num_gpus,
         topk=args.topk,
+        sample_limit=args.sample_limit,
     )
 
     out = Path(args.output_dir)
