@@ -10,7 +10,7 @@
 |---|---|---|---|
 | trace 采集 | 单 token（token_pos=23） | 全序列所有 token position | 单 token 构建的 traffic matrix 极端稀疏，Gate 2 结论不可信 |
 | MoE 层覆盖 | ablation: 4层 (0,5,10,15)；trace: 3层 (0,8,15) | 全部 router-active 层（当前实测 OLMoE-1B-7B-0924-Instruct 返回 16 个 router layers） | 旧的 4 层假设与真实模型不符，需按 16 层重估 |
-| Gate 1 指标 | top-2 Jaccard ≥ 0.80 | top-K hit rate ≥ 0.60（主）+ weighted hit rate（辅） | Jaccard 在 64 experts + topK=8 下 ≈ 0.07，不 informative |
+| Gate 1 指标 | top-2 Jaccard ≥ 0.80 | Fate-style prefetch accuracy（主）+ gate-input cosine similarity（辅） | Gate 1 应测可预测性，不应只测跨层 expert 集合相似性 |
 | traffic matrix | 跨 window 人工聚合 | 同 prompt 内多 token 真实聚合 + 跨 window 聚合对照 | 跨 window 聚合不反映真实 batch 语义相关性 |
 | expert placement | 仅 round-robin | round-robin + skewed（hot expert 集中放置） | round-robin 人为平滑 skew，压缩 Oracle vs Greedy 差异 |
 | makespan 建模 | 未定义 | per-destination 调度粒度 + shared link max 模型 | 原建模模糊，影响 Gate 2 结论 |
@@ -51,7 +51,7 @@ Phase 0 是唯一需要 GPU 和模型的阶段。Phase 1-4 全部离线计算，
 
 ### 输入
 
-- 模型: `allenai/OLMoE-1B-7B-0924-Instruct`（64 experts, topK=8, 4 个 MoE 层位于 layer 0/5/10/15）
+- 模型: `allenai/OLMoE-1B-7B-0924-Instruct`（64 experts, topK=8；当前实测返回 16 个 router-active layers）
 - prompts: 复用 POC1 的 32 条 theory prompts（路径: `archive/poc1-20260629-local-prompts-0924/data/theory_prompts_50.jsonl`，取前 32 条）
 - 环境: 单 GPU，bf16 精度
 
@@ -133,7 +133,7 @@ outputs/poc_line1/full_sequence_trace/
 
 ---
 
-## 四、Phase 1: 跨层相关性分析（Gate 1）
+## 四、Phase 1: 跨层可预测性分析（Gate 1）
 
 ### 目标
 
@@ -145,15 +145,16 @@ Phase 0 产出的 `trace.jsonl`
 
 ### 分析项
 
-#### 1.1 Token 级 hit rate 分析
+#### 1.1 Token 级 prefetch accuracy 分析
 
-对每个 (sample_id, token_position) 组合：
+对每个 `(sample_id, token_position)` 组合：
 
 ```
 对于相邻层对 (L_i, L_{i+1}):
-  S_i = {expert_id for topk_rank in 0..7 at layer L_i}
-  S_{i+1} = {expert_id for topk_rank in 0..7 at layer L_{i+1}}
-  hit_rate(K) = |S_i ∩ S_{i+1}| / K    # K = topK = 8
+  hidden_i = gate_input at layer L_i
+  predicted_topK = topk( gate_{L_{i+1}}(hidden_i) )
+  actual_topK = topk( gate_{L_{i+1}}(hidden_{L_{i+1}}) )
+  prefetch_accuracy(K) = |predicted_topK ∩ actual_topK| / K
 ```
 
 聚合维度：
@@ -163,13 +164,13 @@ Phase 0 产出的 `trace.jsonl`
 
 **多层衰减分析**：计算 hit_rate(L_i → L_{i+k}) for k=1,2,3，观察跨层衰减速度。
 
-#### 1.2 Weighted hit rate 分析
+#### 1.2 Gate input cosine similarity
 
 ```
-weighted_hit_rate(L_i, L_{i+1}) = Σ_{e ∈ S_i ∩ S_{i+1}} (p_i(e) + p_{i+1}(e)) / 2
+cosine_similarity(L_i, L_{i+1}) = cos(hidden_i, hidden_{i+1})
 ```
 
-其中 p_i(e) 是 expert e 在 layer i 的 routing probability。这个指标区分"共享的 expert 是否是高概率 expert"。
+这个指标对应 Fate 的前提条件检查：如果相邻层 gate 输入隐藏态高度相似，则下一层 gate 对上一层 hidden state 的预测可能成立。
 
 #### 1.3 Batch 级流量分布 rank correlation
 
@@ -185,21 +186,21 @@ weighted_hit_rate(L_i, L_{i+1}) = Σ_{e ∈ S_i ∩ S_{i+1}} (p_i(e) + p_{i+1}(e
 
 #### 1.4 可视化
 
-- heatmap: layer pair × token position bucket 的 hit rate
-- histogram: hit rate 分布（按 layer pair 分面）
-- 衰减曲线: hit rate vs 跨层距离 k
-- scatter: token-level hit rate vs batch-level rank correlation
-- pairwise correlation matrix: 三个 Gate 1 指标（hit rate, weighted hit rate, rank correlation）两两之间的 Spearman/Pearson 相关系数，验证指标间是否提供互补信息
+- heatmap: layer pair × token position bucket 的 prefetch accuracy
+- histogram: prefetch accuracy 分布（按 layer pair 分面）
+- 衰减曲线: prefetch accuracy vs 跨层距离 k
+- scatter: token-level prefetch accuracy vs batch-level rank correlation
+- pairwise correlation matrix: prefetch accuracy、cosine similarity、rank correlation 两两之间的 Spearman/Pearson 相关系数
 
 ### 判定标准
 
 | 指标 | 通过 | 灰色地带 | 不通过 |
 |---|---|---|---|
-| 相邻层平均 hit rate (K=8) | ≥ 0.60 | 0.40–0.60 | < 0.40 |
-| 相邻层 weighted hit rate | ≥ 0.45 | 0.30–0.45 | < 0.30 |
+| 相邻层平均 prefetch accuracy (K=8) | ≥ 0.70 | 0.50–0.70 | < 0.50 |
+| 相邻层平均 cosine similarity | ≥ 0.70 | 0.50–0.70 | < 0.50 |
 | batch 级 rank correlation | ≥ 0.50 | 0.30–0.50 | < 0.30 |
 
-三个指标中至少两个通过 → Gate 1 通过。
+prefetch accuracy 为主指标，cosine similarity 和 rank correlation 为辅助指标。至少一个 layer pair 满足 prefetch accuracy / cosine 双阈值，即视为 Gate 1 通过。
 
 **阈值校准**：在正式运行前，先用 POC1 的 ablation 数据（1024 条，虽然只有 token_pos=23）做一次快速预跑（quick sanity check），校准各指标的分布，确认阈值是否需要微调。这比跑完 Phase 0 全量数据后才发现阈值不合理要安全得多。
 

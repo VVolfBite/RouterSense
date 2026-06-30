@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from routesense.evaluation import (
     analyze_cross_layer_correlation,
+    analyze_cross_layer_predictability,
     build_owner_by_expert,
     build_same_prompt_batches,
     combine_matrix_from_dispatch,
@@ -191,3 +192,43 @@ def test_batch_rank_correlation_uses_placement():
     report = build_batch_rank_correlation(records, owner_by_expert=owner_by_expert, num_gpus=4)
     assert "0->1" in report
     assert report["0->1"]["count"] == 1
+
+
+def test_cross_layer_predictability_prefetch_accuracy():
+    from routesense.evaluation.poc_line1 import TraceRecord
+    import torch
+
+    records = [
+        TraceRecord("req", "sample-0", 0, 0, 1, 0, 0.8, 2),
+        TraceRecord("req", "sample-0", 0, 0, 0, 1, 0.2, 2),
+        TraceRecord("req", "sample-0", 0, 1, 1, 0, 0.8, 2),
+        TraceRecord("req", "sample-0", 0, 1, 0, 1, 0.2, 2),
+        TraceRecord("req", "sample-0", 1, 0, 0, 0, 0.8, 2),
+        TraceRecord("req", "sample-0", 1, 0, 1, 1, 0.2, 2),
+        TraceRecord("req", "sample-0", 1, 1, 0, 0, 0.8, 2),
+        TraceRecord("req", "sample-0", 1, 1, 1, 1, 0.2, 2),
+    ]
+    hidden_states = {
+        "sample-0": {
+            0: torch.tensor([[[2.0, 0.0], [0.0, 2.0]]], dtype=torch.float32),
+            1: torch.tensor([[[2.0, 0.0], [0.0, 2.0]]], dtype=torch.float32),
+        }
+    }
+    gate_weights = {
+        "sample-0": {
+            0: torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+            1: torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+        }
+    }
+    owner_by_expert = {0: 0, 1: 1}
+    report = analyze_cross_layer_predictability(
+        records,
+        hidden_states_by_sample=hidden_states,
+        gate_weights_by_sample=gate_weights,
+        topk=2,
+        owner_by_expert=owner_by_expert,
+        num_gpus=4,
+    )
+    assert report["gate1_decision"]["passed"] is True
+    pair = report["layer_pair_summary"]["0->1"]
+    assert pair["prefetch_accuracy"]["mean"] == 1.0

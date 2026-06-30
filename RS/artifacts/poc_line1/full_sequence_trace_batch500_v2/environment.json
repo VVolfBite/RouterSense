@@ -1,0 +1,13 @@
+{
+  "hostname": "autodl-container-43df4dbbb8-b31320c7",
+  "platform": "Linux-5.15.0-94-generic-x86_64-with-glibc2.35",
+  "python": "3.12.3",
+  "torch_version": "2.8.0+cu128",
+  "cuda_version": "12.8",
+  "visible_gpu_count": 1,
+  "timestamp_utc": "2026-06-30T18:36:26.632296+00:00",
+  "cwd": "/root/autodl-tmp/RouterSense/RS",
+  "gpu_names": [
+    "NVIDIA GeForce RTX 4090 D"
+  ]
+}

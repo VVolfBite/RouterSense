@@ -7,6 +7,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+import torch  # type: ignore
+import torch.nn.functional as F  # type: ignore
+
 
 @dataclass(frozen=True)
 class TraceRecord:
@@ -46,6 +49,19 @@ class LayerTransitionStat:
     weighted_hit_rate: float
     sample_id: str
     token_position: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class GatePredictionStat:
+    sample_id: str
+    from_layer: int
+    to_layer: int
+    token_position: int
+    cosine_similarity: float
+    prefetch_accuracy: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -143,6 +159,114 @@ def _pearson(x: list[float], y: list[float]) -> float:
 
 def spearman_rank_correlation(x: list[float], y: list[float]) -> float:
     return _pearson(_rankdata(x), _rankdata(y))
+
+
+def load_hidden_state_bundle(path: str | Path) -> dict[str, dict[int, torch.Tensor]]:
+    payload = torch.load(Path(path), map_location="cpu")
+    return {
+        str(sample_id): {int(layer_id): tensor.float().cpu() for layer_id, tensor in layer_map.items()}
+        for sample_id, layer_map in payload.items()
+    }
+
+
+def load_gate_weight_bundle(path: str | Path) -> dict[str, dict[int, torch.Tensor]]:
+    payload = torch.load(Path(path), map_location="cpu")
+    return {
+        str(sample_id): {int(layer_id): tensor.float().cpu() for layer_id, tensor in layer_map.items()}
+        for sample_id, layer_map in payload.items()
+    }
+
+
+def analyze_cross_layer_predictability(
+    records: list[TraceRecord],
+    *,
+    hidden_states_by_sample: dict[str, dict[int, torch.Tensor]],
+    gate_weights_by_sample: dict[str, dict[int, torch.Tensor]],
+    topk: int,
+    owner_by_expert: dict[int, int] | None = None,
+    num_gpus: int = 4,
+) -> dict[str, Any]:
+    grouped = _group_records_by_sample_token_layer(records)
+    prediction_rows: list[GatePredictionStat] = []
+    sample_ids = sorted({record.sample_id for record in records})
+    layer_ids = sorted({record.layer_id for record in records})
+    for sample_id in sample_ids:
+        sample_hidden = hidden_states_by_sample[sample_id]
+        sample_gates = gate_weights_by_sample[sample_id]
+        sample_layer_ids = [layer_id for layer_id in layer_ids if layer_id in sample_hidden and layer_id in sample_gates]
+        for idx in range(len(sample_layer_ids) - 1):
+            from_layer = sample_layer_ids[idx]
+            to_layer = sample_layer_ids[idx + 1]
+            hidden_from = sample_hidden[from_layer].squeeze(0)
+            hidden_to = sample_hidden[to_layer].squeeze(0)
+            gate_weight = sample_gates[to_layer]
+            if hidden_from.ndim != 2 or hidden_to.ndim != 2:
+                raise RuntimeError(f"unexpected hidden state rank for sample={sample_id}, pair={from_layer}->{to_layer}")
+            cosine = F.cosine_similarity(hidden_from, hidden_to, dim=-1)
+            predicted_logits = hidden_from @ gate_weight.T
+            predicted_topk = torch.topk(torch.softmax(predicted_logits, dim=-1), k=topk, dim=-1).indices
+            for token_position in range(hidden_from.shape[0]):
+                actual_records = grouped.get((sample_id, token_position, to_layer), [])
+                actual_topk = [record.expert_id for record in actual_records[:topk]]
+                if len(actual_topk) < topk:
+                    continue
+                overlap = len(set(predicted_topk[token_position].tolist()) & set(actual_topk))
+                prediction_rows.append(
+                    GatePredictionStat(
+                        sample_id=sample_id,
+                        from_layer=from_layer,
+                        to_layer=to_layer,
+                        token_position=token_position,
+                        cosine_similarity=float(cosine[token_position].item()),
+                        prefetch_accuracy=float(overlap / topk),
+                    )
+                )
+
+    pair_summary: dict[str, Any] = {}
+    for from_layer in layer_ids:
+        for to_layer in layer_ids:
+            if to_layer <= from_layer:
+                continue
+            rows = [row for row in prediction_rows if row.from_layer == from_layer and row.to_layer == to_layer]
+            if not rows:
+                continue
+            pair_summary[f"{from_layer}->{to_layer}"] = {
+                "prefetch_accuracy": _summary_stats([row.prefetch_accuracy for row in rows]),
+                "cosine_similarity": _summary_stats([row.cosine_similarity for row in rows]),
+                "num_tokens": len(rows),
+            }
+
+    batch_rank_correlation = build_batch_rank_correlation(
+        records,
+        owner_by_expert=owner_by_expert,
+        num_gpus=num_gpus,
+    )
+    pass_count = sum(
+        1
+        for payload in pair_summary.values()
+        if payload["prefetch_accuracy"]["mean"] >= 0.70 and payload["cosine_similarity"]["mean"] >= 0.70
+    )
+    rank_pass = any(value.get("spearman", 0.0) >= 0.50 for value in batch_rank_correlation.values())
+    gate1_pass = pass_count >= 1
+    reasons: list[str] = []
+    if not gate1_pass:
+        reasons.append("cross_layer_prefetch_accuracy_below_threshold")
+    return {
+        "prediction_rows": [row.to_dict() for row in prediction_rows],
+        "layer_pair_summary": pair_summary,
+        "batch_rank_correlation": batch_rank_correlation,
+        "gate1_decision": {
+            "passed": gate1_pass,
+            "pass_count": pass_count,
+            "rank_pass": rank_pass,
+            "thresholds": {
+                "prefetch_accuracy_mean": 0.70,
+                "cosine_similarity_mean": 0.70,
+                "rank_correlation_mean": 0.50,
+            },
+            "reasons": reasons,
+        },
+    }
 
 
 def analyze_cross_layer_correlation(

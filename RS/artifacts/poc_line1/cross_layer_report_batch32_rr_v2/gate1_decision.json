@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "pass_count": 13,
+  "rank_pass": true,
+  "thresholds": {
+    "prefetch_accuracy_mean": 0.7,
+    "cosine_similarity_mean": 0.7,
+    "rank_correlation_mean": 0.5
+  },
+  "reasons": []
+}

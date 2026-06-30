@@ -46,6 +46,16 @@ deploy/logs/*
 model_cache/
 *.pid
 
+# Large experimental artifacts should stay local unless explicitly curated
+RS/artifacts/**/auxiliary/
+RS/artifacts/**/*.pt
+RS/artifacts/**/trace.jsonl
+RS/artifacts/**/prediction_rows.json
+archive/backup/**/auxiliary/
+archive/backup/**/*.pt
+archive/backup/**/trace.jsonl
+archive/backup/**/prediction_rows.json
+
 # RS tracked exceptions
 !configs/model/olmoe_1b_7b_instruct.yaml
 !configs/topology/

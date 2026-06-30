@@ -14,7 +14,9 @@ if str(SRC) not in sys.path:
 
 from routesense.evaluation import collect_environment_snapshot, write_json
 from routesense.runtime import load_model_and_tokenizer
-from routesense.trace import collect_full_sequence_trace, discover_moe_layer_ids
+import torch  # type: ignore
+
+from routesense.trace import collect_full_sequence_trace, collect_moe_architecture_probe
 
 
 def _load_prompt_entries(path: Path, limit: int | None) -> list[dict[str, Any]]:
@@ -58,23 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     if bool(args.text) == bool(args.prompts_path):
         raise SystemExit("exactly one of --text or --prompts-path must be provided")
 
-    discovered_layers = discover_moe_layer_ids(model)
-    architecture_probe = {
-        "model_class": type(model).__name__,
-        "moe_layer_count": len(discovered_layers),
-        "moe_layer_ids": discovered_layers,
-        "layers": [],
-    }
-    for index, layer in enumerate(getattr(getattr(model, "model", None), "layers", [])):
-        mlp = getattr(layer, "mlp", None)
-        architecture_probe["layers"].append(
-            {
-                "layer_index": index,
-                "mlp_class": type(mlp).__name__ if mlp is not None else None,
-                "has_gate": bool(mlp is not None and hasattr(mlp, "gate")),
-                "has_experts": bool(mlp is not None and hasattr(mlp, "experts")),
-            }
-        )
+    architecture_probe = collect_moe_architecture_probe(model)
 
     traces: list[dict[str, Any]] = []
     if args.text is not None:
@@ -85,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.text,
                 request_id=args.request_id,
                 sample_id=args.sample_id,
+                save_auxiliary_dir=Path(args.output_dir) / "auxiliary",
             )
         )
     else:
@@ -99,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
                     text,
                     request_id=f"{args.request_id}-{index}",
                     sample_id=f"prompt-{document_id}",
+                    save_auxiliary_dir=Path(args.output_dir) / "auxiliary",
                 )
             )
 
@@ -119,10 +107,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     write_json(out / "environment.json", collect_environment_snapshot())
     write_json(out / "architecture_probe.json", architecture_probe)
+    merged_hidden_states: dict[str, dict[int, torch.Tensor]] = {}
+    merged_gate_weights: dict[str, dict[int, torch.Tensor]] = {}
     with (out / "trace.jsonl").open("w", encoding="utf-8") as handle:
         for trace in traces:
             for record in trace["records"]:
                 handle.write(json.dumps(record) + "\n")
+            merged_hidden_states[trace["summary"]["sample_id"]] = trace["hidden_states"]
+            merged_gate_weights[trace["summary"]["sample_id"]] = trace["gate_weights"]
+    torch.save(merged_hidden_states, out / "hidden_states.pt")
+    torch.save(merged_gate_weights, out / "gate_weights.pt")
     combined_summary = {
         "trace_count": len(traces),
         "sample_ids": [trace["summary"]["sample_id"] for trace in traces],
@@ -132,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         "topk": traces[0]["summary"]["topk"] if traces else 0,
         "token_count_per_sample": {trace["summary"]["sample_id"]: trace["summary"]["token_count"] for trace in traces},
         "record_count": sum(int(trace["summary"]["record_count"]) for trace in traces),
+        "hidden_states_path": str(out / "hidden_states.pt"),
+        "gate_weights_path": str(out / "gate_weights.pt"),
     }
     write_json(out / "summary.json", combined_summary)
     print(json.dumps(combined_summary, indent=2))

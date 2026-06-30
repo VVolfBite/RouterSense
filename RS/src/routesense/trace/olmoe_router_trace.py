@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -138,6 +139,52 @@ def discover_moe_layer_ids(model: Any) -> list[int]:
     return moe_layer_ids
 
 
+def collect_moe_architecture_probe(model: Any) -> dict[str, Any]:
+    layers = getattr(getattr(model, "model", None), "layers", None)
+    if layers is None:
+        return {"model_class": type(model).__name__, "moe_layer_count": 0, "moe_layer_ids": [], "layers": []}
+    moe_layer_ids = discover_moe_layer_ids(model)
+    layer_rows: list[dict[str, Any]] = []
+    for layer_index, layer in enumerate(layers):
+        mlp = getattr(layer, "mlp", None)
+        gate = getattr(mlp, "gate", None) if mlp is not None else None
+        gate_weight = getattr(gate, "weight", None) if gate is not None else None
+        layer_rows.append(
+            {
+                "layer_index": layer_index,
+                "mlp_class": type(mlp).__name__ if mlp is not None else None,
+                "has_gate": bool(gate is not None),
+                "has_experts": bool(mlp is not None and hasattr(mlp, "experts")),
+                "gate_class": type(gate).__name__ if gate is not None else None,
+                "gate_weight_shape": list(gate_weight.shape) if gate_weight is not None else None,
+            }
+        )
+    return {
+        "model_class": type(model).__name__,
+        "moe_layer_count": len(moe_layer_ids),
+        "moe_layer_ids": moe_layer_ids,
+        "layers": layer_rows,
+    }
+
+
+def extract_gate_weights(model: Any, moe_layer_ids: list[int]) -> dict[int, Any]:
+    import torch  # type: ignore
+
+    gate_weights: dict[int, Any] = {}
+    for layer_id in moe_layer_ids:
+        layer = model.model.layers[layer_id]
+        gate = getattr(getattr(layer, "mlp", None), "gate", None)
+        if gate is None:
+            raise RuntimeError(f"layer {layer_id} has no gate module")
+        weight = getattr(gate, "weight", None)
+        if weight is None:
+            raise RuntimeError(f"layer {layer_id} gate has no weight tensor")
+        gate_weights[int(layer_id)] = weight.detach().float().cpu()
+        if not isinstance(gate_weights[int(layer_id)], torch.Tensor):
+            raise RuntimeError(f"failed to extract gate weight tensor for layer {layer_id}")
+    return gate_weights
+
+
 def collect_full_sequence_trace(
     model: Any,
     tokenizer: Any,
@@ -145,6 +192,7 @@ def collect_full_sequence_trace(
     *,
     request_id: str = "req-0",
     sample_id: str = "sample-0",
+    save_auxiliary_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     import torch  # type: ignore
 
@@ -156,11 +204,20 @@ def collect_full_sequence_trace(
     device = next(model.parameters()).device
     encoded = {key: value.to(device) for key, value in encoded.items()}
     with torch.inference_mode():
-        outputs = model(**encoded, output_router_logits=True, return_dict=True, use_cache=False)
+        outputs = model(
+            **encoded,
+            output_router_logits=True,
+            output_hidden_states=True,
+            return_dict=True,
+            use_cache=False,
+        )
 
     router_logits_by_layer = getattr(outputs, "router_logits", None)
     if not router_logits_by_layer:
         raise RuntimeError("model forward did not return router_logits")
+    hidden_states = getattr(outputs, "hidden_states", None)
+    if not hidden_states:
+        raise RuntimeError("model forward did not return hidden_states")
     moe_layer_ids = discover_moe_layer_ids(model)
     if moe_layer_ids and len(moe_layer_ids) != len(router_logits_by_layer):
         raise RuntimeError(
@@ -170,6 +227,11 @@ def collect_full_sequence_trace(
         moe_layer_ids = list(range(len(router_logits_by_layer)))
 
     topk = int(getattr(getattr(model, "config", None), "num_experts_per_tok", 0) or 1)
+    gate_weights = extract_gate_weights(model, moe_layer_ids)
+    hidden_state_payload = {
+        int(layer_id): hidden_states[int(layer_id)].detach().float().cpu()
+        for layer_id in moe_layer_ids
+    }
     records: list[FullSequenceTraceRecord] = []
     per_expert_token_count: dict[str, int] = {}
     routing_weights: list[float] = []
@@ -212,7 +274,17 @@ def collect_full_sequence_trace(
         "per_expert_token_count": per_expert_token_count,
         "routing_weight_summary": _summarize_weights(routing_weights),
     }
-    return {"summary": summary, "records": [record.to_dict() for record in records]}
+    if save_auxiliary_dir is not None:
+        auxiliary_dir = Path(save_auxiliary_dir)
+        auxiliary_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(hidden_state_payload, auxiliary_dir / f"{sample_id}_hidden_states.pt")
+        torch.save(gate_weights, auxiliary_dir / f"{sample_id}_gate_weights.pt")
+    return {
+        "summary": summary,
+        "records": [record.to_dict() for record in records],
+        "hidden_states": hidden_state_payload,
+        "gate_weights": gate_weights,
+    }
 
 
 def decode_metadata_tensor_rows(metadata_tensor: Any) -> list[dict[str, int]]:

@@ -1,0 +1,35 @@
+{
+  "trace_count": 1,
+  "sample_ids": [
+    "smokev2"
+  ],
+  "request_ids": [
+    "smokev2"
+  ],
+  "moe_layer_count": 16,
+  "moe_layer_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "topk": 8,
+  "token_count_per_sample": {
+    "smokev2": 19
+  },
+  "record_count": 2432,
+  "hidden_states_path": "artifacts/poc_line1/full_sequence_trace_smoke_v2/hidden_states.pt",
+  "gate_weights_path": "artifacts/poc_line1/full_sequence_trace_smoke_v2/gate_weights.pt"
+}
