@@ -23,6 +23,22 @@ class RouterTraceRecord:
         return asdict(self)
 
 
+@dataclass
+class FullSequenceTraceRecord:
+    request_id: str
+    sample_id: str
+    token_position: int
+    layer_id: int
+    expert_id: int
+    topk_rank: int
+    routing_weight: float
+    topk: int
+    router_capture_timestamp_ns: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _resolve_layer_id(layer_path: str, layer_count: int) -> int:
     if layer_count <= 0:
         raise RuntimeError("model returned no router layers")
@@ -108,6 +124,97 @@ def collect_olmoe_router_trace(
     return {"summary": summary, "records": [record.to_dict() for record in records]}
 
 
+def discover_moe_layer_ids(model: Any) -> list[int]:
+    layers = getattr(getattr(model, "model", None), "layers", None)
+    if layers is None:
+        return []
+    moe_layer_ids: list[int] = []
+    for layer_index, layer in enumerate(layers):
+        mlp = getattr(layer, "mlp", None)
+        if mlp is None:
+            continue
+        if hasattr(mlp, "gate") and hasattr(mlp, "experts"):
+            moe_layer_ids.append(layer_index)
+    return moe_layer_ids
+
+
+def collect_full_sequence_trace(
+    model: Any,
+    tokenizer: Any,
+    text: str,
+    *,
+    request_id: str = "req-0",
+    sample_id: str = "sample-0",
+) -> dict[str, Any]:
+    import torch  # type: ignore
+
+    if model is None or tokenizer is None:
+        raise RuntimeError("full sequence trace requires a model and tokenizer")
+
+    model.eval()
+    encoded = tokenizer(text, return_tensors="pt")
+    device = next(model.parameters()).device
+    encoded = {key: value.to(device) for key, value in encoded.items()}
+    with torch.inference_mode():
+        outputs = model(**encoded, output_router_logits=True, return_dict=True, use_cache=False)
+
+    router_logits_by_layer = getattr(outputs, "router_logits", None)
+    if not router_logits_by_layer:
+        raise RuntimeError("model forward did not return router_logits")
+    moe_layer_ids = discover_moe_layer_ids(model)
+    if moe_layer_ids and len(moe_layer_ids) != len(router_logits_by_layer):
+        raise RuntimeError(
+            f"router_logits count {len(router_logits_by_layer)} does not match discovered MoE layers {len(moe_layer_ids)}"
+        )
+    if not moe_layer_ids:
+        moe_layer_ids = list(range(len(router_logits_by_layer)))
+
+    topk = int(getattr(getattr(model, "config", None), "num_experts_per_tok", 0) or 1)
+    records: list[FullSequenceTraceRecord] = []
+    per_expert_token_count: dict[str, int] = {}
+    routing_weights: list[float] = []
+    for logical_layer_index, logits in enumerate(router_logits_by_layer):
+        layer_id = int(moe_layer_ids[logical_layer_index])
+        layer_logits = logits.detach().float().cpu()
+        if layer_logits.ndim != 2:
+            raise RuntimeError(f"unexpected router logits shape for layer {layer_id}: {tuple(layer_logits.shape)}")
+        probs = torch.softmax(layer_logits, dim=-1)
+        weights, experts = torch.topk(probs, k=min(topk, probs.shape[-1]), dim=-1)
+        for token_position in range(layer_logits.shape[0]):
+            for topk_rank, (weight, expert_id) in enumerate(
+                zip(weights[token_position].tolist(), experts[token_position].tolist(), strict=False)
+            ):
+                record = FullSequenceTraceRecord(
+                    request_id=request_id,
+                    sample_id=sample_id,
+                    token_position=int(token_position),
+                    layer_id=layer_id,
+                    expert_id=int(expert_id),
+                    topk_rank=int(topk_rank),
+                    routing_weight=float(weight),
+                    topk=int(topk),
+                    router_capture_timestamp_ns=time.time_ns(),
+                )
+                records.append(record)
+                per_expert_token_count[str(int(expert_id))] = per_expert_token_count.get(str(int(expert_id)), 0) + 1
+                routing_weights.append(float(weight))
+    token_count = int(router_logits_by_layer[0].shape[0])
+    summary = {
+        "trace_schema_version": 2,
+        "trace_kind": "full_sequence_router_logit_observational",
+        "request_id": request_id,
+        "sample_id": sample_id,
+        "moe_layer_count": len(router_logits_by_layer),
+        "moe_layer_ids": moe_layer_ids,
+        "topk": topk,
+        "token_count": token_count,
+        "record_count": len(records),
+        "per_expert_token_count": per_expert_token_count,
+        "routing_weight_summary": _summarize_weights(routing_weights),
+    }
+    return {"summary": summary, "records": [record.to_dict() for record in records]}
+
+
 def decode_metadata_tensor_rows(metadata_tensor: Any) -> list[dict[str, int]]:
     import torch  # type: ignore
 
@@ -153,4 +260,3 @@ def _summarize_weights(weights: list[float]) -> dict[str, float]:
     mean = sum(weights) / len(weights)
     variance = sum((value - mean) ** 2 for value in weights) / len(weights)
     return {"min": min(weights), "max": max(weights), "mean": mean, "std": math.sqrt(variance)}
-
