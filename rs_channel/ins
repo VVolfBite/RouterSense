@@ -6,55 +6,387 @@
 
 ---
 
-## P0: Oracle 实现是启发式而非 ILP（致命）
+## P0: Gate 1 指标错误——应测可预测性而非相似性（致命）
 
 ### 问题
 
-`poc_line1.py` 第 406-422 行的 `oracle_schedule_multi_layer` 不是真正的 Oracle 调度器。它用以下公式计算：
+当前 Gate 1 用 hit rate（两层 expert 选择的集合交集）度量"跨层相关性"。这度量的是**相似性**，不是**可预测性**。
+
+Fate（arXiv:2502.12224）的方法不是比较两层选了相同的 expert，而是：
+- 用第 L 层的 hidden state 送入第 L+1 层的 gate 网络，得到 predicted experts
+- 与第 L+1 层实际选择的 experts 对比，度量 prefetch accuracy
+- 在 Qwen-MoE 上 prefetch accuracy > 99%（prefill）
+
+hit rate ≈ 随机不代表不可预测，只代表两层选了不同的 expert——但如果映射关系稳定，仍然可预测。
+
+### 需要做的
+
+1. **Phase 0 采集 hidden states**：修改 `collect_full_sequence_trace`，增加 `output_hidden_states=True`，采集每个 MoE 层的 gate 输入
+
+2. **实现跨层预测**：对每对相邻 MoE 层，用 `hidden_states[L_i]` 通过 `gate_network_{L_{i+1}}` 做 forward，得到 predicted routing
+
+3. **度量 prefetch accuracy**：`|predicted_topK ∩ actual_topK| / K`，这才是 Gate 1 的核心指标
+
+4. **同时度量 gate 输入 cosine similarity**：`cos_sim(hidden_states[L_i], hidden_states[L_{i+1}])`，这是 Fate 的前提条件
+
+5. **任务文档已更新**（`poc_line1_i_task.md` Phase 1 已重写），实现需与之对齐
+
+### 具体实现步骤
+
+#### Step 1: Phase 0 采集 hidden states
+
+修改 `collect_full_sequence_trace`，在 forward pass 中同时输出 hidden states：
 
 ```python
-cross_layer_overlap_bonus = sum(min(curr,nxt)/max(curr,nxt) * 0.08)
-bonus = min(0.35, cross_layer_overlap_bonus)
-return greedy * (1.0 - bonus)
+with torch.inference_mode():
+    outputs = model(**encoded, output_router_logits=True,
+                    output_hidden_states=True,  # 新增
+                    return_dict=True, use_cache=False)
+
+hidden_states = outputs.hidden_states
+# hidden_states 是 tuple，长度 = num_layers + 1
+# hidden_states[i] = 第 i 层 transformer block 的输入，shape [1, seq_len, hidden_dim]
+# 对于 MoE 层 L，gate_input = hidden_states[L]
+
+# 保存为单独文件（维度较大，不适合放进 JSONL）
+torch.save(
+    {layer_id: hidden_states[layer_id].cpu() for layer_id in moe_layer_ids},
+    output_dir / "hidden_states.pt"
+)
 ```
 
-这意味着：
-- 35% 改善是代码中硬编码的上限（`min(0.35, ...)`），不是真实优化结果
-- Gate 2 "通过"完全是人为构造，不是调度优化的证据
-- 任务文档（`poc_line1_i_task.md`）明确要求 ILP 精确求解（G=4,K=4 小规模）或 SA fallback
+#### Step 2: 提取 gate 网络权重
 
-### 修正
+在 OLMoE 中，每个 MoE 层的 gate 是一个线性层（`gate.weight`），shape `[num_experts, hidden_dim]`。
 
-实现真正的 Oracle 调度器：
+```python
+def extract_gate_weights(model, moe_layer_ids):
+    """提取每个 MoE 层的 gate 权重矩阵。"""
+    gates = {}
+    for layer_id in moe_layer_ids:
+        layer = model.model.layers[layer_id]
+        gate = layer.mlp.gate  # OLMoE 的 gate 对象
+        # gate.weight 或 gate.w 是 [num_experts, hidden_dim] 的矩阵
+        weight = getattr(gate, 'weight', None) or getattr(gate, 'w', None)
+        gates[layer_id] = weight.detach().float().cpu()
+    return gates
+```
 
-1. **ILP 精确求解**（优先，G=4, K≤16 的小规模 instance 可用 `scipy.optimize.milp` 或 `PuLP`）：
-   - 决策变量: `start_time[l][c] ∈ R+`，每个 chunk 的开始时间
-   - 约束: per-GPU half-duplex + 放宽的层间依赖（per-GPU 粒度）
-   - 目标: minimize makespan
+#### Step 3: 跨层预测计算
 
-2. **如果 ILP 不可行**（16 层导致变量过多），使用 SA：
-   - 初始解: Greedy LPT 解
-   - 邻域操作 1: 交换同层两个 chunk 顺序
-   - 邻域操作 2: 跨层 chunk 交换（满足依赖约束前提下）
-   - 校准: 在小规模 instance 上与 Greedy 对比确认 gap
+```python
+def cross_layer_predict(hidden_states, gates, moe_layer_ids, topk=8):
+    """
+    对每对相邻 MoE 层，用第 i 层的 hidden state 通过第 i+1 层的 gate 做预测。
+    返回 prefetch accuracy 和 cosine similarity。
+    """
+    results = []
+    for idx in range(len(moe_layer_ids) - 1):
+        layer_i = moe_layer_ids[idx]
+        layer_next = moe_layer_ids[idx + 1]
 
-3. **删除**当前的启发式 `oracle_schedule_multi_layer`，用真正的求解器替代
+        gate_in_i = hidden_states[layer_i]      # [1, seq_len, hidden_dim]
+        gate_in_next = hidden_states[layer_next]  # [1, seq_len, hidden_dim]
 
-4. 运行后对比：新 Oracle vs Greedy 的改善幅度是否仍然 ≥ 15%
+        # 1. Cosine similarity
+        cos_sim = F.cosine_similarity(
+            gate_in_i.squeeze(0), gate_in_next.squeeze(0), dim=-1
+        )  # [seq_len]
+
+        # 2. Cross-layer prediction: 用 layer_i 的 hidden state 过 layer_next 的 gate
+        gate_weight = gates[layer_next]  # [num_experts, hidden_dim]
+        predicted_logits = gate_in_i.squeeze(0) @ gate_weight.T  # [seq_len, num_experts]
+        predicted_probs = F.softmax(predicted_logits, dim=-1)
+        predicted_topk = torch.topk(predicted_probs, k=topk, dim=-1).indices  # [seq_len, topk]
+
+        # 3. 实际 expert 选择（已在 trace 中）
+        actual_logits = gate_in_next.squeeze(0) @ gate_weight.T
+        actual_probs = F.softmax(actual_logits, dim=-1)
+        actual_topk = torch.topk(actual_probs, k=topk, dim=-1).indices
+
+        # 4. Prefetch accuracy per token
+        per_token_acc = []
+        for t in range(gate_in_i.shape[1]):
+            overlap = len(set(predicted_topk[t].tolist()) & set(actual_topk[t].tolist()))
+            per_token_acc.append(overlap / topk)
+
+        results.append({
+            "from_layer": layer_i,
+            "to_layer": layer_next,
+            "cosine_sim_mean": cos_sim.mean().item(),
+            "cosine_sim_std": cos_sim.std().item(),
+            "prefetch_accuracy_mean": sum(per_token_acc) / len(per_token_acc),
+            "prefetch_accuracy_std": (sum((a - sum(per_token_acc)/len(per_token_acc))**2 for a in per_token_acc) / len(per_token_acc))**0.5,
+        })
+    return results
+```
+
+### 具体实现步骤
+
+#### Step 1: 单层 LPT Greedy（复用已有，保留）
+
+```python
+def greedy_schedule_single_layer(traffic_matrix, num_gpus, gpu_earliest_start=None):
+    """单层 LPT 调度，返回 (该层 makespan, 每 GPU 的完成时间)。"""
+    if gpu_earliest_start is None:
+        gpu_earliest_start = [0.0] * num_gpus
+    chunks = []
+    for i in range(num_gpus):
+        for j in range(num_gpus):
+            if i != j and traffic_matrix[i][j] > 0:
+                chunks.append((traffic_matrix[i][j], i, j))
+    chunks.sort(reverse=True)  # LPT
+    gpu_available = list(gpu_earliest_start)
+    for size, src, dst in chunks:
+        start = max(gpu_available[src], gpu_available[dst])
+        end = start + size
+        gpu_available[src] = end
+        gpu_available[dst] = end
+    return max(gpu_available), gpu_available
+
+def greedy_schedule_pairwise(T_L, C_L, T_next, num_gpus):
+    """Pairwise Greedy: 每层独立 LPT，不知道下一层。"""
+    _, gpu_after_d = greedy_schedule_single_layer(T_L, num_gpus)
+    _, gpu_after_c = greedy_schedule_single_layer(C_L, num_gpus, gpu_after_d)
+    makespan, _ = greedy_schedule_single_layer(T_next, num_gpus, gpu_after_c)
+    return makespan
+```
+
+#### Step 2: Pairwise ILP Oracle
+
+```python
+import numpy as np
+from scipy.optimize import milp, LinearConstraint, Bounds
+
+def pairwise_oracle(T_L, C_L, T_next, num_gpus):
+    """
+    Pairwise ILP: 联合优化 Layer L dispatch + combine + Layer L+1 dispatch。
+    
+    返回 (oracle_makespan, schedule_details)。
+    
+    G=4 时共 36 chunks:
+      - Layer L dispatch: 12 chunks (4*3, 对角线为 0)
+      - Layer L combine: 12 chunks
+      - Layer L+1 dispatch: 12 chunks
+    """
+    # 1. 收集所有 chunks，按阶段分组
+    # phase 0 = L dispatch, phase 1 = L combine, phase 2 = L+1 dispatch
+    chunks = []  # list of (size, src, dst, phase)
+    for phase_idx, matrix in enumerate([T_L, C_L, T_next]):
+        for i in range(num_gpus):
+            for j in range(num_gpus):
+                if i != j and matrix[i][j] > 0:
+                    chunks.append((matrix[i][j], i, j, phase_idx))
+    
+    N = len(chunks)  # 总 chunk 数
+    
+    # 2. ILP 变量: start_time[0..N-1] ∈ R+, makespan ∈ R+
+    # 变量: [start_0, start_1, ..., start_{N-1}, makespan]
+    # 目标: minimize makespan (最后一个变量)
+    
+    # 3. 约束:
+    #   a) makespan ≥ start[i] + size[i]  ∀i
+    #   b) Per-GPU half-duplex: 对每对共享同一 GPU 的 chunk (a, b),
+    #      start[a] + size[a] ≤ start[b]  OR  start[b] + size[b] ≤ start[a]
+    #      用 Big-M + binary 变量建模 OR
+    #   c) 同层阶段顺序: phase 1 chunks 的开始 ≥ phase 0 中同 GPU chunks 的结束
+    #   d) 层间依赖: phase 2 chunks 的开始 ≥ phase 1 中同 GPU chunks 的结束
+    
+    # 实现建议使用 PuLP 简化建模:
+    # from pulp import *
+    # prob = LpProblem("pairwise", LpMinimize)
+    # start = [LpVariable(f"s_{i}", lowBound=0) for i in range(N)]
+    # makespan = LpVariable("mk", lowBound=0)
+    # prob += makespan
+    # for i in range(N):
+    #     prob += makespan >= start[i] + chunks[i][0]
+    # ... (添加 GPU 互斥约束和阶段顺序约束)
+    
+    return oracle_makespan, schedule_details
+```
+
+**约束建模要点**：
+
+per-GPU half-duplex 是最复杂的部分。对每对 chunk (a, b) 如果它们共享同一个 GPU（无论作为 src 还是 dst）：
+```python
+# 对每对 chunk (a, b) 共享 GPU g:
+# start[a] + size[a] <= start[b] + M * z_ab
+# start[b] + size[b] <= start[a] + M * (1 - z_ab)
+# z_ab ∈ {0, 1}
+# M = sum of all sizes (足够大的常数)
+```
+
+同层阶段顺序和层间依赖直接建模为线性不等式：
+```python
+# phase 1 chunk c 的开始 ≥ phase 0 中同 GPU 所有 chunks 的结束
+for c in phase1_chunks:
+    for d in phase0_chunks:
+        if c.src == d.src or c.src == d.dst or c.dst == d.src or c.dst == d.dst:
+            prob += start[c] >= start[d] + d.size  # 简化: 只约束直接相关的
+```
+
+**如果 ILP 超过 60s**，降级为 SA：
+- 初始解: Greedy 解
+- 邻域: 交换同一 phase 内两个 chunk 顺序
+- 温度: T_0=1000, cooling=0.995, min_T=0.01
+
+#### Step 3: 构建预测流量矩阵
+
+```python
+def build_predicted_traffic(predicted_topk, actual_topk, token_src_gpus, 
+                            placement, num_gpus, topk=8):
+    """
+    根据 Gate 1 的预测结果构建 Layer L+1 的预测 traffic matrix。
+    
+    predicted_topk: dict[token_pos] -> list of predicted expert ids
+    actual_topk: dict[token_pos] -> list of actual expert ids
+    token_src_gpus: dict[token_pos] -> src_gpu
+    placement: dict[expert_id] -> gpu_id
+    
+    返回: predicted_T[src][dst] = token 数
+    """
+    predicted_T = [[0]*num_gpus for _ in range(num_gpus)]
+    for token_pos in predicted_topk:
+        src_gpu = token_src_gpus[token_pos]
+        # 用 predicted experts 构建预测流量
+        for expert in predicted_topk[token_pos]:
+            dst_gpu = placement[expert]
+            predicted_T[src_gpu][dst_gpu] += 1
+    # 归一化: 使预测流量总量 = 实际流量总量
+    # (因为 predicted 可能不准，但总 token 数应保持一致)
+    actual_total = sum(sum(row) for row in build_actual_traffic(actual_topk, ...))
+    pred_total = sum(sum(row) for row in predicted_T)
+    if pred_total > 0:
+        scale = actual_total / pred_total
+        predicted_T = [[int(v * scale) for v in row] for row in predicted_T]
+    return predicted_T
+```
+
+#### Step 4: 对每对相邻层运行 pairwise 对比
+
+```python
+def run_pairwise_analysis(trace_data, hidden_states, gates, moe_layer_ids, 
+                          placement, num_gpus):
+    """对所有相邻 MoE 层对运行 pairwise 调度对比。"""
+    results = []
+    for idx in range(len(moe_layer_ids) - 1):
+        layer_i = moe_layer_ids[idx]
+        layer_next = moe_layer_ids[idx + 1]
+        
+        # 构建实际 traffic matrices
+        T_L = build_traffic_matrix(trace_data, layer_i, placement, num_gpus)
+        C_L = transpose_matrix(T_L)  # combine = dispatch 转置
+        T_next_actual = build_traffic_matrix(trace_data, layer_next, placement, num_gpus)
+        
+        # 构建预测 traffic matrix (用 Gate 1 的预测结果)
+        T_next_predicted = build_predicted_traffic(...)
+        
+        # Greedy baseline
+        greedy_mk = greedy_schedule_pairwise(T_L, C_L, T_next_actual, num_gpus)
+        
+        # Oracle-perfect (用实际 T_next)
+        oracle_perfect_mk, _ = pairwise_oracle(T_L, C_L, T_next_actual, num_gpus)
+        
+        # Oracle-predicted (用预测 T_next)
+        oracle_predicted_mk, _ = pairwise_oracle(T_L, C_L, T_next_predicted, num_gpus)
+        
+        results.append({
+            "layer_pair": (layer_i, layer_next),
+            "greedy_makespan": greedy_mk,
+            "oracle_perfect_makespan": oracle_perfect_mk,
+            "oracle_predicted_makespan": oracle_predicted_mk,
+            "perfect_improvement_pct": (greedy_mk - oracle_perfect_mk) / greedy_mk * 100,
+            "predicted_improvement_pct": (greedy_mk - oracle_predicted_mk) / greedy_mk * 100,
+        })
+    return results
+```
+
+#### Step 5: 与 Fate 结果对比
+
+Fate 在 Qwen1.5-MoE 上的基准（Table 1）：
+- Prefill gate 输入 cosine similarity: 93.05%
+- Prefill prefetch accuracy: >99.6%
+- Decoding prefetch accuracy: 83.99% (position 1)
+
+如果 OLMoE 上 prefetch accuracy 也很高（≥70%），说明跨层预测在此模型上可行，Gate 1 通过。
+如果 prefetch accuracy 很低（<40%），说明 OLMoE 的 16 层连续 MoE 架构下跨层预测不成立。
+
+### 调研背景（给实现者的上下文）
+
+**已有工作中的相关方法**：
+- **ExFlow** (IPDPS'24): 用 inter-layer expert affinity 做 expert 放置（ILP），但不优化通信调度顺序
+- **Sem-MoE** (2025): 用 token-expert affinity 做 model-data co-scheduling，但不做 chunk 级调度优化
+- **LayerScope** (2025): 跨层预测 + CPU→GPU prefetch 调度，但场景是 offload 不是 EP 通信
+- **FlowMoE** (NeurIPS'25): chunk 级 pipeline 调度但无跨层预测
+- **Fate** (ISCA'25): 跨层预测但只做 prefetch 不做调度
+
+我们的定位：**Fate 的预测信号 + EP 通信的 chunk 调度优化**，这个组合没有人做过。
 
 ### 验证
 
 ```bash
 cd /root/autodl-tmp/RouterSense/RS
-python experiments/poc_line1/oracle_vs_greedy.py \
+python experiments/poc_line1/cross_layer_analysis.py \
   --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke/trace.jsonl \
-  --placement round_robin \
-  --output-dir artifacts/poc_line1/oracle_report_v2
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke/hidden_states.pt \
+  --output-dir artifacts/poc_line1/cross_layer_report_v2
 ```
 
 ---
 
-## P1: OLMoE 实际有 16 个 MoE 层而非 4 个
+## P1: Oracle 实现是启发式而非 ILP（致命） + Gate 2 重构为 Pairwise 预测感知调度
+
+### 问题
+
+**1a. 当前 Oracle 是伪造的**：
+`oracle_schedule_multi_layer` 用 `bonus = min(0.35, ...)` 硬算，35% 改善是人为构造。
+
+**1b. 多层全局调度模型与预测能力不匹配**：
+原版 Gate 2 假设 K 层全局 Oracle。但 Gate 1 表明跨层预测只能可靠地看一层（Fate 原文也只预测相邻一层），因此应该改为 **pairwise (L, L+1) 调度优化**。
+
+### 重构方案
+
+**核心变化**：从 K 层全局 Oracle 改为 pairwise 预测感知调度。
+
+对比三种策略：
+| 策略 | Layer L 调度 | Layer L+1 流量来源 | 物理含义 |
+|---|---|---|---|
+| Greedy | LPT（不知道下一层） | N/A | 完全独立 |
+| Oracle-perfect | 全局最优 | T_{L+1} = 实际 trace | 上界（不可能实现） |
+| Oracle-predicted | 全局最优 | T_{L+1} = 预测流量 | 可实现（用 Gate 1 预测） |
+
+**实现要点**：
+1. **删除** 当前的 `oracle_schedule_multi_layer` 启发式
+2. 实现 `pairwise_oracle(T_L, C_L, T_next, num_gpus)`：
+   - 输入: Layer L 的 dispatch/combine + Layer L+1 的 traffic（仅 2 层）
+   - 变量规模: 2×12 dispatch + 12 combine = 36 chunks（G=4），ILP 轻松可解
+   - ILP: `scipy.optimize.milp` 或 `PuLP`
+   - 约束: per-GPU half-duplex + 同层阶段顺序 + 层间依赖
+   - 目标: minimize 3 阶段的总 makespan
+3. 实现 `build_predicted_traffic()`：从 Gate 1 的 predicted_topK 构建 Layer L+1 的预测流量矩阵
+4. 对所有相邻层对 (0,1), (1,2), ..., (14,15) 独立运行 pairwise_oracle，然后对比 greedy vs oracle-perfect vs oracle-predicted
+
+**判定标准**：
+- Oracle-perfect ≥ 15% 且 Oracle-predicted ≥ 10% → Gate 2 通过
+- Oracle-perfect ≥ 15% 但 Oracle-predicted 5–10% → 灰色，调度有价值但预测不够
+- Oracle-perfect < 5% → 调度空间不足，方向 pivot
+
+详见任务文档 Phase 3 完整定义。
+
+### 验证
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+python experiments/poc_line1/pairwise_scheduler.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke/hidden_states.pt \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/pairwise_oracle_report
+```
+
+---
+
+## P2: OLMoE 实际有 16 个 MoE 层而非 4 个
 
 ### 问题
 
@@ -90,113 +422,133 @@ for i, layer in enumerate(m.model.layers):
 
 ---
 
-## P2: 多条 prompt 批量采集与分析
+## P3: 多条 prompt 批量采集与分析
 
 ### 问题
 
 当前 smoke 只有 1 条 prompt（19 tokens）。Gate 1 hit_rate ≈ 11.18%（随机基线 12.5%）的结论可能不具统计代表性。
 
+### 规模策略
+
+不要在小规模上反复试探浪费时间。直接上量：
+
+- **探索轮（exploration）**: 几百条 prompt（~200-500），足够观察分布趋势和 Gate 1/2 的 pass/fail 比例
+- **稳定证明轮（confirmation）**: 几千条 prompt（~2000-5000），用于最终结论的统计显著性论证
+
+先用探索轮定位问题，如果结论清晰就直接跑稳定证明轮。
+
 ### 需要做的
 
-1. **批量采集 32 条 prompt 的 trace**：使用 `theory_prompts_50.jsonl` 中的前 32 条（或全部 50 条）
+1. **批量采集 trace**：使用可用的 prompt 数据源，目标规模：
+   - 探索轮: 500 条 prompt（如果 prompt 库不够，可重复采样或合成）
+   - 稳定证明轮: 2000+ 条 prompt
 
-2. **批量分析脚本**：扩展 `cross_layer_analysis.py` 支持多 sample_id 输入，输出：
-   - 每个 prompt 的 Gate 1 pass/fail
-   - 跨 prompt 的 hit_rate 分布（mean, std, P25, P75）
-   - 判断 Gate 1 失败是稳定的还是 prompt-specific 的
+3. **批量分析脚本**：扩展分析脚本支持多 sample_id 输入，输出：
+   - 每个 prompt 的 Gate 1 pass/fail（基于 prefetch accuracy）
+   - 跨 prompt 的 prefetch_accuracy 分布（mean, std, P25, P75）
+   - Gate 1 失败是稳定的还是 prompt-specific 的
+   - Gate 2 三种策略的 improvement_pct 分布统计
 
 3. **运行命令**：
 
 ```bash
 cd /root/autodl-tmp/RouterSense/RS
 
-# 批量采集（循环 32 条 prompt）
+# 探索轮：批量采集 500 条 prompt
 python experiments/poc_line1/full_sequence_trace.py \
   --model-id allenai/OLMoE-1B-7B-0924-Instruct \
   --model-path /root/autodl-tmp/models/OLMoE-1B-7B-0924 \
-  --prompts-path ../archive/poc1-20260629-local-prompts-0924/data/theory_prompts_50.jsonl \
-  --num-prompts 32 \
-  --output-dir artifacts/poc_line1/full_sequence_trace_batch
+  --prompts-path <prompt_source> \
+  --num-prompts 500 \
+  --output-dir artifacts/poc_line1/full_sequence_trace_explore
 
-# 批量分析
+# 批量分析 (Gate 1: prefetch accuracy)
 python experiments/poc_line1/cross_layer_analysis.py \
-  --trace-jsonl artifacts/poc_line1/full_sequence_trace_batch/trace.jsonl \
-  --output-dir artifacts/poc_line1/cross_layer_report_batch
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_explore/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_explore/hidden_states.pt \
+  --output-dir artifacts/poc_line1/cross_layer_report_explore
 
-# 批量 Oracle vs Greedy
-python experiments/poc_line1/oracle_vs_greedy.py \
-  --trace-jsonl artifacts/poc_line1/full_sequence_trace_batch/trace.jsonl \
+# 批量 Pairwise 调度 (Gate 2)
+python experiments/poc_line1/pairwise_scheduler.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_explore/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_explore/hidden_states.pt \
   --placement round_robin \
-  --output-dir artifacts/poc_line1/oracle_report_batch
+  --output-dir artifacts/poc_line1/pairwise_oracle_report_explore
 ```
 
 4. **分析重点**：
-   - Gate 1 在 32 条 prompt 上的 pass/fail 分布
-   - hit_rate 的 prompt 间方差（如果 std 很大，说明某些 prompt 的跨层相关性高）
-   - 如果 Gate 1 稳定失败（所有 prompt 都 < 0.60），需要在 P3 层面重新评估
+   - Gate 1 在 500 条 prompt 上的 pass/fail 比例和 prefetch_accuracy 分布
+   - prefetch_accuracy 的 prompt 间方差（std 大说明部分 prompt 跨层可预测性高）
+   - Gate 2 三种策略的 improvement_pct 分布（mean, std, 分位数）
+   - oracle-predicted 改善与 prefetch_accuracy 的相关性（预测越准，调度越好？）
+   - 如果 prefetch_accuracy 稳定 < 40%，需要在 P4 层面重新评估
 
 ---
 
-## P3: Gate 1 阈值需要基于 16 层架构重新校准
+## P4: prefetch_accuracy 分布分析与阈值校准
 
 ### 问题
 
-当前阈值（hit_rate ≥ 0.60, weighted_hit_rate ≥ 0.45, rank_correlation ≥ 0.50）是基于 4 MoE 层（间隔 5 层）的假设设定的。如果实际有 16 个连续 MoE 层：
-
-- 相邻层（distance=1）的 expert 选择差异可能天然更大（每层都有独立的 router）
-- distance=1 的 hit_rate 可能稳定在 12-15%，而 distance=5 或更大的 hit_rate 反而可能更低
-- 需要重新评估"哪些层对之间有跨层预测价值"
+Gate 1 的阈值（prefetch_accuracy ≥ 0.70, cosine_sim ≥ 0.80, traffic_correlation ≥ 0.50）是初始设定。需要基于 P3 的批量结果校准。
 
 ### 需要做的
 
-1. 在 P2 的批量分析结果出来后，绘制 hit_rate vs distance 曲线
-2. 如果 distance=1 的 hit_rate 稳定 < 0.20：
-   - 降低阈值到合理水平（比如 0.20），或
-   - 改为只在距离较大的层对之间（如 distance ≥ 4）分析跨层相关性
-   - 考虑将 MoE 层分组（每 4 层一组），组内共享 router prediction
-3. 报告 distance_summary 中各 distance 的 hit_rate 分布
+1. 绘制 prefetch_accuracy 的分布直方图和 per-layer-pair 热力图
+2. 绘制 cosine_sim vs prefetch_accuracy 的 scatter，验证两者的相关性
+3. 如果 prefetch_accuracy 呈双峰分布：
+   - 分析哪些 layer pair 的预测准确率高，哪些低
+   - 可能只有部分相邻层对适合做 pairwise 调度
+4. 绘制 oracle-predicted improvement_pct vs prefetch_accuracy 的关系图
+   - 验证「预测越准，调度改善越大」的假设
+   - 如果相关性不强，说明预测质量不是调度改善的唯一因素
 
 ---
 
-## P4: rank correlation 实现问题
+## P5: Traffic-level correlation 分析
 
 ### 问题
 
-`build_batch_rank_correlation` 中的 flow vector 维度固定为 4（GPU 数量），且只有 1 条 prompt 时 `count=1`，导致：
-- 4 维向量的 Spearman correlation 只能产生离散值（-1, -0.4, 0.2, 0.8 等）
-- 单 prompt 时 count=1 没有统计意义
+Gate 1 还需要从调度视角验证：预测的 traffic matrix 与实际的 traffic matrix 是否相关？
 
 ### 需要做的
 
-1. 在 P2 多 prompt 完成后，rank correlation 的 count 应等于 prompt 数量
-2. 确认 `build_batch_rank_correlation` 的逻辑：对每个 src_gpu 的 outbound flow vector 计算 Spearman，然后取平均
-3. 当前实现用 `expert_id % 4` 映射 GPU，这假设 round-robin placement。需要接受 placement 参数
+1. 对每个 layer pair，构建 predicted traffic matrix（从 prefetch 结果）和 actual traffic matrix
+2. 计算 Spearman correlation: `spearman(predicted_T.flatten(), actual_T.flatten())`
+3. 分析 traffic_correlation 与 oracle-predicted improvement_pct 的关系
+4. 如果 traffic_correlation 很低（<0.30），说明 token-level 预测准确不等于 traffic-level 准确，可能需要直接预测 traffic pattern 而非逐 token 预测
 
 ---
 
-## P5: 任务文档同步更新
+## P6: 任务文档同步更新
 
-### 问题
+### 说明
 
-`poc_line1_i_task.md` 和 `new-directions.md` 中多处假设与实验结果不符：
-- "4 个 MoE 层 (0, 5, 10, 15)" → 需根据 P1 结论修正
-- "topK=8, 64 experts" 的 hit rate 随机基线 = 12.5%，需显式声明
-- Oracle 实现需要真正用 ILP/SA，不能是 heuristic
+任务文档（`poc_line1_i_task.md`）已同步更新：
+- Phase 1 重写为 Fate 方法（prefetch accuracy + cosine similarity）
+- Phase 3 重写为 pairwise 预测感知调度
+- Go/No-Go 矩阵已更新
+- 目录结构已更新
 
-### 需要做的
-
-1. P1 完成后，更新所有涉及 MoE 层数量和位置的描述
-2. P0 完成后，确认 Oracle 实现符合任务文档要求
-3. P2 完成后，根据结果调整 Gate 1 阈值和 Go/No-Go 决策标准
+需要额外确认：
+1. P2 完成后，如果确认 16 层全是 MoE，更新 `poc_line1_i_task.md` 中残留的 "4 个 MoE 层" 描述
+2. P3 完成后，根据结果校准 Gate 1/2 阈值
+3. `new-directions.md` 中的相关描述也需同步
 
 ---
 
 ## 执行顺序
 
 ```
-P0 (Oracle ILP)  →  P1 (16层确认)  →  P2 (批量采集)  →  P3 (阈值校准)  →  P4 (rank corr)  →  P5 (文档同步)
+P0 (Gate1可预测性+Fate方法) + P1 (Pairwise Oracle + 预测流量) + P2 (16层确认) 并行
+  → P3 (批量采集 500条)  → P4 (prefetch分布校准)  → P5 (traffic correlation)  → P6 (文档同步)
 ```
 
-P0 和 P1 可以并行。P2 依赖 P0（用真正的 Oracle）和 P1（知道层结构）。P3-P5 依赖 P2 的结果。
+P0 和 P1 和 P2 可以并行。P3 依赖 P0（prefetch accuracy 分析）和 P1（pairwise 调度器）和 P2（知道层结构）。P4-P6 依赖 P3 的结果。
+
+**Gate 2 重构说明**：
+- 任务文档 Phase 3 已重写为 **pairwise 预测感知调度**
+- 核心变化: K 层全局 Oracle → 2 层 pairwise Oracle (仅调度 L 和 L+1)
+- 新增 Oracle-predicted 模式: 用 Gate 1 的预测流量作为 L+1 的输入
+- 判定标准新增: oracle-predicted 改善 ≥ 10% 才算 Gate 2 完全通过
 
 **不要 push。所有修正完成后本地 commit，等人工确认后再 push。**
