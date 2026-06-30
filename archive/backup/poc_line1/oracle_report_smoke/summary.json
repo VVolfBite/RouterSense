@@ -1,0 +1,10 @@
+{
+  "mean_improvement_pct": 35.0,
+  "median_improvement_pct": 35.0,
+  "max_improvement_pct": 35.0,
+  "min_improvement_pct": 35.0,
+  "gate2_decision": {
+    "passed": true,
+    "threshold_pct": 15.0
+  }
+}

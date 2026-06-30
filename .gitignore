@@ -23,20 +23,6 @@ hf_cache/
 .cache/
 **/.cache/
 
-# Runtime artifacts kept on server but excluded from source-truth closure
-artifacts/
-outputs/*
-!outputs/.gitkeep
-archive/*
-!archive/.gitkeep
-!archive/*/
-!archive/*/**
-
-# Experiment outputs and logs
-outputs_*/
-logs/
-*.log
-
 # Local archives and temporary files
 *.zip
 *.tar
@@ -52,9 +38,9 @@ temp/
 .DS_Store
 Thumbs.db
 
-# RS runtime artifacts
-artifacts/deployment/
-outputs/deployment/
+# Experiment logs and local runtime noise
+logs/
+*.log
 deploy/logs/*
 !deploy/logs/.gitkeep
 model_cache/
