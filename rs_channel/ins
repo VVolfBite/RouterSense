@@ -1,150 +1,221 @@
-# Line 1 开发任务：快速调度算法设计
+# 快速调度算法实现指令
 
-## 当前状态
+## 目标
 
-### 已完成
-- ✅ Gate 1 跨层预测验证：Fate 方法可在 OLMoE-1B 上实现 >95% prefetch accuracy
-- ✅ Gate 2 理论上限验证：CP-SAT oracle 相比 greedy LPT 改善 ~35% makespan
-- ✅ 原创性确认：跨层预测 + EP 通信调度组合无人 claim
-- ✅ 代码仓库重构：src/experiments/scripts/analysis 四层分离
+在 `src/routesense/scheduler/fast.py` 中实现多个快速调度算法候选，用于与现有 oracle（CP-SAT）和 greedy（LPT）对比。
 
-### 核心缺口
-**快速调度算法**——论文的核心贡献还缺。
+## 输入/输出接口
 
-| 方案 | 调度质量 | 计算开销 | 问题 |
-|------|---------|---------|------|
-| Oracle (CP-SAT) | 最优 (~35% 改善) | 100-200ms | 太慢，无法实时 |
-| Greedy (LPT) | 基线 | <1ms | 太笨，浪费优化空间 |
-| **Fast (待开发)** | **接近 oracle** | **<5ms** | **核心贡献** |
+所有算法遵循统一接口：
 
-### 实时性约束
-- MoE 单层 all-to-all 通信时间：~1-5ms（取决于模型和 GPU 数量）
-- 调度决策必须在下一层 dispatch 开始前完成
-- 目标：调度开销 < 通信时间的 10%（即 <0.5ms 理想，<5ms 可接受）
+```python
+def fast_schedule_xxx(
+    dispatch_matrix: list[list[int]],   # G×G, dispatch_matrix[src][dst] = token_count
+    combine_matrix: list[list[int]],     # G×G, = dispatch_matrix.T
+    next_dispatch_matrix: list[list[int]],  # G×G, 下一层 dispatch
+    num_gpus: int,
+) -> dict[str, Any]:
+    # 返回与 pairwise_oracle 相同结构：
+    # {
+    #   "makespan": float,
+    #   "schedule": list[dict],  # 每个 dict: {chunk_id, start, end, src, dst, phase}
+    #   "solve_time_ms": float,
+    #   "strategy": str,
+    # }
+```
 
----
-
-## 开发任务
-
-### Task 1：快速调度算法设计（核心）
-
-**目标**：设计一个 O(n log n) 或 O(n²) 复杂度的调度算法，质量接近 CP-SAT oracle。
-
-**输入**：
-- dispatch traffic matrix T[G][G]（来自跨层预测或实际 gate output）
-- combine matrix = T.T（自动推导）
-- next_dispatch matrix T'[G][G]（来自跨层预测）
-- GPU 数量 G
-
-**约束**：
-- per-GPU half-duplex：同一 GPU 同时只能参与一个传输
-- chunk 不可抢占：一个传输一旦开始必须完成
-- 三阶段顺序：dispatch → expert compute → combine（per-GPU 粒度，非全局 barrier）
-
-**候选算法方向**：
-
-#### 方向 A：Weighted LPT with Look-ahead
-在 LPT greedy 基础上加入跨层前瞻信息：
-1. 计算每个 GPU 在 L+1 层的预期接收量（来自 next_dispatch matrix）
-2. 对于 L 层 dispatch 中发往同一 GPU 的多个 chunk，优先调度发往"L+1 层接收量大"的 GPU 的 chunk
-3. 复杂度：O(n log n)，与 LPT 相同
-4. 预期改善：5-15%（利用跨层信息做更优排序）
-
-#### 方向 B：Greedy + Local Swap
-1. 先用 LPT 生成初始调度
-2. 识别关键路径上的 chunk（完成时间最晚的 GPU 相关的 chunk）
-3. 尝试将关键路径上的 chunk 提前，检查是否违反约束
-4. 迭代直到无改善或达到迭代上限
-5. 复杂度：O(n² × iterations)
-6. 预期改善：10-25%
-
-#### 方向 C：Two-Phase Constructive
-1. Phase 1：按 GPU 分组，为每个 GPU 独立排序其 outgoing chunks（按目的地 next-layer 接收量降序）
-2. Phase 2：全局调度——维护 per-GPU 时间线，贪心插入各 GPU 的下一个 chunk
-3. 复杂度：O(n log n)
-4. 预期改善：10-20%
-
-#### 方向 D：CP-SAT Warm-Start
-1. 用上一层的 CP-SAT 解作为初始解
-2. 设置更短的超时（10-50ms）
-3. 利用相邻层 traffic 的相似性（Spearman >0.9），warm-start 应快速收敛
-4. 复杂度：取决于 CP-SAT 内部迭代
-5. 预期改善：20-30%（接近 oracle）
-6. 风险：CP-SAT 开销可能仍然偏高
-
-**评估标准**：
-- 在 batch500 数据集上，makespan 改善 ≥ 15%（对比 greedy）
-- 单次调度延迟 < 5ms
-- 代码不超过 200 行
-
-### Task 2：实验验证（与 Task 1 并行准备）
-
-#### 实验 A：oracle_perfect vs oracle_predicted gap
-- 目的：量化预测误差对调度质量的实际影响
-- 数据来源：已有 `run_pairwise_analysis` 结果
-- 输出：ε (prediction error) vs improvement_pct 散点图
-- 文件：`analysis/plot_prediction.py`
-
-#### 实验 B：快速算法 vs oracle vs greedy 三方对比
-- 目的：证明 fast 算法的质量接近 oracle，速度接近 greedy
-- 数据：batch500，round_robin placement
-- 输出：
-  - makespan 统计（mean, median, p25, p75）
-  - 调度延迟统计
-  - 改善百分比分布
-- 文件：`experiments/poc_line1/exp_pairwise.py` 增加 fast 策略
-
-#### 实验 C：多配置验证
-- placement: round_robin + skewed
-- batch size: 32 + 500
-- 输出：各配置下 fast vs greedy 的改善百分比
-
-#### 实验 D：正交性验证（与 FAST 对比）
-- 目的：证明我们的跨层调度与 FAST 的单层调度可以叠加
-- 方法：模拟 FAST 的 Birkhoff 分解 + 我们的跨层调度
-- 输出：单独 FAST / 单独 RouterSENSE / 叠加 的 makespan 对比
-
-### Task 3：分析工具完善
-
-- `analysis/plot_makespan.py`：makespan CDF 图 + box plot
-- `analysis/compare_strategies.py`：多策略表格对比
-- `analysis/summarize_pairwise.py`：pairwise 结果汇总统计
+## 需要实现的算法（4个）
 
 ---
 
-## 时间线
+### 算法 1：Critical Path LPT（CP-LPT）
 
-| 阶段 | 内容 | 预估 |
-|------|------|------|
-| W1 | Task 1 算法设计 + 实现 + 初步验证 | 3-5 天 |
-| W2 | Task 2 完整实验 + Task 3 分析工具 | 3-5 天 |
-| W3 | 论文实验章节撰写 + 图表制作 | 3-5 天 |
+**思路**：在 LPT 基础上，按 critical path length 排序而非 chunk size 排序。
 
----
+**实现**：
+1. 构建三阶段所有 chunk
+2. 对每个 chunk 计算 critical path weight = 自身大小 + 同 GPU 后续阶段所有 chunk 的总大小
+3. 按 critical path weight 降序排列
+4. 贪心插入，维护 per-GPU 时间线，检查 half-duplex 约束
 
-## 文件交付清单
+**复杂度**：O(n log n)
+**预期改善**：5-10%（比纯 LPT 好，因为考虑了跨阶段依赖）
 
-| 文件 | 内容 | 状态 |
-|------|------|------|
-| `src/routesense/scheduler/fast.py` | 快速调度算法 | ⏳ 待开发 |
-| `src/routesense/scheduler/oracle.py` | CP-SAT oracle | ✅ 已有 |
-| `src/routesense/scheduler/greedy.py` | LPT greedy | ✅ 已有 |
-| `experiments/poc_line1/exp_pairwise.py` | pairwise 实验入口 | ✅ 已有（需扩展） |
-| `analysis/plot_prediction.py` | 预测质量可视化 | ⏳ 待开发 |
-| `analysis/compare_strategies.py` | 策略对比 | ⏳ 待开发 |
+**参考**：
+- HEFT/CPoP 算法：https://arxiv.org/html/2403.07120v1
+- List scheduling 综述：https://scholars.lmu.edu/ws/portalfiles/portal/41819393/2403.07120v2.pdf
 
 ---
 
-## 决策点
+### 算法 2：Birkhoff Round Decomposition
 
-1. **算法方向选择**：A/B/C/D 哪个先做？
-   - 建议：先做 A（最简单，有跨层信息利用），如果不够再做 B
-   - D 作为 fallback（CP-SAT warm-start 可能意外地快）
+**思路**：借鉴 FLASH/FAST 的 Birkhoff-von Neumann 分解，将不均匀 traffic 分解为多个均匀轮次。
 
-2. **实验优先级**：A → B → C → D
-   - A 和 B 是论文必须有的
-   - C 和 D 是加分项
+**实现**：
+1. 对 dispatch_matrix 做 Birkhoff 分解：
+   - 输入：非负整数矩阵 M（G×G）
+   - 输出：一系列 (permutation_matrix, weight) 对，使得 sum(weight_i * perm_i) = M
+   - 算法：每次找一个最大匹配（用 scipy 的 linear_sum_assignment），减去对应权重，重复直到矩阵为零
+2. 每个 permutation_matrix 对应一个"轮次"，该轮次内所有 chunk 可并行（每个 GPU 最多参与一次）
+3. 对 combine_matrix 和 next_dispatch_matrix 同样做分解
+4. 尝试合并 dispatch 的最后一轮和 combine 的第一轮（检查 half-duplex 不冲突则合并）
 
-3. **单 strong point vs 双贡献**：
-   - 如果 fast 算法设计有足够的技术深度（如方向 B 的 local swap 有收敛性分析），可以作为独立贡献
-   - 否则论文以"预测感知调度"为单一核心贡献 + 厚实验
+**复杂度**：O(G³ × rounds)，G=4 时 <0.1ms
+**预期改善**：15-25%（理论下界级，round 数量 = max(max_row_sum, max_col_sum)）
+
+**参考**：
+- FLASH 论文（CMU, 2025）：https://arxiv.org/html/2505.09764v1
+  - 核心算法在 §4.2 Multi-Server Scheduling
+  - Birkhoff 分解实现参考 §4.2 "Birkhoff's Theorem" 部分
+- FAST 论文（NSDI'26）：https://arxiv.org/html/2505.09764v2
+  - Birkhoff 分解 O(N⁵) 复杂度分析
+- scipy linear_sum_assignment：https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html
+  - 用于每轮找最大匹配（取负值求最大）
+- Greedy Birkhoff 分解：https://perso.ens-lyon.fr/edouard.bonnet/text/damien-lesens.pdf
+
+**伪代码**：
+```python
+def birkhoff_decompose(matrix):
+    """将 G×G 非负整数矩阵分解为 [(weight, perm_matrix), ...]"""
+    M = np.array(matrix, dtype=float)
+    rounds = []
+    while M.max() > 0:
+        # 用 Hungarian 算法找最大权重匹配
+        cost = -M  # linear_sum_assignment 求最小，取负求最大
+        row_ind, col_ind = linear_sum_assignment(cost)
+        # 匹配权重 = 最小非零值
+        weight = min(M[r, c] for r, c in zip(row_ind, col_ind) if M[r, c] > 0)
+        # 构建 permutation matrix
+        perm = np.zeros_like(M)
+        for r, c in zip(row_ind, col_ind):
+            if M[r, c] > 0:
+                perm[r, c] = 1
+        rounds.append((weight, perm))
+        M -= weight * perm
+    return rounds
+```
+
+---
+
+### 算法 3：Iterated Greedy（IG）
+
+**思路**：经典元启发式，通过 destruction-construction 循环精调。
+
+**实现**：
+1. 用 greedy LPT 生成初始解（调用现有 `greedy_schedule_pairwise`）
+2. 迭代 K 次（K=10，可调）：
+   a. **Destruction**：从当前调度中随机移除 d 个 chunk（d = max(3, n//10)）
+   b. **Construction**：将移除的 chunk 按 LPT 顺序重新插入（贪心找最早可行位置）
+   c. 如果新解 makespan < 当前最优，接受
+3. 返回最优解
+
+**复杂度**：O(K × n²)，K=10 时约 O(n²)
+**预期改善**：10-20%
+
+**参考**：
+- Ruiz (2007) Iterated Greedy for Parallel Machine Scheduling：https://www.researchgate.net/publication/227414878_Ruiz_R_Iterated_greedy_local_search_methods_for_unrelated_parallel_machine_scheduling_European_Journal_of_Operational_Research_207_55-69
+- IG 通用框架：https://link.springer.com/rwe/10.1007/978-3-032-00385-0_10
+- Destruction-Construction 范式：https://www.researchgate.net/publication/311940180
+
+**伪代码**：
+```python
+def iterated_greedy(chunks, num_gpus, iterations=10, destroy_count=None):
+    # 初始解
+    best_schedule = greedy_lpt(chunks, num_gpus)
+    best_makespan = simulate(best_schedule)
+    
+    d = destroy_count or max(3, len(chunks) // 10)
+    
+    for _ in range(iterations):
+        # Destruction: 随机移除 d 个 chunk
+        removed = random.sample(best_schedule, d)
+        partial = [c for c in best_schedule if c not in removed]
+        
+        # Construction: 按 size 降序重新插入
+        removed.sort(key=lambda c: c.size, reverse=True)
+        candidate = partial
+        for chunk in removed:
+            candidate = insert_at_best_position(candidate, chunk, num_gpus)
+        
+        makespan = simulate(candidate)
+        if makespan < best_makespan:
+            best_schedule = candidate
+            best_makespan = makespan
+    
+    return best_schedule
+```
+
+---
+
+### 算法 4：Critical Path + Local Swap
+
+**思路**：先用 LPT 构造，然后识别关键路径并做局部重排。
+
+**实现**：
+1. 用 greedy LPT 生成初始调度
+2. 模拟执行，找出 makespan 的决定者（最后完成的 GPU）
+3. 收集该 GPU 参与的所有 chunk（关键 chunk）
+4. 尝试以下 swap：
+   - 交换两个关键 chunk 的位置
+   - 把关键 chunk 提前到更早的空闲时间槽
+   - 把非关键 chunk 推迟，给关键 chunk 让路
+5. 每次 swap 后重新模拟，接受改善
+6. 迭代直到无改善或达到上限（3 轮）
+
+**复杂度**：O(n² × iterations)
+**预期改善**：10-20%
+
+**参考**：
+- Variable Neighborhood Search：https://www.mdpi.com/2079-8954/12/6/221
+- Local search for scheduling：https://tcs.nju.edu.cn/wiki/index.php?title=高级算法_(Fall_2022)/Greedy_and_Local_Search
+
+---
+
+## 实验对比
+
+在 `experiments/poc_line1/exp_pairwise.py` 中扩展，对比所有算法：
+
+| 策略 | 调度质量 (makespan) | 计算延迟 | 来源 |
+|------|---------------------|---------|------|
+| greedy | 基线 | <0.1ms | 已有 |
+| oracle | ~35% 改善 | 100-200ms | 已有 |
+| cp_lpt | 待测 | <0.5ms | 新增 |
+| birkhoff | 待测 | <1ms | 新增 |
+| iterated_greedy | 待测 | <5ms | 新增 |
+| cp_local_swap | 待测 | <2ms | 新增 |
+
+输出格式：与现有 `run_pairwise_analysis` 一致，增加新策略列。
+
+## 文件结构
+
+```
+src/routesense/scheduler/
+├── __init__.py          # 导出所有算法
+├── oracle.py            # CP-SAT（已有）
+├── greedy.py            # LPT（已有）
+└── fast.py              # 新增：4个快速算法
+    ├── fast_schedule_cp_lpt()
+    ├── fast_schedule_birkhoff()
+    ├── fast_schedule_iterated_greedy()
+    ├── fast_schedule_cp_local_swap()
+    └── _simulate_schedule()  # 通用模拟函数
+```
+
+## 依赖
+
+- `scipy.optimize.linear_sum_assignment`（Birkhoff 分解用）
+- `random`（IG 用）
+- 已有 `greedy.py` 和 `oracle.py` 中的 `PairwiseChunk` 数据结构
+
+## 验证
+
+1. 在 batch500 数据集上运行所有算法
+2. 对比 makespan 统计（mean, median, p25, p75）
+3. 对比计算延迟
+4. 选出质量最高 + 延迟最低的方案作为最终 fast scheduler
+
+## 约束
+
+- 每个算法独立实现，不修改 oracle.py 或 greedy.py
+- 所有算法返回相同格式（与 pairwise_oracle 一致）
+- 添加计时（`time.perf_counter()`）记录 solve_time_ms
