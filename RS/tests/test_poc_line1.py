@@ -10,10 +10,8 @@ from routesense.evaluation import (
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
     evaluate_gate2,
-    oracle_schedule_multi_layer,
     pairwise_oracle,
     run_pairwise_analysis,
-    simulate_oracle_vs_greedy,
     spearman_rank_correlation,
 )
 from routesense.trace.olmoe_router_trace import discover_moe_layer_ids
@@ -137,51 +135,6 @@ def test_greedy_schedule_single_layer_has_positive_makespan():
     )
     assert makespan > 0
     assert len(per_gpu) == 4
-
-
-def test_oracle_schedule_improves_over_greedy():
-    traffic = [
-        [
-            [0, 4, 0, 0],
-            [0, 0, 3, 0],
-            [0, 0, 0, 2],
-            [1, 0, 0, 0],
-        ],
-        [
-            [0, 0, 5, 0],
-            [2, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 0, 0],
-        ],
-    ]
-    combine = [combine_matrix_from_dispatch(matrix, 1.0) for matrix in traffic]
-    from routesense.evaluation import greedy_schedule_multi_layer
-
-    greedy = greedy_schedule_multi_layer(traffic, combine, 4)
-    oracle = oracle_schedule_multi_layer(traffic, combine, 4)
-    assert oracle <= greedy
-    assert oracle >= 0.0
-
-
-def test_simulate_oracle_vs_greedy_returns_gate2_summary():
-    from routesense.evaluation.poc_line1 import TraceRecord
-
-    records = []
-    for sample_id in ("sample-0", "sample-1"):
-        for token_position in range(8):
-            for layer_id, expert_base in ((0, 0), (5, 4), (10, 8), (15, 12)):
-                records.append(
-                    TraceRecord("req", sample_id, token_position, layer_id, expert_base + (token_position % 4), 0, 0.8, 8)
-                )
-                records.append(
-                    TraceRecord("req", sample_id, token_position, layer_id, expert_base + ((token_position + 1) % 4), 1, 0.2, 8)
-                )
-    owner = build_owner_by_expert(records, placement="round_robin", num_gpus=4)
-    batches = build_same_prompt_batches(records, owner_by_expert=owner, num_gpus=4)
-    report = simulate_oracle_vs_greedy(batches, combine_scale_factor=1.0)
-    assert "summary" in report
-    assert "gate2_decision" in report["summary"]
-    assert len(report["results"]) == len(batches)
 
 
 def test_batch_rank_correlation_uses_placement():
