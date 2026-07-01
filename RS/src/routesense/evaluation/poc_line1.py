@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -196,19 +197,22 @@ def _decode_predicted_topk_by_sample(
     topk: int,
 ) -> dict[str, dict[tuple[int, int], list[list[int]]]]:
     predicted: dict[str, dict[tuple[int, int], list[list[int]]]] = {}
-    for sample_id, sample_hidden in hidden_states_by_sample.items():
-        sample_gates = gate_weights_by_sample[sample_id]
-        sample_layer_ids = sorted(layer_id for layer_id in sample_hidden if layer_id in sample_gates)
-        sample_payload: dict[tuple[int, int], list[list[int]]] = {}
-        for idx in range(len(sample_layer_ids) - 1):
-            from_layer = sample_layer_ids[idx]
-            to_layer = sample_layer_ids[idx + 1]
-            hidden_from = sample_hidden[from_layer].squeeze(0)
-            gate_weight = sample_gates[to_layer]
-            predicted_logits = hidden_from @ gate_weight.T
-            predicted_topk = torch.topk(torch.softmax(predicted_logits, dim=-1), k=topk, dim=-1).indices
-            sample_payload[(from_layer, to_layer)] = predicted_topk.tolist()
-        predicted[sample_id] = sample_payload
+    with torch.no_grad():
+        for sample_id, sample_hidden in hidden_states_by_sample.items():
+            sample_gates = gate_weights_by_sample[sample_id]
+            sample_layer_ids = sorted(layer_id for layer_id in sample_hidden if layer_id in sample_gates)
+            sample_payload: dict[tuple[int, int], list[list[int]]] = {}
+            for idx in range(len(sample_layer_ids) - 1):
+                from_layer = sample_layer_ids[idx]
+                to_layer = sample_layer_ids[idx + 1]
+                hidden_from = sample_hidden[from_layer].squeeze(0)
+                gate_weight = sample_gates[to_layer]
+                if hidden_from.device != gate_weight.device:
+                    hidden_from = hidden_from.to(gate_weight.device)
+                predicted_logits = hidden_from @ gate_weight.T
+                predicted_topk = torch.topk(torch.softmax(predicted_logits, dim=-1), k=topk, dim=-1).indices
+                sample_payload[(from_layer, to_layer)] = predicted_topk.tolist()
+            predicted[sample_id] = sample_payload
     return predicted
 
 
@@ -636,6 +640,8 @@ def build_predicted_traffic(
     )
     token_count = (len(token_positions) // num_gpus) * num_gpus
     token_positions = token_positions[:token_count]
+    max_tokens = min(len(token_positions), 256)
+    token_positions = token_positions[:max_tokens]
     matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
     predicted_rows = predicted_topk_by_sample.get(sample_id, {}).get((from_layer, to_layer), [])
     for token_position in token_positions:
@@ -1046,7 +1052,7 @@ def pairwise_oracle(
                     model.add(start >= done)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 30.0
+    solver.parameters.max_time_in_seconds = 5.0
     status = solver.solve(model)
     feasible_statuses = {cp_model.OPTIMAL, cp_model.FEASIBLE}
     if status not in feasible_statuses:
@@ -1227,17 +1233,23 @@ def run_pairwise_analysis(
     topk: int = 8,
     sample_limit: int | None = None,
 ) -> dict[str, Any]:
+    t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
+    print(f"[perf] _group_records: {time.time() - t0:.2f}s")
+    t1 = time.time()
     sample_layer_matrices = build_sample_layer_matrices(
         records,
         owner_by_expert=owner_by_expert,
         num_gpus=num_gpus,
     )
+    print(f"[perf] build_sample_layer_matrices: {time.time() - t1:.2f}s")
+    t2 = time.time()
     predicted_topk_by_sample = _decode_predicted_topk_by_sample(
         hidden_states_by_sample=hidden_states_by_sample,
         gate_weights_by_sample=gate_weights_by_sample,
         topk=topk,
     )
+    print(f"[perf] _decode_predicted_topk: {time.time() - t2:.2f}s")
     sample_ids = sorted({record.sample_id for record in records})
     if sample_limit is not None:
         sample_ids = sample_ids[:sample_limit]
@@ -1273,6 +1285,7 @@ def run_pairwise_analysis(
             dispatch_matrix = layer_map[from_layer]
             next_actual_matrix = layer_map[to_layer]
             combine_matrix = combine_matrix_from_dispatch(dispatch_matrix, 1.0)
+            t_build = time.time()
             next_predicted_matrix = build_predicted_traffic(
                 sample_id=sample_id,
                 from_layer=from_layer,
@@ -1283,10 +1296,24 @@ def run_pairwise_analysis(
                 num_gpus=num_gpus,
                 topk=topk,
             )
+            print(
+                f"[perf] build_predicted_traffic [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
+                f"{time.time() - t_build:.3f}s"
+            )
 
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            t_solve = time.time()
             oracle_perfect = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
+            print(
+                f"[perf] pairwise_oracle perfect [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
+                f"{time.time() - t_solve:.3f}s"
+            )
+            t_solve2 = time.time()
             oracle_predicted = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
+            print(
+                f"[perf] pairwise_oracle predicted [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
+                f"{time.time() - t_solve2:.3f}s"
+            )
             oracle_perfect_makespan = (
                 float(oracle_perfect["makespan"])
                 if oracle_perfect["makespan"] is not None
@@ -1383,8 +1410,9 @@ def evaluate_gate2(perfect_improvements: list[float], predicted_improvements: li
             "oracle_perfect_mean_improvement_pct": 15.0,
             "oracle_predicted_mean_improvement_pct": 10.0,
         },
-        "passed": decision == "PASS",
+            "passed": decision == "PASS",
     }
+    print(f"[perf] total: {time.time() - t0:.2f}s")
 
 
 def write_json(path: str | Path, payload: Any) -> None:

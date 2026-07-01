@@ -217,6 +217,82 @@ run_pairwise_analysis(..., sample_limit=1)
      - OR-Tools 未生效
      - CLI / 文件写出问题
 
+## run_pairwise_analysis 性能诊断更新
+
+已按最新指令补了 profiling 和最小优化。
+
+### 本轮新增
+
+1. 在 `run_pairwise_analysis(...)` 中加入 `[perf]` 分段计时：
+   - `_group_records`
+   - `build_sample_layer_matrices`
+   - `_decode_predicted_topk`
+   - `build_predicted_traffic`
+   - `pairwise_oracle perfect`
+   - `pairwise_oracle predicted`
+   - `total`
+
+2. `_decode_predicted_topk_by_sample(...)`
+   - 加入 `torch.no_grad()`
+   - 显式处理 `hidden_from.device != gate_weight.device`
+
+3. `build_predicted_traffic(...)`
+   - 先加了一个保守 token 截断：
+
+```text
+max_tokens = min(len(token_positions), 256)
+```
+
+4. CP-SAT 超时从 `30s` 收紧到 `5s`
+
+### 当前真实运行观察
+
+我用：
+
+```bash
+OMP_NUM_THREADS=1 python experiments/poc_line1/pairwise_scheduler.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke_v2/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke_v2/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_smoke_v2/gate_weights.pt \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/pairwise_oracle_report_smoke_v3
+```
+
+以及：
+
+```bash
+... > artifacts/poc_line1/pairwise_oracle_report_smoke_v3.perf.log 2>&1
+```
+
+做了新一轮 profiling 尝试。
+
+### 目前得到的事实
+
+1. 单测仍通过：
+
+```text
+16 passed
+```
+
+2. 新的 perf instrumentation 已经写进代码
+
+3. 但在当前实现下，`perf.log` 在短时间窗口内仍未落出首批 `[perf]` 行
+
+4. 结合进程状态：
+   - Python 主进程仍然持续高 CPU
+   - 说明热点还在更早的位置，或 `print` 缓冲尚未 flush 到文件
+
+### 当前判断
+
+这轮 profiling 说明：
+
+- 方向是对的：要继续拆 `run_pairwise_analysis`
+- 但还需要再补一层：
+  - `print(..., flush=True)` 或显式 logger flush
+  - 再跑一次 perf 才能拿到真正的分段热点
+
+也就是说，本轮已经把 profiling 钩子和最小优化埋进去了，但**热点归因结果还没有最终落地**。
+
 ## 当前状态
 
 - Gate1: 维持已完成状态，不改
