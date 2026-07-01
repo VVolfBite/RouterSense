@@ -255,6 +255,48 @@ def test_pairwise_oracle_improves_or_matches_greedy():
     assert oracle["schedule"]
 
 
+def test_relaxed_models_do_not_worsen_greedy_makespan():
+    dispatch = [
+        [0, 4, 0, 0],
+        [0, 0, 3, 0],
+        [0, 0, 0, 2],
+        [1, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 5, 0],
+        [2, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    half = greedy_schedule_pairwise(dispatch, combine, next_dispatch, 4, model="half_duplex")
+    full = greedy_schedule_pairwise(dispatch, combine, next_dispatch, 4, model="full_duplex")
+    incast = greedy_schedule_pairwise(dispatch, combine, next_dispatch, 4, model="incast_only")
+    assert full <= half
+    assert incast <= full
+
+
+def test_relaxed_models_do_not_worsen_oracle_makespan():
+    dispatch = [
+        [0, 4, 0, 0],
+        [0, 0, 3, 0],
+        [0, 0, 0, 2],
+        [1, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 5, 0],
+        [2, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    half = pairwise_oracle(dispatch, combine, next_dispatch, 4, model="half_duplex")
+    full = pairwise_oracle(dispatch, combine, next_dispatch, 4, model="full_duplex")
+    incast = pairwise_oracle(dispatch, combine, next_dispatch, 4, model="incast_only")
+    assert full["makespan"] <= half["makespan"]
+    assert incast["makespan"] <= full["makespan"]
+
+
 def test_fast_schedule_pairwise_returns_valid_schedule():
     dispatch = [
         [0, 8, 0, 0],

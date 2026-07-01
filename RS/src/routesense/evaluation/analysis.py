@@ -30,6 +30,8 @@ def run_pairwise_analysis(
     num_gpus: int = 4,
     topk: int = 8,
     sample_limit: int | None = None,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
@@ -77,10 +79,17 @@ def run_pairwise_analysis(
         return tuple(tuple(int(value) for value in row) for row in matrix)
 
     def solve_pairwise_cached(phase0: list[list[int]], phase1: list[list[int]], phase2: list[list[int]]) -> tuple[dict[str, Any], bool]:
-        key = (matrix_key(phase0), matrix_key(phase1), matrix_key(phase2), num_gpus)
+        key = (matrix_key(phase0), matrix_key(phase1), matrix_key(phase2), num_gpus, model, float(expert_compute_delay))
         cached = pairwise_cache.get(key)
         if cached is None:
-            cached = pairwise_oracle(phase0, phase1, phase2, num_gpus)
+            cached = pairwise_oracle(
+                phase0,
+                phase1,
+                phase2,
+                num_gpus,
+                model=model,
+                expert_compute_delay=expert_compute_delay,
+            )
             pairwise_cache[key] = cached
             return cached, False
         return cached, True
@@ -113,14 +122,21 @@ def run_pairwise_analysis(
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
             t_greedy = time.time()
-            greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            greedy_makespan = greedy_schedule_pairwise(
+                dispatch_matrix,
+                combine_matrix,
+                next_actual_matrix,
+                num_gpus,
+                model=model,
+                expert_compute_delay=expert_compute_delay,
+            )
             greedy_latency_ms = (time.time() - t_greedy) * 1000.0
-            lookahead_result = fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            cp_lpt_result = fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            birkhoff_result = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            iterated_result = fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            local_swap_result = fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            fast_result = fast_schedule_pairwise(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            lookahead_result = fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+            cp_lpt_result = fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+            birkhoff_result = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+            iterated_result = fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+            local_swap_result = fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+            fast_result = fast_schedule_pairwise(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
             fast_latency_ms = float(fast_result["solve_time_ms"])
             fast_makespan = float(fast_result["makespan"])
             t_solve = time.time()
@@ -220,6 +236,8 @@ def run_pairwise_analysis(
     predicted_vs_corr = spearman_rank_correlation(predicted_improvements, traffic_correlations) if len(predicted_improvements) >= 2 else 0.0
     summary = {
         'pair_count': len(results),
+        'model': model,
+        'expert_compute_delay': expert_compute_delay,
         'fast_improvement_pct': _summary_stats(fast_improvements),
         'lookahead_lpt_improvement_pct': _summary_stats(lookahead_lpt_improvements),
         'cp_lpt_improvement_pct': _summary_stats(cp_lpt_improvements),

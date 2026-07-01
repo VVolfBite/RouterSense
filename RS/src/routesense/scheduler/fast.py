@@ -53,20 +53,43 @@ def _schedule_phase_orders(
     strategy: str,
     solve_time_ms: float,
     priority_lookup: dict[str, tuple[float, ...]] | None = None,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     max_gpu = 0
     for chunks in phase_orders.values():
         for chunk in chunks:
             max_gpu = max(max_gpu, chunk.src_gpu, chunk.dst_gpu)
     num_gpus = max_gpu + 1 if phase_orders and max_gpu >= 0 else 0
-    gpu_available = [0.0] * num_gpus
+    sender_available = [0.0] * num_gpus
+    receiver_available = [0.0] * num_gpus
+    phase_receiver_done: dict[int, list[float]] = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus}
     schedule: list[dict[str, Any]] = []
     for phase in sorted(phase_orders):
+        if phase == 1 and model == "half_duplex" and expert_compute_delay > 0.0:
+            sender_available = [value + expert_compute_delay for value in sender_available]
+            receiver_available = [value + expert_compute_delay for value in receiver_available]
         for chunk in phase_orders[phase]:
-            start = max(gpu_available[chunk.src_gpu], gpu_available[chunk.dst_gpu])
+            if model == "half_duplex":
+                start = max(sender_available[chunk.src_gpu], receiver_available[chunk.dst_gpu])
+            elif model == "full_duplex":
+                start = max(sender_available[chunk.src_gpu], receiver_available[chunk.dst_gpu])
+                if phase > 0:
+                    delay = expert_compute_delay if phase == 1 else 0.0
+                    start = max(start, phase_receiver_done[phase - 1][chunk.src_gpu] + delay)
+            elif model == "incast_only":
+                start = receiver_available[chunk.dst_gpu]
+                if phase > 0:
+                    delay = expert_compute_delay if phase == 1 else 0.0
+                    start = max(start, phase_receiver_done[phase - 1][chunk.src_gpu] + delay)
+            else:
+                raise ValueError(f"Unsupported scheduling model: {model}")
             end = start + float(chunk.size)
-            gpu_available[chunk.src_gpu] = end
-            gpu_available[chunk.dst_gpu] = end
+            if model in {"half_duplex", "full_duplex"}:
+                sender_available[chunk.src_gpu] = end
+            receiver_available[chunk.dst_gpu] = end
+            if phase in phase_receiver_done:
+                phase_receiver_done[phase][chunk.dst_gpu] = max(phase_receiver_done[phase][chunk.dst_gpu], end)
             schedule.append(
                 {
                     "chunk_id": chunk.chunk_id,
@@ -81,8 +104,14 @@ def _schedule_phase_orders(
                     "priority": list(priority_lookup.get(chunk.chunk_id, ())) if priority_lookup else [],
                 }
             )
+    if model == "half_duplex":
+        makespan = max(max(sender_available[g], receiver_available[g]) for g in range(num_gpus)) if num_gpus else 0.0
+    elif model == "full_duplex":
+        makespan = max(sender_available + receiver_available) if num_gpus else 0.0
+    else:
+        makespan = max(receiver_available) if receiver_available else 0.0
     return {
-        "makespan": max(gpu_available) if gpu_available else 0.0,
+        "makespan": makespan,
         "schedule": schedule,
         "solve_time_ms": solve_time_ms,
         "strategy": strategy,
@@ -186,6 +215,9 @@ def fast_schedule_lookahead_lpt(
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     phase_orders, priority_lookup = _phase_orders_lookahead_lpt(
@@ -199,6 +231,8 @@ def fast_schedule_lookahead_lpt(
         strategy="lookahead_lpt",
         solve_time_ms=(time.perf_counter() - start) * 1000.0,
         priority_lookup=priority_lookup,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
     )
 
 
@@ -207,6 +241,9 @@ def fast_schedule_cp_lpt(
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     phase_orders, priority_lookup = _phase_orders_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
@@ -215,6 +252,8 @@ def fast_schedule_cp_lpt(
         strategy="cp_lpt",
         solve_time_ms=(time.perf_counter() - start) * 1000.0,
         priority_lookup=priority_lookup,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
     )
 
 
@@ -270,6 +309,9 @@ def fast_schedule_birkhoff(
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     dispatch_rounds = _birkhoff_decompose(dispatch_matrix)
@@ -316,6 +358,8 @@ def fast_schedule_birkhoff(
         strategy="birkhoff",
         solve_time_ms=(time.perf_counter() - start) * 1000.0,
         priority_lookup=priority_lookup,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
     )
 
 
@@ -347,11 +391,20 @@ def fast_schedule_iterated_greedy(
     num_gpus: int,
     *,
     iterations: int = 10,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     base_orders, priority_lookup = _phase_orders_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     best_orders = _clone_phase_orders(base_orders)
-    best_payload = _schedule_phase_orders(best_orders, strategy="iterated_greedy", solve_time_ms=0.0, priority_lookup=priority_lookup)
+    best_payload = _schedule_phase_orders(
+        best_orders,
+        strategy="iterated_greedy",
+        solve_time_ms=0.0,
+        priority_lookup=priority_lookup,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
+    )
     rng = random.Random(0)
     flattened = [(phase, chunk) for phase, chunks in best_orders.items() for chunk in chunks]
     destroy_count = max(3, len(flattened) // 10) if flattened else 0
@@ -368,7 +421,14 @@ def fast_schedule_iterated_greedy(
         removed_chunks.sort(key=lambda chunk: chunk.size, reverse=True)
         for chunk in removed_chunks:
             candidate_orders = _best_insert_position(candidate_orders, chunk)
-        candidate_payload = _schedule_phase_orders(candidate_orders, strategy="iterated_greedy", solve_time_ms=0.0, priority_lookup=priority_lookup)
+        candidate_payload = _schedule_phase_orders(
+            candidate_orders,
+            strategy="iterated_greedy",
+            solve_time_ms=0.0,
+            priority_lookup=priority_lookup,
+            model=model,
+            expert_compute_delay=expert_compute_delay,
+        )
         if float(candidate_payload["makespan"]) < float(best_payload["makespan"]):
             best_orders = candidate_orders
             best_payload = candidate_payload
@@ -388,11 +448,20 @@ def fast_schedule_cp_local_swap(
     num_gpus: int,
     *,
     rounds: int = 3,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     phase_orders, priority_lookup = _phase_orders_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     best_orders = _clone_phase_orders(phase_orders)
-    best_payload = _schedule_phase_orders(best_orders, strategy="cp_local_swap", solve_time_ms=0.0, priority_lookup=priority_lookup)
+    best_payload = _schedule_phase_orders(
+        best_orders,
+        strategy="cp_local_swap",
+        solve_time_ms=0.0,
+        priority_lookup=priority_lookup,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
+    )
     for _ in range(rounds):
         critical_gpu = _critical_gpu(best_payload["schedule"])
         improved = False
@@ -412,6 +481,8 @@ def fast_schedule_cp_local_swap(
                         strategy="cp_local_swap",
                         solve_time_ms=0.0,
                         priority_lookup=priority_lookup,
+                        model=model,
+                        expert_compute_delay=expert_compute_delay,
                     )
                     if float(candidate_payload["makespan"]) < float(best_payload["makespan"]):
                         best_orders = candidate_orders
@@ -433,13 +504,16 @@ def fast_schedule_pairwise(
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    model: str = "half_duplex",
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     candidates = [
-        fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus),
-        fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus),
-        fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus),
-        fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus),
-        fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus),
+        fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
     ]
     eligible = [payload for payload in candidates if float(payload["solve_time_ms"]) <= 5.0]
     best_pool = eligible if eligible else candidates
