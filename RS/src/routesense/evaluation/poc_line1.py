@@ -1004,7 +1004,20 @@ def pairwise_oracle(
         return {"makespan": 0.0, "schedule": [], "chunk_count": 0, "solver_status": "empty"}
 
     chunk_count = len(phase_chunks)
-    horizon = sum(chunk.size for chunk in phase_chunks)
+    greedy_upper_bound = max(
+        1,
+        int(
+            math.ceil(
+                greedy_schedule_pairwise(
+                    dispatch_matrix,
+                    combine_matrix,
+                    next_dispatch_matrix,
+                    num_gpus,
+                )
+            )
+        ),
+    )
+    horizon = greedy_upper_bound
     model = cp_model.CpModel()
 
     starts = []
@@ -1052,7 +1065,9 @@ def pairwise_oracle(
                     model.add(start >= done)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 5.0
+    solver.parameters.max_time_in_seconds = 1.0
+    solver.parameters.num_search_workers = 8
+    solver.parameters.random_seed = 0
     status = solver.solve(model)
     feasible_statuses = {cp_model.OPTIMAL, cp_model.FEASIBLE}
     if status not in feasible_statuses:
@@ -1235,21 +1250,21 @@ def run_pairwise_analysis(
 ) -> dict[str, Any]:
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
-    print(f"[perf] _group_records: {time.time() - t0:.2f}s")
+    print(f"[perf] _group_records: {time.time() - t0:.2f}s", flush=True)
     t1 = time.time()
     sample_layer_matrices = build_sample_layer_matrices(
         records,
         owner_by_expert=owner_by_expert,
         num_gpus=num_gpus,
     )
-    print(f"[perf] build_sample_layer_matrices: {time.time() - t1:.2f}s")
+    print(f"[perf] build_sample_layer_matrices: {time.time() - t1:.2f}s", flush=True)
     t2 = time.time()
     predicted_topk_by_sample = _decode_predicted_topk_by_sample(
         hidden_states_by_sample=hidden_states_by_sample,
         gate_weights_by_sample=gate_weights_by_sample,
         topk=topk,
     )
-    print(f"[perf] _decode_predicted_topk: {time.time() - t2:.2f}s")
+    print(f"[perf] _decode_predicted_topk: {time.time() - t2:.2f}s", flush=True)
     sample_ids = sorted({record.sample_id for record in records})
     if sample_limit is not None:
         sample_ids = sample_ids[:sample_limit]
@@ -1298,7 +1313,8 @@ def run_pairwise_analysis(
             )
             print(
                 f"[perf] build_predicted_traffic [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_build:.3f}s"
+                f"{time.time() - t_build:.3f}s",
+                flush=True,
             )
 
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
@@ -1306,13 +1322,15 @@ def run_pairwise_analysis(
             oracle_perfect = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
             print(
                 f"[perf] pairwise_oracle perfect [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_solve:.3f}s"
+                f"{time.time() - t_solve:.3f}s",
+                flush=True,
             )
             t_solve2 = time.time()
             oracle_predicted = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
             print(
                 f"[perf] pairwise_oracle predicted [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_solve2:.3f}s"
+                f"{time.time() - t_solve2:.3f}s",
+                flush=True,
             )
             oracle_perfect_makespan = (
                 float(oracle_perfect["makespan"])
@@ -1375,6 +1393,7 @@ def run_pairwise_analysis(
         "predicted_improvement_vs_traffic_correlation": predicted_vs_corr,
         "gate2_decision": evaluate_gate2(perfect_improvements, predicted_improvements),
     }
+    print(f"[perf] total run_pairwise_analysis: {time.time() - t0:.2f}s", flush=True)
     return {
         "results": results,
         "summary": summary,
@@ -1410,9 +1429,8 @@ def evaluate_gate2(perfect_improvements: list[float], predicted_improvements: li
             "oracle_perfect_mean_improvement_pct": 15.0,
             "oracle_predicted_mean_improvement_pct": 10.0,
         },
-            "passed": decision == "PASS",
+        "passed": decision == "PASS",
     }
-    print(f"[perf] total: {time.time() - t0:.2f}s")
 
 
 def write_json(path: str | Path, payload: Any) -> None:

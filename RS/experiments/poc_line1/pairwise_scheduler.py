@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +23,7 @@ from routesense.evaluation import (  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
+    t0 = time.time()
     parser = argparse.ArgumentParser(description="Run POC-line1 pairwise predicted-oracle scheduling analysis.")
     parser.add_argument("--trace-jsonl", type=str, required=True)
     parser.add_argument("--hidden-states-path", type=str, required=True)
@@ -37,10 +39,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    print("[perf] loading trace...", flush=True)
     records = load_trace_jsonl(args.trace_jsonl)
+    print(f"[perf] trace loaded: {time.time() - t0:.2f}s", flush=True)
+
+    t_hidden = time.time()
+    print("[perf] loading hidden states...", flush=True)
     hidden_states = load_hidden_state_bundle(args.hidden_states_path)
+    print(f"[perf] hidden states loaded: {time.time() - t_hidden:.2f}s", flush=True)
+
+    t_gates = time.time()
+    print("[perf] loading gate weights...", flush=True)
     gate_weights = load_gate_weight_bundle(args.gate_weights_path)
+    print(f"[perf] gate weights loaded: {time.time() - t_gates:.2f}s", flush=True)
+
+    t_owner = time.time()
     owner_by_expert = build_owner_by_expert(records, placement=args.placement, num_gpus=args.num_gpus)
+    print(f"[perf] owner_by_expert built: {time.time() - t_owner:.2f}s", flush=True)
+
+    t_run = time.time()
     report = run_pairwise_analysis(
         records,
         hidden_states_by_sample=hidden_states,
@@ -50,12 +67,14 @@ def main(argv: list[str] | None = None) -> int:
         topk=args.topk,
         sample_limit=args.sample_limit,
     )
+    print(f"[perf] run_pairwise_analysis returned: {time.time() - t_run:.2f}s", flush=True)
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     write_json(out / "placement.json", {"placement": args.placement, "owner_by_expert": owner_by_expert})
     write_json(out / "results.json", report["results"])
     write_json(out / "summary.json", report["summary"])
+    print(f"[perf] total pairwise_scheduler main: {time.time() - t0:.2f}s", flush=True)
     print(json.dumps(report["summary"], indent=2))
     return 0
 
