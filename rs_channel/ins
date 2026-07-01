@@ -1,12 +1,24 @@
-# Instruction: POC-line1 Smoke 问题修正
+# Instruction: POC-line1 Pairwise Oracle 正确实现
 
-基于 `reply/20260701_poc_line1_smoke.md` 的 smoke report，结合代码审计，以下是需要修正的问题列表。
+基于 `reply/20260701_poc_line1_gate1_v2_status.md` 和代码审计，以下是需要修正的问题列表。
 
-**优先级从高到低排列。逐项执行，每项完成后 commit。**
+## 当前状态（截至 2026-07-01）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| P0: Gate 1 可预测性 | ✅ 完成 | prefetch_accuracy 在 batch500 上 13/15 pairs PASS (≥0.70) |
+| P1: Pairwise Oracle | ❌ **需要重写** | 当前实现有 phase barrier bug，不是真正的 joint MILP |
+| P2: 16 层确认 | ✅ 完成 | 确认 16 层全是 MoE (OlmoeSparseMoeBlock) |
+| P3: 批量 Pairwise | ⏳ 待 P1 修复后执行 | 需要用修复后的代码重跑 batch500 |
+| P4-P6 | ⏳ 待 P3 结果 | 分布分析 + traffic correlation + 文档同步 |
+
+**核心问题**：当前 `pairwise_oracle()` 在每个 phase 之间强制所有 GPU 同步等待（barrier），导致与 Greedy 几乎无差异。需要重写为**无 barrier 的 joint MILP**。
+
+**不要 push。所有修正完成后本地 commit，等人工确认后再 push。**
 
 ---
 
-## P0: Gate 1 指标错误——应测可预测性而非相似性（致命）
+## P0: Gate 1 指标错误——应测可预测性而非相似性（✅ 已完成）
 
 ### 问题
 
@@ -334,59 +346,404 @@ python experiments/poc_line1/cross_layer_analysis.py \
 
 ---
 
-## P1: Oracle 实现是启发式而非 ILP（致命） + Gate 2 重构为 Pairwise 预测感知调度
+## P1: Pairwise Oracle 重写——去掉 phase barrier，实现真正的 joint MILP
 
-### 问题
+### 当前实现的 Bug
 
-**1a. 当前 Oracle 是伪造的**：
-`oracle_schedule_multi_layer` 用 `bonus = min(0.35, ...)` 硬算，35% 改善是人为构造。
+当前 `pairwise_oracle()` (poc_line1.py L840-884) 在每个 phase 之间有**强制同步 barrier**：
 
-**1b. 多层全局调度模型与预测能力不匹配**：
-原版 Gate 2 假设 K 层全局 Oracle。但 Gate 1 表明跨层预测只能可靠地看一层（Fate 原文也只预测相邻一层），因此应该改为 **pairwise (L, L+1) 调度优化**。
+```python
+# 当前错误代码：
+for phase, matrix in enumerate((dispatch_matrix, combine_matrix, next_dispatch_matrix)):
+    _, after_phase = exact_schedule_single_layer(matrix, num_gpus, gpu_state)
+    ...
+    gpu_state = [phase_makespan] * num_gpus  # ← BUG: 所有 GPU 等到最慢的那个做完
+```
 
-### 重构方案
+这意味着：
+- combine_L 必须等 dispatch_L 的**所有** chunk 完成才能开始
+- dispatch_{L+1} 必须等 combine_L 的**所有** chunk 完成才能开始
+- 而 Greedy 也是同样的 per-phase 顺序执行 → 两者几乎无差异
 
-**核心变化**：从 K 层全局 Oracle 改为 pairwise 预测感知调度。
+**正确做法**：把 3 个 phase 的所有 chunk 放进一个联合 MILP，不同 phase 的 chunk 可以自由穿插。
 
-对比三种策略：
-| 策略 | Layer L 调度 | Layer L+1 流量来源 | 物理含义 |
-|---|---|---|---|
-| Greedy | LPT（不知道下一层） | N/A | 完全独立 |
-| Oracle-perfect | 全局最优 | T_{L+1} = 实际 trace | 上界（不可能实现） |
-| Oracle-predicted | 全局最优 | T_{L+1} = 预测流量 | 可实现（用 Gate 1 预测） |
+### 正确实现
 
-**实现要点**：
-1. **删除** 当前的 `oracle_schedule_multi_layer` 启发式
-2. 实现 `pairwise_oracle(T_L, C_L, T_next, num_gpus)`：
-   - 输入: Layer L 的 dispatch/combine + Layer L+1 的 traffic（仅 2 层）
-   - 变量规模: 2×12 dispatch + 12 combine = 36 chunks（G=4），ILP 轻松可解
-   - ILP: `scipy.optimize.milp` 或 `PuLP`
-   - 约束: per-GPU half-duplex + 同层阶段顺序 + 层间依赖
-   - 目标: minimize 3 阶段的总 makespan
-3. 实现 `build_predicted_traffic()`：从 Gate 1 的 predicted_topK 构建 Layer L+1 的预测流量矩阵
-4. 对所有相邻层对 (0,1), (1,2), ..., (14,15) 独立运行 pairwise_oracle，然后对比 greedy vs oracle-perfect vs oracle-predicted
+需要重写以下函数。全部替换到 `poc_line1.py` 中。
 
-**判定标准**：
-- Oracle-perfect ≥ 15% 且 Oracle-predicted ≥ 10% → Gate 2 通过
-- Oracle-perfect ≥ 15% 但 Oracle-predicted 5–10% → 灰色，调度有价值但预测不够
-- Oracle-perfect < 5% → 调度空间不足，方向 pivot
+#### Step 1: 收集 chunks 并分配索引
 
-详见任务文档 Phase 3 完整定义。
+```python
+def _collect_pairwise_chunks(T_L, C_L, T_next, num_gpus):
+    """
+    收集 3 个 phase 的所有 chunks。
+    返回 chunks: list of (size, src, dst, phase)
+    phase: 0=dispatch_L, 1=combine_L, 2=dispatch_L+1
+    """
+    chunks = []
+    for phase_idx, matrix in enumerate([T_L, C_L, T_next]):
+        for src in range(num_gpus):
+            for dst in range(num_gpus):
+                if src != dst and matrix[src][dst] > 0:
+                    chunks.append((matrix[src][dst], src, dst, phase_idx))
+    return chunks
+```
+
+#### Step 2: Joint MILP（无 barrier）
+
+```python
+def pairwise_oracle(T_L, C_L, T_next, num_gpus):
+    """
+    真正的 pairwise joint MILP: 3 个 phase 的 chunks 联合优化，无 phase barrier。
+    
+    约束：
+      1. Per-GPU half-duplex: 每个 GPU 同一时刻只能参与一个 chunk
+      2. 同 GPU 阶段顺序: combine 在 dispatch 之后，下一层 dispatch 在 combine 之后
+    
+    G=4 时 36 个 chunks，约 150-200 个 binary 变量，毫秒级可解。
+    """
+    import numpy as np
+    from scipy.optimize import milp, LinearConstraint, Bounds
+    
+    chunks = _collect_pairwise_chunks(T_L, C_L, T_next, num_gpus)
+    N = len(chunks)
+    if N == 0:
+        return {"makespan": 0.0, "schedule": [], "chunk_count": 0}
+    
+    # 变量: [s_0, s_1, ..., s_{N-1}, makespan]
+    # 索引: 0..N-1 是 chunk 开始时间, N 是 makespan
+    num_vars = N + 1
+    
+    # 目标: minimize makespan
+    c = np.zeros(num_vars)
+    c[N] = 1.0
+    
+    # 约束列表 (每行: coeffs @ x <= ub)
+    A_rows = []
+    ub_vals = []
+    binary_pairs = []  # (i, j) 需要 half-duplex 排序的 chunk 对
+    
+    BigM = float(sum(size for size, _, _, _ in chunks))  # 足够大的常数
+    
+    # --- 约束 1: makespan >= start[i] + size[i] ---
+    for i, (size, src, dst, phase) in enumerate(chunks):
+        row = np.zeros(num_vars)
+        row[i] = 1.0       # start[i]
+        row[N] = -1.0      # -makespan
+        A_rows.append(row)
+        ub_vals.append(-float(size))  # start[i] - makespan <= -size
+    
+    # --- 约束 2: Per-GPU half-duplex (Big-M + binary) ---
+    # 对每对 chunk (i, j) 如果共享同一个 GPU:
+    #   start[i] + size[i] <= start[j] + BigM * z_ij
+    #   start[j] + size[j] <= start[i] + BigM * (1 - z_ij)
+    for i in range(N):
+        for j in range(i + 1, N):
+            _, src_i, dst_i, _ = chunks[i]
+            _, src_j, dst_j, _ = chunks[j]
+            # 检查是否共享 GPU (src 或 dst 重叠)
+            if {src_i, dst_i}.isdisjoint({src_j, dst_j}):
+                continue  # 不共享 GPU，可以并行
+            binary_pairs.append((i, j))
+    
+    # binary 变量追加在连续变量之后
+    binary_offset = num_vars  # z 变量的起始索引
+    num_binaries = len(binary_pairs)
+    total_vars = num_vars + num_binaries
+    
+    c_full = np.zeros(total_vars)
+    c_full[N] = 1.0  # minimize makespan
+    
+    # 扩展约束矩阵
+    A_full = np.zeros((len(A_rows) + 2 * num_binaries, total_vars))
+    ub_full = np.zeros(len(A_rows) + 2 * num_binaries)
+    
+    # 复制已有约束
+    for idx, (row, ub) in enumerate(zip(A_rows, ub_vals)):
+        A_full[idx, :num_vars] = row
+        ub_full[idx] = ub
+    
+    # 添加 half-duplex 约束
+    row_idx = len(A_rows)
+    for b_idx, (i, j) in enumerate(binary_pairs):
+        z_idx = binary_offset + b_idx
+        size_i = float(chunks[i][0])
+        size_j = float(chunks[j][0])
+        
+        # start[i] + size[i] <= start[j] + BigM * z
+        # => start[i] - start[j] - BigM * z <= -size[i]
+        A_full[row_idx, i] = 1.0
+        A_full[row_idx, j] = -1.0
+        A_full[row_idx, z_idx] = -BigM
+        ub_full[row_idx] = -size_i
+        row_idx += 1
+        
+        # start[j] + size[j] <= start[i] + BigM * (1 - z)
+        # => start[j] - start[i] + BigM * z <= BigM - size[j]
+        A_full[row_idx, j] = 1.0
+        A_full[row_idx, i] = -1.0
+        A_full[row_idx, z_idx] = BigM
+        ub_full[row_idx] = BigM - size_j
+        row_idx += 1
+    
+    # --- 约束 3: 同 GPU 阶段顺序 ---
+    # 对每个 GPU g，phase 1 中涉及 g 的 chunk 必须 >= phase 0 中涉及 g 的 chunk 的结束
+    # 对每个 GPU g，phase 2 中涉及 g 的 chunk 必须 >= phase 1 中涉及 g 的 chunk 的结束
+    for g in range(num_gpus):
+        for phase_from, phase_to in [(0, 1), (1, 2)]:
+            from_chunks = [(idx, size) for idx, (size, src, dst, phase) in enumerate(chunks)
+                          if phase == phase_from and (src == g or dst == g)]
+            to_chunks = [(idx, size) for idx, (size, src, dst, phase) in enumerate(chunks)
+                        if phase == phase_to and (src == g or dst == g)]
+            for from_idx, from_size in from_chunks:
+                for to_idx, _ in to_chunks:
+                    # start[to] >= start[from] + from_size
+                    # => start[from] - start[to] <= -from_size
+                    row = np.zeros(total_vars)
+                    row[from_idx] = 1.0
+                    row[to_idx] = -1.0
+                    A_full = np.vstack([A_full, row.reshape(1, -1)])
+                    ub_full = np.append(ub_full, -float(from_size))
+    
+    # 变量界限
+    lb = np.zeros(total_vars)
+    ub_bounds = np.full(total_vars, np.inf)
+    # binary 变量上界 = 1
+    for b_idx in range(num_binaries):
+        ub_bounds[binary_offset + b_idx] = 1.0
+    
+    # integrality: 连续变量 = 0, binary = 1
+    integrality = np.zeros(total_vars)
+    for b_idx in range(num_binaries):
+        integrality[binary_offset + b_idx] = 1
+    
+    # 求解
+    constraints = LinearConstraint(A_full, -np.inf, ub_full)
+    bounds = Bounds(lb, ub_bounds)
+    result = milp(c=c_full, constraints=constraints, integrality=integrality, bounds=bounds)
+    
+    if not result.success or result.x is None:
+        raise RuntimeError(f"MILP failed: {result.message}")
+    
+    starts = result.x[:N]
+    makespan = float(result.x[N])
+    
+    schedule = []
+    for i, (size, src, dst, phase) in enumerate(chunks):
+        schedule.append({
+            "chunk_id": f"phase{phase}_src{src}_dst{dst}",
+            "phase": phase, "size": size, "src_gpu": src, "dst_gpu": dst,
+            "start": float(starts[i]), "end": float(starts[i]) + size,
+        })
+    
+    return {
+        "makespan": makespan,
+        "schedule": schedule,
+        "chunk_count": N,
+    }
+```
+
+#### Step 3: 公平的 Greedy baseline（无 barrier，但不知道下一层）
+
+Greedy 也应该是无 barrier 的，只是不知道下一层流量。这样对比才公平。
+
+```python
+def greedy_schedule_pairwise_no_barrier(T_L, C_L, T_next, num_gpus):
+    """
+    无 barrier 的 Greedy baseline:
+    - dispatch_L: 用 T_L 做 LPT
+    - combine_L: 用 C_L 做 LPT，每个 chunk 的开始时间 >= dispatch_L 中同 GPU 的最后一个 chunk 结束
+    - dispatch_L+1: 用 T_next 做 LPT，每个 chunk 的开始时间 >= combine_L 中同 GPU 的最后一个 chunk 结束
+    
+    关键: 不同 phase 的 chunk 可以在同一 GPU 上穿插（无全局同步 barrier）。
+    但与 Oracle 的区别是: Greedy 不知道 T_next，所以 combine_L 的排序无法考虑 T_next。
+    """
+    # Phase 0: dispatch_L
+    chunks_0 = []
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            if src != dst and T_L[src][dst] > 0:
+                chunks_0.append((T_L[src][dst], src, dst))
+    chunks_0.sort(reverse=True)  # LPT
+    
+    gpu_avail = [0.0] * num_gpus
+    for size, src, dst in chunks_0:
+        start = max(gpu_avail[src], gpu_avail[dst])
+        end = start + float(size)
+        gpu_avail[src] = end
+        gpu_avail[dst] = end
+    
+    # Phase 1: combine_L (LPT，但每个 chunk 的开始 >= 同 GPU 的 phase 0 最后结束)
+    chunks_1 = []
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            if src != dst and C_L[src][dst] > 0:
+                chunks_1.append((C_L[src][dst], src, dst))
+    chunks_1.sort(reverse=True)
+    
+    for size, src, dst in chunks_1:
+        start = max(gpu_avail[src], gpu_avail[dst])
+        end = start + float(size)
+        gpu_avail[src] = end
+        gpu_avail[dst] = end
+    
+    # Phase 2: dispatch_L+1 (LPT，同上)
+    chunks_2 = []
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            if src != dst and T_next[src][dst] > 0:
+                chunks_2.append((T_next[src][dst], src, dst))
+    chunks_2.sort(reverse=True)
+    
+    for size, src, dst in chunks_2:
+        start = max(gpu_avail[src], gpu_avail[dst])
+        end = start + float(size)
+        gpu_avail[src] = end
+        gpu_avail[dst] = end
+    
+    return max(gpu_avail) if gpu_avail else 0.0
+```
+
+**注意**：这个 Greedy 和旧的 `greedy_schedule_pairwise` 的区别是：旧版本在每个 phase 结束后强制 `gpu_avail = [max(gpu_avail)] * num_gpus`（全局同步），新版本允许每个 GPU 独立推进。
+
+#### Step 4: 三种策略的对比函数
+
+```python
+def run_pairwise_analysis(records, *, hidden_states_by_sample, gate_weights_by_sample,
+                          owner_by_expert, num_gpus=4, topk=8, sample_limit=None):
+    """
+    对所有相邻 MoE 层对运行 pairwise 调度对比。
+    
+    输出每个层对的三种策略结果:
+    - greedy_makespan: 无 barrier Greedy (不知道下一层)
+    - oracle_perfect_makespan: Joint MILP (知道下一层真实流量)
+    - oracle_predicted_makespan: Joint MILP (知道下一层预测流量)
+    """
+    # ... (前置代码同现有实现: group records, build matrices, decode predicted topk)
+    
+    results = []
+    perfect_improvements = []
+    predicted_improvements = []
+    
+    for sample_id in sample_ids:
+        for idx in range(len(layer_ids) - 1):
+            from_layer = layer_ids[idx]
+            to_layer = layer_ids[idx + 1]
+            
+            T_L = layer_map[from_layer]          # dispatch_L 实际流量
+            C_L = combine_matrix_from_dispatch(T_L)  # combine_L = dispatch 转置
+            T_next_actual = layer_map[to_layer]  # dispatch_L+1 实际流量
+            T_next_predicted = build_predicted_traffic(...)  # dispatch_L+1 预测流量
+            
+            # 1. Greedy (无 barrier, 不知道下一层)
+            greedy_mk = greedy_schedule_pairwise_no_barrier(T_L, C_L, T_next_actual, num_gpus)
+            
+            # 2. Oracle-perfect (Joint MILP, 真实 T_next)
+            oracle_perfect = pairwise_oracle(T_L, C_L, T_next_actual, num_gpus)
+            oracle_perfect_mk = oracle_perfect["makespan"]
+            
+            # 3. Oracle-predicted (Joint MILP, 预测 T_next)
+            oracle_predicted = pairwise_oracle(T_L, C_L, T_next_predicted, num_gpus)
+            oracle_predicted_mk = oracle_predicted["makespan"]
+            
+            perfect_imp = 0.0 if greedy_mk == 0 else (greedy_mk - oracle_perfect_mk) / greedy_mk * 100
+            predicted_imp = 0.0 if greedy_mk == 0 else (greedy_mk - oracle_predicted_mk) / greedy_mk * 100
+            
+            perfect_improvements.append(perfect_imp)
+            predicted_improvements.append(predicted_imp)
+            
+            results.append({
+                "sample_id": sample_id,
+                "layer_pair": [from_layer, to_layer],
+                "greedy_makespan": greedy_mk,
+                "oracle_perfect_makespan": oracle_perfect_mk,
+                "oracle_predicted_makespan": oracle_predicted_mk,
+                "perfect_improvement_pct": perfect_imp,
+                "predicted_improvement_pct": predicted_imp,
+            })
+    
+    return {
+        "results": results,
+        "summary": {
+            "num_layer_pairs": len(results),
+            "mean_perfect_improvement_pct": statistics.fmean(perfect_improvements),
+            "mean_predicted_improvement_pct": statistics.fmean(predicted_improvements),
+            "median_perfect_improvement_pct": statistics.median(perfect_improvements),
+            "median_predicted_improvement_pct": statistics.median(predicted_improvements),
+            "gate2_decision": evaluate_gate2(perfect_improvements, predicted_improvements),
+        }
+    }
+```
+
+#### Step 5: Go/No-Go 判定
+
+```python
+def evaluate_gate2(perfect_improvements, predicted_improvements):
+    mean_perfect = statistics.fmean(perfect_improvements)
+    mean_predicted = statistics.fmean(predicted_improvements)
+    
+    if mean_perfect >= 15.0 and mean_predicted >= 10.0:
+        decision = "PASS"
+        reason = "Oracle-perfect >= 15% and Oracle-predicted >= 10%"
+    elif mean_perfect >= 15.0 and mean_predicted >= 5.0:
+        decision = "MARGINAL"
+        reason = "Scheduling valuable but prediction quality insufficient"
+    elif mean_perfect >= 15.0 and mean_predicted < 5.0:
+        decision = "PREDICTION_BOTTLENECK"
+        reason = "Scheduling space exists but prediction too inaccurate"
+    elif mean_perfect < 5.0:
+        decision = "NO_SCHEDULING_SPACE"
+        reason = "Insufficient scheduling optimization space"
+    else:
+        decision = "WEAK"
+        reason = f"perfect={mean_perfect:.1f}%, predicted={mean_predicted:.1f}%"
+    
+    return {
+        "decision": decision,
+        "mean_perfect_improvement_pct": mean_perfect,
+        "mean_predicted_improvement_pct": mean_predicted,
+        "reason": reason,
+    }
+```
+
+### 关键实现注意事项
+
+1. **必须删除旧的 `pairwise_oracle` 函数**（poc_line1.py L840-884），用上述 joint MILP 完全替换
+2. **必须删除旧的 `greedy_schedule_pairwise`**，用 `greedy_schedule_pairwise_no_barrier` 替换
+3. **旧的 `oracle_schedule_multi_layer`、`annealed_oracle_schedule_multi_layer`、`simulate_oracle_vs_greedy`** 全部删除或标记为 deprecated
+4. `build_predicted_traffic` 已有实现 (L621-649)，检查其正确性即可
+5. `run_pairwise_analysis` 已有实现 (L1026+)，修改其中的 `greedy_schedule_pairwise` 和 `pairwise_oracle` 调用即可
 
 ### 验证
 
 ```bash
 cd /root/autodl-tmp/RouterSense/RS
+
+# 先用 smoke 验证正确性
 python experiments/poc_line1/pairwise_scheduler.py \
-  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke/trace.jsonl \
-  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke/hidden_states.pt \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke_v2/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke_v2/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_smoke_v2/gate_weights.pt \
   --placement round_robin \
-  --output-dir artifacts/poc_line1/pairwise_oracle_report
+  --output-dir artifacts/poc_line1/pairwise_oracle_report_smoke_v3
+
+# 检查 smoke 结果中 oracle_perfect_makespan < greedy_makespan（至少部分层对）
+
+# 然后用 batch500 跑完整结果
+python experiments/poc_line1/pairwise_scheduler.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_batch500_v2/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_batch500_v2/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_batch500_v2/gate_weights.pt \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/pairwise_oracle_report_batch500_v3
+
+# 运行测试
+cd RS && pytest -q tests/test_poc_line1.py
 ```
 
 ---
 
-## P2: OLMoE 实际有 16 个 MoE 层而非 4 个
+## P2: OLMoE 实际有 16 个 MoE 层而非 4 个（✅ 已完成）
 
 ### 问题
 
@@ -539,16 +896,34 @@ Gate 1 还需要从调度视角验证：预测的 traffic matrix 与实际的 tr
 ## 执行顺序
 
 ```
-P0 (Gate1可预测性+Fate方法) + P1 (Pairwise Oracle + 预测流量) + P2 (16层确认) 并行
-  → P3 (批量采集 500条)  → P4 (prefetch分布校准)  → P5 (traffic correlation)  → P6 (文档同步)
+P0 ✅ + P2 ✅  (已完成)
+  → P1 (重写 pairwise_oracle + greedy 为无 barrier 版本)  ← 当前唯一阻塞项
+  → P3 (用修复后的代码跑 batch500 pairwise 调度)
+  → P4 (prefetch分布校准)
+  → P5 (traffic correlation)
+  → P6 (文档同步)
 ```
 
-P0 和 P1 和 P2 可以并行。P3 依赖 P0（prefetch accuracy 分析）和 P1（pairwise 调度器）和 P2（知道层结构）。P4-P6 依赖 P3 的结果。
+**当前唯一待做: P1**。P1 修复后，用 batch500 数据跑 pairwise 调度，产出 Gate 2 判定结果。
 
-**Gate 2 重构说明**：
-- 任务文档 Phase 3 已重写为 **pairwise 预测感知调度**
-- 核心变化: K 层全局 Oracle → 2 层 pairwise Oracle (仅调度 L 和 L+1)
-- 新增 Oracle-predicted 模式: 用 Gate 1 的预测流量作为 L+1 的输入
-- 判定标准新增: oracle-predicted 改善 ≥ 10% 才算 Gate 2 完全通过
+**Gate 2 判定标准**：
+
+| oracle-perfect | oracle-predicted | 决策 |
+|---|---|---|
+| ≥ 15% | ≥ 10% | ✅ Gate 2 PASS，全力推进 |
+| ≥ 15% | 5–10% | ⚠️ 调度有价值但预测不够 |
+| ≥ 15% | < 5% | ❌ 预测不准，调度空间无法利用 |
+| 5–15% | ≥ 10% | ⚠️ 调度空间有限但预测可用 |
+| < 5% | * | ❌ 调度空间不足，方向需 pivot |
+
+**调研背景**（给实现者的上下文）：
+
+1. **真实 MoE 系统不做 chunk 级调度**：vLLM、DeepEP、FlashMoE 全部用 NCCL all-to-all 黑盒调用，没有任何 chunk 排序逻辑。我们的 Greedy baseline 比真实系统还强（至少做了 LPT 排序）。
+
+2. **MILP 复杂度可接受**：G=4 时 36 chunks + ~150 binary 变量，scipy MILP 毫秒级可解。G=8 时需要 ~2000 binary 变量（1-10s），可用 Gurobi 或 heuristic warm-start。
+
+3. **trace-driven simulation 是标准做法**：Fate (ISCA'25)、FlowMoE (NeurIPS'25)、ExFlow (IPDPS'24)、LayerScope (2025) 都用 trace + simulation 验证调度收益，不是真跑 NCCL。这是 INFOCOM 的标准评估范式。
+
+4. **我们的差异化**：Fate 的跨层预测信号 + EP 通信的 chunk 级调度优化，这个组合在已有工作中没有人做过。
 
 **不要 push。所有修正完成后本地 commit，等人工确认后再 push。**
