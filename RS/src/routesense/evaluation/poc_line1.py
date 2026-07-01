@@ -865,24 +865,32 @@ def pairwise_oracle(
         *_matrix_to_pairwise_chunks(next_dispatch_matrix, phase=2, num_gpus=num_gpus),
     ]
     if not phase_chunks:
-        return {"makespan": 0.0, "schedule": [], "chunk_count": 0}
+        return {"makespan": 0.0, "schedule": [], "chunk_count": 0, "solver_status": "empty"}
 
     chunk_count = len(phase_chunks)
     makespan_index = chunk_count
     base_variable_count = chunk_count + 1
-    big_m = float(sum(chunk.size for chunk in phase_chunks)) + 1.0
+    gpu_busy = [0.0] * num_gpus
+    for chunk in phase_chunks:
+        gpu_busy[chunk.src_gpu] += chunk.size
+        gpu_busy[chunk.dst_gpu] += chunk.size
+    big_m = max(gpu_busy) + 1.0 if gpu_busy else 1.0
 
     conflict_pairs: list[tuple[int, int]] = []
     for i in range(chunk_count):
         for j in range(i + 1, chunk_count):
             chunk_i = phase_chunks[i]
             chunk_j = phase_chunks[j]
+            if chunk_i.phase != chunk_j.phase:
+                continue
             if {chunk_i.src_gpu, chunk_i.dst_gpu}.isdisjoint({chunk_j.src_gpu, chunk_j.dst_gpu}):
                 continue
             conflict_pairs.append((i, j))
 
     binary_offset = base_variable_count
-    total_variable_count = base_variable_count + len(conflict_pairs)
+    aux_offset = base_variable_count + len(conflict_pairs)
+    aux_variable_count = num_gpus * 2
+    total_variable_count = aux_offset + aux_variable_count
     c = np.zeros(total_variable_count, dtype=float)
     c[makespan_index] = 1.0
     lower_bounds = np.zeros(total_variable_count, dtype=float)
@@ -915,27 +923,22 @@ def pairwise_oracle(
         add_ub({j: 1.0, i: -1.0, z_index: big_m}, big_m - dur_j)
 
     for gpu in range(num_gpus):
-        phase0 = [
-            (idx, chunk)
-            for idx, chunk in enumerate(phase_chunks)
-            if chunk.phase == 0 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
-        ]
-        phase1 = [
-            (idx, chunk)
-            for idx, chunk in enumerate(phase_chunks)
-            if chunk.phase == 1 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
-        ]
-        phase2 = [
-            (idx, chunk)
-            for idx, chunk in enumerate(phase_chunks)
-            if chunk.phase == 2 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
-        ]
-        for from_idx, from_chunk in phase0:
-            for to_idx, _ in phase1:
-                add_ub({from_idx: 1.0, to_idx: -1.0}, -float(from_chunk.size))
-        for from_idx, from_chunk in phase1:
-            for to_idx, _ in phase2:
-                add_ub({from_idx: 1.0, to_idx: -1.0}, -float(from_chunk.size))
+        for phase_from, phase_to in ((0, 1), (1, 2)):
+            aux_index = aux_offset + gpu * 2 + phase_from
+            phase_from_chunks = [
+                (idx, chunk)
+                for idx, chunk in enumerate(phase_chunks)
+                if chunk.phase == phase_from and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+            ]
+            phase_to_chunks = [
+                (idx, chunk)
+                for idx, chunk in enumerate(phase_chunks)
+                if chunk.phase == phase_to and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+            ]
+            for from_idx, from_chunk in phase_from_chunks:
+                add_ub({from_idx: 1.0, aux_index: -1.0}, -float(from_chunk.size))
+            for to_idx, _ in phase_to_chunks:
+                add_ub({aux_index: 1.0, to_idx: -1.0}, 0.0)
 
     constraints = spo.LinearConstraint(
         np.vstack(rows),
@@ -947,9 +950,15 @@ def pairwise_oracle(
         constraints=constraints,
         integrality=integrality,
         bounds=spo.Bounds(lower_bounds, upper_bounds),
+        options={"time_limit": 30},
     )
     if not result.success or result.x is None:
-        raise RuntimeError(f"pairwise MILP failed: {result.message}")
+        return {
+            "makespan": None,
+            "schedule": [],
+            "chunk_count": chunk_count,
+            "solver_status": str(result.message),
+        }
 
     starts = result.x[:chunk_count]
     schedule = []
@@ -965,6 +974,7 @@ def pairwise_oracle(
         "makespan": float(result.x[makespan_index]),
         "schedule": schedule,
         "chunk_count": chunk_count,
+        "solver_status": str(result.message),
     }
 
 
@@ -1177,13 +1187,23 @@ def run_pairwise_analysis(
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
             oracle_perfect = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
             oracle_predicted = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
+            oracle_perfect_makespan = (
+                float(oracle_perfect["makespan"])
+                if oracle_perfect["makespan"] is not None
+                else greedy_makespan
+            )
+            oracle_predicted_makespan = (
+                float(oracle_predicted["makespan"])
+                if oracle_predicted["makespan"] is not None
+                else greedy_makespan
+            )
             perfect_improvement_pct = (
-                0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect["makespan"]) / greedy_makespan) * 100.0
+                0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
             )
             predicted_improvement_pct = (
                 0.0
                 if greedy_makespan == 0.0
-                else ((greedy_makespan - oracle_predicted["makespan"]) / greedy_makespan) * 100.0
+                else ((greedy_makespan - oracle_predicted_makespan) / greedy_makespan) * 100.0
             )
             flat_actual = [float(value) for row in next_actual_matrix for value in row]
             flat_predicted = [float(value) for row in next_predicted_matrix for value in row]
@@ -1201,8 +1221,8 @@ def run_pairwise_analysis(
                     "next_actual_matrix": next_actual_matrix,
                     "next_predicted_matrix": next_predicted_matrix,
                     "greedy_makespan": greedy_makespan,
-                    "oracle_perfect_makespan": oracle_perfect["makespan"],
-                    "oracle_predicted_makespan": oracle_predicted["makespan"],
+                    "oracle_perfect_makespan": oracle_perfect_makespan,
+                    "oracle_predicted_makespan": oracle_predicted_makespan,
                     "perfect_improvement_pct": perfect_improvement_pct,
                     "predicted_improvement_pct": predicted_improvement_pct,
                     "traffic_correlation": traffic_corr,
@@ -1210,6 +1230,8 @@ def run_pairwise_analysis(
                     "oracle_predicted_chunk_count": oracle_predicted["chunk_count"],
                     "oracle_perfect_schedule": oracle_perfect["schedule"],
                     "oracle_predicted_schedule": oracle_predicted["schedule"],
+                    "oracle_perfect_solver_status": oracle_perfect.get("solver_status"),
+                    "oracle_predicted_solver_status": oracle_predicted.get("solver_status"),
                 }
             )
 
