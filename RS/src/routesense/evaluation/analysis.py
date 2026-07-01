@@ -7,7 +7,7 @@ from typing import Any
 
 import torch  # type: ignore
 
-from ..scheduler import greedy_schedule_pairwise, pairwise_oracle
+from ..scheduler import fast_schedule_pairwise, greedy_schedule_pairwise, pairwise_oracle
 from .cross_layer import _decode_predicted_topk_by_sample, _summary_stats, evaluate_gate2, spearman_rank_correlation
 from .traffic_matrix import TraceRecord, _group_records_by_sample_token_layer, build_predicted_traffic, build_sample_layer_matrices
 
@@ -49,6 +49,7 @@ def run_pairwise_analysis(
     results: list[dict[str, Any]] = []
     predicted_improvements: list[float] = []
     perfect_improvements: list[float] = []
+    fast_improvements: list[float] = []
     traffic_correlations: list[float] = []
     pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     loop_counter = 0
@@ -93,6 +94,8 @@ def run_pairwise_analysis(
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            fast_result = fast_schedule_pairwise(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            fast_makespan = float(fast_result["makespan"])
             t_solve = time.time()
             oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
             perfect_solve_time = time.time() - t_solve
@@ -105,6 +108,7 @@ def run_pairwise_analysis(
                 print(f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: {predicted_solve_time:.3f}s cached={predicted_cached} (status={oracle_predicted.get('solver_status', '?')})", flush=True)
             oracle_perfect_makespan = float(oracle_perfect['makespan']) if oracle_perfect['makespan'] is not None else greedy_makespan
             oracle_predicted_makespan = float(oracle_predicted['makespan']) if oracle_predicted['makespan'] is not None else greedy_makespan
+            fast_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - fast_makespan) / greedy_makespan) * 100.0
             perfect_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
             predicted_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_predicted_makespan) / greedy_makespan) * 100.0
             flat_actual = [float(value) for row in next_actual_matrix for value in row]
@@ -113,6 +117,7 @@ def run_pairwise_analysis(
 
             perfect_improvements.append(perfect_improvement_pct)
             predicted_improvements.append(predicted_improvement_pct)
+            fast_improvements.append(fast_improvement_pct)
             traffic_correlations.append(traffic_corr)
             results.append({
                 'sample_id': sample_id,
@@ -122,11 +127,14 @@ def run_pairwise_analysis(
                 'next_actual_matrix': next_actual_matrix,
                 'next_predicted_matrix': next_predicted_matrix,
                 'greedy_makespan': greedy_makespan,
+                'fast_makespan': fast_makespan,
                 'oracle_perfect_makespan': oracle_perfect_makespan,
                 'oracle_predicted_makespan': oracle_predicted_makespan,
+                'fast_improvement_pct': fast_improvement_pct,
                 'perfect_improvement_pct': perfect_improvement_pct,
                 'predicted_improvement_pct': predicted_improvement_pct,
                 'traffic_correlation': traffic_corr,
+                'fast_schedule': fast_result['schedule'],
                 'oracle_perfect_chunk_count': oracle_perfect['chunk_count'],
                 'oracle_predicted_chunk_count': oracle_predicted['chunk_count'],
                 'oracle_perfect_schedule': oracle_perfect['schedule'],
@@ -138,6 +146,7 @@ def run_pairwise_analysis(
     predicted_vs_corr = spearman_rank_correlation(predicted_improvements, traffic_correlations) if len(predicted_improvements) >= 2 else 0.0
     summary = {
         'pair_count': len(results),
+        'fast_improvement_pct': _summary_stats(fast_improvements),
         'perfect_improvement_pct': _summary_stats(perfect_improvements),
         'predicted_improvement_pct': _summary_stats(predicted_improvements),
         'traffic_correlation': _summary_stats(traffic_correlations),

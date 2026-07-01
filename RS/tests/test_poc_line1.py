@@ -7,6 +7,7 @@ from routesense.evaluation import (
     build_predicted_traffic,
     build_same_prompt_batches,
     combine_matrix_from_dispatch,
+    fast_schedule_pairwise,
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
     evaluate_gate2,
@@ -249,6 +250,26 @@ def test_pairwise_oracle_improves_or_matches_greedy():
     assert oracle["schedule"]
 
 
+def test_fast_schedule_pairwise_returns_valid_schedule():
+    dispatch = [
+        [0, 8, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 2],
+        [2, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 9, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+        [4, 0, 0, 0],
+    ]
+    result = fast_schedule_pairwise(dispatch, combine, next_dispatch, 4)
+    assert result["makespan"] >= 0
+    assert result["schedule"]
+    assert len(result["phase0_dst_hotness"]) == 4
+
+
 def test_pairwise_oracle_has_no_phase_barrier_in_schedule():
     dispatch = [
         [0, 0, 4, 0],
@@ -319,6 +340,8 @@ def test_run_pairwise_analysis_reports_gate2_summary():
         topk=2,
     )
     assert report["summary"]["pair_count"] == 1
+    assert "fast_improvement_pct" in report["summary"]
     assert "gate2_decision" in report["summary"]
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
+    assert "fast_makespan" in report["results"][0]

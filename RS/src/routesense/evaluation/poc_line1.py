@@ -28,6 +28,6 @@ from .traffic_matrix import (
     combine_matrix_from_dispatch,
     load_trace_jsonl,
 )
-from ..scheduler import PairwiseChunk, _pairwise_oracle_scipy, greedy_schedule_multi_layer, greedy_schedule_pairwise, greedy_schedule_single_layer, pairwise_oracle
+from ..scheduler import PairwiseChunk, _pairwise_oracle_scipy, fast_schedule_pairwise, greedy_schedule_multi_layer, greedy_schedule_pairwise, greedy_schedule_single_layer, pairwise_oracle
 
 __all__ = [name for name in globals() if not name.startswith('__')]

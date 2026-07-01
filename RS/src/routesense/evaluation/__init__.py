@@ -22,6 +22,7 @@ from .dc_asymmetry import run_dc_asymmetry_analysis
 from ..scheduler import (
     PairwiseChunk,
     _pairwise_oracle_scipy,
+    fast_schedule_pairwise,
     greedy_schedule_multi_layer,
     greedy_schedule_pairwise,
     greedy_schedule_single_layer,
@@ -60,6 +61,7 @@ __all__ = [
     "collect_environment_snapshot",
     "combine_matrix_from_dispatch",
     "evaluate_gate2",
+    "fast_schedule_pairwise",
     "greedy_schedule_multi_layer",
     "greedy_schedule_pairwise",
     "greedy_schedule_single_layer",

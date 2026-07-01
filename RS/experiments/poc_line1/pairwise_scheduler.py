@@ -74,6 +74,16 @@ def main(argv: list[str] | None = None) -> int:
     write_json(out / "placement.json", {"placement": args.placement, "owner_by_expert": owner_by_expert})
     write_json(out / "results.json", report["results"])
     write_json(out / "summary.json", report["summary"])
+    write_json(
+        out / "strategy_summary.json",
+        {
+            "baseline": "greedy_lpt",
+            "fast": "weighted_lookahead_lpt",
+            "oracle_perfect": "cp_sat_true_next_dispatch",
+            "oracle_predicted": "cp_sat_predicted_next_dispatch",
+            "summary": report["summary"],
+        },
+    )
     print(f"[perf] total pairwise_scheduler main: {time.time() - t0:.2f}s", flush=True)
     print(json.dumps(report["summary"], indent=2))
     return 0
