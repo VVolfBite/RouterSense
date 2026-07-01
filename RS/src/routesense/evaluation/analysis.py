@@ -7,7 +7,16 @@ from typing import Any
 
 import torch  # type: ignore
 
-from ..scheduler import fast_schedule_pairwise, greedy_schedule_pairwise, pairwise_oracle
+from ..scheduler import (
+    fast_schedule_birkhoff,
+    fast_schedule_cp_local_swap,
+    fast_schedule_cp_lpt,
+    fast_schedule_iterated_greedy,
+    fast_schedule_lookahead_lpt,
+    fast_schedule_pairwise,
+    greedy_schedule_pairwise,
+    pairwise_oracle,
+)
 from .cross_layer import _decode_predicted_topk_by_sample, _summary_stats, evaluate_gate2, spearman_rank_correlation
 from .traffic_matrix import TraceRecord, _group_records_by_sample_token_layer, build_predicted_traffic, build_sample_layer_matrices
 
@@ -56,6 +65,11 @@ def run_pairwise_analysis(
     fast_latencies_ms: list[float] = []
     oracle_perfect_latencies_ms: list[float] = []
     oracle_predicted_latencies_ms: list[float] = []
+    cp_lpt_improvements: list[float] = []
+    lookahead_lpt_improvements: list[float] = []
+    birkhoff_improvements: list[float] = []
+    iterated_greedy_improvements: list[float] = []
+    cp_local_swap_improvements: list[float] = []
     pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     loop_counter = 0
 
@@ -101,9 +115,13 @@ def run_pairwise_analysis(
             t_greedy = time.time()
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
             greedy_latency_ms = (time.time() - t_greedy) * 1000.0
-            t_fast = time.time()
+            lookahead_result = fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            cp_lpt_result = fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            birkhoff_result = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            iterated_result = fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            local_swap_result = fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
             fast_result = fast_schedule_pairwise(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
-            fast_latency_ms = (time.time() - t_fast) * 1000.0
+            fast_latency_ms = float(fast_result["solve_time_ms"])
             fast_makespan = float(fast_result["makespan"])
             t_solve = time.time()
             oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
@@ -117,6 +135,16 @@ def run_pairwise_analysis(
                 print(f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: {predicted_solve_time:.3f}s cached={predicted_cached} (status={oracle_predicted.get('solver_status', '?')})", flush=True)
             oracle_perfect_makespan = float(oracle_perfect['makespan']) if oracle_perfect['makespan'] is not None else greedy_makespan
             oracle_predicted_makespan = float(oracle_predicted['makespan']) if oracle_predicted['makespan'] is not None else greedy_makespan
+            lookahead_makespan = float(lookahead_result["makespan"])
+            cp_lpt_makespan = float(cp_lpt_result["makespan"])
+            birkhoff_makespan = float(birkhoff_result["makespan"])
+            iterated_makespan = float(iterated_result["makespan"])
+            cp_local_swap_makespan = float(local_swap_result["makespan"])
+            lookahead_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - lookahead_makespan) / greedy_makespan) * 100.0
+            cp_lpt_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - cp_lpt_makespan) / greedy_makespan) * 100.0
+            birkhoff_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - birkhoff_makespan) / greedy_makespan) * 100.0
+            iterated_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - iterated_makespan) / greedy_makespan) * 100.0
+            cp_local_swap_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - cp_local_swap_makespan) / greedy_makespan) * 100.0
             fast_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - fast_makespan) / greedy_makespan) * 100.0
             perfect_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
             predicted_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_predicted_makespan) / greedy_makespan) * 100.0
@@ -128,6 +156,11 @@ def run_pairwise_analysis(
             perfect_improvements.append(perfect_improvement_pct)
             predicted_improvements.append(predicted_improvement_pct)
             fast_improvements.append(fast_improvement_pct)
+            lookahead_lpt_improvements.append(lookahead_improvement_pct)
+            cp_lpt_improvements.append(cp_lpt_improvement_pct)
+            birkhoff_improvements.append(birkhoff_improvement_pct)
+            iterated_greedy_improvements.append(iterated_improvement_pct)
+            cp_local_swap_improvements.append(cp_local_swap_improvement_pct)
             oracle_prediction_gaps.append(oracle_prediction_gap_pct)
             traffic_correlations.append(traffic_corr)
             greedy_latencies_ms.append(greedy_latency_ms)
@@ -143,18 +176,39 @@ def run_pairwise_analysis(
                 'next_predicted_matrix': next_predicted_matrix,
                 'greedy_makespan': greedy_makespan,
                 'fast_makespan': fast_makespan,
+                'lookahead_lpt_makespan': lookahead_makespan,
+                'cp_lpt_makespan': cp_lpt_makespan,
+                'birkhoff_makespan': birkhoff_makespan,
+                'iterated_greedy_makespan': iterated_makespan,
+                'cp_local_swap_makespan': cp_local_swap_makespan,
                 'oracle_perfect_makespan': oracle_perfect_makespan,
                 'oracle_predicted_makespan': oracle_predicted_makespan,
                 'greedy_latency_ms': greedy_latency_ms,
                 'fast_latency_ms': fast_latency_ms,
+                'lookahead_lpt_latency_ms': float(lookahead_result["solve_time_ms"]),
+                'cp_lpt_latency_ms': float(cp_lpt_result["solve_time_ms"]),
+                'birkhoff_latency_ms': float(birkhoff_result["solve_time_ms"]),
+                'iterated_greedy_latency_ms': float(iterated_result["solve_time_ms"]),
+                'cp_local_swap_latency_ms': float(local_swap_result["solve_time_ms"]),
                 'oracle_perfect_latency_ms': perfect_solve_time * 1000.0,
                 'oracle_predicted_latency_ms': predicted_solve_time * 1000.0,
                 'fast_improvement_pct': fast_improvement_pct,
+                'lookahead_lpt_improvement_pct': lookahead_improvement_pct,
+                'cp_lpt_improvement_pct': cp_lpt_improvement_pct,
+                'birkhoff_improvement_pct': birkhoff_improvement_pct,
+                'iterated_greedy_improvement_pct': iterated_improvement_pct,
+                'cp_local_swap_improvement_pct': cp_local_swap_improvement_pct,
                 'perfect_improvement_pct': perfect_improvement_pct,
                 'predicted_improvement_pct': predicted_improvement_pct,
                 'oracle_prediction_gap_pct': oracle_prediction_gap_pct,
                 'traffic_correlation': traffic_corr,
                 'fast_schedule': fast_result['schedule'],
+                'lookahead_lpt_schedule': lookahead_result['schedule'],
+                'cp_lpt_schedule': cp_lpt_result['schedule'],
+                'birkhoff_schedule': birkhoff_result['schedule'],
+                'iterated_greedy_schedule': iterated_result['schedule'],
+                'cp_local_swap_schedule': local_swap_result['schedule'],
+                'fast_candidates': fast_result.get('candidates', []),
                 'oracle_perfect_chunk_count': oracle_perfect['chunk_count'],
                 'oracle_predicted_chunk_count': oracle_predicted['chunk_count'],
                 'oracle_perfect_schedule': oracle_perfect['schedule'],
@@ -167,12 +221,22 @@ def run_pairwise_analysis(
     summary = {
         'pair_count': len(results),
         'fast_improvement_pct': _summary_stats(fast_improvements),
+        'lookahead_lpt_improvement_pct': _summary_stats(lookahead_lpt_improvements),
+        'cp_lpt_improvement_pct': _summary_stats(cp_lpt_improvements),
+        'birkhoff_improvement_pct': _summary_stats(birkhoff_improvements),
+        'iterated_greedy_improvement_pct': _summary_stats(iterated_greedy_improvements),
+        'cp_local_swap_improvement_pct': _summary_stats(cp_local_swap_improvements),
         'perfect_improvement_pct': _summary_stats(perfect_improvements),
         'predicted_improvement_pct': _summary_stats(predicted_improvements),
         'oracle_prediction_gap_pct': _summary_stats(oracle_prediction_gaps),
         'traffic_correlation': _summary_stats(traffic_correlations),
         'greedy_latency_ms': _summary_stats(greedy_latencies_ms),
         'fast_latency_ms': _summary_stats(fast_latencies_ms),
+        'lookahead_lpt_latency_ms': _summary_stats([float(row['lookahead_lpt_latency_ms']) for row in results]),
+        'cp_lpt_latency_ms': _summary_stats([float(row['cp_lpt_latency_ms']) for row in results]),
+        'birkhoff_latency_ms': _summary_stats([float(row['birkhoff_latency_ms']) for row in results]),
+        'iterated_greedy_latency_ms': _summary_stats([float(row['iterated_greedy_latency_ms']) for row in results]),
+        'cp_local_swap_latency_ms': _summary_stats([float(row['cp_local_swap_latency_ms']) for row in results]),
         'oracle_perfect_latency_ms': _summary_stats(oracle_perfect_latencies_ms),
         'oracle_predicted_latency_ms': _summary_stats(oracle_predicted_latencies_ms),
         'predicted_improvement_vs_traffic_correlation': predicted_vs_corr,

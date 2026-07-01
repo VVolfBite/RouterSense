@@ -78,7 +78,14 @@ def main(argv: list[str] | None = None) -> int:
         out / "strategy_summary.json",
         {
             "baseline": "greedy_lpt",
-            "fast": "weighted_lookahead_lpt",
+            "fast_selection_rule": "best makespan among candidates with solve_time_ms <= 5.0, else global best",
+            "fast_candidates": [
+                "lookahead_lpt",
+                "cp_lpt",
+                "birkhoff",
+                "iterated_greedy",
+                "cp_local_swap",
+            ],
             "oracle_perfect": "cp_sat_true_next_dispatch",
             "oracle_predicted": "cp_sat_predicted_next_dispatch",
             "summary": report["summary"],

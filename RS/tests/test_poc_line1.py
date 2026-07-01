@@ -7,6 +7,11 @@ from routesense.evaluation import (
     build_predicted_traffic,
     build_same_prompt_batches,
     combine_matrix_from_dispatch,
+    fast_schedule_birkhoff,
+    fast_schedule_cp_local_swap,
+    fast_schedule_cp_lpt,
+    fast_schedule_iterated_greedy,
+    fast_schedule_lookahead_lpt,
     fast_schedule_pairwise,
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
@@ -267,7 +272,35 @@ def test_fast_schedule_pairwise_returns_valid_schedule():
     result = fast_schedule_pairwise(dispatch, combine, next_dispatch, 4)
     assert result["makespan"] >= 0
     assert result["schedule"]
-    assert len(result["phase0_dst_hotness"]) == 4
+    assert result["candidates"]
+
+
+def test_all_fast_scheduler_variants_return_valid_schedule():
+    dispatch = [
+        [0, 8, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 2],
+        [2, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 9, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+        [4, 0, 0, 0],
+    ]
+    for scheduler in (
+        fast_schedule_lookahead_lpt,
+        fast_schedule_cp_lpt,
+        fast_schedule_birkhoff,
+        fast_schedule_iterated_greedy,
+        fast_schedule_cp_local_swap,
+    ):
+        payload = scheduler(dispatch, combine, next_dispatch, 4)
+        assert payload["makespan"] >= 0
+        assert payload["schedule"]
+        assert payload["solve_time_ms"] >= 0
+        assert payload["strategy"]
 
 
 def test_pairwise_oracle_has_no_phase_barrier_in_schedule():
@@ -341,11 +374,22 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
+    assert "lookahead_lpt_improvement_pct" in report["summary"]
+    assert "cp_lpt_improvement_pct" in report["summary"]
+    assert "birkhoff_improvement_pct" in report["summary"]
+    assert "iterated_greedy_improvement_pct" in report["summary"]
+    assert "cp_local_swap_improvement_pct" in report["summary"]
     assert "oracle_prediction_gap_pct" in report["summary"]
     assert "fast_latency_ms" in report["summary"]
+    assert "lookahead_lpt_latency_ms" in report["summary"]
     assert "gate2_decision" in report["summary"]
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
+    assert "lookahead_lpt_makespan" in report["results"][0]
+    assert "cp_lpt_makespan" in report["results"][0]
+    assert "birkhoff_makespan" in report["results"][0]
+    assert "iterated_greedy_makespan" in report["results"][0]
+    assert "cp_local_swap_makespan" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]
