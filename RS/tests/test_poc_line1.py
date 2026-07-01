@@ -9,6 +9,7 @@ from routesense.evaluation import (
     combine_matrix_from_dispatch,
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
+    evaluate_gate2,
     oracle_schedule_multi_layer,
     pairwise_oracle,
     run_pairwise_analysis,
@@ -295,6 +296,43 @@ def test_pairwise_oracle_improves_or_matches_greedy():
     assert oracle["schedule"]
 
 
+def test_pairwise_oracle_has_no_phase_barrier_in_schedule():
+    dispatch = [
+        [0, 0, 4, 0],
+        [0, 0, 0, 10],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    combine = [
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [2, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    next_dispatch = [
+        [0, 0, 0, 0],
+        [0, 0, 0, 2],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    oracle = pairwise_oracle(dispatch, combine, next_dispatch, 4)
+    phase0_end = max(item["end"] for item in oracle["schedule"] if item["phase"] == 0)
+    phase1_start = min(item["start"] for item in oracle["schedule"] if item["phase"] == 1)
+    # no global phase barrier: later phase can start before every phase0 chunk globally ends
+    assert phase1_start < phase0_end
+
+
+def test_evaluate_gate2_decision_labels():
+    payload = evaluate_gate2([20.0, 18.0], [12.0, 11.0])
+    assert payload["decision"] == "PASS"
+    payload = evaluate_gate2([20.0, 18.0], [6.0, 7.0])
+    assert payload["decision"] == "MARGINAL"
+    payload = evaluate_gate2([20.0, 18.0], [2.0, 3.0])
+    assert payload["decision"] == "PREDICTION_BOTTLENECK"
+    payload = evaluate_gate2([3.0, 4.0], [2.0, 3.0])
+    assert payload["decision"] == "NO_SCHEDULING_SPACE"
+
+
 def test_run_pairwise_analysis_reports_gate2_summary():
     from routesense.evaluation.poc_line1 import TraceRecord
     import torch
@@ -329,4 +367,5 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "gate2_decision" in report["summary"]
+    assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1

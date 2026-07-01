@@ -677,10 +677,20 @@ def greedy_schedule_pairwise(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
 ) -> float:
-    _, after_dispatch = greedy_schedule_single_layer(dispatch_matrix, num_gpus)
-    _, after_combine = greedy_schedule_single_layer(combine_matrix, num_gpus, after_dispatch)
-    makespan, _ = greedy_schedule_single_layer(next_dispatch_matrix, num_gpus, after_combine)
-    return makespan
+    gpu_available = [0.0] * num_gpus
+    for matrix in (dispatch_matrix, combine_matrix, next_dispatch_matrix):
+        chunks: list[tuple[int, int, int]] = []
+        for src in range(num_gpus):
+            for dst in range(num_gpus):
+                if src != dst and matrix[src][dst] > 0:
+                    chunks.append((int(matrix[src][dst]), src, dst))
+        chunks.sort(reverse=True)
+        for size, src, dst in chunks:
+            start = max(gpu_available[src], gpu_available[dst])
+            end = start + float(size)
+            gpu_available[src] = end
+            gpu_available[dst] = end
+    return max(gpu_available) if gpu_available else 0.0
 
 
 def combine_matrix_from_dispatch(matrix: list[list[int]], scale: float = 1.0) -> list[list[int]]:
@@ -843,44 +853,118 @@ def pairwise_oracle(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
 ) -> dict[str, Any]:
-    schedule: list[dict[str, Any]] = []
-    gpu_state = [0.0] * num_gpus
-    total_chunk_count = 0
-    current_offset = 0.0
-    for phase, matrix in enumerate((dispatch_matrix, combine_matrix, next_dispatch_matrix)):
-        phase_chunks = _matrix_to_pairwise_chunks(matrix, phase=phase, num_gpus=num_gpus)
-        total_chunk_count += len(phase_chunks)
-        if not phase_chunks:
-            continue
-        _, after_phase = exact_schedule_single_layer(matrix, num_gpus, gpu_state)
-        phase_schedule = []
-        phase_gpu = list(gpu_state)
-        sorted_chunks = sorted(phase_chunks, key=lambda item: (-item.size, item.src_gpu, item.dst_gpu))
-        for chunk in sorted_chunks:
-            start = max(phase_gpu[chunk.src_gpu], phase_gpu[chunk.dst_gpu])
-            end = start + float(chunk.size)
-            phase_gpu[chunk.src_gpu] = end
-            phase_gpu[chunk.dst_gpu] = end
-            phase_schedule.append(
-                {
-                    **chunk.to_dict(),
-                    "start": start,
-                    "end": end,
-                }
-            )
-        phase_makespan = max(after_phase) if after_phase else current_offset
-        if phase_schedule:
-            latest_end = max(item["end"] for item in phase_schedule)
-            if latest_end > phase_makespan:
-                phase_makespan = latest_end
-        schedule.extend(phase_schedule)
-        current_offset = phase_makespan
-        gpu_state = [phase_makespan] * num_gpus
+    try:
+        import numpy as np
+        import scipy.optimize as spo
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("scipy is required for pairwise oracle scheduling") from exc
 
+    phase_chunks = [
+        *_matrix_to_pairwise_chunks(dispatch_matrix, phase=0, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(combine_matrix, phase=1, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(next_dispatch_matrix, phase=2, num_gpus=num_gpus),
+    ]
+    if not phase_chunks:
+        return {"makespan": 0.0, "schedule": [], "chunk_count": 0}
+
+    chunk_count = len(phase_chunks)
+    makespan_index = chunk_count
+    base_variable_count = chunk_count + 1
+    big_m = float(sum(chunk.size for chunk in phase_chunks)) + 1.0
+
+    conflict_pairs: list[tuple[int, int]] = []
+    for i in range(chunk_count):
+        for j in range(i + 1, chunk_count):
+            chunk_i = phase_chunks[i]
+            chunk_j = phase_chunks[j]
+            if {chunk_i.src_gpu, chunk_i.dst_gpu}.isdisjoint({chunk_j.src_gpu, chunk_j.dst_gpu}):
+                continue
+            conflict_pairs.append((i, j))
+
+    binary_offset = base_variable_count
+    total_variable_count = base_variable_count + len(conflict_pairs)
+    c = np.zeros(total_variable_count, dtype=float)
+    c[makespan_index] = 1.0
+    lower_bounds = np.zeros(total_variable_count, dtype=float)
+    upper_bounds = np.full(total_variable_count, np.inf, dtype=float)
+    integrality = np.zeros(total_variable_count, dtype=int)
+    for binary_index in range(len(conflict_pairs)):
+        integrality[binary_offset + binary_index] = 1
+        upper_bounds[binary_offset + binary_index] = 1.0
+
+    rows: list[np.ndarray] = []
+    lower_row_bounds: list[float] = []
+    upper_row_bounds: list[float] = []
+
+    def add_ub(coeffs: dict[int, float], ub: float) -> None:
+        row = np.zeros(total_variable_count, dtype=float)
+        for index, value in coeffs.items():
+            row[index] = value
+        rows.append(row)
+        lower_row_bounds.append(-math.inf)
+        upper_row_bounds.append(ub)
+
+    for idx, chunk in enumerate(phase_chunks):
+        add_ub({idx: 1.0, makespan_index: -1.0}, -float(chunk.size))
+
+    for binary_index, (i, j) in enumerate(conflict_pairs):
+        z_index = binary_offset + binary_index
+        dur_i = float(phase_chunks[i].size)
+        dur_j = float(phase_chunks[j].size)
+        add_ub({i: 1.0, j: -1.0, z_index: -big_m}, -dur_i)
+        add_ub({j: 1.0, i: -1.0, z_index: big_m}, big_m - dur_j)
+
+    for gpu in range(num_gpus):
+        phase0 = [
+            (idx, chunk)
+            for idx, chunk in enumerate(phase_chunks)
+            if chunk.phase == 0 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+        ]
+        phase1 = [
+            (idx, chunk)
+            for idx, chunk in enumerate(phase_chunks)
+            if chunk.phase == 1 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+        ]
+        phase2 = [
+            (idx, chunk)
+            for idx, chunk in enumerate(phase_chunks)
+            if chunk.phase == 2 and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+        ]
+        for from_idx, from_chunk in phase0:
+            for to_idx, _ in phase1:
+                add_ub({from_idx: 1.0, to_idx: -1.0}, -float(from_chunk.size))
+        for from_idx, from_chunk in phase1:
+            for to_idx, _ in phase2:
+                add_ub({from_idx: 1.0, to_idx: -1.0}, -float(from_chunk.size))
+
+    constraints = spo.LinearConstraint(
+        np.vstack(rows),
+        np.asarray(lower_row_bounds, dtype=float),
+        np.asarray(upper_row_bounds, dtype=float),
+    )
+    result = spo.milp(
+        c=c,
+        constraints=constraints,
+        integrality=integrality,
+        bounds=spo.Bounds(lower_bounds, upper_bounds),
+    )
+    if not result.success or result.x is None:
+        raise RuntimeError(f"pairwise MILP failed: {result.message}")
+
+    starts = result.x[:chunk_count]
+    schedule = []
+    for start, chunk in sorted(zip(starts, phase_chunks, strict=False), key=lambda item: float(item[0])):
+        schedule.append(
+            {
+                **chunk.to_dict(),
+                "start": float(start),
+                "end": float(start) + float(chunk.size),
+            }
+        )
     return {
-        "makespan": max(gpu_state) if gpu_state else 0.0,
+        "makespan": float(result.x[makespan_index]),
         "schedule": schedule,
-        "chunk_count": total_chunk_count,
+        "chunk_count": chunk_count,
     }
 
 
@@ -1140,20 +1224,44 @@ def run_pairwise_analysis(
         "predicted_improvement_pct": _summary_stats(predicted_improvements),
         "traffic_correlation": _summary_stats(traffic_correlations),
         "predicted_improvement_vs_traffic_correlation": predicted_vs_corr,
-        "gate2_decision": {
-            "passed": (
-                _summary_stats(perfect_improvements)["mean"] >= 15.0
-                and _summary_stats(predicted_improvements)["mean"] >= 10.0
-            ),
-            "thresholds": {
-                "oracle_perfect_mean_improvement_pct": 15.0,
-                "oracle_predicted_mean_improvement_pct": 10.0,
-            },
-        },
+        "gate2_decision": evaluate_gate2(perfect_improvements, predicted_improvements),
     }
     return {
         "results": results,
         "summary": summary,
+    }
+
+
+def evaluate_gate2(perfect_improvements: list[float], predicted_improvements: list[float]) -> dict[str, Any]:
+    mean_perfect = statistics.fmean(perfect_improvements) if perfect_improvements else 0.0
+    mean_predicted = statistics.fmean(predicted_improvements) if predicted_improvements else 0.0
+
+    if mean_perfect >= 15.0 and mean_predicted >= 10.0:
+        decision = "PASS"
+        reason = "Oracle-perfect >= 15% and Oracle-predicted >= 10%"
+    elif mean_perfect >= 15.0 and mean_predicted >= 5.0:
+        decision = "MARGINAL"
+        reason = "Scheduling valuable but prediction quality insufficient"
+    elif mean_perfect >= 15.0 and mean_predicted < 5.0:
+        decision = "PREDICTION_BOTTLENECK"
+        reason = "Scheduling space exists but prediction too inaccurate"
+    elif mean_perfect < 5.0:
+        decision = "NO_SCHEDULING_SPACE"
+        reason = "Insufficient scheduling optimization space"
+    else:
+        decision = "WEAK"
+        reason = f"perfect={mean_perfect:.1f}%, predicted={mean_predicted:.1f}%"
+
+    return {
+        "decision": decision,
+        "mean_perfect_improvement_pct": mean_perfect,
+        "mean_predicted_improvement_pct": mean_predicted,
+        "reason": reason,
+        "thresholds": {
+            "oracle_perfect_mean_improvement_pct": 15.0,
+            "oracle_predicted_mean_improvement_pct": 10.0,
+        },
+        "passed": decision == "PASS",
     }
 
 
