@@ -600,15 +600,24 @@ def build_sample_layer_matrices(
     *,
     owner_by_expert: dict[int, int],
     num_gpus: int = 4,
+    grouped: dict[tuple[str, int, int], list[TraceRecord]] | None = None,
 ) -> dict[str, dict[int, list[list[int]]]]:
-    grouped = _group_records_by_sample_token_layer(records)
+    if grouped is None:
+        grouped = _group_records_by_sample_token_layer(records)
     sample_ids = sorted({record.sample_id for record in records})
     layer_ids = sorted({record.layer_id for record in records})
+    tokens_by_sample: dict[str, set[int]] = {}
+    for record in records:
+        tokens_by_sample.setdefault(record.sample_id, set()).add(record.token_position)
+    normalized_tokens_by_sample = {
+        sample_id: (
+            (lambda positions: positions[: ((len(positions) // num_gpus) * num_gpus)])(sorted(token_positions))
+        )
+        for sample_id, token_positions in tokens_by_sample.items()
+    }
     sample_layer_matrices: dict[str, dict[int, list[list[int]]]] = {}
     for sample_id in sample_ids:
-        token_positions = sorted({record.token_position for record in records if record.sample_id == sample_id})
-        token_count = (len(token_positions) // num_gpus) * num_gpus
-        token_positions = token_positions[:token_count]
+        token_positions = normalized_tokens_by_sample.get(sample_id, [])
         layer_payload: dict[int, list[list[int]]] = {}
         for layer_id in layer_ids:
             matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
@@ -632,16 +641,20 @@ def build_predicted_traffic(
     owner_by_expert: dict[int, int],
     num_gpus: int = 4,
     topk: int = 8,
+    token_index: dict[tuple[str, int], list[int]] | None = None,
 ) -> list[list[int]]:
-    token_positions = sorted(
-        token_position
-        for record_sample_id, token_position, layer_id in grouped_records
-        if record_sample_id == sample_id and layer_id == to_layer
-    )
-    token_count = (len(token_positions) // num_gpus) * num_gpus
-    token_positions = token_positions[:token_count]
-    max_tokens = min(len(token_positions), 256)
-    token_positions = token_positions[:max_tokens]
+    if token_index is not None:
+        token_positions = token_index.get((sample_id, to_layer), [])
+    else:
+        token_positions = sorted(
+            token_position
+            for record_sample_id, token_position, layer_id in grouped_records
+            if record_sample_id == sample_id and layer_id == to_layer
+        )
+        token_count = (len(token_positions) // num_gpus) * num_gpus
+        token_positions = token_positions[:token_count]
+        max_tokens = min(len(token_positions), 256)
+        token_positions = token_positions[:max_tokens]
     matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
     predicted_rows = predicted_topk_by_sample.get(sample_id, {}).get((from_layer, to_layer), [])
     for token_position in token_positions:
@@ -1251,11 +1264,19 @@ def run_pairwise_analysis(
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
     print(f"[perf] _group_records: {time.time() - t0:.2f}s", flush=True)
+    token_index: dict[tuple[str, int], list[int]] = {}
+    for record in records:
+        token_index.setdefault((record.sample_id, record.layer_id), []).append(record.token_position)
+    for key, positions in list(token_index.items()):
+        deduped_positions = sorted(set(positions))
+        token_count = (len(deduped_positions) // num_gpus) * num_gpus
+        token_index[key] = deduped_positions[: min(token_count, 256)]
     t1 = time.time()
     sample_layer_matrices = build_sample_layer_matrices(
         records,
         owner_by_expert=owner_by_expert,
         num_gpus=num_gpus,
+        grouped=grouped,
     )
     print(f"[perf] build_sample_layer_matrices: {time.time() - t1:.2f}s", flush=True)
     t2 = time.time()
@@ -1274,6 +1295,7 @@ def run_pairwise_analysis(
     perfect_improvements: list[float] = []
     traffic_correlations: list[float] = []
     pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    loop_counter = 0
 
     def matrix_key(matrix: list[list[int]]) -> tuple[tuple[int, ...], ...]:
         return tuple(tuple(int(value) for value in row) for row in matrix)
@@ -1282,16 +1304,18 @@ def run_pairwise_analysis(
         phase0: list[list[int]],
         phase1: list[list[int]],
         phase2: list[list[int]],
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         key = (matrix_key(phase0), matrix_key(phase1), matrix_key(phase2), num_gpus)
         cached = pairwise_cache.get(key)
         if cached is None:
             cached = pairwise_oracle(phase0, phase1, phase2, num_gpus)
             pairwise_cache[key] = cached
-        return cached
+            return cached, False
+        return cached, True
 
     for sample_id in sample_ids:
         for idx in range(len(layer_ids) - 1):
+            loop_counter += 1
             from_layer = layer_ids[idx]
             to_layer = layer_ids[idx + 1]
             layer_map = sample_layer_matrices.get(sample_id, {})
@@ -1310,28 +1334,36 @@ def run_pairwise_analysis(
                 owner_by_expert=owner_by_expert,
                 num_gpus=num_gpus,
                 topk=topk,
+                token_index=token_index,
             )
-            print(
-                f"[perf] build_predicted_traffic [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_build:.3f}s",
-                flush=True,
-            )
+            if loop_counter <= 5 or loop_counter % 100 == 0:
+                print(
+                    f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: "
+                    f"{time.time() - t_build:.3f}s",
+                    flush=True,
+                )
 
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
             t_solve = time.time()
-            oracle_perfect = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
-            print(
-                f"[perf] pairwise_oracle perfect [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_solve:.3f}s",
-                flush=True,
-            )
+            oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
+            perfect_solve_time = time.time() - t_solve
+            if not perfect_cached or loop_counter <= 5 or loop_counter % 100 == 0:
+                print(
+                    f"[perf] pairwise_oracle perfect [{sample_id}..L{from_layer}->{to_layer}]: "
+                    f"{perfect_solve_time:.3f}s cached={perfect_cached} "
+                    f"(status={oracle_perfect.get('solver_status', '?')})",
+                    flush=True,
+                )
             t_solve2 = time.time()
-            oracle_predicted = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
-            print(
-                f"[perf] pairwise_oracle predicted [{sample_id[:8]}..L{from_layer}->{to_layer}]: "
-                f"{time.time() - t_solve2:.3f}s",
-                flush=True,
-            )
+            oracle_predicted, predicted_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
+            predicted_solve_time = time.time() - t_solve2
+            if not predicted_cached or loop_counter <= 5 or loop_counter % 100 == 0:
+                print(
+                    f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: "
+                    f"{predicted_solve_time:.3f}s cached={predicted_cached} "
+                    f"(status={oracle_predicted.get('solver_status', '?')})",
+                    flush=True,
+                )
             oracle_perfect_makespan = (
                 float(oracle_perfect["makespan"])
                 if oracle_perfect["makespan"] is not None
