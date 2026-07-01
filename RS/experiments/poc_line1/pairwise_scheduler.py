@@ -31,7 +31,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--placement", type=str, default="round_robin", choices=["round_robin", "skewed"])
     parser.add_argument("--num-gpus", type=int, default=4)
     parser.add_argument("--topk", type=int, default=8)
-    parser.add_argument("--sample-limit", type=int, default=None)
+    parser.add_argument(
+        "--sample-limit",
+        type=int,
+        default=32,
+        help="Prompt/sample cap for quick scheduler validation. Recommended defaults are 32 or 64; avoid full batch500 until the algorithm has already passed small-sample checks.",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -80,11 +85,10 @@ def main(argv: list[str] | None = None) -> int:
             "baseline": "greedy_lpt",
             "fast_selection_rule": "best makespan among candidates with solve_time_ms <= 5.0, else global best",
             "fast_candidates": [
-                "lookahead_lpt",
-                "cp_lpt",
+                "phase_aware_greedy",
                 "birkhoff",
+                "lagrangian",
                 "iterated_greedy",
-                "cp_local_swap",
             ],
             "oracle_perfect": "cp_sat_true_next_dispatch",
             "oracle_predicted": "cp_sat_predicted_next_dispatch",

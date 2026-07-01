@@ -38,7 +38,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--placement", default="round_robin", choices=["round_robin", "skewed"])
     parser.add_argument("--num-gpus", type=int, default=4)
     parser.add_argument("--topk", type=int, default=8)
-    parser.add_argument("--sample-limit", type=int, default=None)
+    parser.add_argument(
+        "--sample-limit",
+        type=int,
+        default=32,
+        help="Prompt/sample cap for quick algorithm validation. Use small values like 32 or 64 by default; do not start with full batch500 unless explicitly needed.",
+    )
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
 
