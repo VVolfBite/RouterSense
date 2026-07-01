@@ -123,6 +123,100 @@ OMP_NUM_THREADS=1 python experiments/poc_line1/pairwise_scheduler.py \
 - 但当前主要瓶颈已变成 **SciPy/HiGHS 对 repeated pairwise MILP 的总体求解成本**
 - 也就是说，问题已从“约束写错”推进为“求解器策略不够实用”
 
+## OR-Tools / CP-SAT 更新
+
+已进一步按新指令切换到 OR-Tools CP-SAT，并保留 SciPy 版本作为 fallback。
+
+### 本轮新增
+
+1. 安装：
+
+```bash
+pip install ortools
+```
+
+2. `pairwise_oracle(...)` 现在优先使用：
+
+```text
+ortools.sat.python.cp_model
+```
+
+3. 原有 SciPy 版本已下沉为：
+
+```text
+_pairwise_oracle_scipy(...)
+```
+
+### 已确认的事实
+
+1. **单测通过**
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+pytest -q tests/test_poc_line1.py
+```
+
+结果：
+
+```text
+16 passed
+```
+
+2. **单个本地探针走到了 CP-SAT 路径**
+
+对一个小型 pairwise 调度例子，`pairwise_oracle(...)` 返回：
+
+```text
+solver_status = OPTIMAL
+```
+
+说明：
+
+- OR-Tools 已正确安装
+- CP-SAT 路径可用
+- 不是 import fallback 失效
+
+3. **真实 smoke 主流程仍然偏慢**
+
+重新清空 `pairwise_oracle_report_smoke_v3` 后，用新的 CP-SAT 版本重跑：
+
+```bash
+OMP_NUM_THREADS=1 python experiments/poc_line1/pairwise_scheduler.py \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_smoke_v2/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_smoke_v2/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_smoke_v2/gate_weights.pt \
+  --placement round_robin \
+  --output-dir artifacts/poc_line1/pairwise_oracle_report_smoke_v3
+```
+
+观察到：
+
+- 完整 `smoke_v3` 流程仍未回到秒级
+- 进一步把问题缩到：
+
+```python
+run_pairwise_analysis(..., sample_limit=1)
+```
+
+也没有快速完成
+
+### 当前结论
+
+现在可以明确区分两层事实：
+
+1. **Solver 路径层面**
+   - CP-SAT 已接上
+   - 小实例可正常求解并返回最优解
+
+2. **真实离线分析层面**
+   - `run_pairwise_analysis` 在真实 trace 上的总体成本仍偏高
+   - 当前瓶颈已进一步缩小到这层批量 pairwise 分析逻辑
+   - 不再是：
+     - Big-M 约束写错
+     - phase barrier bug
+     - OR-Tools 未生效
+     - CLI / 文件写出问题
+
 ## 当前状态
 
 - Gate1: 维持已完成状态，不改

@@ -847,7 +847,7 @@ def _matrix_to_pairwise_chunks(
     return chunks
 
 
-def pairwise_oracle(
+def _pairwise_oracle_scipy(
     dispatch_matrix: list[list[int]],
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
@@ -975,6 +975,106 @@ def pairwise_oracle(
         "schedule": schedule,
         "chunk_count": chunk_count,
         "solver_status": str(result.message),
+    }
+
+
+def pairwise_oracle(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+) -> dict[str, Any]:
+    try:
+        from ortools.sat.python import cp_model
+    except ImportError:
+        return _pairwise_oracle_scipy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+
+    phase_chunks = [
+        *_matrix_to_pairwise_chunks(dispatch_matrix, phase=0, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(combine_matrix, phase=1, num_gpus=num_gpus),
+        *_matrix_to_pairwise_chunks(next_dispatch_matrix, phase=2, num_gpus=num_gpus),
+    ]
+    if not phase_chunks:
+        return {"makespan": 0.0, "schedule": [], "chunk_count": 0, "solver_status": "empty"}
+
+    chunk_count = len(phase_chunks)
+    horizon = sum(chunk.size for chunk in phase_chunks)
+    model = cp_model.CpModel()
+
+    starts = []
+    ends = []
+    intervals = []
+    for index, chunk in enumerate(phase_chunks):
+        start = model.new_int_var(0, horizon, f"start_{index}")
+        end = model.new_int_var(0, horizon, f"end_{index}")
+        interval = model.new_interval_var(start, int(chunk.size), end, f"interval_{index}")
+        starts.append(start)
+        ends.append(end)
+        intervals.append(interval)
+
+    makespan = model.new_int_var(0, horizon, "makespan")
+    for end in ends:
+        model.add(makespan >= end)
+    model.minimize(makespan)
+
+    for gpu in range(num_gpus):
+        gpu_intervals = [
+            intervals[index]
+            for index, chunk in enumerate(phase_chunks)
+            if chunk.src_gpu == gpu or chunk.dst_gpu == gpu
+        ]
+        if len(gpu_intervals) > 1:
+            model.add_no_overlap(gpu_intervals)
+
+    for gpu in range(num_gpus):
+        for phase_from, phase_to in ((0, 1), (1, 2)):
+            from_ends = [
+                ends[index]
+                for index, chunk in enumerate(phase_chunks)
+                if chunk.phase == phase_from and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+            ]
+            to_starts = [
+                starts[index]
+                for index, chunk in enumerate(phase_chunks)
+                if chunk.phase == phase_to and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+            ]
+            if from_ends and to_starts:
+                done = model.new_int_var(0, horizon, f"done_{gpu}_{phase_from}")
+                for end in from_ends:
+                    model.add(done >= end)
+                for start in to_starts:
+                    model.add(start >= done)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 30.0
+    status = solver.solve(model)
+    feasible_statuses = {cp_model.OPTIMAL, cp_model.FEASIBLE}
+    if status not in feasible_statuses:
+        status_name = solver.status_name(status) if hasattr(solver, "status_name") else str(status)
+        return {
+            "makespan": None,
+            "schedule": [],
+            "chunk_count": chunk_count,
+            "solver_status": status_name,
+        }
+
+    schedule = []
+    for index, chunk in enumerate(phase_chunks):
+        start_value = solver.value(starts[index])
+        schedule.append(
+            {
+                **chunk.to_dict(),
+                "start": float(start_value),
+                "end": float(start_value + chunk.size),
+            }
+        )
+    schedule.sort(key=lambda item: item["start"])
+    status_name = solver.status_name(status) if hasattr(solver, "status_name") else str(status)
+    return {
+        "makespan": float(solver.value(makespan)),
+        "schedule": schedule,
+        "chunk_count": chunk_count,
+        "solver_status": status_name,
     }
 
 
