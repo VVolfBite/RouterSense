@@ -44,6 +44,8 @@ def test_archive_unpack_allows_pytest_from_rs_dir(tmp_path):
     with tarfile.open(archive, "r:gz") as tf:
         tf.extractall(unpack_dir)
     rs_dir = unpack_dir / "RS"
-    env = dict(**os.environ, PYTHONPATH="src")
+    env = dict(os.environ)
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src:{existing_pythonpath}"
     result = subprocess.run(["python", "-c", "from routesense.topology.paths import resolve_rs_root; print(resolve_rs_root().name)"], cwd=rs_dir, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + "\n" + result.stderr

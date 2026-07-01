@@ -23,7 +23,7 @@ def greedy_schedule_single_layer(
     num_gpus: int,
     gpu_earliest_start: list[float] | None = None,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
 ) -> tuple[float, list[float]]:
     if gpu_earliest_start is None:
         gpu_earliest_start = [0.0] * num_gpus
@@ -66,16 +66,20 @@ def greedy_schedule_pairwise(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> float:
     matrices = (dispatch_matrix, combine_matrix, next_dispatch_matrix)
 
     if model == "half_duplex":
         gpu_available = [0.0] * num_gpus
+        dispatch_receivers = {dst for _size, _src, dst in _matrix_to_chunks(dispatch_matrix, num_gpus)}
         for phase_index, matrix in enumerate(matrices):
             if phase_index == 1 and expert_compute_delay > 0.0:
-                gpu_available = [value + expert_compute_delay for value in gpu_available]
+                gpu_available = [
+                    value + expert_compute_delay if gpu in dispatch_receivers else value
+                    for gpu, value in enumerate(gpu_available)
+                ]
             for size, src, dst in _matrix_to_chunks(matrix, num_gpus):
                 start = max(gpu_available[src], gpu_available[dst])
                 end = start + float(size)
@@ -123,7 +127,7 @@ def greedy_schedule_multi_layer(
     combine_matrices: list[list[list[int]]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> float:
     gpu_earliest_start = [0.0] * num_gpus

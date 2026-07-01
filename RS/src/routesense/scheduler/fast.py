@@ -53,7 +53,7 @@ def _schedule_phase_orders(
     strategy: str,
     solve_time_ms: float,
     priority_lookup: dict[str, tuple[float, ...]] | None = None,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     max_gpu = 0
@@ -124,6 +124,9 @@ def _critical_path_weights(phase_chunks: dict[int, list[ChunkSpec]], num_gpus: i
         for gpu in range(num_gpus):
             later_work[gpu][phase] = later_work[gpu][phase + 1]
         for chunk in phase_chunks.get(phase, []):
+            # Note: src and dst later_work are tracked independently per port.
+            # In full_duplex, send-port and recv-port are separate resources,
+            # so summing both into the priority signal reflects downstream contention on both ports.
             later_work[chunk.src_gpu][phase] += chunk.size
             later_work[chunk.dst_gpu][phase] += chunk.size
     weights: dict[str, float] = {}
@@ -216,7 +219,7 @@ def fast_schedule_lookahead_lpt(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -242,7 +245,7 @@ def fast_schedule_cp_lpt(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -310,7 +313,7 @@ def fast_schedule_birkhoff(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -335,6 +338,8 @@ def fast_schedule_birkhoff(
             )
     phase_orders = {}
     for phase, chunks in phase_chunks.items():
+        # Birkhoff round_rank: lower index = higher weight matching = schedule first.
+        # -round_rank with reverse=True yields ascending round_rank, so early rounds run first.
         phase_orders[phase] = sorted(
             chunks,
             key=lambda chunk: (
@@ -391,7 +396,7 @@ def fast_schedule_iterated_greedy(
     num_gpus: int,
     *,
     iterations: int = 10,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -448,7 +453,7 @@ def fast_schedule_cp_local_swap(
     num_gpus: int,
     *,
     rounds: int = 3,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -505,7 +510,7 @@ def fast_schedule_pairwise(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     candidates = [

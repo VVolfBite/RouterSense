@@ -62,7 +62,7 @@ def _pairwise_oracle_scipy(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     # Fallback path uses greedy upper bound only; main experiments should hit CP-SAT.
@@ -89,7 +89,7 @@ def pairwise_oracle(
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
     *,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     try:
@@ -182,14 +182,14 @@ def pairwise_oracle(
                 from_ends = [
                     ends[index]
                     for index, chunk in enumerate(phase_chunks)
-                    if chunk.phase == phase_from and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+                    if chunk.phase == phase_from and chunk.dst_gpu == gpu
                 ]
                 to_starts = [
                     starts[index]
                     for index, chunk in enumerate(phase_chunks)
-                    if chunk.phase == phase_to and (chunk.src_gpu == gpu or chunk.dst_gpu == gpu)
+                    if chunk.phase == phase_to and chunk.src_gpu == gpu
                 ]
-                extra_delay = 0
+                extra_delay = int(math.ceil(expert_compute_delay)) if phase_to == 1 else 0
             else:
                 from_ends = [
                     ends[index]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ def run_pairwise_analysis(
     num_gpus: int = 4,
     topk: int = 8,
     sample_limit: int | None = None,
-    model: str = "half_duplex",
+    model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     t0 = time.time()
@@ -67,6 +68,8 @@ def run_pairwise_analysis(
     fast_latencies_ms: list[float] = []
     oracle_perfect_latencies_ms: list[float] = []
     oracle_predicted_latencies_ms: list[float] = []
+    oracle_perfect_statuses: list[str] = []
+    oracle_predicted_statuses: list[str] = []
     cp_lpt_improvements: list[float] = []
     lookahead_lpt_improvements: list[float] = []
     birkhoff_improvements: list[float] = []
@@ -142,11 +145,13 @@ def run_pairwise_analysis(
             t_solve = time.time()
             oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
             perfect_solve_time = time.time() - t_solve
+            oracle_perfect_statuses.append(str(oracle_perfect.get("solver_status", "unknown")))
             if not perfect_cached or loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] pairwise_oracle perfect [{sample_id}..L{from_layer}->{to_layer}]: {perfect_solve_time:.3f}s cached={perfect_cached} (status={oracle_perfect.get('solver_status', '?')})", flush=True)
             t_solve2 = time.time()
             oracle_predicted, predicted_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
             predicted_solve_time = time.time() - t_solve2
+            oracle_predicted_statuses.append(str(oracle_predicted.get("solver_status", "unknown")))
             if not predicted_cached or loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: {predicted_solve_time:.3f}s cached={predicted_cached} (status={oracle_predicted.get('solver_status', '?')})", flush=True)
             oracle_perfect_makespan = float(oracle_perfect['makespan']) if oracle_perfect['makespan'] is not None else greedy_makespan
@@ -257,6 +262,8 @@ def run_pairwise_analysis(
         'cp_local_swap_latency_ms': _summary_stats([float(row['cp_local_swap_latency_ms']) for row in results]),
         'oracle_perfect_latency_ms': _summary_stats(oracle_perfect_latencies_ms),
         'oracle_predicted_latency_ms': _summary_stats(oracle_predicted_latencies_ms),
+        'oracle_perfect_solver_statuses': dict(Counter(oracle_perfect_statuses)),
+        'oracle_predicted_solver_statuses': dict(Counter(oracle_predicted_statuses)),
         'predicted_improvement_vs_traffic_correlation': predicted_vs_corr,
         'gate2_decision': evaluate_gate2(perfect_improvements, predicted_improvements),
     }
