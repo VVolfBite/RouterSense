@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .local_test.inference import (
+from . import distributed_ep
+from .single_gpu import (
     SingleGPUInferenceResult,
     gpu_environment_snapshot,
     load_model_and_tokenizer,
@@ -9,6 +10,7 @@ from .local_test.inference import (
 
 __all__ = [
     "SingleGPUInferenceResult",
+    "distributed_ep",
     "gpu_environment_snapshot",
     "load_model_and_tokenizer",
     "run_single_gpu_text_inference",
