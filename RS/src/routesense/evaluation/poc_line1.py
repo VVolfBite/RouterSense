@@ -1078,7 +1078,7 @@ def pairwise_oracle(
                     model.add(start >= done)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 1.0
+    solver.parameters.max_time_in_seconds = 0.2
     solver.parameters.num_search_workers = 8
     solver.parameters.random_seed = 0
     status = solver.solve(model)
