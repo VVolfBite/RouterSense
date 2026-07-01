@@ -1,193 +1,150 @@
-# RS 代码仓库重构指令
+# Line 1 开发任务：快速调度算法设计
 
-## 目标
-将 RouterSense/RS 重构为四层清晰结构：`src/` | `experiments/` | `scripts/` | `deploy/`
-另保留 `channel/` 用于远端通信（仅 pull，不 push）。
+## 当前状态
 
-## 目标结构
+### 已完成
+- ✅ Gate 1 跨层预测验证：Fate 方法可在 OLMoE-1B 上实现 >95% prefetch accuracy
+- ✅ Gate 2 理论上限验证：CP-SAT oracle 相比 greedy LPT 改善 ~35% makespan
+- ✅ 原创性确认：跨层预测 + EP 通信调度组合无人 claim
+- ✅ 代码仓库重构：src/experiments/scripts/analysis 四层分离
 
-```
-RS/
-├── src/routesense/
-│   ├── __init__.py
-│   ├── trace/                        ← 路由 trace 采集（保留不动）
-│   │   ├── __init__.py
-│   │   └── olmoe_router_trace.py
-│   ├── topology/                     ← 网络拓扑（保留不动）
-│   │   ├── __init__.py
-│   │   ├── inventory.py
-│   │   └── paths.py
-│   ├── scheduler/                    ← 调度算法（核心）
-│   │   ├── __init__.py
-│   │   ├── oracle.py                 ← CP-SAT oracle（从 poc_line1.py 拆出）
-│   │   ├── greedy.py                 ← LPT greedy（从 poc_line1.py 拆出）
-│   │   └── fast.py                   ← 快速调度算法（待开发，先建空壳）
-│   ├── evaluation/                   ← 评估与分析
-│   │   ├── __init__.py
-│   │   ├── cross_layer.py            ← Gate 1 跨层预测分析（从 poc_line1.py 拆出）
-│   │   ├── traffic_matrix.py         ← 流量矩阵构建（从 poc_line1.py 拆出）
-│   │   └── artifacts.py              ← artifact 写入（保留不动）
-│   └── runtime/                      ← 分布式运行时（保留不动）
-│       └── distributed_ep/
-│           ├── core/
-│           └── adapter/
-│
-├── experiments/                      ← 实验入口（一键运行，参数硬编码）
-│   ├── poc_line1/
-│   │   ├── exp_trace.py              ← 采集 trace
-│   │   ├── exp_cross_layer.py        ← 跨层预测分析
-│   │   ├── exp_oracle.py             ← oracle vs greedy 对比
-│   │   └── exp_pairwise.py           ← pairwise 调度分析
-│   ├── distributed/
-│   │   ├── exp_nccl_smoke.py
-│   │   └── exp_olmoe_ep.py
-│   └── ablation/
-│       └── configs/                  ← 消融实验配置 yaml
-│
-├── analysis/                         ← 分析工具（处理实验产出）
-│   ├── __init__.py
-│   ├── plot_makespan.py              ← makespan 对比可视化
-│   ├── plot_prediction.py            ← 预测质量分析
-│   ├── summarize_pairwise.py         ← pairwise 结果汇总
-│   └── compare_strategies.py         ← 多策略对比
-│
-├── scripts/                          ← 脚手架/工具脚本
-│   ├── verify_gpu_env.py
-│   ├── verify_cluster_gpu_env.py
-│   ├── verify_model_cache.py
-│   ├── verify_model_parity.py
-│   ├── probe_architecture.py
-│   ├── router_trace_smoke.py
-│   ├── single_gpu_smoke.py
-│   ├── text_inference.py
-│   ├── check_cluster_access.sh
-│   ├── check_repo_parity.sh
-│   ├── collect_logs.sh
-│   ├── launch_remote.sh
-│   ├── prefetch_model.sh
-│   ├── prepare_node.sh
-│   ├── prepare_2node_4gpu.sh
-│   ├── stop_rs_jobs.sh
-│   ├── sync_model_cache.sh
-│   └── sync_repo.sh
-│
-├── deploy/                           ← 远端部署包
-│   ├── inventory/                    ← 集群节点配置
-│   ├── env/                          ← 环境依赖
-│   └── README.md
-│
-├── channel/                          ← 远端通信目录（仅 pull，不 push）
-│   ├── ins/                          ← 远端发来的指令
-│   └── reply/                        ← 远端发来的回复
-│
-├── tests/
-│   ├── test_poc_line1.py
-│   └── test_structure_refactor.py
-│
-├── configs/                          ← 本地配置
-│   ├── model/
-│   ├── topology/
-│   └── scheduler/
-│
-├── artifacts/                        ← 实验产出（gitignore）
-├── pyproject.toml
-└── README.md
-```
+### 核心缺口
+**快速调度算法**——论文的核心贡献还缺。
 
-## 执行步骤
+| 方案 | 调度质量 | 计算开销 | 问题 |
+|------|---------|---------|------|
+| Oracle (CP-SAT) | 最优 (~35% 改善) | 100-200ms | 太慢，无法实时 |
+| Greedy (LPT) | 基线 | <1ms | 太笨，浪费优化空间 |
+| **Fast (待开发)** | **接近 oracle** | **<5ms** | **核心贡献** |
 
-### Step 1: 清理
-1. 删除所有 `__pycache__/` 目录
-2. 删除空目录：`src/routesense/oracle/`、`experiments/baseline/`、`experiments/paper/`、`experiments/stress/`
-3. 删除 `src/routesense/runtime/local_test/`（单机验证已完成，archive 有备份）
+### 实时性约束
+- MoE 单层 all-to-all 通信时间：~1-5ms（取决于模型和 GPU 数量）
+- 调度决策必须在下一层 dispatch 开始前完成
+- 目标：调度开销 < 通信时间的 10%（即 <0.5ms 理想，<5ms 可接受）
 
-### Step 2: 拆分 poc_line1.py
-将 `src/routesense/evaluation/poc_line1.py`（1472行）拆分为：
+---
 
-- `src/routesense/scheduler/oracle.py`：
-  - `pairwise_oracle()` 函数
-  - `_pairwise_oracle_scipy()` 函数（fallback）
-  - `PairwiseChunk` dataclass
-  - 所有 CP-SAT / scipy 相关辅助函数
+## 开发任务
 
-- `src/routesense/scheduler/greedy.py`：
-  - `greedy_schedule_pairwise()`
-  - `greedy_schedule_single_layer()`
-  - `greedy_schedule_multi_layer()`
+### Task 1：快速调度算法设计（核心）
 
-- `src/routesense/evaluation/cross_layer.py`：
-  - `analyze_cross_layer_predictability()`
-  - `analyze_cross_layer_correlation()`
-  - `evaluate_gate2()`
-  - `_decode_predicted_topk_by_sample()`
-  - `GatePredictionStat` dataclass
-  - `spearman_rank_correlation()` 及辅助统计函数（`_pearson`, `_rankdata`, `_summary_stats`）
+**目标**：设计一个 O(n log n) 或 O(n²) 复杂度的调度算法，质量接近 CP-SAT oracle。
 
-- `src/routesense/evaluation/traffic_matrix.py`：
-  - `build_sample_layer_matrices()`
-  - `build_predicted_traffic()`
-  - `combine_matrix_from_dispatch()`
-  - `build_owner_by_expert()`
-  - `build_same_prompt_batches()`
-  - `TraceRecord` dataclass
-  - `load_trace_jsonl()`
-  - `_group_records_by_sample_token_layer()`
+**输入**：
+- dispatch traffic matrix T[G][G]（来自跨层预测或实际 gate output）
+- combine matrix = T.T（自动推导）
+- next_dispatch matrix T'[G][G]（来自跨层预测）
+- GPU 数量 G
 
-- `src/routesense/evaluation/analysis.py`：
-  - `run_pairwise_analysis()`
-  - `simulate_oracle_vs_greedy()`
-  - `oracle_schedule_multi_layer()`
-  - 其他编排/汇总函数
+**约束**：
+- per-GPU half-duplex：同一 GPU 同时只能参与一个传输
+- chunk 不可抢占：一个传输一旦开始必须完成
+- 三阶段顺序：dispatch → expert compute → combine（per-GPU 粒度，非全局 barrier）
 
-保留 `src/routesense/evaluation/artifacts.py` 不动。
+**候选算法方向**：
 
-### Step 3: 更新 __init__.py
-- 新建 `src/routesense/scheduler/__init__.py`，导出所有调度相关函数
-- 更新 `src/routesense/evaluation/__init__.py`，改为从新模块 import
-- 确保所有 experiment 脚本的 import 路径正确
+#### 方向 A：Weighted LPT with Look-ahead
+在 LPT greedy 基础上加入跨层前瞻信息：
+1. 计算每个 GPU 在 L+1 层的预期接收量（来自 next_dispatch matrix）
+2. 对于 L 层 dispatch 中发往同一 GPU 的多个 chunk，优先调度发往"L+1 层接收量大"的 GPU 的 chunk
+3. 复杂度：O(n log n)，与 LPT 相同
+4. 预期改善：5-15%（利用跨层信息做更优排序）
 
-### Step 4: 整合 scripts/
-1. 将 `deploy/scripts/` 下所有文件移到 `scripts/`
-2. 将 `experiments/prerun/` 下所有文件移到 `scripts/`
-3. 删除 `deploy/scripts/` 和 `experiments/prerun/`
+#### 方向 B：Greedy + Local Swap
+1. 先用 LPT 生成初始调度
+2. 识别关键路径上的 chunk（完成时间最晚的 GPU 相关的 chunk）
+3. 尝试将关键路径上的 chunk 提前，检查是否违反约束
+4. 迭代直到无改善或达到迭代上限
+5. 复杂度：O(n² × iterations)
+6. 预期改善：10-25%
 
-### Step 5: 重写 experiments 入口
-将 `experiments/poc_line1/` 下的 4 个脚本重写为统一格式：
-- 文件名统一为 `exp_*.py`
-- 参数硬编码在文件顶部常量区
-- 每个文件一个 `main()` 函数，一键运行
-- import 路径指向 `src/routesense/` 的新模块
+#### 方向 C：Two-Phase Constructive
+1. Phase 1：按 GPU 分组，为每个 GPU 独立排序其 outgoing chunks（按目的地 next-layer 接收量降序）
+2. Phase 2：全局调度——维护 per-GPU 时间线，贪心插入各 GPU 的下一个 chunk
+3. 复杂度：O(n log n)
+4. 预期改善：10-20%
 
-同理处理 `experiments/distributed/scripts/` → 提升到 `experiments/distributed/`，去掉 scripts 子目录。
+#### 方向 D：CP-SAT Warm-Start
+1. 用上一层的 CP-SAT 解作为初始解
+2. 设置更短的超时（10-50ms）
+3. 利用相邻层 traffic 的相似性（Spearman >0.9），warm-start 应快速收敛
+4. 复杂度：取决于 CP-SAT 内部迭代
+5. 预期改善：20-30%（接近 oracle）
+6. 风险：CP-SAT 开销可能仍然偏高
 
-### Step 6: 创建 analysis/ 目录
-新建 `analysis/` 目录，放入分析工具脚本。初期可以先创建 `__init__.py` 和占位文件，后续填充具体分析代码。
+**评估标准**：
+- 在 batch500 数据集上，makespan 改善 ≥ 15%（对比 greedy）
+- 单次调度延迟 < 5ms
+- 代码不超过 200 行
 
-### Step 7: channel/ 目录
-确保 `channel/ins/` 和 `channel/reply/` 目录存在（替代原 rs_channel/）。
-添加 `.gitkeep` 保持目录结构。
+### Task 2：实验验证（与 Task 1 并行准备）
 
-### Step 8: 清理根目录 md 文件
-根目录散落的 md 文件整理：
-- `line2-thought.md` → 保留（当前讨论记录）
-- `new-directions.md` → 保留（方向文档）
-- `poc1-claim-risk.md` → 保留（审计提示词）
-- `poc_line1_i_task.md` → 保留（任务书）
-- `combine.md`, `perfer.md`, `infocom-direction-survey.md` → 移入 `docs/` 或评估是否可删除
+#### 实验 A：oracle_perfect vs oracle_predicted gap
+- 目的：量化预测误差对调度质量的实际影响
+- 数据来源：已有 `run_pairwise_analysis` 结果
+- 输出：ε (prediction error) vs improvement_pct 散点图
+- 文件：`analysis/plot_prediction.py`
 
-### Step 9: 文件命名统一
-- experiments 下：`exp_<功能>.py`
-- scripts 下：功能描述性命名，snake_case
-- analysis 下：`<动作>_<对象>.py`（如 plot_makespan.py）
-- 所有 Python 文件 snake_case
+#### 实验 B：快速算法 vs oracle vs greedy 三方对比
+- 目的：证明 fast 算法的质量接近 oracle，速度接近 greedy
+- 数据：batch500，round_robin placement
+- 输出：
+  - makespan 统计（mean, median, p25, p75）
+  - 调度延迟统计
+  - 改善百分比分布
+- 文件：`experiments/poc_line1/exp_pairwise.py` 增加 fast 策略
 
-### Step 10: 验证
-1. 运行 `cd RS && pytest -q tests/` 确保所有测试通过
-2. 检查所有 import 路径无报错
-3. 运行一个 smoke 实验确认端到端可用
+#### 实验 C：多配置验证
+- placement: round_robin + skewed
+- batch size: 32 + 500
+- 输出：各配置下 fast vs greedy 的改善百分比
 
-## 约束
-- **不修改任何算法逻辑**，只做文件移动和 import 修正
-- `channel/` 目录只做 pull，这边不做 push
-- 保留 archive/ 和 legacy/ 不动
-- 每步完成后 git add + commit，不要一次性大提交
+#### 实验 D：正交性验证（与 FAST 对比）
+- 目的：证明我们的跨层调度与 FAST 的单层调度可以叠加
+- 方法：模拟 FAST 的 Birkhoff 分解 + 我们的跨层调度
+- 输出：单独 FAST / 单独 RouterSENSE / 叠加 的 makespan 对比
+
+### Task 3：分析工具完善
+
+- `analysis/plot_makespan.py`：makespan CDF 图 + box plot
+- `analysis/compare_strategies.py`：多策略表格对比
+- `analysis/summarize_pairwise.py`：pairwise 结果汇总统计
+
+---
+
+## 时间线
+
+| 阶段 | 内容 | 预估 |
+|------|------|------|
+| W1 | Task 1 算法设计 + 实现 + 初步验证 | 3-5 天 |
+| W2 | Task 2 完整实验 + Task 3 分析工具 | 3-5 天 |
+| W3 | 论文实验章节撰写 + 图表制作 | 3-5 天 |
+
+---
+
+## 文件交付清单
+
+| 文件 | 内容 | 状态 |
+|------|------|------|
+| `src/routesense/scheduler/fast.py` | 快速调度算法 | ⏳ 待开发 |
+| `src/routesense/scheduler/oracle.py` | CP-SAT oracle | ✅ 已有 |
+| `src/routesense/scheduler/greedy.py` | LPT greedy | ✅ 已有 |
+| `experiments/poc_line1/exp_pairwise.py` | pairwise 实验入口 | ✅ 已有（需扩展） |
+| `analysis/plot_prediction.py` | 预测质量可视化 | ⏳ 待开发 |
+| `analysis/compare_strategies.py` | 策略对比 | ⏳ 待开发 |
+
+---
+
+## 决策点
+
+1. **算法方向选择**：A/B/C/D 哪个先做？
+   - 建议：先做 A（最简单，有跨层信息利用），如果不够再做 B
+   - D 作为 fallback（CP-SAT warm-start 可能意外地快）
+
+2. **实验优先级**：A → B → C → D
+   - A 和 B 是论文必须有的
+   - C 和 D 是加分项
+
+3. **单 strong point vs 双贡献**：
+   - 如果 fast 算法设计有足够的技术深度（如方向 B 的 local swap 有收敛性分析），可以作为独立贡献
+   - 否则论文以"预测感知调度"为单一核心贡献 + 厚实验
