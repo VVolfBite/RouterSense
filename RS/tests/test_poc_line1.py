@@ -341,7 +341,11 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
+    assert "oracle_prediction_gap_pct" in report["summary"]
+    assert "fast_latency_ms" in report["summary"]
     assert "gate2_decision" in report["summary"]
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
+    assert "oracle_prediction_gap_pct" in report["results"][0]
+    assert "oracle_perfect_latency_ms" in report["results"][0]

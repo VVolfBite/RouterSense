@@ -23,7 +23,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-json", type=str, required=True)
     args = parser.parse_args(argv)
     payload = json.loads(Path(args.results_json).read_text(encoding="utf-8"))
-    fields = ["fast_improvement_pct", "perfect_improvement_pct", "predicted_improvement_pct", "traffic_correlation"]
+    fields = [
+        "fast_improvement_pct",
+        "perfect_improvement_pct",
+        "predicted_improvement_pct",
+        "oracle_prediction_gap_pct",
+        "traffic_correlation",
+        "greedy_latency_ms",
+        "fast_latency_ms",
+        "oracle_perfect_latency_ms",
+        "oracle_predicted_latency_ms",
+    ]
     summary = {field: _stats([float(row.get(field, 0.0)) for row in payload]) for field in fields}
     print(json.dumps(summary, indent=2))
     return 0

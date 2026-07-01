@@ -18,6 +18,10 @@ def main(argv: list[str] | None = None) -> int:
             "fast_makespan": row.get("fast_makespan", row["greedy_makespan"]),
             "oracle_perfect_makespan": row["oracle_perfect_makespan"],
             "oracle_predicted_makespan": row["oracle_predicted_makespan"],
+            "greedy_latency_ms": row.get("greedy_latency_ms", 0.0),
+            "fast_latency_ms": row.get("fast_latency_ms", 0.0),
+            "oracle_perfect_latency_ms": row.get("oracle_perfect_latency_ms", 0.0),
+            "oracle_predicted_latency_ms": row.get("oracle_predicted_latency_ms", 0.0),
         }
         for row in rows
     ]

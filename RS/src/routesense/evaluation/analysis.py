@@ -50,7 +50,12 @@ def run_pairwise_analysis(
     predicted_improvements: list[float] = []
     perfect_improvements: list[float] = []
     fast_improvements: list[float] = []
+    oracle_prediction_gaps: list[float] = []
     traffic_correlations: list[float] = []
+    greedy_latencies_ms: list[float] = []
+    fast_latencies_ms: list[float] = []
+    oracle_perfect_latencies_ms: list[float] = []
+    oracle_predicted_latencies_ms: list[float] = []
     pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     loop_counter = 0
 
@@ -93,8 +98,12 @@ def run_pairwise_analysis(
             if loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
+            t_greedy = time.time()
             greedy_makespan = greedy_schedule_pairwise(dispatch_matrix, combine_matrix, next_actual_matrix, num_gpus)
+            greedy_latency_ms = (time.time() - t_greedy) * 1000.0
+            t_fast = time.time()
             fast_result = fast_schedule_pairwise(dispatch_matrix, combine_matrix, next_predicted_matrix, num_gpus)
+            fast_latency_ms = (time.time() - t_fast) * 1000.0
             fast_makespan = float(fast_result["makespan"])
             t_solve = time.time()
             oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
@@ -111,6 +120,7 @@ def run_pairwise_analysis(
             fast_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - fast_makespan) / greedy_makespan) * 100.0
             perfect_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
             predicted_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_predicted_makespan) / greedy_makespan) * 100.0
+            oracle_prediction_gap_pct = perfect_improvement_pct - predicted_improvement_pct
             flat_actual = [float(value) for row in next_actual_matrix for value in row]
             flat_predicted = [float(value) for row in next_predicted_matrix for value in row]
             traffic_corr = spearman_rank_correlation(flat_actual, flat_predicted)
@@ -118,7 +128,12 @@ def run_pairwise_analysis(
             perfect_improvements.append(perfect_improvement_pct)
             predicted_improvements.append(predicted_improvement_pct)
             fast_improvements.append(fast_improvement_pct)
+            oracle_prediction_gaps.append(oracle_prediction_gap_pct)
             traffic_correlations.append(traffic_corr)
+            greedy_latencies_ms.append(greedy_latency_ms)
+            fast_latencies_ms.append(fast_latency_ms)
+            oracle_perfect_latencies_ms.append(perfect_solve_time * 1000.0)
+            oracle_predicted_latencies_ms.append(predicted_solve_time * 1000.0)
             results.append({
                 'sample_id': sample_id,
                 'layer_pair': f'{from_layer}->{to_layer}',
@@ -130,9 +145,14 @@ def run_pairwise_analysis(
                 'fast_makespan': fast_makespan,
                 'oracle_perfect_makespan': oracle_perfect_makespan,
                 'oracle_predicted_makespan': oracle_predicted_makespan,
+                'greedy_latency_ms': greedy_latency_ms,
+                'fast_latency_ms': fast_latency_ms,
+                'oracle_perfect_latency_ms': perfect_solve_time * 1000.0,
+                'oracle_predicted_latency_ms': predicted_solve_time * 1000.0,
                 'fast_improvement_pct': fast_improvement_pct,
                 'perfect_improvement_pct': perfect_improvement_pct,
                 'predicted_improvement_pct': predicted_improvement_pct,
+                'oracle_prediction_gap_pct': oracle_prediction_gap_pct,
                 'traffic_correlation': traffic_corr,
                 'fast_schedule': fast_result['schedule'],
                 'oracle_perfect_chunk_count': oracle_perfect['chunk_count'],
@@ -149,7 +169,12 @@ def run_pairwise_analysis(
         'fast_improvement_pct': _summary_stats(fast_improvements),
         'perfect_improvement_pct': _summary_stats(perfect_improvements),
         'predicted_improvement_pct': _summary_stats(predicted_improvements),
+        'oracle_prediction_gap_pct': _summary_stats(oracle_prediction_gaps),
         'traffic_correlation': _summary_stats(traffic_correlations),
+        'greedy_latency_ms': _summary_stats(greedy_latencies_ms),
+        'fast_latency_ms': _summary_stats(fast_latencies_ms),
+        'oracle_perfect_latency_ms': _summary_stats(oracle_perfect_latencies_ms),
+        'oracle_predicted_latency_ms': _summary_stats(oracle_predicted_latencies_ms),
         'predicted_improvement_vs_traffic_correlation': predicted_vs_corr,
         'gate2_decision': evaluate_gate2(perfect_improvements, predicted_improvements),
     }

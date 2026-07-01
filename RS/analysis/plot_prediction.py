@@ -15,6 +15,8 @@ def main(argv: list[str] | None = None) -> int:
             "sample_id": row["sample_id"],
             "layer_pair": row["layer_pair"],
             "predicted_improvement_pct": row.get("predicted_improvement_pct", 0.0),
+            "perfect_improvement_pct": row.get("perfect_improvement_pct", 0.0),
+            "oracle_prediction_gap_pct": row.get("oracle_prediction_gap_pct", 0.0),
             "traffic_correlation": row.get("traffic_correlation", 0.0),
             "fast_improvement_pct": row.get("fast_improvement_pct", 0.0),
         }
