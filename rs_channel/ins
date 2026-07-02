@@ -1,221 +1,292 @@
-# 快速调度算法实现指令
+# 消融实验：Fluid 拆分 vs 跨 Phase 联合调度 贡献归因
 
 ## 目标
 
-在 `src/routesense/scheduler/fast.py` 中实现多个快速调度算法候选，用于与现有 oracle（CP-SAT）和 greedy（LPT）对比。
+量化 U_ 类调度器的两个性能增益来源的**独立贡献**：
+1. **Fluid 拆分**（wave 模型允许拆分 flow）
+2. **跨 Phase 联合调度**（全局 ready-set 允许不同 phase 的 flow 同时竞争端口）
 
-## 输入/输出接口
+这是论文归档级实验，结果需要长期保存。
 
-所有算法遵循统一接口：
+---
 
+## 背景
+
+当前 U_ 类算法 (N=8) 达到 ~43% improvement，D_ 类 ~19%。差距来自两个因素：
+- U_ 允许把一个大 flow 拆成多个 wave 传输（fluid）
+- U_ 允许 phase-0 和 phase-1 的 flow 在同一个 wave 中同时调度（跨 phase）
+
+需要做 2×2 消融矩阵：
+
+|  | 无跨 phase | 跨 phase |
+|---|---|---|
+| **无 fluid（atomic）** | D_atomic（当前 baseline ~19%） | U_atomic（待实现） |
+| **有 fluid** | D_fluid（语义等价于 D_atomic，见下文） | U_fluid（当前 U_ ~43%） |
+
+**关键洞察**：D_fluid ≈ D_atomic，因为 D_ 的 `_schedule_phase_orders` 按 phase 顺序处理，phase 内拆不拆 chunk 不影响总时间。所以实际上只需要测 3 个配置。
+
+---
+
+## 实现要求
+
+### Task 1：给 `_run_global_matching_scheduler` 添加 `atomic` 参数
+
+文件：`src/routesense/scheduler/multiphase_global.py`
+
+在函数签名中新增参数：
 ```python
-def fast_schedule_xxx(
-    dispatch_matrix: list[list[int]],   # G×G, dispatch_matrix[src][dst] = token_count
-    combine_matrix: list[list[int]],     # G×G, = dispatch_matrix.T
-    next_dispatch_matrix: list[list[int]],  # G×G, 下一层 dispatch
+def _run_global_matching_scheduler(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    strategy: str,
+    mode: str,
+    prediction_confidence: float,
+    expert_compute_delay: float,
+    exact_matching: bool,
+    wave_quantum: float | None,
+    max_waves: int,
+    residual_weight: float,
+    barrier_weight: float,
+    age_weight: float,
+    prediction_weight: float,
+    adaptive_prices: bool,
+    price_step: float,
+    price_decay: float,
+    price_clip: float,
+    iteration_budget: int,
+    atomic: bool = False,  # ← 新增
 ) -> dict[str, Any]:
-    # 返回与 pairwise_oracle 相同结构：
-    # {
-    #   "makespan": float,
-    #   "schedule": list[dict],  # 每个 dict: {chunk_id, start, end, src, dst, phase}
-    #   "solve_time_ms": float,
-    #   "strategy": str,
-    # }
 ```
 
-## 需要实现的算法（4个）
+**核心修改**（约 L420 附近）：
 
----
-
-### 算法 1：Critical Path LPT（CP-LPT）
-
-**思路**：在 LPT 基础上，按 critical path length 排序而非 chunk size 排序。
-
-**实现**：
-1. 构建三阶段所有 chunk
-2. 对每个 chunk 计算 critical path weight = 自身大小 + 同 GPU 后续阶段所有 chunk 的总大小
-3. 按 critical path weight 降序排列
-4. 贪心插入，维护 per-GPU 时间线，检查 half-duplex 约束
-
-**复杂度**：O(n log n)
-**预期改善**：5-10%（比纯 LPT 好，因为考虑了跨阶段依赖）
-
-**参考**：
-- HEFT/CPoP 算法：https://arxiv.org/html/2403.07120v1
-- List scheduling 综述：https://scholars.lmu.edu/ws/portalfiles/portal/41819393/2403.07120v2.pdf
-
----
-
-### 算法 2：Birkhoff Round Decomposition
-
-**思路**：借鉴 FLASH/FAST 的 Birkhoff-von Neumann 分解，将不均匀 traffic 分解为多个均匀轮次。
-
-**实现**：
-1. 对 dispatch_matrix 做 Birkhoff 分解：
-   - 输入：非负整数矩阵 M（G×G）
-   - 输出：一系列 (permutation_matrix, weight) 对，使得 sum(weight_i * perm_i) = M
-   - 算法：每次找一个最大匹配（用 scipy 的 linear_sum_assignment），减去对应权重，重复直到矩阵为零
-2. 每个 permutation_matrix 对应一个"轮次"，该轮次内所有 chunk 可并行（每个 GPU 最多参与一次）
-3. 对 combine_matrix 和 next_dispatch_matrix 同样做分解
-4. 尝试合并 dispatch 的最后一轮和 combine 的第一轮（检查 half-duplex 不冲突则合并）
-
-**复杂度**：O(G³ × rounds)，G=4 时 <0.1ms
-**预期改善**：15-25%（理论下界级，round 数量 = max(max_row_sum, max_col_sum)）
-
-**参考**：
-- FLASH 论文（CMU, 2025）：https://arxiv.org/html/2505.09764v1
-  - 核心算法在 §4.2 Multi-Server Scheduling
-  - Birkhoff 分解实现参考 §4.2 "Birkhoff's Theorem" 部分
-- FAST 论文（NSDI'26）：https://arxiv.org/html/2505.09764v2
-  - Birkhoff 分解 O(N⁵) 复杂度分析
-- scipy linear_sum_assignment：https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html
-  - 用于每轮找最大匹配（取负值求最大）
-- Greedy Birkhoff 分解：https://perso.ens-lyon.fr/edouard.bonnet/text/damien-lesens.pdf
-
-**伪代码**：
+当前 fluid 模式：
 ```python
-def birkhoff_decompose(matrix):
-    """将 G×G 非负整数矩阵分解为 [(weight, perm_matrix), ...]"""
-    M = np.array(matrix, dtype=float)
-    rounds = []
-    while M.max() > 0:
-        # 用 Hungarian 算法找最大权重匹配
-        cost = -M  # linear_sum_assignment 求最小，取负求最大
-        row_ind, col_ind = linear_sum_assignment(cost)
-        # 匹配权重 = 最小非零值
-        weight = min(M[r, c] for r, c in zip(row_ind, col_ind) if M[r, c] > 0)
-        # 构建 permutation matrix
-        perm = np.zeros_like(M)
-        for r, c in zip(row_ind, col_ind):
-            if M[r, c] > 0:
-                perm[r, c] = 1
-        rounds.append((weight, perm))
-        M -= weight * perm
-    return rounds
+duration = min(float(candidate["residual"]) for candidate in chosen)
 ```
 
----
-
-### 算法 3：Iterated Greedy（IG）
-
-**思路**：经典元启发式，通过 destruction-construction 循环精调。
-
-**实现**：
-1. 用 greedy LPT 生成初始解（调用现有 `greedy_schedule_pairwise`）
-2. 迭代 K 次（K=10，可调）：
-   a. **Destruction**：从当前调度中随机移除 d 个 chunk（d = max(3, n//10)）
-   b. **Construction**：将移除的 chunk 按 LPT 顺序重新插入（贪心找最早可行位置）
-   c. 如果新解 makespan < 当前最优，接受
-3. 返回最优解
-
-**复杂度**：O(K × n²)，K=10 时约 O(n²)
-**预期改善**：10-20%
-
-**参考**：
-- Ruiz (2007) Iterated Greedy for Parallel Machine Scheduling：https://www.researchgate.net/publication/227414878_Ruiz_R_Iterated_greedy_local_search_methods_for_unrelated_parallel_machine_scheduling_European_Journal_of_Operational_Research_207_55-69
-- IG 通用框架：https://link.springer.com/rwe/10.1007/978-3-032-00385-0_10
-- Destruction-Construction 范式：https://www.researchgate.net/publication/311940180
-
-**伪代码**：
+atomic 模式改为：
 ```python
-def iterated_greedy(chunks, num_gpus, iterations=10, destroy_count=None):
-    # 初始解
-    best_schedule = greedy_lpt(chunks, num_gpus)
-    best_makespan = simulate(best_schedule)
+if atomic:
+    # Atomic: 每个 flow 必须在一个 wave 中完整服务，不允许拆分
+    # wave duration = max residual among chosen (每个 flow 全部传完)
+    # 但不同 flow 的 residual 不同，取 max 意味着小 flow 会被过度服务
+    # 正确做法：每个 flow 只服务自己的 residual，wave 内不同 flow 可以有不同的 duration
+    # 但这样就不是统一的 wave 模型了
+    # 
+    # 实现方案：wave 按 flow 独立服务——每个 flow 在自己的 duration 内完成
+    # 但同一个 wave 内的 flow 共享端口时间线
+    # 所以 wave duration = max residual，小 flow 结束后端口不能复用（atomic 约束）
+    duration = max(float(candidate["residual"]) for candidate in chosen)
+else:
+    duration = min(float(candidate["residual"]) for candidate in chosen)
+```
+
+**atomic 模式的 residual 更新逻辑**也需要修改：
+
+```python
+for candidate in chosen:
+    flow_id = str(candidate["flow_id"])
+    phase = int(candidate["phase"])
+    src = int(candidate["src_gpu"])
+    dst = int(candidate["dst_gpu"])
+    if atomic:
+        # Atomic: flow 完全服务，residual 直接归零
+        served = float(residual[flow_id])
+        residual[flow_id] = 0.0
+        inbound_remaining[(phase, dst)] = max(0.0, inbound_remaining[(phase, dst)] - served)
+        end = current_time + served
+    else:
+        # Fluid: 按 wave duration 部分服务
+        residual[flow_id] = max(0.0, residual[flow_id] - duration)
+        inbound_remaining[(phase, dst)] = max(0.0, inbound_remaining[(phase, dst)] - duration)
+        end = current_time + duration
     
-    d = destroy_count or max(3, len(chunks) // 10)
-    
-    for _ in range(iterations):
-        # Destruction: 随机移除 d 个 chunk
-        removed = random.sample(best_schedule, d)
-        partial = [c for c in best_schedule if c not in removed]
-        
-        # Construction: 按 size 降序重新插入
-        removed.sort(key=lambda c: c.size, reverse=True)
-        candidate = partial
-        for chunk in removed:
-            candidate = insert_at_best_position(candidate, chunk, num_gpus)
-        
-        makespan = simulate(candidate)
-        if makespan < best_makespan:
-            best_schedule = candidate
-            best_makespan = makespan
-    
-    return best_schedule
+    barrier_done[(phase, dst)] = max(barrier_done[(phase, dst)], end)
+    if phase < 2 and inbound_remaining[(phase, dst)] <= 1e-9:
+        release_time[(phase + 1, dst)] = barrier_done[(phase, dst)] + (
+            expert_compute_delay if phase == 0 else 0.0
+        )
+    schedule.append({
+        "chunk_id": f"{flow_id}_wave{wave_count}",
+        "flow_id": flow_id,
+        "phase": phase,
+        "size": float(served if atomic else duration),
+        "served_volume": float(served if atomic else duration),
+        "src": src,
+        "dst": dst,
+        "src_gpu": src,
+        "dst_gpu": dst,
+        "start": current_time,
+        "end": end,
+        "priority": [
+            float(candidate["score"]),
+            float(candidate["barrier_urgency"]),
+            float(candidate["age"]),
+            float(candidate["prediction_bonus"]),
+        ],
+    })
+
+if atomic:
+    # Atomic 模式下 current_time 前进到 wave 中最晚结束的时间
+    current_time = max(float(entry["end"]) for entry in schedule if entry["chunk_id"].endswith(f"_wave{wave_count}"))
+else:
+    current_time += duration
+wave_count += 1
+```
+
+**重要**：atomic 模式下，同一 wave 内不同 flow 可能有不同的 end time（因为 residual 不同），但它们的 start time 相同。replay validator 需要能通过——因为端口约束是 per-flow 检查的，不要求同一 wave 的所有 flow 同时结束。
+
+### Task 2：注册 U_atomic 策略变体
+
+文件：`src/routesense/scheduler/multiphase_global.py`
+
+为 4 个 U_ 调度器各添加一个 `_atomic` 版本，复用相同的评分参数，但传入 `atomic=True`：
+
+```python
+def fast_schedule_u_gated_maxweight_matching_atomic(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, *, model="full_duplex", expert_compute_delay=0.0, mode=EXECUTION_WINDOW_MODE, prediction_confidence=1.0, wave_quantum=None, max_waves=256):
+    del model
+    return _run_global_matching_scheduler(
+        dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus,
+        strategy="O_gated_maxweight_matching_atomic",
+        mode=mode, prediction_confidence=prediction_confidence,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=True, wave_quantum=wave_quantum, max_waves=max_waves,
+        residual_weight=1.0, barrier_weight=1.0, age_weight=0.15, prediction_weight=0.50,
+        adaptive_prices=False, price_step=0.0, price_decay=0.0, price_clip=0.0, iteration_budget=1,
+        atomic=True,
+    )
+```
+
+类似地为 `barrier_criticality_global_matching` 和 `gated_greedy_maximal` 创建 atomic 版本（参数与对应的 fluid 版本一致，只加 `atomic=True`）。
+
+文件：`src/routesense/scheduler/strategies.py` 注册这些新策略。
+
+文件：`src/routesense/evaluation/analysis.py` 的 `FAST_ALGORITHMS` 列表中添加 atomic 变体。
+
+### Task 3：运行消融实验
+
+创建实验脚本 `experiments/poc_line1/exp_ablation_fluid_vs_joint.py`：
+
+```python
+#!/usr/bin/env python3
+"""消融实验：量化 fluid 拆分 vs 跨 phase 联合调度的独立贡献"""
+import argparse, json, time
+from pathlib import Path
+from routesense.scheduler import (
+    fast_schedule_birkhoff,
+    fast_schedule_u_gated_maxweight_matching,
+    fast_schedule_u_barrier_criticality_global_matching,
+    # ... atomic 版本
+)
+from routesense.scheduler.oracle import pairwise_oracle
+
+# 对 N=8, N=16, N=30 三种规模各跑一次完整对比
+# 输出 4 列对比表：B_birkhoff | U_atomic | U_fluid | Oracle
+```
+
+**实验配置**：
+- N=8: 使用现有 OLMoE 的 sample=16 和 sample=64 数据
+- N=16: 使用现有 sample=64 数据
+- N=30: 使用现有 sample=64 数据
+- mode=execution_window（所有 phase 真实流量）
+- prediction_confidence=1.0
+
+### Task 4：生成归档结果
+
+输出路径：`artifacts/poc_line1/ablation_fluid_vs_joint/`
+
+生成文件：
+1. `table_ablation.md` — 核心对比表
+2. `summary.json` — 完整数据（含 makespan, latency, improvement, wave_count）
+3. `analysis_notes.md` — 结论摘要
+
+表格式：
+
+```markdown
+## Ablation: Fluid vs Joint Scheduling (N=8, sample=64)
+
+| Algorithm | Fluid | Joint | Makespan | Improvement | Latency (ms) | E2E |
+|-----------|-------|-------|----------|-------------|--------------|-----|
+| B_birkhoff (D_atomic) | ❌ | ❌ | ... | ...% | ...ms | ...% |
+| O_gated_maxweight_atomic (U_atomic) | ❌ | ✅ | ... | ...% | ...ms | ...% |
+| O_gated_maxweight (U_fluid) | ✅ | ✅ | ... | ...% | ...ms | ...% |
+| oracle_perfect | ❌ | ✅ | ... | ...% | ...ms | ...% |
+
+### 贡献归因
+- Joint scheduling 贡献: (U_atomic - D_atomic) / (U_fluid - D_atomic) × 100%
+- Fluid splitting 贡献: (U_fluid - U_atomic) / (U_fluid - D_atomic) × 100%
 ```
 
 ---
 
-### 算法 4：Critical Path + Local Swap
+## 验证要求
 
-**思路**：先用 LPT 构造，然后识别关键路径并做局部重排。
-
-**实现**：
-1. 用 greedy LPT 生成初始调度
-2. 模拟执行，找出 makespan 的决定者（最后完成的 GPU）
-3. 收集该 GPU 参与的所有 chunk（关键 chunk）
-4. 尝试以下 swap：
-   - 交换两个关键 chunk 的位置
-   - 把关键 chunk 提前到更早的空闲时间槽
-   - 把非关键 chunk 推迟，给关键 chunk 让路
-5. 每次 swap 后重新模拟，接受改善
-6. 迭代直到无改善或达到上限（3 轮）
-
-**复杂度**：O(n² × iterations)
-**预期改善**：10-20%
-
-**参考**：
-- Variable Neighborhood Search：https://www.mdpi.com/2079-8954/12/6/221
-- Local search for scheduling：https://tcs.nju.edu.cn/wiki/index.php?title=高级算法_(Fall_2022)/Greedy_and_Local_Search
+1. **replay validator 通过**：U_atomic 的 schedule 必须通过 `replay_and_audit_schedule` 验证
+   - atomic 模式下同一个 wave 内不同 flow 可能有不同 end time，validator 按 per-flow 区间检查端口冲突，不要求同 wave 统一 end
+2. **makespan 单调性**：`U_atomic ≥ U_fluid`（atomic 不允许拆分，所以不会比 fluid 更好）
+3. **D_fluid 等价性验证**：可选地实现 D_fluid（把 chunk 拆成 unit token 后喂给 `_schedule_phase_orders`），验证 makespan 与 D_atomic 一致
 
 ---
 
-## 实验对比
+## 关于 D_fluid 的说明
 
-在 `experiments/poc_line1/exp_pairwise.py` 中扩展，对比所有算法：
+D_fluid 语义上等价于 D_atomic：`_schedule_phase_orders` 按 phase 顺序处理 chunk，phase 内的总传输时间 = sum(所有 chunk 的有效时间)，与 chunk 粒度无关。拆不拆 chunk 不改变 phase 内的调度结果，也不改变 phase 间的 barrier 时间。
 
-| 策略 | 调度质量 (makespan) | 计算延迟 | 来源 |
-|------|---------------------|---------|------|
-| greedy | 基线 | <0.1ms | 已有 |
-| oracle | ~35% 改善 | 100-200ms | 已有 |
-| cp_lpt | 待测 | <0.5ms | 新增 |
-| birkhoff | 待测 | <1ms | 新增 |
-| iterated_greedy | 待测 | <5ms | 新增 |
-| cp_local_swap | 待测 | <2ms | 新增 |
+因此 **D_fluid 不需要实现**。如果为了论文严谨性需要验证这一点，可以临时实现并确认 makespan 一致，然后移除。
 
-输出格式：与现有 `run_pairwise_analysis` 一致，增加新策略列。
+---
 
-## 文件结构
+## 关于 U_atomic 语义的精确说明
 
+U_atomic 模式：
+- ✅ 跨 phase 联合调度（全局 ready-set，不同 phase 的 flow 可以同时在同一个 wave 中）
+- ❌ 不允许 fluid 拆分（每个 flow 在一个 wave 中完整传输，不可分割）
+
+这样 U_atomic 与 Oracle 的语义一致（都是 atomic chunk + 跨 phase），可以做公平对比。
+
+预期结果：
+- `U_atomic ≈ Oracle` 或 `U_atomic ≤ Oracle`（Oracle 是 atomic 最优解）
+- `U_fluid > U_atomic`（fluid 提供额外增益）
+- `U_fluid > Oracle`（fluid 解空间更大，不是 bug）
+
+---
+
+## 执行命令
+
+```bash
+cd RS
+
+# 1. 运行消融实验（N=8）
+python experiments/poc_line1/exp_ablation_fluid_vs_joint.py \
+    --scale 8 --samples 64 \
+    --output artifacts/poc_line1/ablation_fluid_vs_joint/n8_s64/
+
+# 2. 运行消融实验（N=16）
+python experiments/poc_line1/exp_ablation_fluid_vs_joint.py \
+    --scale 16 --samples 64 \
+    --output artifacts/poc_line1/ablation_fluid_vs_joint/n16_s64/
+
+# 3. 运行消融实验（N=30）
+python experiments/poc_line1/exp_ablation_fluid_vs_joint.py \
+    --scale 30 --samples 64 \
+    --output artifacts/poc_line1/ablation_fluid_vs_joint/n30_s64/
+
+# 4. 汇总结果
+python experiments/poc_line1/exp_ablation_fluid_vs_joint.py \
+    --summary artifacts/poc_line1/ablation_fluid_vs_joint/
 ```
-src/routesense/scheduler/
-├── __init__.py          # 导出所有算法
-├── oracle.py            # CP-SAT（已有）
-├── greedy.py            # LPT（已有）
-└── fast.py              # 新增：4个快速算法
-    ├── fast_schedule_cp_lpt()
-    ├── fast_schedule_birkhoff()
-    ├── fast_schedule_iterated_greedy()
-    ├── fast_schedule_cp_local_swap()
-    └── _simulate_schedule()  # 通用模拟函数
-```
 
-## 依赖
+---
 
-- `scipy.optimize.linear_sum_assignment`（Birkhoff 分解用）
-- `random`（IG 用）
-- 已有 `greedy.py` 和 `oracle.py` 中的 `PairwiseChunk` 数据结构
+## 验收标准
 
-## 验证
-
-1. 在 batch500 数据集上运行所有算法
-2. 对比 makespan 统计（mean, median, p25, p75）
-3. 对比计算延迟
-4. 选出质量最高 + 延迟最低的方案作为最终 fast scheduler
-
-## 约束
-
-- 每个算法独立实现，不修改 oracle.py 或 greedy.py
-- 所有算法返回相同格式（与 pairwise_oracle 一致）
-- 添加计时（`time.perf_counter()`）记录 solve_time_ms
+- [ ] U_atomic 通过 replay validator
+- [ ] U_atomic makespan ≥ U_fluid makespan（原子化不会更好）
+- [ ] U_atomic 与 Oracle 的 gap 缩小（相比 U_fluid vs Oracle）
+- [ ] 三个规模的表格都生成
+- [ ] summary.json 包含完整的贡献归因百分比
+- [ ] 所有结果文件在 `artifacts/poc_line1/ablation_fluid_vs_joint/` 下
