@@ -34,4 +34,9 @@ in place for now.
      used for deployment candidate selection.
    - Structure: `artifacts/`, `reports/`, `docs/`, `README.md`
 
+4. `20260703_multimodel_u_scheduler_snapshot`
+   - Why kept: preserves the current single-node OLMoE + Qwen scheduler status
+     right before distributed deployment work.
+   - Structure: `artifacts/`, `reports/`, `README.md`
+
 No other active backup snapshots are retained here at this time.
