@@ -22,6 +22,118 @@ class ChunkSpec:
     dst_gpu: int
 
 
+def _matrix_row_sums(matrix: list[list[int]]) -> list[int]:
+    return [sum(int(value) for value in row) for row in matrix]
+
+
+def _matrix_col_sums(matrix: list[list[int]]) -> list[int]:
+    return [sum(int(matrix[row][col]) for row in range(len(matrix))) for col in range(len(matrix[0]) if matrix else 0)]
+
+
+def _phase_matrices(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+) -> tuple[list[list[int]], list[list[int]], list[list[int]]]:
+    return dispatch_matrix, combine_matrix, next_dispatch_matrix
+
+
+def _extract_phase_orders_from_schedule(schedule: list[dict[str, Any]]) -> dict[int, list[ChunkSpec]]:
+    phase_orders: dict[int, list[ChunkSpec]] = {0: [], 1: [], 2: []}
+    ordered = sorted(schedule, key=lambda entry: (int(entry["phase"]), float(entry["start"]), float(entry["end"])))
+    for entry in ordered:
+        phase_orders[int(entry["phase"])].append(
+            ChunkSpec(
+                chunk_id=str(entry["chunk_id"]),
+                phase=int(entry["phase"]),
+                size=int(entry["size"]),
+                src_gpu=int(entry["src_gpu"]),
+                dst_gpu=int(entry["dst_gpu"]),
+            )
+        )
+    return phase_orders
+
+
+def _phase_completion_times(
+    phase_orders: dict[int, list[ChunkSpec]],
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> tuple[dict[int, list[float]], dict[int, list[float]], dict[str, Any]]:
+    payload = _schedule_phase_orders(
+        phase_orders,
+        strategy="tmp_eval",
+        solve_time_ms=0.0,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
+    )
+    max_gpu = 0
+    for chunks in phase_orders.values():
+        for chunk in chunks:
+            max_gpu = max(max_gpu, chunk.src_gpu, chunk.dst_gpu)
+    num_gpus = max_gpu + 1 if phase_orders and max_gpu >= 0 else 0
+    send_done: dict[int, list[float]] = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus, 2: [0.0] * num_gpus}
+    recv_done: dict[int, list[float]] = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus, 2: [0.0] * num_gpus}
+    for entry in payload["schedule"]:
+        phase = int(entry["phase"])
+        src = int(entry["src_gpu"])
+        dst = int(entry["dst_gpu"])
+        end = float(entry["end"])
+        send_done[phase][src] = max(send_done[phase][src], end)
+        recv_done[phase][dst] = max(recv_done[phase][dst], end)
+    return send_done, recv_done, payload
+
+
+def _evaluate_phase_orders(
+    phase_orders: dict[int, list[ChunkSpec]],
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> float:
+    return float(
+        _schedule_phase_orders(
+            phase_orders,
+            strategy="tmp_eval",
+            solve_time_ms=0.0,
+            model=model,
+            expert_compute_delay=expert_compute_delay,
+        )["makespan"]
+    )
+
+
+def _random_swap_orders(
+    phase_orders: dict[int, list[ChunkSpec]],
+    rng: random.Random,
+    *,
+    only_phase: int | None = None,
+) -> dict[int, list[ChunkSpec]]:
+    candidate = _clone_phase_orders(phase_orders)
+    phases = [only_phase] if only_phase is not None else [phase for phase, chunks in candidate.items() if len(chunks) >= 2]
+    phases = [phase for phase in phases if phase is not None and len(candidate[phase]) >= 2]
+    if not phases:
+        return candidate
+    phase = rng.choice(phases)
+    i, j = sorted(rng.sample(range(len(candidate[phase])), 2))
+    candidate[phase][i], candidate[phase][j] = candidate[phase][j], candidate[phase][i]
+    return candidate
+
+
+def _gpu_completion(phase_orders: dict[int, list[ChunkSpec]], *, model: str = "full_duplex", expert_compute_delay: float = 0.0) -> dict[int, float]:
+    send_done, recv_done, _payload = _phase_completion_times(
+        phase_orders,
+        model=model,
+        expert_compute_delay=expert_compute_delay,
+    )
+    num_gpus = len(next(iter(send_done.values()), []))
+    return {
+        gpu: max(
+            max(send_done[phase][gpu] for phase in send_done),
+            max(recv_done[phase][gpu] for phase in recv_done),
+        )
+        for gpu in range(num_gpus)
+    }
+
+
 def _collect_phase_chunks(
     dispatch_matrix: list[list[int]],
     combine_matrix: list[list[int]],
@@ -412,6 +524,104 @@ def fast_schedule_phase_aware_greedy(
     )
 
 
+def fast_schedule_barrier_aware_birkhoff(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    rng = random.Random(0)
+    matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    phase_candidates: dict[int, list[tuple[dict[int, list[ChunkSpec]], dict[str, tuple[float, ...]]]]] = {0: [], 1: [], 2: []}
+    for phase, matrix in enumerate(matrices):
+        for variant in range(3):
+            perturbed = np.array(matrix, dtype=float)
+            noise = np.array([[rng.uniform(-0.1, 0.1) for _ in row] for row in matrix], dtype=float)
+            perturbed = np.maximum(perturbed + noise, 0.0)
+            scaled = np.rint(perturbed * 100.0).astype(int).tolist()
+            rounds = _birkhoff_decompose(scaled)
+            order = _rounds_to_phase_order(rounds, phase=phase)
+            order.sort(key=lambda chunk: (chunk.size, -chunk.src_gpu, -chunk.dst_gpu), reverse=True)
+            lookup = {chunk.chunk_id: (float(chunk.size),) for chunk in order}
+            phase_candidates[phase].append(({phase: order}, lookup))
+    best_payload: dict[str, Any] | None = None
+    best_orders: dict[int, list[ChunkSpec]] | None = None
+    for phase0_orders, lookup0 in phase_candidates[0]:
+        for phase1_orders, lookup1 in phase_candidates[1]:
+            for phase2_orders, lookup2 in phase_candidates[2]:
+                merged = {
+                    0: phase0_orders[0],
+                    1: phase1_orders[1],
+                    2: phase2_orders[2],
+                }
+                merged_lookup = {}
+                merged_lookup.update(lookup0)
+                merged_lookup.update(lookup1)
+                merged_lookup.update(lookup2)
+                payload = _schedule_phase_orders(
+                    merged,
+                    strategy="barrier_aware_birkhoff",
+                    solve_time_ms=0.0,
+                    priority_lookup=merged_lookup,
+                    model=model,
+                    expert_compute_delay=expert_compute_delay,
+                )
+                if best_payload is None or float(payload["makespan"]) < float(best_payload["makespan"]):
+                    best_payload = payload
+                    best_orders = merged
+    assert best_payload is not None and best_orders is not None
+    best_payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
+    best_payload["strategy"] = "barrier_aware_birkhoff"
+    return best_payload
+
+
+def fast_schedule_randomized_multistart_birkhoff(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    rng = random.Random(1)
+    matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    phase_variants: dict[int, list[list[ChunkSpec]]] = {0: [], 1: [], 2: []}
+    for phase, matrix in enumerate(matrices):
+        for _ in range(5):
+            perturbed = np.array(matrix, dtype=float)
+            noise = np.array([[rng.uniform(-0.25, 0.25) for _ in row] for row in matrix], dtype=float)
+            perturbed = np.maximum(perturbed + noise, 0.0)
+            scaled = np.rint(perturbed * 50.0).astype(int).tolist()
+            rounds = _birkhoff_decompose(scaled)
+            order = _rounds_to_phase_order(rounds, phase=phase)
+            order.sort(key=lambda chunk: (chunk.size, rng.random()), reverse=True)
+            phase_variants[phase].append(order)
+    best_payload: dict[str, Any] | None = None
+    for orders0 in phase_variants[0]:
+        for orders1 in phase_variants[1]:
+            for orders2 in phase_variants[2]:
+                merged = {0: orders0, 1: orders1, 2: orders2}
+                payload = _schedule_phase_orders(
+                    merged,
+                    strategy="randomized_multistart_birkhoff",
+                    solve_time_ms=0.0,
+                    model=model,
+                    expert_compute_delay=expert_compute_delay,
+                )
+                if best_payload is None or float(payload["makespan"]) < float(best_payload["makespan"]):
+                    best_payload = payload
+    assert best_payload is not None
+    best_payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
+    best_payload["strategy"] = "randomized_multistart_birkhoff"
+    return best_payload
+
+
 def _clone_phase_orders(phase_orders: dict[int, list[ChunkSpec]]) -> dict[int, list[ChunkSpec]]:
     return {phase: list(chunks) for phase, chunks in phase_orders.items()}
 
@@ -485,6 +695,128 @@ def fast_schedule_iterated_greedy(
     return best_payload
 
 
+def fast_schedule_tabu_search(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+    current = _extract_phase_orders_from_schedule(base["schedule"])
+    best = _clone_phase_orders(current)
+    best_makespan = _evaluate_phase_orders(best, model=model, expert_compute_delay=expert_compute_delay)
+    tabu: dict[tuple[str, str], int] = {}
+    tenure = 7
+    iteration = 0
+    while time.perf_counter() - start <= 0.004:
+        iteration += 1
+        best_neighbor = None
+        best_neighbor_makespan = float("inf")
+        best_pair: tuple[str, str] | None = None
+        for phase, chunks in current.items():
+            for i in range(len(chunks)):
+                for j in range(i + 1, len(chunks)):
+                    candidate = _clone_phase_orders(current)
+                    candidate[phase][i], candidate[phase][j] = candidate[phase][j], candidate[phase][i]
+                    pair = tuple(sorted((chunks[i].chunk_id, chunks[j].chunk_id)))
+                    makespan = _evaluate_phase_orders(candidate, model=model, expert_compute_delay=expert_compute_delay)
+                    is_tabu = tabu.get(pair, 0) > 0
+                    if (not is_tabu or makespan < best_makespan) and makespan < best_neighbor_makespan:
+                        best_neighbor = candidate
+                        best_neighbor_makespan = makespan
+                        best_pair = pair
+        if best_neighbor is None or best_pair is None:
+            break
+        for key in list(tabu):
+            tabu[key] -= 1
+            if tabu[key] <= 0:
+                del tabu[key]
+        tabu[best_pair] = tenure
+        current = best_neighbor
+        if best_neighbor_makespan < best_makespan:
+            best = _clone_phase_orders(best_neighbor)
+            best_makespan = best_neighbor_makespan
+        if iteration >= 32:
+            break
+    payload = _schedule_phase_orders(best, strategy="tabu_search", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
+    return payload
+
+
+def fast_schedule_lns(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+    best_orders = _extract_phase_orders_from_schedule(base["schedule"])
+    best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    while time.perf_counter() - start <= 0.003:
+        gpu_completion = _gpu_completion(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+        bottleneck_gpu = max(gpu_completion, key=gpu_completion.get)
+        target_phase = max(
+            range(3),
+            key=lambda phase: sum(chunk.size for chunk in best_orders[phase] if chunk.src_gpu == bottleneck_gpu or chunk.dst_gpu == bottleneck_gpu),
+        )
+        candidate_orders = _clone_phase_orders(best_orders)
+        removed = [chunk for chunk in candidate_orders[target_phase] if chunk.src_gpu == bottleneck_gpu or chunk.dst_gpu == bottleneck_gpu]
+        if not removed:
+            break
+        removed_ids = {chunk.chunk_id for chunk in removed}
+        candidate_orders[target_phase] = [chunk for chunk in candidate_orders[target_phase] if chunk.chunk_id not in removed_ids]
+        removed.sort(key=lambda chunk: chunk.size, reverse=True)
+        for chunk in removed:
+            candidate_orders = _best_insert_position(candidate_orders, chunk)
+        makespan = _evaluate_phase_orders(candidate_orders, model=model, expert_compute_delay=expert_compute_delay)
+        if makespan < best_makespan:
+            best_orders = candidate_orders
+            best_makespan = makespan
+        else:
+            break
+    return _schedule_phase_orders(best_orders, strategy="lns", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
+
+
+def fast_schedule_simulated_annealing(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    rng = random.Random(7)
+    base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+    current = _extract_phase_orders_from_schedule(base["schedule"])
+    current_makespan = _evaluate_phase_orders(current, model=model, expert_compute_delay=expert_compute_delay)
+    best = _clone_phase_orders(current)
+    best_makespan = current_makespan
+    temperature = max(current_makespan * 0.1, 1.0)
+    while time.perf_counter() - start <= 0.003:
+        neighbor = _random_swap_orders(current, rng)
+        makespan = _evaluate_phase_orders(neighbor, model=model, expert_compute_delay=expert_compute_delay)
+        delta = makespan - current_makespan
+        if delta < 0 or rng.random() < np.exp(-delta / max(temperature, 1e-9)):
+            current = neighbor
+            current_makespan = makespan
+            if makespan < best_makespan:
+                best = _clone_phase_orders(neighbor)
+                best_makespan = makespan
+        temperature *= 0.95
+        if temperature < 1e-3:
+            break
+    return _schedule_phase_orders(best, strategy="simulated_annealing", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
+
+
 def fast_schedule_lagrangian(
     dispatch_matrix: list[list[int]],
     combine_matrix: list[list[int]],
@@ -497,66 +829,50 @@ def fast_schedule_lagrangian(
     learning_rate: float = 0.1,
 ) -> dict[str, Any]:
     start = time.perf_counter()
-    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
-    lambdas: dict[int, list[float]] = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus}
+    matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    lambda_g = [0.0] * num_gpus
     best_makespan = float("inf")
-    best_schedule: dict[str, Any] | None = None
+    best_orders: dict[int, list[ChunkSpec]] | None = None
 
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
         phase_orders: dict[int, list[ChunkSpec]] = {}
-        for phase in range(3):
-            chunks = list(phase_chunks[phase])
-
-            def penalized_key(chunk: ChunkSpec, _phase: int = phase) -> tuple[float, int, int]:
-                base_priority = float(chunk.size)
-                penalty = 0.0
-                if _phase > 0:
-                    penalty += lambdas[_phase - 1][chunk.src_gpu] * 0.5
-                if _phase < 2:
-                    penalty += lambdas[_phase][chunk.dst_gpu] * 0.5
-                return (base_priority + penalty, -chunk.src_gpu, -chunk.dst_gpu)
-
-            chunks.sort(key=penalized_key, reverse=True)
+        for phase, matrix in enumerate(matrices):
+            row_sums = _matrix_row_sums(matrix)
+            col_sums = _matrix_col_sums(matrix)
+            rounds = _birkhoff_decompose(matrix)
+            chunks = _rounds_to_phase_order(rounds, phase=phase)
+            chunks.sort(
+                key=lambda chunk: (
+                    chunk.size + lambda_g[chunk.src_gpu] * row_sums[chunk.src_gpu] * 0.01 + lambda_g[chunk.dst_gpu] * col_sums[chunk.dst_gpu] * 0.01,
+                    -chunk.src_gpu,
+                    -chunk.dst_gpu,
+                ),
+                reverse=True,
+            )
             phase_orders[phase] = chunks
 
-        candidate = _schedule_phase_orders(
-            phase_orders,
-            strategy="lagrangian",
-            solve_time_ms=0.0,
-            model=model,
-            expert_compute_delay=expert_compute_delay,
-        )
-        if float(candidate["makespan"]) < best_makespan:
-            best_makespan = float(candidate["makespan"])
-            best_schedule = dict(candidate)
+        makespan = _evaluate_phase_orders(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
+        if makespan < best_makespan:
+            best_makespan = makespan
+            best_orders = _clone_phase_orders(phase_orders)
 
-        schedule = candidate["schedule"]
-        recv_done = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus}
-        send_start = {1: [float("inf")] * num_gpus, 2: [float("inf")] * num_gpus}
-        for entry in schedule:
-            phase = int(entry["phase"])
-            dst_gpu = int(entry["dst_gpu"])
-            src_gpu = int(entry["src_gpu"])
-            if phase in recv_done:
-                recv_done[phase][dst_gpu] = max(recv_done[phase][dst_gpu], float(entry["end"]))
-            if phase in send_start:
-                send_start[phase][src_gpu] = min(send_start[phase][src_gpu], float(entry["start"]))
-
+        send_done, recv_done, _payload = _phase_completion_times(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
+        for phase in recv_done:
+            if len(recv_done[phase]) < num_gpus:
+                recv_done[phase].extend([0.0] * (num_gpus - len(recv_done[phase])))
+        for phase in send_done:
+            if len(send_done[phase]) < num_gpus:
+                send_done[phase].extend([0.0] * (num_gpus - len(send_done[phase])))
+        step_size = learning_rate / float(iteration + 1)
         for gpu in range(num_gpus):
-            for phase in (0, 1):
-                barrier_time = recv_done[phase][gpu] + (expert_compute_delay if phase == 0 else 0.0)
-                earliest_send = send_start[phase + 1][gpu]
-                if earliest_send == float("inf"):
-                    continue
-                violation = barrier_time - earliest_send
-                lambdas[phase][gpu] = max(0.0, lambdas[phase][gpu] + learning_rate * violation)
-        learning_rate *= 0.95
-
+            completion0 = recv_done[0][gpu]
+            completion1 = recv_done[1][gpu]
+            violation = completion1 - completion0 - expert_compute_delay
+            lambda_g[gpu] = max(0.0, lambda_g[gpu] + step_size * violation)
     solve_time_ms = (time.perf_counter() - start) * 1000.0
-    if best_schedule is not None:
-        best_schedule["solve_time_ms"] = solve_time_ms
-        best_schedule["strategy"] = "lagrangian"
-        return best_schedule
+    if best_orders is not None:
+        payload = _schedule_phase_orders(best_orders, strategy="lagrangian", solve_time_ms=solve_time_ms, model=model, expert_compute_delay=expert_compute_delay)
+        return payload
     return fast_schedule_birkhoff(
         dispatch_matrix,
         combine_matrix,
@@ -565,6 +881,200 @@ def fast_schedule_lagrangian(
         model=model,
         expert_compute_delay=expert_compute_delay,
     )
+
+
+def fast_schedule_grasp(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    rng = random.Random(11)
+    base_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+    best_orders: dict[int, list[ChunkSpec]] | None = None
+    best_makespan = float("inf")
+    for _ in range(5):
+        if time.perf_counter() - start > 0.003:
+            break
+        candidate_orders: dict[int, list[ChunkSpec]] = {0: [], 1: [], 2: []}
+        for phase in range(3):
+            available = list(base_chunks[phase])
+            while available:
+                priorities = [float(chunk.size) for chunk in available]
+                threshold = max(priorities) * 0.7
+                candidates = [chunk for chunk, priority in zip(available, priorities, strict=False) if priority >= threshold]
+                chosen = rng.choice(candidates)
+                candidate_orders[phase].append(chosen)
+                available.remove(chosen)
+        local = _clone_phase_orders(candidate_orders)
+        no_improve = 0
+        current = _evaluate_phase_orders(local, model=model, expert_compute_delay=expert_compute_delay)
+        while no_improve < 20 and time.perf_counter() - start <= 0.003:
+            neighbor = _random_swap_orders(local, rng)
+            score = _evaluate_phase_orders(neighbor, model=model, expert_compute_delay=expert_compute_delay)
+            if score < current:
+                local = neighbor
+                current = score
+                no_improve = 0
+            else:
+                no_improve += 1
+        if current < best_makespan:
+            best_makespan = current
+            best_orders = local
+    assert best_orders is not None
+    return _schedule_phase_orders(best_orders, strategy="grasp", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
+
+
+def fast_schedule_completion_balanced(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+    priority_lookup: dict[str, tuple[float, ...]] = {}
+    for phase, matrix in enumerate(_phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)):
+        row_sums = _matrix_row_sums(matrix)
+        col_sums = _matrix_col_sums(matrix)
+        lb_f = max(max(row_sums, default=0), max(col_sums, default=0))
+        slack = [float(lb_f - max(row_sums[gpu], col_sums[gpu])) for gpu in range(num_gpus)]
+        phase_chunks[phase].sort(
+            key=lambda chunk: (
+                chunk.size - 0.5 * (slack[chunk.src_gpu] + slack[chunk.dst_gpu]) / 2.0,
+                -chunk.src_gpu,
+                -chunk.dst_gpu,
+            ),
+            reverse=True,
+        )
+        for chunk in phase_chunks[phase]:
+            priority_lookup[chunk.chunk_id] = (
+                float(chunk.size - 0.5 * (slack[chunk.src_gpu] + slack[chunk.dst_gpu]) / 2.0),
+                float(chunk.size),
+            )
+    return _schedule_phase_orders(phase_chunks, strategy="completion_balanced", solve_time_ms=(time.perf_counter() - start) * 1000.0, priority_lookup=priority_lookup, model=model, expert_compute_delay=expert_compute_delay)
+
+
+def fast_schedule_two_stage(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    phase_orders: dict[int, list[ChunkSpec]] = {}
+    priority_lookup: dict[str, tuple[float, ...]] = {}
+    for phase, matrix in enumerate(matrices):
+        rounds = _birkhoff_decompose(matrix)
+        order = _rounds_to_phase_order(rounds, phase=phase)
+        row_sums = _matrix_row_sums(matrix)
+        col_sums = _matrix_col_sums(matrix)
+        phase_orders[phase] = sorted(
+            order,
+            key=lambda chunk: (
+                max(row_sums[chunk.src_gpu], col_sums[chunk.dst_gpu]),
+                chunk.size,
+                -chunk.src_gpu,
+                -chunk.dst_gpu,
+            ),
+            reverse=True,
+        )
+        for chunk in phase_orders[phase]:
+            priority_lookup[chunk.chunk_id] = (
+                float(max(row_sums[chunk.src_gpu], col_sums[chunk.dst_gpu])),
+                float(chunk.size),
+            )
+    return _schedule_phase_orders(phase_orders, strategy="two_stage", solve_time_ms=(time.perf_counter() - start) * 1000.0, priority_lookup=priority_lookup, model=model, expert_compute_delay=expert_compute_delay)
+
+
+def fast_schedule_critical_path_compression(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+    best_orders = _extract_phase_orders_from_schedule(base["schedule"])
+    best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    for _ in range(4):
+        if time.perf_counter() - start > 0.0008:
+            break
+        payload = _schedule_phase_orders(best_orders, strategy="critical_path_probe", solve_time_ms=0.0, model=model, expert_compute_delay=expert_compute_delay)
+        if not payload["schedule"]:
+            break
+        critical = max(payload["schedule"], key=lambda entry: float(entry["end"]))
+        phase = int(critical["phase"])
+        chunk_id = str(critical["chunk_id"])
+        idx = next((i for i, chunk in enumerate(best_orders[phase]) if chunk.chunk_id == chunk_id), None)
+        if idx is None:
+            break
+        improved = False
+        for other_idx in range(max(0, idx - 3), len(best_orders[phase])):
+            if other_idx == idx:
+                continue
+            candidate = _clone_phase_orders(best_orders)
+            candidate[phase][idx], candidate[phase][other_idx] = candidate[phase][other_idx], candidate[phase][idx]
+            makespan = _evaluate_phase_orders(candidate, model=model, expert_compute_delay=expert_compute_delay)
+            if makespan < best_makespan:
+                best_orders = candidate
+                best_makespan = makespan
+                improved = True
+                break
+        if not improved:
+            break
+    return _schedule_phase_orders(best_orders, strategy="critical_path_compression", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
+
+
+def fast_schedule_ibbr(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
+    best_orders = _extract_phase_orders_from_schedule(base["schedule"])
+    best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    for _ in range(4):
+        if time.perf_counter() - start > 0.003:
+            break
+        gpu_completion = _gpu_completion(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+        g_star = max(gpu_completion, key=gpu_completion.get)
+        improved = False
+        for phase in range(3):
+            indices = [idx for idx, chunk in enumerate(best_orders[phase]) if chunk.src_gpu == g_star or chunk.dst_gpu == g_star]
+            for left, right in zip(indices, indices[1:]):
+                candidate = _clone_phase_orders(best_orders)
+                candidate[phase][left], candidate[phase][right] = candidate[phase][right], candidate[phase][left]
+                makespan = _evaluate_phase_orders(candidate, model=model, expert_compute_delay=expert_compute_delay)
+                if makespan < best_makespan:
+                    best_orders = candidate
+                    best_makespan = makespan
+                    improved = True
+                    break
+            if improved:
+                break
+        if not improved:
+            break
+    return _schedule_phase_orders(best_orders, strategy="ibbr", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
 
 
 def _critical_gpu(schedule: list[dict[str, Any]]) -> int:
@@ -640,9 +1150,23 @@ def fast_schedule_pairwise(
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     candidates = [
+        fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_phase_aware_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_barrier_aware_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_randomized_multistart_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_tabu_search(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_lns(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_simulated_annealing(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_lagrangian(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_grasp(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_completion_balanced(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_two_stage(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_critical_path_compression(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_ibbr(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
     ]
     eligible = [payload for payload in candidates if float(payload["solve_time_ms"]) <= 5.0]
     best_pool = eligible if eligible else candidates

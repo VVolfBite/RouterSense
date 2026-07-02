@@ -28,6 +28,6 @@ from .traffic_matrix import (
     combine_matrix_from_dispatch,
     load_trace_jsonl,
 )
-from ..scheduler import PairwiseChunk, _pairwise_oracle_scipy, fast_schedule_birkhoff, fast_schedule_cp_local_swap, fast_schedule_cp_lpt, fast_schedule_iterated_greedy, fast_schedule_lagrangian, fast_schedule_lookahead_lpt, fast_schedule_pairwise, fast_schedule_phase_aware_greedy, greedy_schedule_multi_layer, greedy_schedule_pairwise, greedy_schedule_single_layer, pairwise_oracle
+from ..scheduler import PairwiseChunk, _pairwise_oracle_scipy, fast_schedule_barrier_aware_birkhoff, fast_schedule_birkhoff, fast_schedule_completion_balanced, fast_schedule_cp_local_swap, fast_schedule_cp_lpt, fast_schedule_critical_path_compression, fast_schedule_grasp, fast_schedule_ibbr, fast_schedule_iterated_greedy, fast_schedule_lagrangian, fast_schedule_lns, fast_schedule_lookahead_lpt, fast_schedule_pairwise, fast_schedule_phase_aware_greedy, fast_schedule_randomized_multistart_birkhoff, fast_schedule_simulated_annealing, fast_schedule_tabu_search, fast_schedule_two_stage, greedy_schedule_multi_layer, greedy_schedule_pairwise, greedy_schedule_single_layer, pairwise_oracle
 
 __all__ = [name for name in globals() if not name.startswith('__')]
