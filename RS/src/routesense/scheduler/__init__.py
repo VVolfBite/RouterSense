@@ -10,7 +10,9 @@ from .strategy import (
 from .greedy import greedy_schedule_pairwise, greedy_schedule_single_layer, greedy_schedule_multi_layer
 from .fast import (
     fast_schedule_barrier_aware_birkhoff,
+    fast_schedule_barrier_aware_birkhoff_wave,
     fast_schedule_birkhoff,
+    fast_schedule_birkhoff_wave,
     fast_schedule_birkhoff_exhaustive,
     fast_schedule_completion_balanced,
     fast_schedule_cp_local_swap,
@@ -46,7 +48,13 @@ from .multiphase_global import (
     fast_schedule_u_gated_maxweight_matching_atomic,
     replay_and_audit_schedule,
 )
-from .oracle import PairwiseChunk, pairwise_oracle, _pairwise_oracle_scipy
+from .oracle import (
+    PairwiseChunk,
+    pairwise_fluid_wave_oracle,
+    pairwise_oracle,
+    pairwise_wave_oracle,
+    _pairwise_oracle_scipy,
+)
 from . import strategies as _strategies
 
 __all__ = [
@@ -58,7 +66,9 @@ __all__ = [
     "list_strategies",
     "register_strategy",
     "fast_schedule_barrier_aware_birkhoff",
+    "fast_schedule_barrier_aware_birkhoff_wave",
     "fast_schedule_birkhoff",
+    "fast_schedule_birkhoff_wave",
     "fast_schedule_birkhoff_exhaustive",
     "fast_schedule_completion_balanced",
     "fast_schedule_cp_local_swap",
@@ -94,7 +104,9 @@ __all__ = [
     "greedy_schedule_single_layer",
     "greedy_schedule_multi_layer",
     "PairwiseChunk",
+    "pairwise_fluid_wave_oracle",
     "pairwise_oracle",
+    "pairwise_wave_oracle",
     "_pairwise_oracle_scipy",
     "replay_and_audit_schedule",
 ]

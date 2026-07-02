@@ -41,7 +41,9 @@ from routesense.evaluation import (
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
     evaluate_gate2,
+    pairwise_fluid_wave_oracle,
     pairwise_oracle,
+    pairwise_wave_oracle,
     replay_and_audit_schedule,
     run_pairwise_analysis,
     spearman_rank_correlation,
@@ -279,6 +281,34 @@ def test_pairwise_oracle_improves_or_matches_greedy():
     assert oracle["makespan"] <= greedy
     assert oracle["chunk_count"] > 0
     assert oracle["schedule"]
+    assert oracle["solver_status"] in {"OPTIMAL", "FEASIBLE", "fallback_greedy"}
+    assert "solve_time_ms" in oracle
+    assert "best_bound" in oracle
+    assert "optimality_gap" in oracle
+
+
+def test_wave_oracle_variants_return_valid_complete_schedules():
+    dispatch = [
+        [0, 4, 0, 0],
+        [0, 0, 3, 0],
+        [0, 0, 0, 2],
+        [1, 0, 0, 0],
+    ]
+    combine = combine_matrix_from_dispatch(dispatch, 1.0)
+    next_dispatch = [
+        [0, 0, 5, 0],
+        [2, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    for payload in (
+        pairwise_wave_oracle(dispatch, combine, next_dispatch, 4, planning_budget_ms=50.0),
+        pairwise_fluid_wave_oracle(dispatch, combine, next_dispatch, 4, planning_budget_ms=50.0),
+    ):
+        assert payload["makespan"] is not None
+        assert payload["schedule"]
+        assert payload["wave_count"] > 0
+        assert payload["audit"]["valid"] is True
 
 
 def test_relaxed_models_do_not_worsen_greedy_makespan():

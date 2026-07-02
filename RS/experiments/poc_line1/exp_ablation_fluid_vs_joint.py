@@ -19,7 +19,10 @@ from routesense.evaluation import (  # noqa: E402
     run_pairwise_analysis,
 )
 from routesense.scheduler import (  # noqa: E402
+    fast_schedule_barrier_aware_birkhoff,
+    fast_schedule_barrier_aware_birkhoff_wave,
     fast_schedule_birkhoff,
+    fast_schedule_birkhoff_wave,
     fast_schedule_u_barrier_criticality_global_matching,
     fast_schedule_u_barrier_criticality_global_matching_atomic,
     fast_schedule_u_gated_maxweight_matching,
@@ -39,30 +42,38 @@ def _contribution_stats(summary: dict) -> list[dict[str, float | str]]:
     decompositions = [
         (
             "gated_maxweight",
+            "B_birkhoff",
+            "B_birkhoff_wave",
             "U_gated_maxweight_matching_atomic",
             "U_gated_maxweight_matching",
         ),
         (
             "barrier_criticality",
+            "B_barrier_aware_birkhoff",
+            "B_barrier_aware_birkhoff_wave",
             "U_barrier_criticality_global_matching_atomic",
             "U_barrier_criticality_global_matching",
         ),
     ]
-    base = _mean(summary, "B_birkhoff_improvement_pct")
-    for family, atomic_name, fluid_name in decompositions:
-        atomic = _mean(summary, f"{atomic_name}_improvement_pct")
-        fluid = _mean(summary, f"{fluid_name}_improvement_pct")
-        denom = max(fluid - base, 1e-9)
+    for family, b_atomic_name, b_wave_name, u_atomic_name, u_wave_name in decompositions:
+        b_atomic = _mean(summary, f"{b_atomic_name}_improvement_pct")
+        b_wave = _mean(summary, f"{b_wave_name}_improvement_pct")
+        u_atomic = _mean(summary, f"{u_atomic_name}_improvement_pct")
+        u_wave = _mean(summary, f"{u_wave_name}_improvement_pct")
+        total_gap = max(u_wave - b_atomic, 1e-9)
         rows.append(
             {
                 "family": family,
-                "birkhoff_improve_pct": base,
-                "atomic_improve_pct": atomic,
-                "fluid_improve_pct": fluid,
-                "joint_gain_pct": atomic - base,
-                "fluid_gain_pct": fluid - atomic,
-                "joint_share_pct": (atomic - base) / denom * 100.0,
-                "fluid_share_pct": (fluid - atomic) / denom * 100.0,
+                "b_atomic_pct": b_atomic,
+                "b_wave_pct": b_wave,
+                "u_atomic_pct": u_atomic,
+                "u_wave_pct": u_wave,
+                "b_wave_gain_pct": b_wave - b_atomic,
+                "joint_gain_pct": u_atomic - b_wave,
+                "u_wave_gain_pct": u_wave - u_atomic,
+                "b_wave_share_pct": (b_wave - b_atomic) / total_gap * 100.0,
+                "joint_share_pct": (u_atomic - b_wave) / total_gap * 100.0,
+                "u_wave_share_pct": (u_wave - u_atomic) / total_gap * 100.0,
             }
         )
     return rows
@@ -70,12 +81,12 @@ def _contribution_stats(summary: dict) -> list[dict[str, float | str]]:
 
 def _markdown(rows: list[dict[str, float | str]]) -> str:
     lines = [
-        "| family | birkhoff% | atomic% | fluid% | joint_gain% | fluid_gain% | joint_share% | fluid_share% |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| family | B_atomic% | B_wave% | U_atomic% | U_wave% | B_wave_gain% | joint_gain% | U_wave_gain% | B_wave_share% | joint_share% | U_wave_share% |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| {family} | {birkhoff_improve_pct:.4f} | {atomic_improve_pct:.4f} | {fluid_improve_pct:.4f} | {joint_gain_pct:.4f} | {fluid_gain_pct:.4f} | {joint_share_pct:.2f} | {fluid_share_pct:.2f} |".format(
+            "| {family} | {b_atomic_pct:.4f} | {b_wave_pct:.4f} | {u_atomic_pct:.4f} | {u_wave_pct:.4f} | {b_wave_gain_pct:.4f} | {joint_gain_pct:.4f} | {u_wave_gain_pct:.4f} | {b_wave_share_pct:.2f} | {joint_share_pct:.2f} | {u_wave_share_pct:.2f} |".format(
                 **row
             )
         )
@@ -103,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
 
     selected_algorithms = [
         ("B_birkhoff", fast_schedule_birkhoff),
+        ("B_birkhoff_wave", fast_schedule_birkhoff_wave),
+        ("B_barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
+        ("B_barrier_aware_birkhoff_wave", fast_schedule_barrier_aware_birkhoff_wave),
         ("U_gated_maxweight_matching_atomic", fast_schedule_u_gated_maxweight_matching_atomic),
         ("U_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching),
         ("U_barrier_criticality_global_matching_atomic", fast_schedule_u_barrier_criticality_global_matching_atomic),

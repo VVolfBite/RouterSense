@@ -801,6 +801,79 @@ def fast_schedule_birkhoff(
     )
 
 
+def _phase_local_wave_schedule(
+    phase_orders: dict[int, list[ChunkSpec]],
+    *,
+    strategy: str,
+    expert_compute_delay: float,
+) -> dict[str, Any]:
+    from .multiphase_global import EXECUTION_WINDOW_MODE, _run_global_matching_scheduler
+
+    num_gpus = 0
+    for chunks in phase_orders.values():
+        for chunk in chunks:
+            num_gpus = max(num_gpus, chunk.src_gpu + 1, chunk.dst_gpu + 1)
+    matrices = [[[0] * num_gpus for _ in range(num_gpus)] for _ in range(3)]
+    base_score_lookup: dict[str, float] = {}
+    for phase, chunks in phase_orders.items():
+        total = max(len(chunks), 1)
+        for index, chunk in enumerate(chunks):
+            matrices[phase][chunk.src_gpu][chunk.dst_gpu] = int(chunk.size)
+            base_score_lookup[chunk.chunk_id] = float(total - index)
+    return _run_global_matching_scheduler(
+        matrices[0],
+        matrices[1],
+        matrices[2],
+        num_gpus,
+        strategy=strategy,
+        mode=EXECUTION_WINDOW_MODE,
+        prediction_confidence=0.0,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=True,
+        wave_quantum=None,
+        max_waves=256,
+        residual_weight=0.25,
+        barrier_weight=0.0,
+        age_weight=0.05,
+        prediction_weight=0.0,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=1,
+        atomic=False,
+        base_score_lookup=base_score_lookup,
+        base_priority_weight=1.0,
+    )
+
+
+def fast_schedule_birkhoff_wave(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    del model
+    start = time.perf_counter()
+    base = fast_schedule_birkhoff(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        expert_compute_delay=expert_compute_delay,
+    )
+    payload = _phase_local_wave_schedule(
+        _extract_phase_orders_from_schedule(base["schedule"]),
+        strategy="B_birkhoff_wave",
+        expert_compute_delay=expert_compute_delay,
+    )
+    payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
+    return payload
+
+
 def fast_schedule_phase_aware_greedy(
     dispatch_matrix: list[list[int]],
     combine_matrix: list[list[int]],
@@ -902,6 +975,33 @@ def fast_schedule_barrier_aware_birkhoff(
     best_payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
     best_payload["strategy"] = "barrier_aware_birkhoff"
     return best_payload
+
+
+def fast_schedule_barrier_aware_birkhoff_wave(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+) -> dict[str, Any]:
+    del model
+    start = time.perf_counter()
+    base = fast_schedule_barrier_aware_birkhoff(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        expert_compute_delay=expert_compute_delay,
+    )
+    payload = _phase_local_wave_schedule(
+        _extract_phase_orders_from_schedule(base["schedule"]),
+        strategy="B_barrier_aware_birkhoff_wave",
+        expert_compute_delay=expert_compute_delay,
+    )
+    payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
+    return payload
 
 
 def fast_schedule_randomized_multistart_birkhoff(

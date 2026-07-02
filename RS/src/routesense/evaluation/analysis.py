@@ -10,7 +10,9 @@ import torch  # type: ignore
 
 from ..scheduler import (
     fast_schedule_barrier_aware_birkhoff,
+    fast_schedule_barrier_aware_birkhoff_wave,
     fast_schedule_birkhoff,
+    fast_schedule_birkhoff_wave,
     fast_schedule_cp_lpt,
     fast_schedule_ibbr,
     fast_schedule_lagrangian,
@@ -43,7 +45,9 @@ SchedulerFn = Callable[[list[list[int]], list[list[int]], list[list[int]], int],
 FAST_ALGORITHMS: list[tuple[str, SchedulerFn]] = [
     ("U_cp_lpt", fast_schedule_cp_lpt),
     ("B_birkhoff", fast_schedule_birkhoff),
+    ("B_birkhoff_wave", fast_schedule_birkhoff_wave),
     ("B_barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
+    ("B_barrier_aware_birkhoff_wave", fast_schedule_barrier_aware_birkhoff_wave),
     ("U_lagrangian", fast_schedule_lagrangian),
     ("U_ibbr", fast_schedule_ibbr),
     ("U_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal),

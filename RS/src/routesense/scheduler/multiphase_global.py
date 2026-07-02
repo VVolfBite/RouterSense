@@ -290,6 +290,8 @@ def _ready_flow_candidates(
     prediction_weight: float,
     mode: str,
     prediction_confidence: float,
+    base_score_lookup: dict[str, float] | None = None,
+    base_priority_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     max_residual = max((value for value in residual.values() if value > 0.0), default=1.0)
     ready: list[dict[str, Any]] = []
@@ -309,8 +311,10 @@ def _ready_flow_candidates(
         prediction_bonus = 0.0
         if mode == RUNTIME_LOOKAHEAD_MODE and flow.phase == 1:
             prediction_bonus = prediction_confidence * downstream_load.get((2, flow.dst_gpu), 0.0) / max(max_residual, 1.0)
+        base_priority = 0.0 if base_score_lookup is None else float(base_score_lookup.get(flow.flow_id, 0.0))
         score = (
-            residual_weight * (remaining / max_residual)
+            base_priority_weight * base_priority
+            + residual_weight * (remaining / max_residual)
             + barrier_weight * barrier_urgency
             + age_weight * age
             + prediction_weight * prediction_bonus
@@ -326,6 +330,7 @@ def _ready_flow_candidates(
                 "barrier_urgency": barrier_urgency,
                 "age": age,
                 "prediction_bonus": prediction_bonus,
+                "base_priority": base_priority,
                 "score": score,
             }
         )
@@ -355,6 +360,8 @@ def _run_global_matching_scheduler(
     price_clip: float,
     iteration_budget: int,
     atomic: bool,
+    base_score_lookup: dict[str, float] | None = None,
+    base_priority_weight: float = 0.0,
 ) -> dict[str, Any]:
     start_time = time.perf_counter()
     flows = _collect_real_flows(
@@ -402,6 +409,8 @@ def _run_global_matching_scheduler(
             prediction_weight=prediction_weight,
             mode=mode,
             prediction_confidence=prediction_confidence,
+            base_score_lookup=base_score_lookup,
+            base_priority_weight=base_priority_weight,
         )
         if adaptive_prices:
             for candidate in ready:
@@ -463,6 +472,7 @@ def _run_global_matching_scheduler(
                         float(candidate["barrier_urgency"]),
                         float(candidate["age"]),
                         float(candidate["prediction_bonus"]),
+                        float(candidate["base_priority"]),
                     ],
                 }
             )

@@ -133,6 +133,13 @@ _register_function_strategy(
     description="Baseline: per-phase Birkhoff decomposition.",
 )
 _register_function_strategy(
+    "DBirkhoffWaveStrategy",
+    "B_birkhoff_wave",
+    fast.fast_schedule_birkhoff_wave,
+    prediction_aware=False,
+    description="Baseline: phase-local Birkhoff order with wave-level interleave after release.",
+)
+_register_function_strategy(
     "BirkhoffExhaustiveStrategy",
     "birkhoff_exhaustive",
     fast.fast_schedule_birkhoff_exhaustive,
@@ -191,6 +198,13 @@ _register_function_strategy(
     fast.fast_schedule_barrier_aware_birkhoff,
     prediction_aware=False,
     description="Baseline: Birkhoff variant search within phase-local space.",
+)
+_register_function_strategy(
+    "DBarrierAwareBirkhoffWaveStrategy",
+    "B_barrier_aware_birkhoff_wave",
+    fast.fast_schedule_barrier_aware_birkhoff_wave,
+    prediction_aware=False,
+    description="Baseline: barrier-aware Birkhoff order with wave-level interleave after release.",
 )
 _register_function_strategy(
     "RandomizedMultistartBirkhoffStrategy",
@@ -260,6 +274,8 @@ _register_function_strategy(
 )
 _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pairwise, description="Best-of candidate fast scheduler pool.")
 _register_function_strategy("OracleStrategy", "oracle", oracle.pairwise_oracle, prediction_aware=True, description="CP-SAT upper bound over all provided phases.")
+_register_function_strategy("WaveOracleStrategy", "oracle_wave_atomic", oracle.pairwise_wave_oracle, prediction_aware=True, description="Wave outer-loop oracle over atomic chunk execution.")
+_register_function_strategy("FluidWaveOracleStrategy", "oracle_wave_fluid", oracle.pairwise_fluid_wave_oracle, prediction_aware=True, description="Fluid wave oracle-style relaxation for small-sample upper-bound analysis.")
 _register_function_strategy(
     "DIBBRStrategy",
     "U_ibbr",
