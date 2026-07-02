@@ -419,6 +419,49 @@ def _rounds_to_phase_order(rounds: list[tuple[int, list[tuple[int, int]]]], *, p
     return order
 
 
+def _birkhoff_round_rank(
+    rounds: list[tuple[int, list[tuple[int, int]]]],
+    chunks: list[ChunkSpec],
+    *,
+    phase: int,
+) -> dict[tuple[int, int, int], tuple[int, int]]:
+    seen: dict[tuple[int, int], int] = {}
+    for round_index, (_weight, edges) in enumerate(rounds):
+        for src, dst in edges:
+            seen.setdefault((src, dst), round_index)
+    return {
+        (phase, chunk.src_gpu, chunk.dst_gpu): (
+            seen.get((chunk.src_gpu, chunk.dst_gpu), len(rounds)),
+            -chunk.size,
+        )
+        for chunk in chunks
+    }
+
+
+def _phase_order_from_round_rank(
+    chunks: list[ChunkSpec],
+    round_rank: dict[tuple[int, int, int], tuple[int, int]],
+) -> tuple[list[ChunkSpec], dict[str, tuple[float, ...]]]:
+    ordered = sorted(
+        chunks,
+        key=lambda chunk: (
+            -round_rank[(chunk.phase, chunk.src_gpu, chunk.dst_gpu)][0],
+            chunk.size,
+            -chunk.src_gpu,
+            -chunk.dst_gpu,
+        ),
+        reverse=True,
+    )
+    priority_lookup = {
+        chunk.chunk_id: (
+            float(round_rank[(chunk.phase, chunk.src_gpu, chunk.dst_gpu)][0]),
+            float(chunk.size),
+        )
+        for chunk in ordered
+    }
+    return ordered, priority_lookup
+
+
 def fast_schedule_birkhoff(
     dispatch_matrix: list[list[int]],
     combine_matrix: list[list[int]],
@@ -536,7 +579,8 @@ def fast_schedule_barrier_aware_birkhoff(
     start = time.perf_counter()
     rng = random.Random(0)
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
-    phase_candidates: dict[int, list[tuple[dict[int, list[ChunkSpec]], dict[str, tuple[float, ...]]]]] = {0: [], 1: [], 2: []}
+    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+    phase_candidates: dict[int, list[tuple[list[ChunkSpec], dict[str, tuple[float, ...]]]]] = {0: [], 1: [], 2: []}
     for phase, matrix in enumerate(matrices):
         for variant in range(3):
             perturbed = np.array(matrix, dtype=float)
@@ -544,19 +588,17 @@ def fast_schedule_barrier_aware_birkhoff(
             perturbed = np.maximum(perturbed + noise, 0.0)
             scaled = np.rint(perturbed * 100.0).astype(int).tolist()
             rounds = _birkhoff_decompose(scaled)
-            order = _rounds_to_phase_order(rounds, phase=phase)
-            order.sort(key=lambda chunk: (chunk.size, -chunk.src_gpu, -chunk.dst_gpu), reverse=True)
-            lookup = {chunk.chunk_id: (float(chunk.size),) for chunk in order}
-            phase_candidates[phase].append(({phase: order}, lookup))
+            round_rank = _birkhoff_round_rank(rounds, phase_chunks[phase], phase=phase)
+            order, lookup = _phase_order_from_round_rank(phase_chunks[phase], round_rank)
+            phase_candidates[phase].append((order, lookup))
     best_payload: dict[str, Any] | None = None
-    best_orders: dict[int, list[ChunkSpec]] | None = None
     for phase0_orders, lookup0 in phase_candidates[0]:
         for phase1_orders, lookup1 in phase_candidates[1]:
             for phase2_orders, lookup2 in phase_candidates[2]:
                 merged = {
-                    0: phase0_orders[0],
-                    1: phase1_orders[1],
-                    2: phase2_orders[2],
+                    0: phase0_orders,
+                    1: phase1_orders,
+                    2: phase2_orders,
                 }
                 merged_lookup = {}
                 merged_lookup.update(lookup0)
@@ -572,8 +614,7 @@ def fast_schedule_barrier_aware_birkhoff(
                 )
                 if best_payload is None or float(payload["makespan"]) < float(best_payload["makespan"]):
                     best_payload = payload
-                    best_orders = merged
-    assert best_payload is not None and best_orders is not None
+    assert best_payload is not None
     best_payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
     best_payload["strategy"] = "barrier_aware_birkhoff"
     return best_payload
@@ -591,7 +632,8 @@ def fast_schedule_randomized_multistart_birkhoff(
     start = time.perf_counter()
     rng = random.Random(1)
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
-    phase_variants: dict[int, list[list[ChunkSpec]]] = {0: [], 1: [], 2: []}
+    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+    phase_variants: dict[int, list[tuple[list[ChunkSpec], dict[str, tuple[float, ...]]]]] = {0: [], 1: [], 2: []}
     for phase, matrix in enumerate(matrices):
         for _ in range(5):
             perturbed = np.array(matrix, dtype=float)
@@ -599,18 +641,23 @@ def fast_schedule_randomized_multistart_birkhoff(
             perturbed = np.maximum(perturbed + noise, 0.0)
             scaled = np.rint(perturbed * 50.0).astype(int).tolist()
             rounds = _birkhoff_decompose(scaled)
-            order = _rounds_to_phase_order(rounds, phase=phase)
-            order.sort(key=lambda chunk: (chunk.size, rng.random()), reverse=True)
-            phase_variants[phase].append(order)
+            round_rank = _birkhoff_round_rank(rounds, phase_chunks[phase], phase=phase)
+            order, lookup = _phase_order_from_round_rank(phase_chunks[phase], round_rank)
+            phase_variants[phase].append((order, lookup))
     best_payload: dict[str, Any] | None = None
-    for orders0 in phase_variants[0]:
-        for orders1 in phase_variants[1]:
-            for orders2 in phase_variants[2]:
+    for orders0, lookup0 in phase_variants[0]:
+        for orders1, lookup1 in phase_variants[1]:
+            for orders2, lookup2 in phase_variants[2]:
                 merged = {0: orders0, 1: orders1, 2: orders2}
+                merged_lookup = {}
+                merged_lookup.update(lookup0)
+                merged_lookup.update(lookup1)
+                merged_lookup.update(lookup2)
                 payload = _schedule_phase_orders(
                     merged,
                     strategy="randomized_multistart_birkhoff",
                     solve_time_ms=0.0,
+                    priority_lookup=merged_lookup,
                     model=model,
                     expert_compute_delay=expert_compute_delay,
                 )
@@ -830,31 +877,48 @@ def fast_schedule_lagrangian(
 ) -> dict[str, Any]:
     start = time.perf_counter()
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     lambda_g = [0.0] * num_gpus
     best_makespan = float("inf")
     best_orders: dict[int, list[ChunkSpec]] | None = None
+    best_lookup: dict[str, tuple[float, ...]] = {}
 
     for iteration in range(max_iterations):
         phase_orders: dict[int, list[ChunkSpec]] = {}
+        priority_lookup: dict[str, tuple[float, ...]] = {}
         for phase, matrix in enumerate(matrices):
             row_sums = _matrix_row_sums(matrix)
             col_sums = _matrix_col_sums(matrix)
             rounds = _birkhoff_decompose(matrix)
-            chunks = _rounds_to_phase_order(rounds, phase=phase)
-            chunks.sort(
+            round_rank = _birkhoff_round_rank(rounds, phase_chunks[phase], phase=phase)
+            chunks = sorted(
+                phase_chunks[phase],
                 key=lambda chunk: (
-                    chunk.size + lambda_g[chunk.src_gpu] * row_sums[chunk.src_gpu] * 0.01 + lambda_g[chunk.dst_gpu] * col_sums[chunk.dst_gpu] * 0.01,
+                    -(
+                        round_rank[(phase, chunk.src_gpu, chunk.dst_gpu)][0]
+                        - lambda_g[chunk.src_gpu] * row_sums[chunk.src_gpu] * 0.01
+                        - lambda_g[chunk.dst_gpu] * col_sums[chunk.dst_gpu] * 0.01
+                    ),
+                    chunk.size,
                     -chunk.src_gpu,
                     -chunk.dst_gpu,
                 ),
                 reverse=True,
             )
             phase_orders[phase] = chunks
+            for chunk in chunks:
+                priority_lookup[chunk.chunk_id] = (
+                    float(round_rank[(phase, chunk.src_gpu, chunk.dst_gpu)][0]),
+                    float(lambda_g[chunk.src_gpu]),
+                    float(lambda_g[chunk.dst_gpu]),
+                    float(chunk.size),
+                )
 
         makespan = _evaluate_phase_orders(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
         if makespan < best_makespan:
             best_makespan = makespan
             best_orders = _clone_phase_orders(phase_orders)
+            best_lookup = dict(priority_lookup)
 
         send_done, recv_done, _payload = _phase_completion_times(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
         for phase in recv_done:
@@ -871,7 +935,14 @@ def fast_schedule_lagrangian(
             lambda_g[gpu] = max(0.0, lambda_g[gpu] + step_size * violation)
     solve_time_ms = (time.perf_counter() - start) * 1000.0
     if best_orders is not None:
-        payload = _schedule_phase_orders(best_orders, strategy="lagrangian", solve_time_ms=solve_time_ms, model=model, expert_compute_delay=expert_compute_delay)
+        payload = _schedule_phase_orders(
+            best_orders,
+            strategy="lagrangian",
+            solve_time_ms=solve_time_ms,
+            priority_lookup=best_lookup,
+            model=model,
+            expert_compute_delay=expert_compute_delay,
+        )
         return payload
     return fast_schedule_birkhoff(
         dispatch_matrix,
@@ -973,16 +1044,18 @@ def fast_schedule_two_stage(
 ) -> dict[str, Any]:
     start = time.perf_counter()
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     phase_orders: dict[int, list[ChunkSpec]] = {}
     priority_lookup: dict[str, tuple[float, ...]] = {}
     for phase, matrix in enumerate(matrices):
         rounds = _birkhoff_decompose(matrix)
-        order = _rounds_to_phase_order(rounds, phase=phase)
+        round_rank = _birkhoff_round_rank(rounds, phase_chunks[phase], phase=phase)
         row_sums = _matrix_row_sums(matrix)
         col_sums = _matrix_col_sums(matrix)
         phase_orders[phase] = sorted(
-            order,
+            phase_chunks[phase],
             key=lambda chunk: (
+                -round_rank[(phase, chunk.src_gpu, chunk.dst_gpu)][0],
                 max(row_sums[chunk.src_gpu], col_sums[chunk.dst_gpu]),
                 chunk.size,
                 -chunk.src_gpu,
@@ -992,6 +1065,7 @@ def fast_schedule_two_stage(
         )
         for chunk in phase_orders[phase]:
             priority_lookup[chunk.chunk_id] = (
+                float(round_rank[(phase, chunk.src_gpu, chunk.dst_gpu)][0]),
                 float(max(row_sums[chunk.src_gpu], col_sums[chunk.dst_gpu])),
                 float(chunk.size),
             )
