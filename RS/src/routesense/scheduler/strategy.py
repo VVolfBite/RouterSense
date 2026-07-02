@@ -39,6 +39,18 @@ class SchedulingStrategy(ABC):
     def solve(self, ctx: SchedulingContext) -> SchedulingResult:
         """Run the scheduling policy."""
 
+    @property
+    def prediction_aware(self) -> bool:
+        """Whether the strategy intentionally uses next-phase values in its policy."""
+
+        return False
+
+    @property
+    def description(self) -> str:
+        """Short strategy description."""
+
+        return ""
+
 
 _REGISTRY: dict[str, type[SchedulingStrategy]] = {}
 
@@ -63,3 +75,14 @@ def list_strategies() -> list[str]:
     """List registered strategy names."""
 
     return sorted(_REGISTRY)
+
+
+def get_strategy_metadata(name: str) -> dict[str, Any]:
+    """Return registered metadata for a strategy."""
+
+    strategy = get_strategy(name)
+    return {
+        "name": strategy.name,
+        "prediction_aware": bool(strategy.prediction_aware),
+        "description": str(strategy.description),
+    }

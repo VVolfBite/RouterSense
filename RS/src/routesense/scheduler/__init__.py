@@ -3,6 +3,7 @@ from .strategy import (
     SchedulingResult,
     SchedulingStrategy,
     get_strategy,
+    get_strategy_metadata,
     list_strategies,
     register_strategy,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "SchedulingResult",
     "SchedulingStrategy",
     "get_strategy",
+    "get_strategy_metadata",
     "list_strategies",
     "register_strategy",
     "fast_schedule_barrier_aware_birkhoff",

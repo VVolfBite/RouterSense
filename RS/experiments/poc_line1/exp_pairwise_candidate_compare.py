@@ -34,6 +34,28 @@ def _stats_line(summary: dict, name: str) -> dict[str, float | None]:
     }
 
 
+def _blind_rows(predicted_summary: dict, zeros_summary: dict, selected_names: list[str]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for name in selected_names:
+        predicted_imp = float((predicted_summary.get(f"{name}_improvement_pct") or {}).get("mean") or 0.0)
+        zeros_imp = float((zeros_summary.get(f"{name}_improvement_pct") or {}).get("mean") or 0.0)
+        delta = abs(predicted_imp - zeros_imp)
+        declared = bool(predicted_summary.get(f"{name}_prediction_aware", False))
+        actual = delta >= 1.0
+        rows.append(
+            {
+                "algorithm": name,
+                "declared_aware": declared,
+                "predicted_imp_pct": predicted_imp,
+                "zeros_imp_pct": zeros_imp,
+                "delta_pct": delta,
+                "actual_aware": actual,
+                "match": declared == actual,
+            }
+        )
+    return rows
+
+
 def _markdown_table(rows: list[dict[str, object]]) -> str:
     lines = [
         "| algorithm | sched_improve% | effective_improve% | prediction_aware | latency_ms |",
@@ -47,6 +69,26 @@ def _markdown_table(rows: list[dict[str, object]]) -> str:
                 effective_improve_pct=float(row["effective_improve_pct"] or 0.0),
                 prediction_aware="yes" if bool(row["prediction_aware"]) else "no",
                 mean_latency_ms=float(row["mean_latency_ms"] or 0.0),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _blind_markdown_table(rows: list[dict[str, object]]) -> str:
+    lines = [
+        "| algorithm | declared_aware | predicted_imp% | zeros_imp% | delta% | actual_aware | match |",
+        "|---|:---:|---:|---:|---:|:---:|:---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| {algorithm} | {declared} | {predicted:.4f} | {zeros:.4f} | {delta:.4f} | {actual} | {match} |".format(
+                algorithm=row["algorithm"],
+                declared="yes" if bool(row["declared_aware"]) else "no",
+                predicted=float(row["predicted_imp_pct"]),
+                zeros=float(row["zeros_imp_pct"]),
+                delta=float(row["delta_pct"]),
+                actual="yes" if bool(row["actual_aware"]) else "no",
+                match="yes" if bool(row["match"]) else "no",
             )
         )
     return "\n".join(lines)
@@ -69,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)
     parser.add_argument(
+        "--next-mode",
+        choices=["predicted", "zeros", "both"],
+        default="predicted",
+        help="next_dispatch_matrix mode: predicted, zeros, or both",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=str(ROOT / "artifacts" / "poc_line1" / "candidate_compare"),
@@ -88,41 +136,77 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Unknown algorithms: {missing}")
     selected_algorithms = [(name, by_name[name]) for name in selected_names]
 
-    report = run_pairwise_analysis(
-        records,
-        hidden_states_by_sample=hidden_states,
-        gate_weights_by_sample=gate_weights,
-        owner_by_expert=owner_by_expert,
-        num_gpus=args.num_gpus,
-        topk=args.topk,
-        sample_limit=args.sample_limit,
-        fast_algorithms=selected_algorithms,
-        skip_oracle=args.skip_oracle,
-        include_fast_best_of=not args.skip_fast_best_of,
-    )
-
-    rows = []
-    for name in selected_names:
-        row = {"algorithm": name}
-        row.update(_stats_line(report["summary"], name))
-        rows.append(row)
-    if not args.skip_oracle:
-        rows.append(
-            {
-                "algorithm": "oracle_perfect",
-                "sched_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
-                "effective_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
-                "prediction_aware": False,
-                "mean_latency_ms": report["summary"]["oracle_perfect_latency_ms"]["mean"],
-            }
-        )
-    table = _markdown_table(rows)
-
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "summary.json").write_text(json.dumps(report["summary"], indent=2), encoding="utf-8")
-    (out / "table.md").write_text(table + "\n", encoding="utf-8")
-    print(table)
+
+    def run_and_collect(mode: str) -> tuple[dict, str]:
+        report = run_pairwise_analysis(
+            records,
+            hidden_states_by_sample=hidden_states,
+            gate_weights_by_sample=gate_weights,
+            owner_by_expert=owner_by_expert,
+            num_gpus=args.num_gpus,
+            topk=args.topk,
+            sample_limit=args.sample_limit,
+            next_mode=mode,
+            fast_algorithms=selected_algorithms,
+            skip_oracle=args.skip_oracle,
+            include_fast_best_of=not args.skip_fast_best_of,
+        )
+        rows = []
+        for name in selected_names:
+            row = {"algorithm": name}
+            row.update(_stats_line(report["summary"], name))
+            rows.append(row)
+        if not args.skip_oracle:
+            rows.append(
+                {
+                    "algorithm": "oracle_perfect",
+                    "sched_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
+                    "effective_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
+                    "prediction_aware": False,
+                    "mean_latency_ms": report["summary"]["oracle_perfect_latency_ms"]["mean"],
+                }
+            )
+        return report, _markdown_table(rows)
+
+    if args.next_mode != "both":
+        report, table = run_and_collect(args.next_mode)
+        (out / "summary.json").write_text(json.dumps(report["summary"], indent=2), encoding="utf-8")
+        (out / "table.md").write_text(table + "\n", encoding="utf-8")
+        print(table)
+        return 0
+
+    predicted_report, predicted_table = run_and_collect("predicted")
+    zeros_report, zeros_table = run_and_collect("zeros")
+    blind_rows = _blind_rows(predicted_report["summary"], zeros_report["summary"], selected_names)
+    prediction_blind_test = {
+        row["algorithm"]: {
+            "predicted_improvement_pct": row["predicted_imp_pct"],
+            "zeros_improvement_pct": row["zeros_imp_pct"],
+            "delta_pct": row["delta_pct"],
+            "prediction_aware": row["actual_aware"],
+            "prediction_aware_declared": row["declared_aware"],
+            "match": row["match"],
+        }
+        for row in blind_rows
+    }
+    combined_summary = {
+        "predicted": predicted_report["summary"],
+        "zeros": zeros_report["summary"],
+        "prediction_blind_test": prediction_blind_test,
+        "prediction_aware_algorithms": [row["algorithm"] for row in blind_rows if bool(row["actual_aware"])],
+        "prediction_blind_algorithms": [row["algorithm"] for row in blind_rows if not bool(row["actual_aware"])],
+        "mismatched": [row["algorithm"] for row in blind_rows if not bool(row["match"])],
+    }
+    blind_table = _blind_markdown_table(blind_rows)
+    (out / "summary_predicted.json").write_text(json.dumps(predicted_report["summary"], indent=2), encoding="utf-8")
+    (out / "summary_zeros.json").write_text(json.dumps(zeros_report["summary"], indent=2), encoding="utf-8")
+    (out / "summary.json").write_text(json.dumps(combined_summary, indent=2), encoding="utf-8")
+    (out / "table_predicted.md").write_text(predicted_table + "\n", encoding="utf-8")
+    (out / "table_zeros.md").write_text(zeros_table + "\n", encoding="utf-8")
+    (out / "table.md").write_text(blind_table + "\n", encoding="utf-8")
+    print(blind_table)
     return 0
 
 

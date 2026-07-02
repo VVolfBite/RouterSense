@@ -365,6 +365,12 @@ def fast_schedule_cp_lpt(
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
+    """Critical-path LPT ordering.
+
+    prediction_aware: True
+        Uses next_dispatch_matrix values through _critical_path_weights() to
+        compute downstream later_work for phase-0/1 prioritization.
+    """
     start = time.perf_counter()
     phase_orders, priority_lookup = _phase_orders_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     return _schedule_phase_orders(
@@ -722,6 +728,12 @@ def fast_schedule_birkhoff(
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
+    """Per-phase Birkhoff decomposition with barrier-aware simulation.
+
+    prediction_aware: False
+        next_dispatch_matrix only defines phase 2 itself; its values do not
+        influence phase-0/1 ordering decisions.
+    """
     start = time.perf_counter()
     dispatch_rounds = _birkhoff_decompose(dispatch_matrix)
     combine_rounds = _birkhoff_decompose(combine_matrix)
@@ -827,6 +839,12 @@ def fast_schedule_barrier_aware_birkhoff(
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
+    """Searches among Birkhoff variants while keeping phase-local optimality.
+
+    prediction_aware: False
+        It evaluates the three-phase schedule jointly, but phase-2 values do
+        not directly guide phase-0/1 priorities beyond candidate evaluation.
+    """
     start = time.perf_counter()
     rng = random.Random(0)
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
@@ -1160,6 +1178,12 @@ def fast_schedule_lagrangian(
     max_iterations: int = 15,
     learning_rate: float = 0.1,
 ) -> dict[str, Any]:
+    """Cross-phase Lagrangian ordering over all provided phase matrices.
+
+    prediction_aware: True
+        The optimization uses phase-2 matrix values inside the coupled
+        three-phase objective and multiplier updates.
+    """
     start = time.perf_counter()
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
     phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
@@ -1345,6 +1369,12 @@ def fast_schedule_two_stage(
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
+    """Two-stage Birkhoff-based ordering.
+
+    prediction_aware: False
+        Phase-2 traffic is scheduled as its own phase but does not shape
+        phase-0/1 priorities.
+    """
     start = time.perf_counter()
     matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
     phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
@@ -1428,6 +1458,12 @@ def fast_schedule_ibbr(
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
+    """Iterated Birkhoff barrier repair.
+
+    prediction_aware: False
+        Local repairs operate on existing phase orders without using phase-2
+        traffic values to prioritize phase-0/1 changes.
+    """
     start = time.perf_counter()
     base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
     best_orders = _extract_phase_orders_from_schedule(base["schedule"])
@@ -1548,6 +1584,10 @@ def fast_schedule_ejection_chain_tabu(
     """Cross-phase tabu search with shallow ejection chains.
 
     Complexity is O(K * N^2 * F) in practice due to bounded local repairs.
+
+    prediction_aware: False
+        Search decisions are driven by current schedule bottlenecks rather than
+        direct inspection of phase-2 traffic values.
     """
 
     start = time.perf_counter()

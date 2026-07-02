@@ -25,6 +25,7 @@ from ..scheduler import (
     greedy_schedule_pairwise,
     pairwise_oracle,
 )
+from ..scheduler.strategy import get_strategy_metadata
 from .cross_layer import _decode_predicted_topk_by_sample, _summary_stats, evaluate_gate2, spearman_rank_correlation
 from .traffic_matrix import (
     TraceRecord,
@@ -79,10 +80,13 @@ def run_pairwise_analysis(
     sample_limit: int | None = None,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
+    next_mode: str = "predicted",
     fast_algorithms: list[tuple[str, SchedulerFn]] | None = None,
     skip_oracle: bool = False,
     include_fast_best_of: bool = True,
 ) -> dict[str, Any]:
+    if next_mode not in {"predicted", "zeros"}:
+        raise ValueError(f"unsupported next_mode {next_mode!r}")
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
     print(f"[perf] _group_records: {time.time() - t0:.2f}s", flush=True)
@@ -176,6 +180,9 @@ def run_pairwise_analysis(
                 topk=topk,
                 token_index=token_index,
             )
+            if next_mode == "zeros":
+                size = len(next_predicted_matrix)
+                next_predicted_matrix = [[0] * size for _ in range(size)]
             if loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
@@ -358,6 +365,7 @@ def run_pairwise_analysis(
         "pair_count": len(results),
         "model": model,
         "expert_compute_delay": expert_compute_delay,
+        "next_mode": next_mode,
         "traffic_correlation": _summary_stats(traffic_correlations),
         "greedy_latency_ms": _summary_stats(greedy_latencies_ms),
         "include_fast_best_of": include_fast_best_of,
@@ -377,10 +385,12 @@ def run_pairwise_analysis(
         summary["oracle_perfect_solver_statuses"] = dict(Counter(oracle_perfect_statuses))
         summary["oracle_predicted_solver_statuses"] = dict(Counter(oracle_predicted_statuses))
     for name, _scheduler in selected_fast_algorithms:
+        metadata = get_strategy_metadata(name)
         summary[f"{name}_improvement_pct"] = _summary_stats(algorithm_improvements[name])
         summary[f"{name}_effective_improvement_pct"] = _summary_stats(algorithm_effective_improvements[name])
         summary[f"{name}_latency_ms"] = _summary_stats(algorithm_latencies[name])
-        summary[f"{name}_prediction_aware"] = name in PREDICTION_AWARE_ALGORITHMS
+        summary[f"{name}_prediction_aware"] = bool(metadata["prediction_aware"])
+        summary[f"{name}_description"] = str(metadata["description"])
         if algorithm_failures[name]:
             summary[f"{name}_failures"] = dict(Counter(algorithm_failures[name]))
 
