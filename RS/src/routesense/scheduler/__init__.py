@@ -1,3 +1,11 @@
+from .strategy import (
+    SchedulingContext,
+    SchedulingResult,
+    SchedulingStrategy,
+    get_strategy,
+    list_strategies,
+    register_strategy,
+)
 from .greedy import greedy_schedule_pairwise, greedy_schedule_single_layer, greedy_schedule_multi_layer
 from .fast import (
     fast_schedule_barrier_aware_birkhoff,
@@ -20,8 +28,15 @@ from .fast import (
     fast_schedule_two_stage,
 )
 from .oracle import PairwiseChunk, pairwise_oracle, _pairwise_oracle_scipy
+from . import strategies as _strategies
 
 __all__ = [
+    "SchedulingContext",
+    "SchedulingResult",
+    "SchedulingStrategy",
+    "get_strategy",
+    "list_strategies",
+    "register_strategy",
     "fast_schedule_barrier_aware_birkhoff",
     "fast_schedule_birkhoff",
     "fast_schedule_completion_balanced",
