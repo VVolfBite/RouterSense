@@ -88,6 +88,11 @@ _register_function_strategy(
 )
 _register_function_strategy("BirkhoffStrategy", "birkhoff", fast.fast_schedule_birkhoff)
 _register_function_strategy(
+    "BirkhoffExhaustiveStrategy",
+    "birkhoff_exhaustive",
+    fast.fast_schedule_birkhoff_exhaustive,
+)
+_register_function_strategy(
     "SimulatedAnnealingStrategy",
     "simulated_annealing",
     fast.fast_schedule_simulated_annealing,
@@ -96,7 +101,17 @@ _register_function_strategy("GRASPStrategy", "grasp", fast.fast_schedule_grasp)
 _register_function_strategy("IBBRStrategy", "ibbr", fast.fast_schedule_ibbr)
 _register_function_strategy("TabuSearchStrategy", "tabu_search", fast.fast_schedule_tabu_search)
 _register_function_strategy("LNSStrategy", "lns", fast.fast_schedule_lns)
+_register_function_strategy(
+    "LNSCPRepairStrategy",
+    "lns_cp_repair",
+    fast.fast_schedule_lns_cp_repair,
+)
 _register_function_strategy("LagrangianStrategy", "lagrangian", fast.fast_schedule_lagrangian)
+_register_function_strategy(
+    "EjectionChainTabuStrategy",
+    "ejection_chain_tabu",
+    fast.fast_schedule_ejection_chain_tabu,
+)
 _register_function_strategy(
     "IteratedGreedyStrategy",
     "iterated_greedy",
@@ -113,6 +128,16 @@ _register_function_strategy(
     fast.fast_schedule_randomized_multistart_birkhoff,
 )
 _register_function_strategy("TwoStageStrategy", "two_stage", fast.fast_schedule_two_stage)
+_register_function_strategy(
+    "DecomposedStrategy",
+    "decomposed",
+    fast.fast_schedule_decomposed,
+)
+_register_function_strategy(
+    "QuantizedDecomposedStrategy",
+    "quantized_decomposed",
+    fast.fast_schedule_quantized_decomposed,
+)
 _register_function_strategy(
     "CriticalPathCompressionStrategy",
     "critical_path_compression",
@@ -137,4 +162,3 @@ _register_function_strategy(
 )
 _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pairwise)
 _register_function_strategy("OracleStrategy", "oracle", oracle.pairwise_oracle)
-

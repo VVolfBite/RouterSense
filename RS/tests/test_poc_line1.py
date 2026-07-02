@@ -9,18 +9,23 @@ from routesense.evaluation import (
     combine_matrix_from_dispatch,
     fast_schedule_barrier_aware_birkhoff,
     fast_schedule_birkhoff,
+    fast_schedule_birkhoff_exhaustive,
     fast_schedule_completion_balanced,
     fast_schedule_cp_local_swap,
     fast_schedule_cp_lpt,
     fast_schedule_critical_path_compression,
+    fast_schedule_decomposed,
+    fast_schedule_ejection_chain_tabu,
     fast_schedule_grasp,
     fast_schedule_ibbr,
     fast_schedule_iterated_greedy,
     fast_schedule_lagrangian,
     fast_schedule_lns,
+    fast_schedule_lns_cp_repair,
     fast_schedule_lookahead_lpt,
     fast_schedule_phase_aware_greedy,
     fast_schedule_pairwise,
+    fast_schedule_quantized_decomposed,
     fast_schedule_randomized_multistart_birkhoff,
     fast_schedule_simulated_annealing,
     fast_schedule_tabu_search,
@@ -355,18 +360,55 @@ def test_all_fast_scheduler_variants_return_valid_schedule():
         fast_schedule_simulated_annealing,
         fast_schedule_lagrangian,
         fast_schedule_grasp,
+        fast_schedule_ejection_chain_tabu,
+        fast_schedule_lns_cp_repair,
+        fast_schedule_decomposed,
+        fast_schedule_quantized_decomposed,
         fast_schedule_completion_balanced,
         fast_schedule_two_stage,
         fast_schedule_critical_path_compression,
         fast_schedule_ibbr,
         fast_schedule_iterated_greedy,
         fast_schedule_cp_local_swap,
+        fast_schedule_birkhoff_exhaustive,
     ):
         payload = scheduler(dispatch, combine, next_dispatch, 4)
         assert payload["makespan"] >= 0
         assert payload["schedule"]
         assert payload["solve_time_ms"] >= 0
         assert payload["strategy"]
+
+
+def test_new_candidate_schedulers_basic_shapes():
+    dispatch = [
+        [0, 5, 3, 2],
+        [4, 0, 6, 1],
+        [2, 3, 0, 7],
+        [1, 4, 5, 0],
+    ]
+    combine = [
+        [0, 5, 3, 2],
+        [4, 0, 6, 1],
+        [2, 3, 0, 7],
+        [1, 4, 5, 0],
+    ]
+    next_dispatch = [
+        [0, 3, 4, 5],
+        [2, 0, 1, 6],
+        [5, 4, 0, 3],
+        [3, 2, 6, 0],
+    ]
+    for scheduler, name in (
+        (fast_schedule_ejection_chain_tabu, "ejection_chain_tabu"),
+        (fast_schedule_lns_cp_repair, "lns_cp_repair"),
+        (fast_schedule_decomposed, "decomposed"),
+        (fast_schedule_quantized_decomposed, "quantized_decomposed"),
+        (fast_schedule_birkhoff_exhaustive, "birkhoff_exhaustive"),
+    ):
+        result = scheduler(dispatch, combine, next_dispatch, 4)
+        assert result["makespan"] > 0
+        assert result["strategy"] == name
+        assert len(result["schedule"]) > 0
 
 
 def test_pairwise_oracle_has_no_phase_barrier_in_schedule():
