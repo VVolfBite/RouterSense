@@ -49,6 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--device-map", type=str, default=None)
+    parser.add_argument(
+        "--max-memory-gb",
+        type=str,
+        default=None,
+        help="Comma-separated per-GPU memory limits, e.g. '22,22' when using --device-map auto.",
+    )
     args = parser.parse_args(argv)
 
     model, tokenizer, _, _, source = load_model_and_tokenizer(
@@ -56,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         model_path=args.model_path,
         precision=args.precision,
         device_index=args.device_index,
+        device_map=args.device_map,
+        max_memory_gb=args.max_memory_gb,
     )
     if bool(args.text) == bool(args.prompts_path):
         raise SystemExit("exactly one of --text or --prompts-path must be provided")
@@ -98,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
             "model_path": args.model_path,
             "model_source": source,
             "precision": args.precision,
+            "device_map": args.device_map,
+            "max_memory_gb": args.max_memory_gb,
             "trace_backend": "qwen_moe",
             "request_id": args.request_id,
             "sample_id": args.sample_id,

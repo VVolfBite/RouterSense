@@ -75,6 +75,8 @@ def load_model_and_tokenizer(
     precision: str = "bf16",
     device_index: int = 0,
     revision: str | None = None,
+    device_map: str | None = None,
+    max_memory_gb: str | None = None,
 ):
     import torch  # type: ignore
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
@@ -86,16 +88,29 @@ def load_model_and_tokenizer(
     device = torch.device(f"cuda:{device_index}")
     torch.cuda.set_device(device)
     tokenizer = AutoTokenizer.from_pretrained(model_ref, revision=revision, trust_remote_code=True)
+    model_kwargs: dict[str, Any] = {
+        "revision": revision,
+        "trust_remote_code": True,
+        "torch_dtype": dtype,
+    }
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
+        if max_memory_gb:
+            limits = [item.strip() for item in max_memory_gb.split(",") if item.strip()]
+            if limits:
+                model_kwargs["max_memory"] = {
+                    gpu_index: f"{int(limit)}GiB" for gpu_index, limit in enumerate(limits)
+                }
     model = AutoModelForCausalLM.from_pretrained(
         model_ref,
-        revision=revision,
-        trust_remote_code=True,
-        torch_dtype=dtype,
+        **model_kwargs,
     )
     model.eval()
-    model.to(device)
+    if device_map is None:
+        model.to(device)
     resolved_revision = revision or getattr(getattr(model, "config", None), "_commit_hash", None)
-    return model, tokenizer, resolved_revision, str(device), str(dtype).replace("torch.", "")
+    resolved_device = f"device_map:{device_map}" if device_map is not None else str(device)
+    return model, tokenizer, resolved_revision, resolved_device, str(dtype).replace("torch.", "")
 
 
 def run_single_gpu_text_inference(

@@ -57,6 +57,19 @@ def _resolve_layer_id(layer_path: str, layer_count: int) -> int:
     return value
 
 
+def _resolve_model_input_device(model: Any):
+    import torch  # type: ignore
+
+    embedding = getattr(model, "get_input_embeddings", lambda: None)()
+    weight = getattr(embedding, "weight", None)
+    if weight is not None and isinstance(weight, torch.Tensor) and weight.device.type != "meta":
+        return weight.device
+    for parameter in model.parameters():
+        if parameter.device.type != "meta":
+            return parameter.device
+    raise RuntimeError("could not resolve a concrete input device for model")
+
+
 def collect_olmoe_router_trace(
     model: Any,
     tokenizer: Any,
@@ -73,7 +86,7 @@ def collect_olmoe_router_trace(
 
     model.eval()
     encoded = tokenizer(text, return_tensors="pt")
-    device = next(model.parameters()).device
+    device = _resolve_model_input_device(model)
     encoded = {key: value.to(device) for key, value in encoded.items()}
     with torch.inference_mode():
         outputs = model(**encoded, output_router_logits=True, return_dict=True, use_cache=False)
@@ -201,7 +214,7 @@ def collect_full_sequence_trace(
 
     model.eval()
     encoded = tokenizer(text, return_tensors="pt")
-    device = next(model.parameters()).device
+    device = _resolve_model_input_device(model)
     encoded = {key: value.to(device) for key, value in encoded.items()}
     with torch.inference_mode():
         outputs = model(
