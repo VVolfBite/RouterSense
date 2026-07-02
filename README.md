@@ -61,3 +61,23 @@ The current mainline focus is the path from offline scheduler validation to
 real multi-GPU MoE communication execution under the `RS/` stack. Historical
 POC documents remain available for context, but they are not the source of
 truth for the deployment mainline.
+
+## Current POC-Line1 Presets
+
+- Standard non-repeated prompt corpus:
+  `RS/artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
+- Tiered scheduler candidate presets:
+  `RS/experiments/poc_line1/configs/candidate_tiers.json`
+
+Example:
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+OMP_NUM_THREADS=1 PYTHONPATH=src python -u experiments/poc_line1/exp_pairwise_candidate_compare.py \
+  --config-json experiments/poc_line1/configs/candidate_tiers.json \
+  --config-key tier2 \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/gate_weights.pt \
+  --output-dir artifacts/poc_line1/tier2_compare
+```

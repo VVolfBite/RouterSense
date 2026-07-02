@@ -19,7 +19,24 @@ from routesense.evaluation import (  # noqa: E402
     load_trace_jsonl,
     run_pairwise_analysis,
 )
-from routesense.scheduler import fast_schedule_birkhoff_exhaustive  # noqa: E402
+from routesense.scheduler import (  # noqa: E402
+    fast_schedule_birkhoff_exhaustive,
+    fast_schedule_completion_balanced,
+    fast_schedule_cp_local_swap,
+    fast_schedule_critical_path_compression,
+    fast_schedule_lookahead_lpt,
+    fast_schedule_quantized_decomposed,
+    pairwise_wave_oracle,
+)
+
+
+def _load_config(path: Path, key: str) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    configs = payload.get("configs", {})
+    if key not in configs:
+        available = ", ".join(sorted(configs))
+        raise SystemExit(f"Unknown config key {key!r}. Available: {available}")
+    return dict(configs[key])
 
 
 def _stats_line(summary: dict, name: str) -> dict[str, float | None]:
@@ -133,6 +150,8 @@ def _e2e_markdown_table(rows: list[dict[str, object]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compare selected pairwise schedulers on the same trace slice.")
+    parser.add_argument("--config-json", type=str, default="")
+    parser.add_argument("--config-key", type=str, default="")
     parser.add_argument("--trace-jsonl", type=str, required=True)
     parser.add_argument("--hidden-states-path", type=str, required=True)
     parser.add_argument("--gate-weights-path", type=str, required=True)
@@ -168,6 +187,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.config_json:
+        if not args.config_key:
+            raise SystemExit("--config-key is required when --config-json is set")
+        config = _load_config(Path(args.config_json), args.config_key)
+        for field in (
+            "placement",
+            "num_gpus",
+            "topk",
+            "sample_limit",
+            "algorithms",
+            "phase2_source",
+            "hidden_window_ms",
+            "token_to_ms_factor",
+            "next_mode",
+            "skip_oracle",
+            "skip_fast_best_of",
+        ):
+            if field in config:
+                setattr(args, field, config[field])
+
     records = load_trace_jsonl(args.trace_jsonl)
     hidden_states = load_hidden_state_bundle(args.hidden_states_path)
     gate_weights = load_gate_weight_bundle(args.gate_weights_path)
@@ -175,6 +214,12 @@ def main(argv: list[str] | None = None) -> int:
 
     by_name = {name: fn for name, fn in FAST_ALGORITHMS}
     by_name["birkhoff_exhaustive"] = fast_schedule_birkhoff_exhaustive
+    by_name["lookahead_lpt"] = fast_schedule_lookahead_lpt
+    by_name["completion_balanced"] = fast_schedule_completion_balanced
+    by_name["critical_path_compression"] = fast_schedule_critical_path_compression
+    by_name["cp_local_swap"] = fast_schedule_cp_local_swap
+    by_name["quantized_decomposed"] = fast_schedule_quantized_decomposed
+    by_name["oracle_wave_atomic"] = pairwise_wave_oracle
     selected_names = [name.strip() for name in args.algorithms.split(",") if name.strip()]
     missing = [name for name in selected_names if name not in by_name]
     if missing:

@@ -1,64 +1,133 @@
-# 调度算法淘汰清单
+# 调度算法候选清单
 
-基于：
-- `RS/artifacts/poc_line1/candidate_screen_sample32_v2/summary.json`
+本文件不再作为“最终淘汰清单”，而作为当前阶段的**三档候选池**。
 
-本表已按 chunk 粒度修复后的 `sample32_v2` 更新。此前 `v1` 中超过 oracle 的候选，已确认为 chunk 拆分导致的无效结果。
+原因：
+- 现在已经确认 `atomic/chunk` 与 `wave/fluid` 是独立评价维度；
+- 直接用旧的单一“淘汰/保留”框架会混淆方法收益与调度语义收益；
+- 当前更合理的做法，是按**研究阶段目标**维护候选池。
 
-## 重要说明
+## 统一语义
 
-当前评估基于 `sample32`（`N=4 GPU`），尚未在大规模场景下验证。
-所有“待定”算法保留至：
-1. 完成 `N=8/16 GPU` 的大规模测试
-2. 完成各算法的时间复杂度分析（`O(N)` 对比）
-3. 确认算法在规模扩展下的延迟增长趋势
+- `B_*`：外部/基线方法线，尤其是逐 phase 本地优化的强基线
+- `U_*`：我们的方法线，只要调度决策会显式利用其他 phase 信息，就归入 `U`
+- `*_atomic`：chunk/atomic 语义
+- `*_wave`：wave/fluid 语义
 
-| 算法 | 改善(vs greedy) | 延迟 | 状态 | 淘汰原因/保留理由 |
-|------|----------------|------|------|-----------------|
-| greedy | 0.00% | 0.12ms | 基线 | 无优化基线 |
-| birkhoff | 20.46% | 0.67ms | 保留（FAST对标） | 逐层独立强基线，后续所有跨层算法都要对它比较 |
-| oracle_perfect | 40.92% | 29.68ms | 保留（上界） | 跨三 phase 联合最优上界 |
-| oracle_predicted | 41.12% | 33.04ms | 保留（预测上界） | 与 perfect 几乎重合，说明预测信号有效 |
-| lookahead_lpt | -10.11% | 0.26ms | 淘汰 | 稳定劣于 greedy |
-| cp_lpt | 6.74% | 0.29ms | 淘汰 | 收益太低 |
-| phase_aware_greedy | -8.06% | 0.28ms | 淘汰 | 稳定劣于 greedy |
-| barrier_aware_birkhoff | 22.68% | 6.07ms | 待定 | 已修复为合理值，但收益未过 25%，延迟略高 |
-| randomized_multistart_birkhoff | 23.57% | 20.11ms | 待定 | 与 barrier_aware_birkhoff 同类，延迟问题待规模验证 |
-| tabu_search | 28.33% | 20.59ms | 待定 | 改善率高，当前只在小规模测过，延迟扩展性未验证 |
-| lns | 25.29% | 5.57ms | 待定 | 收益过线，但延迟略高于 5ms |
-| simulated_annealing | 26.76% | 3.05ms | 保留 | 目前最稳妥的新候选之一 |
-| lagrangian | 24.16% | 7.01ms | 待定 | 修复后已回到 oracle 下方，但暂未达到主目标 |
-| grasp | 26.40% | 3.04ms | 保留 | 与 simulated_annealing 接近，性价比好 |
-| completion_balanced | 1.72% | 0.17ms | 淘汰 | 收益太低 |
-| two_stage | 16.55% | 0.34ms | 待定 | 延迟极低，仍有调参和大规模验证价值 |
-| critical_path_compression | 22.41% | 0.94ms | 待定 | 延迟极低，改善率仍有潜力 |
-| ibbr | 25.67% | 2.60ms | 保留 | 过线且延迟可接受 |
-| iterated_greedy | 31.56% | 24.58ms | 待定 | 收益最高的非 oracle 候选之一，需等规模验证后再定性 |
-| cp_local_swap | 16.21% | 3.27ms | 待定 | 延迟合理，改善率一般，但仍有潜力 |
-| fast_pairwise(best-of) | 31.72% | 2.94ms | 保留（组合器） | 修复后 best-of 回到合理区间，当前主力组合器 |
+## Tier 1：定论候选池
 
-## 当前结论
+用途：
+- 只从这里选 `3` 个左右代表方法，做最终定论级对比
+- 目标是覆盖不同维度，而不是机械选分数前三
 
-- 主线结论成立：`oracle_perfect` 40.92% vs `birkhoff` 20.46%，跨层联合调度相对逐层独立仍有约 20 个百分点的额外空间。
-- 目前可信的主候选集中在：
-  - `fast_pairwise(best-of)`
-  - `simulated_annealing`
-  - `grasp`
-  - `ibbr`
-- 第二/第三梯队当前不淘汰，继续保留做规模验证：
-  - `tabu_search`
-  - `iterated_greedy`
-  - `randomized_multistart_birkhoff`
-  - `lns`
-  - `barrier_aware_birkhoff`
-  - `lagrangian`
-  - `critical_path_compression`
-  - `two_stage`
-  - `cp_local_swap`
-- `barrier_aware_birkhoff`、`randomized_multistart_birkhoff`、`lagrangian`、`two_stage` 的 chunk 粒度问题已修复，不再超过 oracle 上界。
+实验规格：
+- `sample >= 256`
+- `N >= 16`
+- 优先看 `N=16 / 32`
 
-## 判定规则
+推荐保留：
 
-- **保留**：改善 ≥25% 且延迟 ≤5ms
-- **待定**：改善 ≥15% 或延迟 ≤10ms
-- **淘汰**：改善 <10% 或稳定劣于 greedy
+| 算法 | 角色 | 当前原因 |
+|------|------|----------|
+| `B_birkhoff` | `B_atomic` 强基线 | 最干净的逐 phase atomic 基线 |
+| `B_birkhoff_wave` | `B_wave` 强基线 | 用来隔离 wave 语义本身带来的收益 |
+| `U_gated_maxweight_matching` | `U_wave` 主候选 | 当前最标准的全局 ready-set max-weight 主方法 |
+| `U_barrier_criticality_global_matching` | `U_wave` 主候选 | 更强调 barrier unlock 的联合调度候选 |
+| `U_gated_maxweight_matching_atomic` | `U_atomic` 主候选 | 用来隔离“联合决策”本身而非 fluid 分流 |
+| `U_barrier_criticality_global_matching_atomic` | `U_atomic` 主候选 | 同上，保留第二个联合 atomic 代表 |
+| `U_lagrangian` | 旧一代联合方法 | 作为非 matching-based 的 `U` 代表 |
+
+建议最终打架时优先从这里挑三类：
+- `B_atomic`：`B_birkhoff`
+- `B_wave`：`B_birkhoff_wave`
+- `U_wave`：`U_gated_maxweight_matching` 或 `U_barrier_criticality_global_matching`
+
+必要时额外补：
+- `U_atomic`：`U_gated_maxweight_matching_atomic`
+
+## Tier 2：优化晋级池
+
+用途：
+- 看有没有值得继续打磨、晋级到 Tier 1 的算法
+- 更关注机制潜力，不直接下最终结论
+
+实验规格：
+- `N=8`
+- `sample=64`
+
+当前候选：
+
+| 算法 | 当前定位 |
+|------|----------|
+| `U_cp_lpt` | 最早一代利用三层信息排序的联合方法 |
+| `U_lagrangian` | 旧联合方法，可能仍有进一步调参空间 |
+| `U_ibbr` | repair 型联合启发式 |
+| `U_gated_greedy_maximal` | 低成本 ready-set baseline |
+| `U_gated_greedy_maximal_atomic` | 上述方法的 atomic 对照 |
+| `U_barrier_price_adaptive_matching` | barrier price 自适应版本 |
+| `U_barrier_price_adaptive_matching_atomic` | 上述方法的 atomic 对照 |
+| `B_barrier_aware_birkhoff` | 比 `B_birkhoff` 更强的 phase-local 基线 |
+| `B_barrier_aware_birkhoff_wave` | 上述基线的 wave 版本 |
+| `pairwise_wave_oracle` | atomic wave 强参考，不作为部署候选 |
+
+## Tier 3：快速淘汰池
+
+用途：
+- 快速试错，不追求结论稳定性
+- 主要目的是尽快淘汰第一次尝试但明显不合适的算法
+
+实验规格：
+- `N=4`
+- `sample=32`
+
+适合放在这里的：
+
+| 算法 | 当前定位 |
+|------|----------|
+| `lookahead_lpt` | 旧快速启发式，历史上常劣于更强基线 |
+| `completion_balanced` | 收益偏低，主要保留作机制参考 |
+| `critical_path_compression` | 收益有限，更多是局部调序尝试 |
+| `cp_local_swap` | 小修补方法，常被更强 repair 法支配 |
+| `quantized_decomposed` | 当前已明显不合适，仅保留代码参考 |
+| `tabu_search` | 若继续尝试新邻域，可先回 Tier 3 快速筛 |
+| `lns` | 同上 |
+| `simulated_annealing` | 同上 |
+| `grasp` | 同上 |
+| `decomposed` | 需在明确 merge 语义后再考虑回升 |
+
+## Oracle / Reference
+
+这些不是部署候选，但需要保留作为参考：
+
+| 算法 | 作用 |
+|------|------|
+| `pairwise_oracle` | 现有 `atomic/chunk` CP-SAT 上界 |
+| `pairwise_wave_oracle` | 可进入中等规模实验的 atomic wave 强参考 |
+| `pairwise_fluid_wave_oracle` | 仅用于小样本上限分析的 fluid/wave 上界原型 |
+
+注意：
+- `pairwise_oracle` 仍是 `atomic/chunk` 语义；
+- `pairwise_fluid_wave_oracle` 不能直接拿去作为大规模部署结论，只能做小样本理论上限说明。
+
+## 当前阶段结论
+
+1. 现在不适合直接下“大规模最终定论”。
+2. 首先需要把收益拆成三部分：
+   - `B_atomic -> B_wave`
+   - `B_wave -> U_atomic`
+   - `U_atomic -> U_wave`
+3. 当前最值得继续投资源的是：
+   - `B_birkhoff_wave`
+   - `U_gated_maxweight_matching`
+   - `U_barrier_criticality_global_matching`
+   - 以及对应的 atomic 对照
+
+## 当前唯一标准语料
+
+当前仅保留一个标准非重复 prompt 集：
+
+- `RS/artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
+
+用途：
+- Tier 1 定论级实验的统一语料入口
+- 后续 `sample=64` / `sample=32` 仅从该 256 集合取前缀子集，不再维护多份独立 prompt 集
