@@ -1,25 +1,63 @@
 # RouteSense
 
-RouteSense is a distributed MoE scheduling and deployment project. The current mainline lives under `RS/` and focuses on real single-GPU deployment bring-up, router trace capture, and the path toward controlled multi-GPU execution.
+RouteSense is a distributed MoE scheduling and deployment project. The formal
+mainline lives under `RS/`. Historical POC material is preserved in `legacy/`
+and curated result snapshots live under `archive/backup/`.
 
 ## Mainline
 
-- `RS/src/routesense/`: formal runtime, trace, topology, oracle, and evaluation code.
-- `RS/deploy/`: inventory, dry-run launch contracts, and deployment scripts.
-- `RS/experiments/prerun/`: single-GPU smoke, architecture probe, and router trace entrypoints.
-- `RS/experiments/distributed/`: distributed bring-up scripts.
-- `RS/experiments/ablation/`: reserved real ablation configs and scripts.
-- `RS/configs/`: model and topology configuration.
-- `RS/tests/`: deployment-side regression tests.
+- `RS/src/routesense/`
+  Mainline runtime, scheduler, trace, topology, oracle, and evaluation code.
+- `RS/deploy/`
+  Inventory, dry-run launch contracts, and deployment helpers.
+- `RS/experiments/`
+  Deployment smokes, distributed bring-up, and scheduler evaluation entrypoints.
+- `RS/docs/`
+  Mainline technical docs and current design notes.
+- `RS/tests/`
+  Mainline regression tests.
+- `RS/artifacts/`
+  Active working outputs only. This tree should stay trimmed.
+
+## Curated Backup
+
+- `archive/backup/`
+  Git-controlled curated backup area.
+- `archive/backup/README.md`
+  Index of the currently retained result snapshots.
+- `archive/backup/docs/`
+  Archived copies of root-level planning / task / elimination documents.
+
+As of the current cleanup, only three experiment backup groups are intentionally
+retained there:
+
+1. cross-layer prediction validity
+2. oracle / fast optimization-gap study
+3. execution-window multiscale scheduler study
 
 ## Legacy
 
-- `legacy/poc1/`: router observability and proxy-era experiments.
-- `legacy/poc2/`: single-node NCCL correctness and harness diagnostics.
-- `legacy/shared/`: shared historical docs.
+- `legacy/poc1/`
+  Router observability and proxy-era experiments.
+- `legacy/poc2/`
+  Single-node NCCL harness and historical scheduler diagnostics.
+- `legacy/shared/`
+  Shared historical docs and test assets.
 
-The legacy trees are preserved for reference and reproducibility. They are not the formal deployment mainline.
+The legacy trees are kept for reference and reproducibility. They are not part
+of the formal `RS/` runtime path, and the mainline tests explicitly guard
+against accidental legacy imports.
+
+## Operator Channel
+
+- `rs_channel/instruction/`
+  Incoming operator instructions synchronized through git.
+- `rs_channel/reply/`
+  Outgoing step reports.
 
 ## Current Phase
 
-The current RS mainline is being refactored toward real distributed OLMoE expert-parallel bring-up. Legacy POC1/POC2 are archived references only and are not part of deployment or runtime mainline execution.
+The current mainline focus is the path from offline scheduler validation to
+real multi-GPU MoE communication execution under the `RS/` stack. Historical
+POC documents remain available for context, but they are not the source of
+truth for the deployment mainline.
