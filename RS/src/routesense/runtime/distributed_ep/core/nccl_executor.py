@@ -33,6 +33,7 @@ class NCCLExecutor:
         dtype=None,
         device: str | Any | None = None,
     ) -> None:
+        import os
         import torch  # type: ignore
 
         self.rank = rank
@@ -41,7 +42,8 @@ class NCCLExecutor:
         if device is not None:
             self.device = torch.device(device)
         elif torch.cuda.is_available():
-            self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            self.device = torch.device(f"cuda:{local_rank}")
         else:
             self.device = torch.device("cpu")
 
@@ -69,9 +71,9 @@ class NCCLExecutor:
             handle = dist.irecv(buffer, src=src_rank)
             recv_handles.append((src_rank, num_rows, handle))
 
+        send_handles: list[tuple[int, int, Any, Any, float]] = []
         send_offset = 0
         for dst_rank, num_rows in send_chunks:
-            start_us = time.perf_counter() * 1e6
             elements = num_rows * hidden_size
             if payload is not None:
                 send_tensor = payload[send_offset : send_offset + elements].contiguous()
@@ -79,18 +81,7 @@ class NCCLExecutor:
             else:
                 send_tensor = torch.ones(elements, dtype=self.dtype, device=self.device)
             handle = dist.isend(send_tensor, dst=dst_rank)
-            handle.wait()
-            end_us = time.perf_counter() * 1e6
-            ops.append(
-                NCCLOpRecord(
-                    op="send",
-                    peer_rank=dst_rank,
-                    tensor_size=elements,
-                    start_us=start_us,
-                    end_us=end_us,
-                    duration_us=end_us - start_us,
-                )
-            )
+            send_handles.append((dst_rank, num_rows, send_tensor, handle, time.perf_counter() * 1e6))
 
         for src_rank, num_rows, handle in recv_handles:
             start_us = time.perf_counter() * 1e6
@@ -100,6 +91,20 @@ class NCCLExecutor:
                 NCCLOpRecord(
                     op="recv",
                     peer_rank=src_rank,
+                    tensor_size=num_rows * hidden_size,
+                    start_us=start_us,
+                    end_us=end_us,
+                    duration_us=end_us - start_us,
+                )
+            )
+
+        for dst_rank, num_rows, _send_tensor, handle, start_us in send_handles:
+            handle.wait()
+            end_us = time.perf_counter() * 1e6
+            ops.append(
+                NCCLOpRecord(
+                    op="send",
+                    peer_rank=dst_rank,
                     tensor_size=num_rows * hidden_size,
                     start_us=start_us,
                     end_us=end_us,

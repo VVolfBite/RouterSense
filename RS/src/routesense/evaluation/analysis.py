@@ -69,6 +69,9 @@ def run_pairwise_analysis(
     sample_limit: int | None = None,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
+    fast_algorithms: list[tuple[str, SchedulerFn]] | None = None,
+    skip_oracle: bool = False,
+    include_fast_best_of: bool = True,
 ) -> dict[str, Any]:
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
@@ -99,8 +102,10 @@ def run_pairwise_analysis(
         sample_ids = sample_ids[:sample_limit]
     layer_ids = sorted({record.layer_id for record in records})
 
-    algorithm_improvements: dict[str, list[float]] = {name: [] for name, _ in FAST_ALGORITHMS}
-    algorithm_latencies: dict[str, list[float]] = {name: [] for name, _ in FAST_ALGORITHMS}
+    selected_fast_algorithms = fast_algorithms if fast_algorithms is not None else FAST_ALGORITHMS
+    algorithm_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_failures: dict[str, list[str]] = {name: [] for name, _ in selected_fast_algorithms}
     results: list[dict[str, Any]] = []
     predicted_improvements: list[float] = []
     perfect_improvements: list[float] = []
@@ -176,8 +181,32 @@ def run_pairwise_analysis(
             greedy_latency_ms = (time.time() - t_greedy) * 1000.0
 
             algorithm_results: dict[str, dict[str, Any]] = {}
-            for name, scheduler in FAST_ALGORITHMS:
-                payload = scheduler(
+            for name, scheduler in selected_fast_algorithms:
+                try:
+                    payload = scheduler(
+                        dispatch_matrix,
+                        combine_matrix,
+                        next_predicted_matrix,
+                        num_gpus,
+                        model=model,
+                        expert_compute_delay=expert_compute_delay,
+                    )
+                except Exception as exc:
+                    algorithm_failures[name].append(type(exc).__name__)
+                    payload = {
+                        "makespan": greedy_makespan,
+                        "solve_time_ms": 0.0,
+                        "schedule": [],
+                        "strategy": name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                algorithm_results[name] = payload
+
+            fast_result: dict[str, Any] | None = None
+            fast_latency_ms = 0.0
+            fast_makespan = greedy_makespan
+            if include_fast_best_of:
+                fast_result = fast_schedule_pairwise(
                     dispatch_matrix,
                     combine_matrix,
                     next_predicted_matrix,
@@ -185,32 +214,37 @@ def run_pairwise_analysis(
                     model=model,
                     expert_compute_delay=expert_compute_delay,
                 )
-                algorithm_results[name] = payload
+                fast_latency_ms = float(fast_result["solve_time_ms"])
+                fast_makespan = float(fast_result["makespan"])
 
-            fast_result = fast_schedule_pairwise(
-                dispatch_matrix,
-                combine_matrix,
-                next_predicted_matrix,
-                num_gpus,
-                model=model,
-                expert_compute_delay=expert_compute_delay,
-            )
-            fast_latency_ms = float(fast_result["solve_time_ms"])
-            fast_makespan = float(fast_result["makespan"])
+            oracle_perfect: dict[str, Any] = {
+                "makespan": None,
+                "chunk_count": 0,
+                "schedule": [],
+                "solver_status": "skipped",
+            }
+            oracle_predicted: dict[str, Any] = {
+                "makespan": None,
+                "chunk_count": 0,
+                "schedule": [],
+                "solver_status": "skipped",
+            }
+            perfect_solve_time = 0.0
+            predicted_solve_time = 0.0
+            if not skip_oracle:
+                t_solve = time.time()
+                oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
+                perfect_solve_time = time.time() - t_solve
+                oracle_perfect_statuses.append(str(oracle_perfect.get("solver_status", "unknown")))
+                if not perfect_cached or loop_counter <= 5 or loop_counter % 100 == 0:
+                    print(f"[perf] pairwise_oracle perfect [{sample_id}..L{from_layer}->{to_layer}]: {perfect_solve_time:.3f}s cached={perfect_cached} (status={oracle_perfect.get('solver_status', '?')})", flush=True)
 
-            t_solve = time.time()
-            oracle_perfect, perfect_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_actual_matrix)
-            perfect_solve_time = time.time() - t_solve
-            oracle_perfect_statuses.append(str(oracle_perfect.get("solver_status", "unknown")))
-            if not perfect_cached or loop_counter <= 5 or loop_counter % 100 == 0:
-                print(f"[perf] pairwise_oracle perfect [{sample_id}..L{from_layer}->{to_layer}]: {perfect_solve_time:.3f}s cached={perfect_cached} (status={oracle_perfect.get('solver_status', '?')})", flush=True)
-
-            t_solve2 = time.time()
-            oracle_predicted, predicted_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
-            predicted_solve_time = time.time() - t_solve2
-            oracle_predicted_statuses.append(str(oracle_predicted.get("solver_status", "unknown")))
-            if not predicted_cached or loop_counter <= 5 or loop_counter % 100 == 0:
-                print(f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: {predicted_solve_time:.3f}s cached={predicted_cached} (status={oracle_predicted.get('solver_status', '?')})", flush=True)
+                t_solve2 = time.time()
+                oracle_predicted, predicted_cached = solve_pairwise_cached(dispatch_matrix, combine_matrix, next_predicted_matrix)
+                predicted_solve_time = time.time() - t_solve2
+                oracle_predicted_statuses.append(str(oracle_predicted.get("solver_status", "unknown")))
+                if not predicted_cached or loop_counter <= 5 or loop_counter % 100 == 0:
+                    print(f"[perf] pairwise_oracle predicted [{sample_id}..L{from_layer}->{to_layer}]: {predicted_solve_time:.3f}s cached={predicted_cached} (status={oracle_predicted.get('solver_status', '?')})", flush=True)
 
             oracle_perfect_makespan = float(oracle_perfect["makespan"]) if oracle_perfect["makespan"] is not None else greedy_makespan
             oracle_predicted_makespan = float(oracle_predicted["makespan"]) if oracle_predicted["makespan"] is not None else greedy_makespan
@@ -226,8 +260,8 @@ def run_pairwise_analysis(
                 "greedy_latency_ms": greedy_latency_ms,
                 "fast_makespan": fast_makespan,
                 "fast_latency_ms": fast_latency_ms,
-                "fast_schedule": fast_result["schedule"],
-                "fast_candidates": fast_result.get("candidates", []),
+                "fast_schedule": [] if fast_result is None else fast_result["schedule"],
+                "fast_candidates": [] if fast_result is None else fast_result.get("candidates", []),
                 "oracle_perfect_makespan": oracle_perfect_makespan,
                 "oracle_predicted_makespan": oracle_predicted_makespan,
                 "oracle_perfect_latency_ms": perfect_solve_time * 1000.0,
@@ -250,6 +284,8 @@ def run_pairwise_analysis(
                 result_row[f"{name}_latency_ms"] = latency_ms
                 result_row[f"{name}_improvement_pct"] = improvement_pct
                 result_row[f"{name}_schedule"] = payload["schedule"]
+                if "error" in payload:
+                    result_row[f"{name}_error"] = payload["error"]
 
             fast_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - fast_makespan) / greedy_makespan) * 100.0
             perfect_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
@@ -265,39 +301,52 @@ def run_pairwise_analysis(
             result_row["oracle_prediction_gap_pct"] = oracle_prediction_gap_pct
             result_row["traffic_correlation"] = traffic_corr
 
-            perfect_improvements.append(perfect_improvement_pct)
-            predicted_improvements.append(predicted_improvement_pct)
-            fast_improvements.append(fast_improvement_pct)
-            oracle_prediction_gaps.append(oracle_prediction_gap_pct)
+            if not skip_oracle:
+                perfect_improvements.append(perfect_improvement_pct)
+                predicted_improvements.append(predicted_improvement_pct)
+                oracle_prediction_gaps.append(oracle_prediction_gap_pct)
+                oracle_perfect_latencies_ms.append(perfect_solve_time * 1000.0)
+                oracle_predicted_latencies_ms.append(predicted_solve_time * 1000.0)
+            if include_fast_best_of:
+                fast_improvements.append(fast_improvement_pct)
             traffic_correlations.append(traffic_corr)
             greedy_latencies_ms.append(greedy_latency_ms)
-            fast_latencies_ms.append(fast_latency_ms)
-            oracle_perfect_latencies_ms.append(perfect_solve_time * 1000.0)
-            oracle_predicted_latencies_ms.append(predicted_solve_time * 1000.0)
+            if include_fast_best_of:
+                fast_latencies_ms.append(fast_latency_ms)
             results.append(result_row)
 
-    predicted_vs_corr = spearman_rank_correlation(predicted_improvements, traffic_correlations) if len(predicted_improvements) >= 2 else 0.0
+    predicted_vs_corr = (
+        spearman_rank_correlation(predicted_improvements, traffic_correlations)
+        if len(predicted_improvements) >= 2
+        else 0.0
+    )
     summary: dict[str, Any] = {
         "pair_count": len(results),
         "model": model,
         "expert_compute_delay": expert_compute_delay,
-        "fast_improvement_pct": _summary_stats(fast_improvements),
-        "perfect_improvement_pct": _summary_stats(perfect_improvements),
-        "predicted_improvement_pct": _summary_stats(predicted_improvements),
-        "oracle_prediction_gap_pct": _summary_stats(oracle_prediction_gaps),
         "traffic_correlation": _summary_stats(traffic_correlations),
         "greedy_latency_ms": _summary_stats(greedy_latencies_ms),
-        "fast_latency_ms": _summary_stats(fast_latencies_ms),
-        "oracle_perfect_latency_ms": _summary_stats(oracle_perfect_latencies_ms),
-        "oracle_predicted_latency_ms": _summary_stats(oracle_predicted_latencies_ms),
-        "oracle_perfect_solver_statuses": dict(Counter(oracle_perfect_statuses)),
-        "oracle_predicted_solver_statuses": dict(Counter(oracle_predicted_statuses)),
-        "predicted_improvement_vs_traffic_correlation": predicted_vs_corr,
-        "gate2_decision": evaluate_gate2(perfect_improvements, predicted_improvements),
+        "include_fast_best_of": include_fast_best_of,
+        "skip_oracle": skip_oracle,
+        "predicted_improvement_vs_traffic_correlation": predicted_vs_corr if not skip_oracle else None,
+        "gate2_decision": evaluate_gate2(perfect_improvements, predicted_improvements) if not skip_oracle else None,
     }
-    for name, _scheduler in FAST_ALGORITHMS:
+    if include_fast_best_of:
+        summary["fast_improvement_pct"] = _summary_stats(fast_improvements)
+        summary["fast_latency_ms"] = _summary_stats(fast_latencies_ms)
+    if not skip_oracle:
+        summary["perfect_improvement_pct"] = _summary_stats(perfect_improvements)
+        summary["predicted_improvement_pct"] = _summary_stats(predicted_improvements)
+        summary["oracle_prediction_gap_pct"] = _summary_stats(oracle_prediction_gaps)
+        summary["oracle_perfect_latency_ms"] = _summary_stats(oracle_perfect_latencies_ms)
+        summary["oracle_predicted_latency_ms"] = _summary_stats(oracle_predicted_latencies_ms)
+        summary["oracle_perfect_solver_statuses"] = dict(Counter(oracle_perfect_statuses))
+        summary["oracle_predicted_solver_statuses"] = dict(Counter(oracle_predicted_statuses))
+    for name, _scheduler in selected_fast_algorithms:
         summary[f"{name}_improvement_pct"] = _summary_stats(algorithm_improvements[name])
         summary[f"{name}_latency_ms"] = _summary_stats(algorithm_latencies[name])
+        if algorithm_failures[name]:
+            summary[f"{name}_failures"] = dict(Counter(algorithm_failures[name]))
 
     print(f"[perf] total run_pairwise_analysis: {time.time() - t0:.2f}s", flush=True)
     return {"results": results, "summary": summary}

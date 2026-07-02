@@ -40,7 +40,7 @@ for node in inventory.nodes:
     commands[node.name] = (
         f"ssh -p {node.port} {node.ssh_user}@{node.host} "
         f\"'cd {node.paths.get('remote_rs_root', 'RS')} && "
-        f"PYTHONPATH=src torchrun --nnodes={nnodes} --nproc_per_node={node.target_gpu_count} "
+        f"NCCL_DEBUG=INFO NCCL_SOCKET_TIMEOUT=30 NCCL_IB_DISABLE=0 PYTHONPATH=src torchrun --nnodes={nnodes} --nproc_per_node={node.target_gpu_count} "
         f"--node_rank={node.node_rank} --rdzv-backend={inventory.rendezvous.backend} "
         f"--rdzv-id={inventory.cluster_name}-sched --rdzv-endpoint={master.host}:{inventory.rendezvous.master_port} "
         f"experiments/distributed/exp_scheduled_execution.py --strategy {strategy}'\"

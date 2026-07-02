@@ -62,7 +62,7 @@ def build_distributed_runner_plan(
     dispatch_plans = _build_layer_dispatch_plans(
         trace=trace,
         owner_by_expert=owner_by_expert,
-        origin_rank=config.origin_rank,
+        origin_rank=rank,
         world_size=config.world_size,
     )
     manifest = DistributedManifest(
@@ -116,6 +116,7 @@ def execute_scheduled_inference(
     expert_compute_delay: float = 0.0,
     executor: NCCLExecutor | None = None,
     payload=None,
+    use_distributed: bool = False,
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
@@ -137,10 +138,27 @@ def execute_scheduled_inference(
         device=f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu",
     )
 
-    dispatch_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "send")
-    combine_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "recv")
+    local_dispatch_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "send")
+    local_combine_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "recv")
+    dispatch_matrix = _aggregate_matrix(
+        local_dispatch_matrix,
+        use_distributed=use_distributed,
+        world_size=world_size,
+        device=getattr(executor, "device", None),
+    )
+    combine_matrix = _aggregate_matrix(
+        local_combine_matrix,
+        use_distributed=use_distributed,
+        world_size=world_size,
+        device=getattr(executor, "device", None),
+    )
     next_dispatch_matrix = (
-        _build_matrix_from_plan(dispatch_plans[1], rank, "send")
+        _aggregate_matrix(
+            _build_matrix_from_plan(dispatch_plans[1], rank, "send"),
+            use_distributed=use_distributed,
+            world_size=world_size,
+            device=getattr(executor, "device", None),
+        )
         if len(dispatch_plans) > 1
         else [[0] * world_size for _ in range(world_size)]
     )
@@ -171,6 +189,12 @@ def execute_scheduled_inference(
 
     nccl_results: dict[str, Any] = {}
     for phase_idx, plan, direction in phase_specs:
+        if direction == "combine" and expert_compute_delay > 0.0:
+            _simulate_expert_compute_delay(
+                expert_compute_delay=expert_compute_delay,
+                hidden_size=hidden_size,
+                device=getattr(executor, "device", None),
+            )
         phase_schedule = [chunk for chunk in schedule if int(chunk["phase"]) == phase_idx]
         execution = collective.execute_scheduled_phase(
             plan=plan,
@@ -255,6 +279,58 @@ def _build_matrix_from_plan(
     if direction != "send":
         raise ValueError(f"unsupported direction: {direction}")
     return matrix
+
+
+def _aggregate_matrix(
+    matrix: list[list[int]],
+    *,
+    use_distributed: bool,
+    world_size: int,
+    device=None,
+    dist_module=None,
+) -> list[list[int]]:
+    if not use_distributed or world_size <= 1:
+        return matrix
+
+    import torch  # type: ignore
+    import torch.distributed as dist  # type: ignore
+
+    dist_impl = dist if dist_module is None else dist_module
+    target_device = device
+    if target_device is None:
+        if torch.cuda.is_available() and getattr(dist_impl, "get_backend", lambda: "")() == "nccl":
+            target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        else:
+            target_device = torch.device("cpu")
+
+    tensor = torch.tensor(matrix, dtype=torch.float32, device=target_device)
+    dist_impl.all_reduce(tensor, op=dist_impl.ReduceOp.SUM)
+    return [[int(value) for value in row] for row in tensor.tolist()]
+
+
+def _simulate_expert_compute_delay(
+    *,
+    expert_compute_delay: float,
+    hidden_size: int,
+    device=None,
+) -> None:
+    import time
+
+    if expert_compute_delay <= 0.0:
+        return
+
+    try:
+        import torch  # type: ignore
+    except ImportError:
+        time.sleep(min(expert_compute_delay, 1.0))
+        return
+
+    if device is not None and torch.cuda.is_available() and str(device).startswith("cuda"):
+        rows = max(1, int(expert_compute_delay))
+        dummy = torch.zeros((rows, hidden_size), device=device, dtype=torch.float16)
+        _ = dummy @ dummy.transpose(0, 1)
+        torch.cuda.synchronize(device)
+    time.sleep(min(expert_compute_delay, 1.0))
 
 
 def _fallback_schedule(

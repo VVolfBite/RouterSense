@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .analysis import run_pairwise_analysis, write_json
+from .analysis import FAST_ALGORITHMS, run_pairwise_analysis, write_json
 from .artifacts import collect_environment_snapshot, write_artifact_bundle
 from .cross_layer import (
     GatePredictionStat,
@@ -78,6 +78,7 @@ __all__ = [
     "collect_environment_snapshot",
     "combine_matrix_from_dispatch",
     "evaluate_gate2",
+    "FAST_ALGORITHMS",
     "fast_schedule_barrier_aware_birkhoff",
     "fast_schedule_birkhoff",
     "fast_schedule_completion_balanced",

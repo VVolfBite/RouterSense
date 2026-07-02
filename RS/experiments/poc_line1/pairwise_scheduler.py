@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from routesense.evaluation import (  # noqa: E402
+    FAST_ALGORITHMS,
     build_owner_by_expert,
     load_gate_weight_bundle,
     load_hidden_state_bundle,
@@ -42,6 +43,24 @@ def main(argv: list[str] | None = None) -> int:
         type=str,
         default=str(ROOT / "artifacts" / "poc_line1" / "pairwise_oracle_report"),
     )
+    parser.add_argument(
+        "--algorithms",
+        type=str,
+        default="",
+        help="Comma-separated fast scheduler subset. Defaults to all registered candidates in evaluation.analysis.FAST_ALGORITHMS.",
+    )
+    parser.add_argument(
+        "--skip-oracle",
+        action="store_true",
+        default=False,
+        help="Skip oracle_perfect/oracle_predicted and only evaluate greedy/fast candidates.",
+    )
+    parser.add_argument(
+        "--skip-fast-best-of",
+        action="store_true",
+        default=False,
+        help="Skip the composite fast_schedule_pairwise(best_of) run and only evaluate the explicitly requested algorithms.",
+    )
     args = parser.parse_args(argv)
 
     print("[perf] loading trace...", flush=True)
@@ -62,6 +81,15 @@ def main(argv: list[str] | None = None) -> int:
     owner_by_expert = build_owner_by_expert(records, placement=args.placement, num_gpus=args.num_gpus)
     print(f"[perf] owner_by_expert built: {time.time() - t_owner:.2f}s", flush=True)
 
+    selected_algorithms = FAST_ALGORITHMS
+    if args.algorithms:
+        requested = [item.strip() for item in args.algorithms.split(",") if item.strip()]
+        by_name = {name: fn for name, fn in FAST_ALGORITHMS}
+        missing = [name for name in requested if name not in by_name]
+        if missing:
+            raise SystemExit(f"Unknown algorithms: {missing}. Available: {sorted(by_name)}")
+        selected_algorithms = [(name, by_name[name]) for name in requested]
+
     t_run = time.time()
     report = run_pairwise_analysis(
         records,
@@ -71,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         num_gpus=args.num_gpus,
         topk=args.topk,
         sample_limit=args.sample_limit,
+        fast_algorithms=selected_algorithms,
+        skip_oracle=args.skip_oracle,
+        include_fast_best_of=not args.skip_fast_best_of,
     )
     print(f"[perf] run_pairwise_analysis returned: {time.time() - t_run:.2f}s", flush=True)
 
@@ -85,13 +116,12 @@ def main(argv: list[str] | None = None) -> int:
             "baseline": "greedy_lpt",
             "fast_selection_rule": "best makespan among candidates with solve_time_ms <= 5.0, else global best",
             "fast_candidates": [
-                "phase_aware_greedy",
-                "birkhoff",
-                "lagrangian",
-                "iterated_greedy",
+                name for name, _fn in selected_algorithms
             ],
+            "include_fast_best_of": not args.skip_fast_best_of,
             "oracle_perfect": "cp_sat_true_next_dispatch",
             "oracle_predicted": "cp_sat_predicted_next_dispatch",
+            "skip_oracle": args.skip_oracle,
             "summary": report["summary"],
         },
     )

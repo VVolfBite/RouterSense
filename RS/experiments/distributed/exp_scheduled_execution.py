@@ -91,6 +91,7 @@ def _run_torchrun(args, strategies: list[str]) -> int:
             strategy_name=strategy_name,
             hidden_size=int(runner_plan.adapter.get("hidden_size", 2048)),
             expert_compute_delay=args.expert_compute_delay,
+            use_distributed=True,
         )
         per_rank_results[strategy_name] = {
             **execution,
