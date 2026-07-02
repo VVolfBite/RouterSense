@@ -34,6 +34,21 @@ def _stats_line(summary: dict, name: str) -> dict[str, float | None]:
     }
 
 
+def _e2e_stats_line(summary: dict, name: str) -> dict[str, float | None]:
+    greedy = (summary.get("greedy_makespan_ms") or {}).get("mean")
+    savings = (summary.get(f"{name}_comm_savings_ms") or {}).get("mean")
+    return {
+        "greedy_mksp_ms": greedy,
+        "algo_mksp_ms": (None if greedy is None or savings is None else float(greedy) - float(savings)),
+        "comm_savings_ms": savings,
+        "sched_latency_ms": (summary.get(f"{name}_latency_ms") or {}).get("mean"),
+        "exposed_ms": (summary.get(f"{name}_exposed_latency_ms") or {}).get("mean"),
+        "net_benefit_ms": (summary.get(f"{name}_net_benefit_ms") or {}).get("mean"),
+        "e2e_time_ms": (summary.get(f"{name}_effective_e2e_time_ms") or {}).get("mean"),
+        "e2e_speedup_pct": (summary.get(f"{name}_e2e_speedup_pct") or {}).get("mean"),
+    }
+
+
 def _blind_rows(predicted_summary: dict, zeros_summary: dict, selected_names: list[str]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name in selected_names:
@@ -94,6 +109,28 @@ def _blind_markdown_table(rows: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _e2e_markdown_table(rows: list[dict[str, object]]) -> str:
+    lines = [
+        "| algorithm | greedy_mksp | algo_mksp | comm_savings_ms | sched_latency_ms | exposed_ms | net_benefit_ms | e2e_time_ms | e2e_speedup% |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| {algorithm} | {greedy:.4f} | {algo:.4f} | {savings:.4f} | {latency:.4f} | {exposed:.4f} | {benefit:.4f} | {e2e:.4f} | {speedup:.4f} |".format(
+                algorithm=row["algorithm"],
+                greedy=float(row["greedy_mksp_ms"] or 0.0),
+                algo=float(row["algo_mksp_ms"] or 0.0),
+                savings=float(row["comm_savings_ms"] or 0.0),
+                latency=float(row["sched_latency_ms"] or 0.0),
+                exposed=float(row["exposed_ms"] or 0.0),
+                benefit=float(row["net_benefit_ms"] or 0.0),
+                e2e=float(row["e2e_time_ms"] or 0.0),
+                speedup=float(row["e2e_speedup_pct"] or 0.0),
+            )
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compare selected pairwise schedulers on the same trace slice.")
     parser.add_argument("--trace-jsonl", type=str, required=True)
@@ -110,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)
+    parser.add_argument("--hidden-window-ms", type=float, default=10.0)
+    parser.add_argument("--token-to-ms-factor", type=float, default=0.5)
     parser.add_argument(
         "--next-mode",
         choices=["predicted", "zeros", "both"],
@@ -148,16 +187,22 @@ def main(argv: list[str] | None = None) -> int:
             num_gpus=args.num_gpus,
             topk=args.topk,
             sample_limit=args.sample_limit,
+            hidden_window_ms=args.hidden_window_ms,
+            token_to_ms_factor=args.token_to_ms_factor,
             next_mode=mode,
             fast_algorithms=selected_algorithms,
             skip_oracle=args.skip_oracle,
             include_fast_best_of=not args.skip_fast_best_of,
         )
         rows = []
+        e2e_rows = []
         for name in selected_names:
             row = {"algorithm": name}
             row.update(_stats_line(report["summary"], name))
             rows.append(row)
+            e2e_row = {"algorithm": name}
+            e2e_row.update(_e2e_stats_line(report["summary"], name))
+            e2e_rows.append(e2e_row)
         if not args.skip_oracle:
             rows.append(
                 {
@@ -168,17 +213,46 @@ def main(argv: list[str] | None = None) -> int:
                     "mean_latency_ms": report["summary"]["oracle_perfect_latency_ms"]["mean"],
                 }
             )
-        return report, _markdown_table(rows)
+            oracle_e2e = {
+                "algorithm": "oracle_perfect",
+                "greedy_mksp_ms": report["summary"]["greedy_makespan_ms"]["mean"],
+                "algo_mksp_ms": report["summary"]["oracle_perfect_effective_e2e_time_ms"]["mean"] - report["summary"]["oracle_perfect_exposed_latency_ms"]["mean"],
+                "comm_savings_ms": report["summary"]["oracle_perfect_comm_savings_ms"]["mean"],
+                "sched_latency_ms": report["summary"]["oracle_perfect_latency_ms"]["mean"],
+                "exposed_ms": report["summary"]["oracle_perfect_exposed_latency_ms"]["mean"],
+                "net_benefit_ms": report["summary"]["oracle_perfect_net_benefit_ms"]["mean"],
+                "e2e_time_ms": report["summary"]["oracle_perfect_effective_e2e_time_ms"]["mean"],
+                "e2e_speedup_pct": report["summary"]["oracle_perfect_e2e_speedup_pct"]["mean"],
+            }
+            e2e_rows.append(oracle_e2e)
+        e2e_rows.insert(
+            0,
+            {
+                "algorithm": "greedy (no sched)",
+                "greedy_mksp_ms": report["summary"]["greedy_makespan_ms"]["mean"],
+                "algo_mksp_ms": report["summary"]["greedy_makespan_ms"]["mean"],
+                "comm_savings_ms": 0.0,
+                "sched_latency_ms": 0.0,
+                "exposed_ms": 0.0,
+                "net_benefit_ms": 0.0,
+                "e2e_time_ms": report["summary"]["greedy_makespan_ms"]["mean"],
+                "e2e_speedup_pct": 0.0,
+            },
+        )
+        return report, _markdown_table(rows), _e2e_markdown_table(e2e_rows)
 
     if args.next_mode != "both":
-        report, table = run_and_collect(args.next_mode)
+        report, table, e2e_table = run_and_collect(args.next_mode)
         (out / "summary.json").write_text(json.dumps(report["summary"], indent=2), encoding="utf-8")
         (out / "table.md").write_text(table + "\n", encoding="utf-8")
+        (out / "table_e2e.md").write_text(e2e_table + "\n", encoding="utf-8")
         print(table)
+        print()
+        print(e2e_table)
         return 0
 
-    predicted_report, predicted_table = run_and_collect("predicted")
-    zeros_report, zeros_table = run_and_collect("zeros")
+    predicted_report, predicted_table, predicted_e2e_table = run_and_collect("predicted")
+    zeros_report, zeros_table, zeros_e2e_table = run_and_collect("zeros")
     blind_rows = _blind_rows(predicted_report["summary"], zeros_report["summary"], selected_names)
     prediction_blind_test = {
         row["algorithm"]: {
@@ -205,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     (out / "summary.json").write_text(json.dumps(combined_summary, indent=2), encoding="utf-8")
     (out / "table_predicted.md").write_text(predicted_table + "\n", encoding="utf-8")
     (out / "table_zeros.md").write_text(zeros_table + "\n", encoding="utf-8")
+    (out / "table_predicted_e2e.md").write_text(predicted_e2e_table + "\n", encoding="utf-8")
+    (out / "table_zeros_e2e.md").write_text(zeros_e2e_table + "\n", encoding="utf-8")
     (out / "table.md").write_text(blind_table + "\n", encoding="utf-8")
     print(blind_table)
     return 0

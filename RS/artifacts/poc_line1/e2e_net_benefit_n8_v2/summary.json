@@ -1,0 +1,547 @@
+{
+  "pair_count": 120,
+  "model": "full_duplex",
+  "expert_compute_delay": 0.0,
+  "baseline_layer_time_ms": 10.0,
+  "hidden_window_ms": 10.0,
+  "token_to_ms_factor": 0.5,
+  "next_mode": "predicted",
+  "traffic_correlation": {
+    "mean": 0.7395382041217088,
+    "median": 0.7911585677450619,
+    "std": 0.15966424341313618,
+    "p25": 0.6750383918622999,
+    "p75": 0.8417338206661928
+  },
+  "greedy_latency_ms": {
+    "mean": 0.4493514696756999,
+    "median": 0.5022287368774414,
+    "std": 0.18136926718300436,
+    "p25": 0.2917647361755371,
+    "p75": 0.5336999893188477
+  },
+  "greedy_makespan_ms": {
+    "mean": 65.91666666666667,
+    "median": 64.5,
+    "std": 21.033141837480095,
+    "p25": 56.875,
+    "p75": 77.5
+  },
+  "include_fast_best_of": false,
+  "skip_oracle": false,
+  "predicted_improvement_vs_traffic_correlation": -0.05514894208353438,
+  "gate2_decision": {
+    "decision": "PASS",
+    "mean_perfect_improvement_pct": 46.72259605052568,
+    "mean_predicted_improvement_pct": 46.78667491811619,
+    "reason": "Oracle-perfect >= 15% and Oracle-predicted >= 10%",
+    "thresholds": {
+      "oracle_perfect_mean_improvement_pct": 15.0,
+      "oracle_predicted_mean_improvement_pct": 10.0
+    },
+    "passed": true
+  },
+  "perfect_improvement_pct": {
+    "mean": 46.72259605052568,
+    "median": 47.56480754124116,
+    "std": 5.259690012251545,
+    "p25": 44.56121973929236,
+    "p75": 49.83480176211454
+  },
+  "predicted_improvement_pct": {
+    "mean": 46.78667491811619,
+    "median": 47.66273481869812,
+    "std": 5.243225824979446,
+    "p25": 44.27833902837617,
+    "p75": 49.7093023255814
+  },
+  "oracle_prediction_gap_pct": {
+    "mean": -0.0640788675905131,
+    "median": 0.0,
+    "std": 1.696823898368338,
+    "p25": -0.746268656716417,
+    "p75": 0.6753812636165559
+  },
+  "oracle_perfect_latency_ms": {
+    "mean": 111.83350483576457,
+    "median": 103.06620597839355,
+    "std": 88.06506488552839,
+    "p25": 34.433066844940186,
+    "p75": 216.7986035346985
+  },
+  "oracle_predicted_latency_ms": {
+    "mean": 123.49286278088887,
+    "median": 110.61596870422363,
+    "std": 88.6342583791412,
+    "p25": 47.62101173400879,
+    "p75": 224.05314445495605
+  },
+  "oracle_perfect_comm_savings_ms": {
+    "mean": 31.345833333333335,
+    "median": 31.0,
+    "std": 11.539749389489455,
+    "p25": 24.75,
+    "p75": 37.625
+  },
+  "oracle_perfect_exposed_latency_ms": {
+    "mean": 104.32270050048828,
+    "median": 93.06620597839355,
+    "std": 84.9559187895519,
+    "p25": 26.91828489303589,
+    "p75": 206.7986035346985
+  },
+  "oracle_perfect_net_benefit_ms": {
+    "mean": -72.97686716715495,
+    "median": -62.193607330322266,
+    "std": 85.4579353532577,
+    "p25": -168.4592432975769,
+    "p75": -12.532378196716309
+  },
+  "oracle_perfect_effective_e2e_time_ms": {
+    "mean": 138.8935338338216,
+    "median": 119.40457153320312,
+    "std": 85.18257081143462,
+    "p25": 57.62845230102539,
+    "p75": 236.99800825119019
+  },
+  "oracle_perfect_e2e_speedup_pct": {
+    "mean": -129.02432258650563,
+    "median": -121.1834565071618,
+    "std": 137.0598037486598,
+    "p25": -260.74683458338734,
+    "p75": -7.563334563902789
+  },
+  "oracle_predicted_comm_savings_ms": {
+    "mean": 31.420833333333334,
+    "median": 31.0,
+    "std": 11.634180216308993,
+    "p25": 25.0,
+    "p75": 38.625
+  },
+  "oracle_predicted_exposed_latency_ms": {
+    "mean": 115.98395387331645,
+    "median": 100.61596870422363,
+    "std": 85.20306310441056,
+    "p25": 40.10795831680298,
+    "p75": 214.05314445495605
+  },
+  "oracle_predicted_net_benefit_ms": {
+    "mean": -84.56312053998312,
+    "median": -76.04906272888184,
+    "std": 86.51796510076545,
+    "p25": -174.31320095062256,
+    "p75": -27.10795831680298
+  },
+  "oracle_predicted_effective_e2e_time_ms": {
+    "mean": 150.47978720664977,
+    "median": 138.11384963989258,
+    "std": 84.6595065650669,
+    "p25": 69.23295831680298,
+    "p75": 244.4635910987854
+  },
+  "oracle_predicted_e2e_speedup_pct": {
+    "mean": -152.32901050817537,
+    "median": -156.55652065009042,
+    "std": 146.29207645472118,
+    "p25": -285.3858099926959,
+    "p75": -21.670086434320734
+  },
+  "oracle_perfect_solver_statuses": {
+    "OPTIMAL": 74,
+    "FEASIBLE": 46
+  },
+  "oracle_predicted_solver_statuses": {
+    "OPTIMAL": 63,
+    "FEASIBLE": 57
+  },
+  "birkhoff_improvement_pct": {
+    "mean": 22.94986411604165,
+    "median": 22.875816993464053,
+    "std": 9.999406061960855,
+    "p25": 16.019898525447914,
+    "p75": 29.927007299270077
+  },
+  "birkhoff_effective_improvement_pct": {
+    "mean": 22.94986411604165,
+    "median": 22.875816993464053,
+    "std": 9.999406061960855,
+    "p25": 16.019898525447914,
+    "p75": 29.927007299270077
+  },
+  "birkhoff_latency_ms": {
+    "mean": 2.527678571641445,
+    "median": 2.7931705117225647,
+    "std": 1.0554488540671179,
+    "p25": 1.860242336988449,
+    "p75": 3.1208135187625885
+  },
+  "birkhoff_effective_latency_ms": {
+    "mean": 2.527678571641445,
+    "median": 2.7931705117225647,
+    "std": 1.0554488540671179,
+    "p25": 1.860242336988449,
+    "p75": 3.1208135187625885
+  },
+  "birkhoff_comm_savings_ms": {
+    "mean": 16.095833333333335,
+    "median": 15.0,
+    "std": 10.049936947010607,
+    "p25": 8.5,
+    "p75": 21.125
+  },
+  "birkhoff_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "birkhoff_net_benefit_ms": {
+    "mean": 16.095833333333335,
+    "median": 15.0,
+    "std": 10.049936947010607,
+    "p25": 8.5,
+    "p75": 21.125
+  },
+  "birkhoff_effective_e2e_time_ms": {
+    "mean": 49.82083333333333,
+    "median": 48.5,
+    "std": 14.059515732730231,
+    "p25": 44.375,
+    "p75": 59.25
+  },
+  "birkhoff_e2e_speedup_pct": {
+    "mean": 22.94986411604165,
+    "median": 22.875816993464053,
+    "std": 9.999406061960855,
+    "p25": 16.019898525447914,
+    "p75": 29.927007299270077
+  },
+  "birkhoff_prediction_aware": false,
+  "birkhoff_description": "Per-phase Birkhoff decomposition; next phase does not influence earlier phases.",
+  "ibbr_improvement_pct": {
+    "mean": 23.27677447135789,
+    "median": 23.576799140708914,
+    "std": 9.98304654736337,
+    "p25": 16.085705148704825,
+    "p75": 30.426816680429393
+  },
+  "ibbr_effective_improvement_pct": {
+    "mean": 23.27677447135789,
+    "median": 23.576799140708914,
+    "std": 9.98304654736337,
+    "p25": 16.085705148704825,
+    "p75": 30.426816680429393
+  },
+  "ibbr_latency_ms": {
+    "mean": 6.362787323693435,
+    "median": 5.752053111791611,
+    "std": 2.082609370501045,
+    "p25": 5.050079897046089,
+    "p75": 6.951645016670227
+  },
+  "ibbr_effective_latency_ms": {
+    "mean": 6.362787323693435,
+    "median": 5.752053111791611,
+    "std": 2.082609370501045,
+    "p25": 5.050079897046089,
+    "p75": 6.951645016670227
+  },
+  "ibbr_comm_savings_ms": {
+    "mean": 16.341666666666665,
+    "median": 15.25,
+    "std": 10.124430711018878,
+    "p25": 8.5,
+    "p75": 21.625
+  },
+  "ibbr_exposed_latency_ms": {
+    "mean": 0.10544207443793614,
+    "median": 0.0,
+    "std": 0.5479464681300464,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "ibbr_net_benefit_ms": {
+    "mean": 16.23622459222873,
+    "median": 15.25,
+    "std": 10.014117724784649,
+    "p25": 8.5,
+    "p75": 21.58598741889
+  },
+  "ibbr_effective_e2e_time_ms": {
+    "mean": 49.680442074437934,
+    "median": 48.5,
+    "std": 13.959133223376586,
+    "p25": 44.375,
+    "p75": 59.0
+  },
+  "ibbr_e2e_speedup_pct": {
+    "mean": 23.144116805854615,
+    "median": 23.576799140708914,
+    "std": 9.91332676178154,
+    "p25": 16.085705148704825,
+    "p75": 30.426816680429393
+  },
+  "ibbr_prediction_aware": false,
+  "ibbr_description": "Iterated Birkhoff barrier repair.",
+  "ejection_chain_tabu_improvement_pct": {
+    "mean": 27.026860277061708,
+    "median": 27.923976608187132,
+    "std": 9.014548954886111,
+    "p25": 22.750424448217316,
+    "p75": 33.3176423599224
+  },
+  "ejection_chain_tabu_effective_improvement_pct": {
+    "mean": 27.026860277061708,
+    "median": 27.923976608187132,
+    "std": 9.014548954886111,
+    "p25": 22.750424448217316,
+    "p75": 33.3176423599224
+  },
+  "ejection_chain_tabu_latency_ms": {
+    "mean": 29.422849416732788,
+    "median": 29.368281364440918,
+    "std": 39.7366127175027,
+    "p25": 13.917829841375351,
+    "p75": 31.955143436789513
+  },
+  "ejection_chain_tabu_effective_latency_ms": {
+    "mean": 29.422849416732788,
+    "median": 29.368281364440918,
+    "std": 39.7366127175027,
+    "p25": 13.917829841375351,
+    "p75": 31.955143436789513
+  },
+  "ejection_chain_tabu_comm_savings_ms": {
+    "mean": 18.65,
+    "median": 18.0,
+    "std": 9.87813241458121,
+    "p25": 12.0,
+    "p75": 24.0
+  },
+  "ejection_chain_tabu_exposed_latency_ms": {
+    "mean": 19.451577879488468,
+    "median": 19.368281364440918,
+    "std": 39.72131101531511,
+    "p25": 3.917829841375351,
+    "p75": 21.955143436789513
+  },
+  "ejection_chain_tabu_net_benefit_ms": {
+    "mean": -0.8015778794884681,
+    "median": -1.137762427330017,
+    "std": 41.72245303868734,
+    "p25": -8.41712012887001,
+    "p75": 11.39793772995472
+  },
+  "ejection_chain_tabu_effective_e2e_time_ms": {
+    "mean": 66.71824454615513,
+    "median": 65.20605310797691,
+    "std": 40.89088175964561,
+    "p25": 55.139395639300346,
+    "p75": 73.48686376214027
+  },
+  "ejection_chain_tabu_e2e_speedup_pct": {
+    "mean": -7.883958315755951,
+    "median": -1.529431355775234,
+    "std": 79.58844870992742,
+    "p25": -15.982143711787284,
+    "p75": 15.567088792947672
+  },
+  "ejection_chain_tabu_prediction_aware": false,
+  "ejection_chain_tabu_description": "Cross-phase tabu search with shallow ejection chains.",
+  "lns_cp_repair_improvement_pct": {
+    "mean": 27.026860277061708,
+    "median": 27.923976608187132,
+    "std": 9.014548954886111,
+    "p25": 22.750424448217316,
+    "p75": 33.3176423599224
+  },
+  "lns_cp_repair_effective_improvement_pct": {
+    "mean": 27.026860277061708,
+    "median": 27.923976608187132,
+    "std": 9.014548954886111,
+    "p25": 22.750424448217316,
+    "p75": 33.3176423599224
+  },
+  "lns_cp_repair_latency_ms": {
+    "mean": 19.347977203627426,
+    "median": 21.023157984018326,
+    "std": 5.029277021506275,
+    "p25": 13.128932565450668,
+    "p75": 23.481814190745354
+  },
+  "lns_cp_repair_effective_latency_ms": {
+    "mean": 19.347977203627426,
+    "median": 21.023157984018326,
+    "std": 5.029277021506275,
+    "p25": 13.128932565450668,
+    "p75": 23.481814190745354
+  },
+  "lns_cp_repair_comm_savings_ms": {
+    "mean": 18.65,
+    "median": 18.0,
+    "std": 9.87813241458121,
+    "p25": 12.0,
+    "p75": 24.0
+  },
+  "lns_cp_repair_exposed_latency_ms": {
+    "mean": 9.378673861424128,
+    "median": 11.023157984018326,
+    "std": 4.960414053649392,
+    "p25": 3.1289325654506683,
+    "p75": 13.481814190745354
+  },
+  "lns_cp_repair_net_benefit_ms": {
+    "mean": 9.271326138575871,
+    "median": 8.123195976018906,
+    "std": 11.415772027764678,
+    "p25": 1.7727823108434677,
+    "p75": 16.021682485938072
+  },
+  "lns_cp_repair_effective_e2e_time_ms": {
+    "mean": 56.64534052809079,
+    "median": 57.968977361917496,
+    "std": 13.890634599414035,
+    "p25": 49.47324062883854,
+    "p75": 63.44739420711994
+  },
+  "lns_cp_repair_e2e_speedup_pct": {
+    "mean": 10.508108154996648,
+    "median": 11.435552100799677,
+    "std": 15.949058433512091,
+    "p25": 2.722847874675478,
+    "p75": 21.01870613521737
+  },
+  "lns_cp_repair_prediction_aware": false,
+  "lns_cp_repair_description": "CP-repair around single-phase bottlenecks.",
+  "cp_lpt_improvement_pct": {
+    "mean": 5.411981364644889,
+    "median": 5.511811023622047,
+    "std": 10.05778956898551,
+    "p25": 1.7857142857142856,
+    "p75": 12.876269910949455
+  },
+  "cp_lpt_effective_improvement_pct": {
+    "mean": 5.411981364644889,
+    "median": 5.511811023622047,
+    "std": 10.05778956898551,
+    "p25": 1.7857142857142856,
+    "p75": 12.876269910949455
+  },
+  "cp_lpt_latency_ms": {
+    "mean": 1.2317290529608727,
+    "median": 1.3262629508972168,
+    "std": 0.2562213337341899,
+    "p25": 0.9481944143772125,
+    "p75": 1.4316756278276443
+  },
+  "cp_lpt_effective_latency_ms": {
+    "mean": 1.2317290529608727,
+    "median": 1.3262629508972168,
+    "std": 0.2562213337341899,
+    "p25": 0.9481944143772125,
+    "p75": 1.4316756278276443
+  },
+  "cp_lpt_comm_savings_ms": {
+    "mean": 4.5125,
+    "median": 3.25,
+    "std": 6.5968624170889,
+    "p25": 1.0,
+    "p75": 8.5
+  },
+  "cp_lpt_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "cp_lpt_net_benefit_ms": {
+    "mean": 4.5125,
+    "median": 3.25,
+    "std": 6.5968624170889,
+    "p25": 1.0,
+    "p75": 8.5
+  },
+  "cp_lpt_effective_e2e_time_ms": {
+    "mean": 61.40416666666667,
+    "median": 59.5,
+    "std": 17.98602418468913,
+    "p25": 55.0,
+    "p75": 72.625
+  },
+  "cp_lpt_e2e_speedup_pct": {
+    "mean": 5.411981364644889,
+    "median": 5.511811023622047,
+    "std": 10.05778956898551,
+    "p25": 1.7857142857142856,
+    "p75": 12.876269910949455
+  },
+  "cp_lpt_prediction_aware": true,
+  "cp_lpt_description": "Critical-path LPT using later_work from next phase.",
+  "lagrangian_improvement_pct": {
+    "mean": 24.547992990963778,
+    "median": 25.073099415204677,
+    "std": 9.102284216473562,
+    "p25": 18.48335200081458,
+    "p75": 30.745982603567743
+  },
+  "lagrangian_effective_improvement_pct": {
+    "mean": 24.547992990963778,
+    "median": 25.073099415204677,
+    "std": 9.102284216473562,
+    "p25": 18.48335200081458,
+    "p75": 30.745982603567743
+  },
+  "lagrangian_latency_ms": {
+    "mean": 5.761990944544475,
+    "median": 5.604807287454605,
+    "std": 0.6455584853768441,
+    "p25": 5.294157192111015,
+    "p75": 6.095750257372856
+  },
+  "lagrangian_effective_latency_ms": {
+    "mean": 5.761990944544475,
+    "median": 5.604807287454605,
+    "std": 0.6455584853768441,
+    "p25": 5.294157192111015,
+    "p75": 6.095750257372856
+  },
+  "lagrangian_comm_savings_ms": {
+    "mean": 17.075,
+    "median": 16.0,
+    "std": 9.681952712822623,
+    "p25": 9.5,
+    "p75": 23.0
+  },
+  "lagrangian_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "lagrangian_net_benefit_ms": {
+    "mean": 17.075,
+    "median": 16.0,
+    "std": 9.681952712822623,
+    "p25": 9.5,
+    "p75": 23.0
+  },
+  "lagrangian_effective_e2e_time_ms": {
+    "mean": 48.84166666666667,
+    "median": 48.0,
+    "std": 13.92524436250781,
+    "p25": 43.5,
+    "p75": 58.5
+  },
+  "lagrangian_e2e_speedup_pct": {
+    "mean": 24.547992990963778,
+    "median": 25.073099415204677,
+    "std": 9.102284216473562,
+    "p25": 18.48335200081458,
+    "p75": 30.745982603567743
+  },
+  "lagrangian_prediction_aware": true,
+  "lagrangian_description": "Cross-phase Lagrangian ordering using all three phase matrices."
+}

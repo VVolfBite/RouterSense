@@ -86,6 +86,8 @@ def run_pairwise_analysis(
     sample_limit: int | None = None,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
+    hidden_window_ms: float = 10.0,
+    token_to_ms_factor: float = 0.5,
     next_mode: str = "predicted",
     fast_algorithms: list[tuple[str, SchedulerFn]] | None = None,
     skip_oracle: bool = False,
@@ -126,6 +128,11 @@ def run_pairwise_analysis(
     algorithm_effective_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_effective_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_comm_savings_ms: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_exposed_latency_ms: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_net_benefit_ms: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_effective_e2e_time_ms: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_e2e_speedup_pct: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_failures: dict[str, list[str]] = {name: [] for name, _ in selected_fast_algorithms}
     results: list[dict[str, Any]] = []
     predicted_improvements: list[float] = []
@@ -134,13 +141,47 @@ def run_pairwise_analysis(
     oracle_prediction_gaps: list[float] = []
     traffic_correlations: list[float] = []
     greedy_latencies_ms: list[float] = []
+    greedy_makespans_ms: list[float] = []
     fast_latencies_ms: list[float] = []
+    fast_comm_savings_ms: list[float] = []
+    fast_exposed_latency_ms: list[float] = []
+    fast_net_benefit_ms: list[float] = []
+    fast_effective_e2e_time_ms: list[float] = []
+    fast_e2e_speedup_pct: list[float] = []
     oracle_perfect_latencies_ms: list[float] = []
     oracle_predicted_latencies_ms: list[float] = []
+    oracle_perfect_comm_savings_ms: list[float] = []
+    oracle_perfect_exposed_latency_ms: list[float] = []
+    oracle_perfect_net_benefit_ms: list[float] = []
+    oracle_perfect_effective_e2e_time_ms: list[float] = []
+    oracle_perfect_e2e_speedup_pct: list[float] = []
+    oracle_predicted_comm_savings_ms: list[float] = []
+    oracle_predicted_exposed_latency_ms: list[float] = []
+    oracle_predicted_net_benefit_ms: list[float] = []
+    oracle_predicted_effective_e2e_time_ms: list[float] = []
+    oracle_predicted_e2e_speedup_pct: list[float] = []
     oracle_perfect_statuses: list[str] = []
     oracle_predicted_statuses: list[str] = []
     pairwise_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     loop_counter = 0
+
+    def compute_e2e_metrics(makespan_tokens: float, latency_ms: float, greedy_tokens: float) -> dict[str, float]:
+        greedy_makespan_ms = greedy_tokens * token_to_ms_factor
+        algo_makespan_ms = makespan_tokens * token_to_ms_factor
+        comm_savings_ms = (greedy_tokens - makespan_tokens) * token_to_ms_factor
+        exposed_latency_ms = max(0.0, latency_ms - hidden_window_ms)
+        net_benefit_ms = comm_savings_ms - exposed_latency_ms
+        effective_e2e_time_ms = algo_makespan_ms + exposed_latency_ms
+        e2e_speedup_pct = (net_benefit_ms / greedy_makespan_ms * 100.0) if greedy_makespan_ms > 0.0 else 0.0
+        return {
+            "greedy_makespan_ms": greedy_makespan_ms,
+            "algo_makespan_ms": algo_makespan_ms,
+            "comm_savings_ms": comm_savings_ms,
+            "exposed_latency_ms": exposed_latency_ms,
+            "net_benefit_ms": net_benefit_ms,
+            "effective_e2e_time_ms": effective_e2e_time_ms,
+            "e2e_speedup_pct": e2e_speedup_pct,
+        }
 
     def matrix_key(matrix: list[list[int]]) -> tuple[tuple[int, ...], ...]:
         return tuple(tuple(int(value) for value in row) for row in matrix)
@@ -201,6 +242,7 @@ def run_pairwise_analysis(
                 expert_compute_delay=expert_compute_delay,
             )
             greedy_latency_ms = (time.time() - t_greedy) * 1000.0
+            greedy_e2e = compute_e2e_metrics(greedy_makespan, 0.0, greedy_makespan)
 
             algorithm_results: dict[str, dict[str, Any]] = {}
             for name, scheduler in selected_fast_algorithms:
@@ -284,7 +326,14 @@ def run_pairwise_analysis(
                 "next_actual_matrix": next_actual_matrix,
                 "next_predicted_matrix": next_predicted_matrix,
                 "greedy_makespan": greedy_makespan,
+                "greedy_makespan_ms": greedy_e2e["greedy_makespan_ms"],
                 "greedy_latency_ms": greedy_latency_ms,
+                "greedy_comm_savings_ms": 0.0,
+                "greedy_exposed_latency_ms": 0.0,
+                "greedy_net_benefit_ms": 0.0,
+                "greedy_effective_e2e_time_ms": greedy_e2e["greedy_makespan_ms"],
+                "greedy_e2e_speedup_pct": 0.0,
+                "baseline_layer_time_ms": hidden_window_ms,
                 "fast_makespan": fast_makespan,
                 "fast_latency_ms": fast_latency_ms,
                 "fast_schedule": [] if fast_result is None else fast_result["schedule"],
@@ -325,32 +374,64 @@ def run_pairwise_analysis(
                     if greedy_makespan == 0.0
                     else ((greedy_makespan - effective_makespan) / greedy_makespan) * 100.0
                 )
+                e2e_metrics = compute_e2e_metrics(makespan, latency_ms, greedy_makespan)
                 algorithm_improvements[name].append(improvement_pct)
                 algorithm_effective_improvements[name].append(effective_improvement_pct)
                 algorithm_latencies[name].append(latency_ms)
                 algorithm_effective_latencies[name].append(latency_ms)
+                algorithm_comm_savings_ms[name].append(e2e_metrics["comm_savings_ms"])
+                algorithm_exposed_latency_ms[name].append(e2e_metrics["exposed_latency_ms"])
+                algorithm_net_benefit_ms[name].append(e2e_metrics["net_benefit_ms"])
+                algorithm_effective_e2e_time_ms[name].append(e2e_metrics["effective_e2e_time_ms"])
+                algorithm_e2e_speedup_pct[name].append(e2e_metrics["e2e_speedup_pct"])
                 result_row[f"{name}_makespan"] = makespan
+                result_row[f"{name}_makespan_ms"] = e2e_metrics["algo_makespan_ms"]
                 result_row[f"{name}_effective_makespan"] = effective_makespan
                 result_row[f"{name}_latency_ms"] = latency_ms
                 result_row[f"{name}_effective_latency_ms"] = latency_ms
                 result_row[f"{name}_improvement_pct"] = improvement_pct
                 result_row[f"{name}_effective_improvement_pct"] = effective_improvement_pct
+                result_row[f"{name}_comm_savings_ms"] = e2e_metrics["comm_savings_ms"]
+                result_row[f"{name}_exposed_latency_ms"] = e2e_metrics["exposed_latency_ms"]
+                result_row[f"{name}_net_benefit_ms"] = e2e_metrics["net_benefit_ms"]
+                result_row[f"{name}_effective_e2e_time_ms"] = e2e_metrics["effective_e2e_time_ms"]
+                result_row[f"{name}_e2e_speedup_pct"] = e2e_metrics["e2e_speedup_pct"]
                 result_row[f"{name}_prediction_aware"] = prediction_aware
                 result_row[f"{name}_schedule"] = payload["schedule"]
                 if "error" in payload:
                     result_row[f"{name}_error"] = payload["error"]
 
             fast_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - fast_makespan) / greedy_makespan) * 100.0
+            fast_e2e = compute_e2e_metrics(fast_makespan, fast_latency_ms, greedy_makespan) if include_fast_best_of else None
             perfect_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_perfect_makespan) / greedy_makespan) * 100.0
             predicted_improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - oracle_predicted_makespan) / greedy_makespan) * 100.0
+            oracle_perfect_e2e = compute_e2e_metrics(oracle_perfect_makespan, perfect_solve_time * 1000.0, greedy_makespan)
+            oracle_predicted_e2e = compute_e2e_metrics(oracle_predicted_makespan, predicted_solve_time * 1000.0, greedy_makespan)
             oracle_prediction_gap_pct = perfect_improvement_pct - predicted_improvement_pct
             flat_actual = [float(value) for row in next_actual_matrix for value in row]
             flat_predicted = [float(value) for row in next_predicted_matrix for value in row]
             traffic_corr = spearman_rank_correlation(flat_actual, flat_predicted)
 
             result_row["fast_improvement_pct"] = fast_improvement_pct
+            result_row["fast_comm_savings_ms"] = 0.0 if fast_e2e is None else fast_e2e["comm_savings_ms"]
+            result_row["fast_exposed_latency_ms"] = 0.0 if fast_e2e is None else fast_e2e["exposed_latency_ms"]
+            result_row["fast_net_benefit_ms"] = 0.0 if fast_e2e is None else fast_e2e["net_benefit_ms"]
+            result_row["fast_effective_e2e_time_ms"] = (
+                greedy_e2e["greedy_makespan_ms"] if fast_e2e is None else fast_e2e["effective_e2e_time_ms"]
+            )
+            result_row["fast_e2e_speedup_pct"] = 0.0 if fast_e2e is None else fast_e2e["e2e_speedup_pct"]
             result_row["perfect_improvement_pct"] = perfect_improvement_pct
             result_row["predicted_improvement_pct"] = predicted_improvement_pct
+            result_row["oracle_perfect_comm_savings_ms"] = oracle_perfect_e2e["comm_savings_ms"]
+            result_row["oracle_perfect_exposed_latency_ms"] = oracle_perfect_e2e["exposed_latency_ms"]
+            result_row["oracle_perfect_net_benefit_ms"] = oracle_perfect_e2e["net_benefit_ms"]
+            result_row["oracle_perfect_effective_e2e_time_ms"] = oracle_perfect_e2e["effective_e2e_time_ms"]
+            result_row["oracle_perfect_e2e_speedup_pct"] = oracle_perfect_e2e["e2e_speedup_pct"]
+            result_row["oracle_predicted_comm_savings_ms"] = oracle_predicted_e2e["comm_savings_ms"]
+            result_row["oracle_predicted_exposed_latency_ms"] = oracle_predicted_e2e["exposed_latency_ms"]
+            result_row["oracle_predicted_net_benefit_ms"] = oracle_predicted_e2e["net_benefit_ms"]
+            result_row["oracle_predicted_effective_e2e_time_ms"] = oracle_predicted_e2e["effective_e2e_time_ms"]
+            result_row["oracle_predicted_e2e_speedup_pct"] = oracle_predicted_e2e["e2e_speedup_pct"]
             result_row["oracle_prediction_gap_pct"] = oracle_prediction_gap_pct
             result_row["traffic_correlation"] = traffic_corr
 
@@ -362,10 +443,28 @@ def run_pairwise_analysis(
                 oracle_predicted_latencies_ms.append(predicted_solve_time * 1000.0)
             if include_fast_best_of:
                 fast_improvements.append(fast_improvement_pct)
+                assert fast_e2e is not None
+                fast_comm_savings_ms.append(fast_e2e["comm_savings_ms"])
+                fast_exposed_latency_ms.append(fast_e2e["exposed_latency_ms"])
+                fast_net_benefit_ms.append(fast_e2e["net_benefit_ms"])
+                fast_effective_e2e_time_ms.append(fast_e2e["effective_e2e_time_ms"])
+                fast_e2e_speedup_pct.append(fast_e2e["e2e_speedup_pct"])
             traffic_correlations.append(traffic_corr)
             greedy_latencies_ms.append(greedy_latency_ms)
+            greedy_makespans_ms.append(greedy_e2e["greedy_makespan_ms"])
             if include_fast_best_of:
                 fast_latencies_ms.append(fast_latency_ms)
+            if not skip_oracle:
+                oracle_perfect_comm_savings_ms.append(oracle_perfect_e2e["comm_savings_ms"])
+                oracle_perfect_exposed_latency_ms.append(oracle_perfect_e2e["exposed_latency_ms"])
+                oracle_perfect_net_benefit_ms.append(oracle_perfect_e2e["net_benefit_ms"])
+                oracle_perfect_effective_e2e_time_ms.append(oracle_perfect_e2e["effective_e2e_time_ms"])
+                oracle_perfect_e2e_speedup_pct.append(oracle_perfect_e2e["e2e_speedup_pct"])
+                oracle_predicted_comm_savings_ms.append(oracle_predicted_e2e["comm_savings_ms"])
+                oracle_predicted_exposed_latency_ms.append(oracle_predicted_e2e["exposed_latency_ms"])
+                oracle_predicted_net_benefit_ms.append(oracle_predicted_e2e["net_benefit_ms"])
+                oracle_predicted_effective_e2e_time_ms.append(oracle_predicted_e2e["effective_e2e_time_ms"])
+                oracle_predicted_e2e_speedup_pct.append(oracle_predicted_e2e["e2e_speedup_pct"])
             results.append(result_row)
 
     predicted_vs_corr = (
@@ -377,9 +476,13 @@ def run_pairwise_analysis(
         "pair_count": len(results),
         "model": model,
         "expert_compute_delay": expert_compute_delay,
+        "baseline_layer_time_ms": hidden_window_ms,
+        "hidden_window_ms": hidden_window_ms,
+        "token_to_ms_factor": token_to_ms_factor,
         "next_mode": next_mode,
         "traffic_correlation": _summary_stats(traffic_correlations),
         "greedy_latency_ms": _summary_stats(greedy_latencies_ms),
+        "greedy_makespan_ms": _summary_stats(greedy_makespans_ms),
         "include_fast_best_of": include_fast_best_of,
         "skip_oracle": skip_oracle,
         "predicted_improvement_vs_traffic_correlation": predicted_vs_corr if not skip_oracle else None,
@@ -388,12 +491,27 @@ def run_pairwise_analysis(
     if include_fast_best_of:
         summary["fast_improvement_pct"] = _summary_stats(fast_improvements)
         summary["fast_latency_ms"] = _summary_stats(fast_latencies_ms)
+        summary["fast_comm_savings_ms"] = _summary_stats(fast_comm_savings_ms)
+        summary["fast_exposed_latency_ms"] = _summary_stats(fast_exposed_latency_ms)
+        summary["fast_net_benefit_ms"] = _summary_stats(fast_net_benefit_ms)
+        summary["fast_effective_e2e_time_ms"] = _summary_stats(fast_effective_e2e_time_ms)
+        summary["fast_e2e_speedup_pct"] = _summary_stats(fast_e2e_speedup_pct)
     if not skip_oracle:
         summary["perfect_improvement_pct"] = _summary_stats(perfect_improvements)
         summary["predicted_improvement_pct"] = _summary_stats(predicted_improvements)
         summary["oracle_prediction_gap_pct"] = _summary_stats(oracle_prediction_gaps)
         summary["oracle_perfect_latency_ms"] = _summary_stats(oracle_perfect_latencies_ms)
         summary["oracle_predicted_latency_ms"] = _summary_stats(oracle_predicted_latencies_ms)
+        summary["oracle_perfect_comm_savings_ms"] = _summary_stats(oracle_perfect_comm_savings_ms)
+        summary["oracle_perfect_exposed_latency_ms"] = _summary_stats(oracle_perfect_exposed_latency_ms)
+        summary["oracle_perfect_net_benefit_ms"] = _summary_stats(oracle_perfect_net_benefit_ms)
+        summary["oracle_perfect_effective_e2e_time_ms"] = _summary_stats(oracle_perfect_effective_e2e_time_ms)
+        summary["oracle_perfect_e2e_speedup_pct"] = _summary_stats(oracle_perfect_e2e_speedup_pct)
+        summary["oracle_predicted_comm_savings_ms"] = _summary_stats(oracle_predicted_comm_savings_ms)
+        summary["oracle_predicted_exposed_latency_ms"] = _summary_stats(oracle_predicted_exposed_latency_ms)
+        summary["oracle_predicted_net_benefit_ms"] = _summary_stats(oracle_predicted_net_benefit_ms)
+        summary["oracle_predicted_effective_e2e_time_ms"] = _summary_stats(oracle_predicted_effective_e2e_time_ms)
+        summary["oracle_predicted_e2e_speedup_pct"] = _summary_stats(oracle_predicted_e2e_speedup_pct)
         summary["oracle_perfect_solver_statuses"] = dict(Counter(oracle_perfect_statuses))
         summary["oracle_predicted_solver_statuses"] = dict(Counter(oracle_predicted_statuses))
     for name, _scheduler in selected_fast_algorithms:
@@ -402,6 +520,11 @@ def run_pairwise_analysis(
         summary[f"{name}_effective_improvement_pct"] = _summary_stats(algorithm_effective_improvements[name])
         summary[f"{name}_latency_ms"] = _summary_stats(algorithm_latencies[name])
         summary[f"{name}_effective_latency_ms"] = _summary_stats(algorithm_effective_latencies[name])
+        summary[f"{name}_comm_savings_ms"] = _summary_stats(algorithm_comm_savings_ms[name])
+        summary[f"{name}_exposed_latency_ms"] = _summary_stats(algorithm_exposed_latency_ms[name])
+        summary[f"{name}_net_benefit_ms"] = _summary_stats(algorithm_net_benefit_ms[name])
+        summary[f"{name}_effective_e2e_time_ms"] = _summary_stats(algorithm_effective_e2e_time_ms[name])
+        summary[f"{name}_e2e_speedup_pct"] = _summary_stats(algorithm_e2e_speedup_pct[name])
         summary[f"{name}_prediction_aware"] = bool(metadata["prediction_aware"])
         summary[f"{name}_description"] = str(metadata["description"])
         if algorithm_failures[name]:
