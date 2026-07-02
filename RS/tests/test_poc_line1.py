@@ -482,13 +482,16 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
-    assert "phase_aware_greedy_improvement_pct" in report["summary"]
     assert "birkhoff_improvement_pct" in report["summary"]
+    assert "ejection_chain_tabu_improvement_pct" in report["summary"]
     assert "lagrangian_improvement_pct" in report["summary"]
-    assert "iterated_greedy_improvement_pct" in report["summary"]
+    assert "quantized_decomposed_improvement_pct" in report["summary"]
+    assert "cp_lpt_effective_improvement_pct" in report["summary"]
+    assert report["summary"]["cp_lpt_prediction_aware"] is True
+    assert report["summary"]["birkhoff_prediction_aware"] is False
     assert "oracle_prediction_gap_pct" in report["summary"]
     assert "fast_latency_ms" in report["summary"]
-    assert "phase_aware_greedy_latency_ms" in report["summary"]
+    assert "ejection_chain_tabu_latency_ms" in report["summary"]
     assert "lagrangian_latency_ms" in report["summary"]
     assert "oracle_perfect_solver_statuses" in report["summary"]
     assert "oracle_predicted_solver_statuses" in report["summary"]
@@ -496,9 +499,11 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
-    assert "phase_aware_greedy_makespan" in report["results"][0]
     assert "birkhoff_makespan" in report["results"][0]
+    assert "ejection_chain_tabu_makespan" in report["results"][0]
     assert "lagrangian_makespan" in report["results"][0]
-    assert "iterated_greedy_makespan" in report["results"][0]
+    assert "quantized_decomposed_makespan" in report["results"][0]
+    assert "cp_lpt_effective_makespan" in report["results"][0]
+    assert "cp_lpt_prediction_aware" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]

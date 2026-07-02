@@ -11,59 +11,61 @@ import torch  # type: ignore
 from ..scheduler import (
     fast_schedule_barrier_aware_birkhoff,
     fast_schedule_birkhoff,
-    fast_schedule_completion_balanced,
-    fast_schedule_cp_local_swap,
     fast_schedule_cp_lpt,
-    fast_schedule_critical_path_compression,
-    fast_schedule_decomposed,
     fast_schedule_ejection_chain_tabu,
     fast_schedule_grasp,
     fast_schedule_ibbr,
-    fast_schedule_iterated_greedy,
     fast_schedule_lagrangian,
     fast_schedule_lns,
     fast_schedule_lns_cp_repair,
-    fast_schedule_lookahead_lpt,
-    fast_schedule_phase_aware_greedy,
     fast_schedule_pairwise,
     fast_schedule_quantized_decomposed,
-    fast_schedule_randomized_multistart_birkhoff,
     fast_schedule_simulated_annealing,
-    fast_schedule_tabu_search,
     fast_schedule_two_stage,
     greedy_schedule_pairwise,
     pairwise_oracle,
 )
 from .cross_layer import _decode_predicted_topk_by_sample, _summary_stats, evaluate_gate2, spearman_rank_correlation
-from .traffic_matrix import TraceRecord, _group_records_by_sample_token_layer, build_predicted_traffic, build_sample_layer_matrices
+from .traffic_matrix import (
+    TraceRecord,
+    _group_records_by_sample_token_layer,
+    _normalize_token_positions,
+    build_predicted_traffic,
+    build_sample_layer_matrices,
+)
 
 
 SchedulerFn = Callable[[list[list[int]], list[list[int]], list[list[int]], int], dict[str, Any]]
 
 
 FAST_ALGORITHMS: list[tuple[str, SchedulerFn]] = [
-    ("lookahead_lpt", fast_schedule_lookahead_lpt),
     ("cp_lpt", fast_schedule_cp_lpt),
     ("birkhoff", fast_schedule_birkhoff),
-    ("phase_aware_greedy", fast_schedule_phase_aware_greedy),
     ("barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
-    ("randomized_multistart_birkhoff", fast_schedule_randomized_multistart_birkhoff),
-    ("tabu_search", fast_schedule_tabu_search),
     ("lns", fast_schedule_lns),
     ("simulated_annealing", fast_schedule_simulated_annealing),
     ("lagrangian", fast_schedule_lagrangian),
     ("grasp", fast_schedule_grasp),
-    ("completion_balanced", fast_schedule_completion_balanced),
     ("two_stage", fast_schedule_two_stage),
-    ("critical_path_compression", fast_schedule_critical_path_compression),
     ("ibbr", fast_schedule_ibbr),
-    ("iterated_greedy", fast_schedule_iterated_greedy),
-    ("cp_local_swap", fast_schedule_cp_local_swap),
     ("ejection_chain_tabu", fast_schedule_ejection_chain_tabu),
     ("lns_cp_repair", fast_schedule_lns_cp_repair),
-    ("decomposed", fast_schedule_decomposed),
     ("quantized_decomposed", fast_schedule_quantized_decomposed),
 ]
+
+PREDICTION_AWARE_ALGORITHMS = {"cp_lpt", "lagrangian"}
+
+
+def compute_effective_makespan(
+    scheduling_makespan: float,
+    phase0_makespan: float,
+    expert_compute_delay: float,
+    is_prediction_aware: bool,
+) -> float:
+    if not is_prediction_aware:
+        return scheduling_makespan
+    hidden_overlap = min(expert_compute_delay, phase0_makespan)
+    return scheduling_makespan - hidden_overlap
 
 
 def run_pairwise_analysis(
@@ -90,8 +92,7 @@ def run_pairwise_analysis(
         token_index.setdefault((record.sample_id, record.layer_id), []).append(record.token_position)
     for key, positions in list(token_index.items()):
         deduped_positions = sorted(set(positions))
-        token_count = (len(deduped_positions) // num_gpus) * num_gpus
-        token_index[key] = deduped_positions[: min(token_count, 256)]
+        token_index[key] = _normalize_token_positions(deduped_positions, num_gpus=num_gpus, max_tokens=256)
 
     t1 = time.time()
     sample_layer_matrices = build_sample_layer_matrices(records, owner_by_expert=owner_by_expert, num_gpus=num_gpus, grouped=grouped)
@@ -112,6 +113,7 @@ def run_pairwise_analysis(
 
     selected_fast_algorithms = fast_algorithms if fast_algorithms is not None else FAST_ALGORITHMS
     algorithm_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_effective_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_failures: dict[str, list[str]] = {name: [] for name, _ in selected_fast_algorithms}
     results: list[dict[str, Any]] = []
@@ -286,11 +288,35 @@ def run_pairwise_analysis(
                 makespan = float(payload["makespan"])
                 latency_ms = float(payload["solve_time_ms"])
                 improvement_pct = 0.0 if greedy_makespan == 0.0 else ((greedy_makespan - makespan) / greedy_makespan) * 100.0
+                phase0_makespan = max(
+                    (
+                        float(entry["end"])
+                        for entry in payload.get("schedule", [])
+                        if int(entry.get("phase", -1)) == 0
+                    ),
+                    default=0.0,
+                )
+                prediction_aware = name in PREDICTION_AWARE_ALGORITHMS
+                effective_makespan = compute_effective_makespan(
+                    makespan,
+                    phase0_makespan,
+                    expert_compute_delay,
+                    prediction_aware,
+                )
+                effective_improvement_pct = (
+                    0.0
+                    if greedy_makespan == 0.0
+                    else ((greedy_makespan - effective_makespan) / greedy_makespan) * 100.0
+                )
                 algorithm_improvements[name].append(improvement_pct)
+                algorithm_effective_improvements[name].append(effective_improvement_pct)
                 algorithm_latencies[name].append(latency_ms)
                 result_row[f"{name}_makespan"] = makespan
+                result_row[f"{name}_effective_makespan"] = effective_makespan
                 result_row[f"{name}_latency_ms"] = latency_ms
                 result_row[f"{name}_improvement_pct"] = improvement_pct
+                result_row[f"{name}_effective_improvement_pct"] = effective_improvement_pct
+                result_row[f"{name}_prediction_aware"] = prediction_aware
                 result_row[f"{name}_schedule"] = payload["schedule"]
                 if "error" in payload:
                     result_row[f"{name}_error"] = payload["error"]
@@ -352,7 +378,9 @@ def run_pairwise_analysis(
         summary["oracle_predicted_solver_statuses"] = dict(Counter(oracle_predicted_statuses))
     for name, _scheduler in selected_fast_algorithms:
         summary[f"{name}_improvement_pct"] = _summary_stats(algorithm_improvements[name])
+        summary[f"{name}_effective_improvement_pct"] = _summary_stats(algorithm_effective_improvements[name])
         summary[f"{name}_latency_ms"] = _summary_stats(algorithm_latencies[name])
+        summary[f"{name}_prediction_aware"] = name in PREDICTION_AWARE_ALGORITHMS
         if algorithm_failures[name]:
             summary[f"{name}_failures"] = dict(Counter(algorithm_failures[name]))
 

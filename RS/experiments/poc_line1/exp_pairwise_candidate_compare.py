@@ -19,31 +19,33 @@ from routesense.evaluation import (  # noqa: E402
     load_trace_jsonl,
     run_pairwise_analysis,
 )
+from routesense.scheduler import fast_schedule_birkhoff_exhaustive  # noqa: E402
 
 
 def _stats_line(summary: dict, name: str) -> dict[str, float | None]:
     improve = summary.get(f"{name}_improvement_pct", {})
+    effective_improve = summary.get(f"{name}_effective_improvement_pct", {})
     latency = summary.get(f"{name}_latency_ms", {})
     return {
-        "mean_improvement_pct": improve.get("mean"),
-        "median_improvement_pct": improve.get("median"),
-        "p75_improvement_pct": improve.get("p75"),
+        "sched_improve_pct": improve.get("mean"),
+        "effective_improve_pct": effective_improve.get("mean"),
+        "prediction_aware": bool(summary.get(f"{name}_prediction_aware", False)),
         "mean_latency_ms": latency.get("mean"),
     }
 
 
 def _markdown_table(rows: list[dict[str, object]]) -> str:
     lines = [
-        "| algorithm | mean_improvement_pct | median_improvement_pct | p75_improvement_pct | mean_latency_ms |",
-        "|---|---:|---:|---:|---:|",
+        "| algorithm | sched_improve% | effective_improve% | prediction_aware | latency_ms |",
+        "|---|---:|---:|:---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| {algorithm} | {mean_improvement_pct:.4f} | {median_improvement_pct:.4f} | {p75_improvement_pct:.4f} | {mean_latency_ms:.4f} |".format(
+            "| {algorithm} | {sched_improve_pct:.4f} | {effective_improve_pct:.4f} | {prediction_aware} | {mean_latency_ms:.4f} |".format(
                 algorithm=row["algorithm"],
-                mean_improvement_pct=float(row["mean_improvement_pct"] or 0.0),
-                median_improvement_pct=float(row["median_improvement_pct"] or 0.0),
-                p75_improvement_pct=float(row["p75_improvement_pct"] or 0.0),
+                sched_improve_pct=float(row["sched_improve_pct"] or 0.0),
+                effective_improve_pct=float(row["effective_improve_pct"] or 0.0),
+                prediction_aware="yes" if bool(row["prediction_aware"]) else "no",
                 mean_latency_ms=float(row["mean_latency_ms"] or 0.0),
             )
         )
@@ -62,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--algorithms",
         type=str,
-        default="birkhoff,ibbr,ejection_chain_tabu,lns_cp_repair,decomposed,quantized_decomposed",
+        default="birkhoff,ibbr,ejection_chain_tabu,lns_cp_repair,quantized_decomposed,cp_lpt,lagrangian",
     )
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)
@@ -79,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     owner_by_expert = build_owner_by_expert(records, placement=args.placement, num_gpus=args.num_gpus)
 
     by_name = {name: fn for name, fn in FAST_ALGORITHMS}
+    by_name["birkhoff_exhaustive"] = fast_schedule_birkhoff_exhaustive
     selected_names = [name.strip() for name in args.algorithms.split(",") if name.strip()]
     missing = [name for name in selected_names if name not in by_name]
     if missing:
@@ -107,9 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         rows.append(
             {
                 "algorithm": "oracle_perfect",
-                "mean_improvement_pct": report["summary"]["perfect_improvement_pct"]["mean"],
-                "median_improvement_pct": report["summary"]["perfect_improvement_pct"]["median"],
-                "p75_improvement_pct": report["summary"]["perfect_improvement_pct"]["p75"],
+                "sched_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
+                "effective_improve_pct": report["summary"]["perfect_improvement_pct"]["mean"],
+                "prediction_aware": False,
                 "mean_latency_ms": report["summary"]["oracle_perfect_latency_ms"]["mean"],
             }
         )

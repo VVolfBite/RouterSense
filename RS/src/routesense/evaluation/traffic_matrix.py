@@ -61,6 +61,17 @@ def _top2_records(records: list[TraceRecord]) -> list[TraceRecord]:
     return [record for record in records if record.topk_rank < 2]
 
 
+def _normalize_token_positions(token_positions: list[int], *, num_gpus: int, max_tokens: int | None = None) -> list[int]:
+    if len(token_positions) < num_gpus:
+        normalized = list(token_positions)
+    else:
+        token_count = (len(token_positions) // num_gpus) * num_gpus
+        normalized = token_positions[:token_count]
+    if max_tokens is not None:
+        normalized = normalized[:max_tokens]
+    return normalized
+
+
 def build_owner_by_expert(records: list[TraceRecord], placement: str = "round_robin", num_gpus: int = 4) -> dict[int, int]:
     expert_ids = sorted({record.expert_id for record in records})
     if placement == "round_robin":
@@ -92,10 +103,10 @@ def build_same_prompt_batches(
     batches: list[dict[str, Any]] = []
     for batch_id, sample_id in enumerate(sample_ids):
         token_positions = sorted({record.token_position for record in records if record.sample_id == sample_id})
-        token_count = (len(token_positions) // num_gpus) * num_gpus
+        token_positions = _normalize_token_positions(token_positions, num_gpus=num_gpus)
+        token_count = len(token_positions)
         if token_count == 0:
             continue
-        token_positions = token_positions[:token_count]
         layers_payload = []
         for layer_id in layer_ids:
             matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
@@ -135,7 +146,7 @@ def build_sample_layer_matrices(
     for record in records:
         tokens_by_sample.setdefault(record.sample_id, set()).add(record.token_position)
     normalized_tokens_by_sample = {
-        sample_id: ((lambda positions: positions[: ((len(positions) // num_gpus) * num_gpus)])(sorted(token_positions)))
+        sample_id: _normalize_token_positions(sorted(token_positions), num_gpus=num_gpus)
         for sample_id, token_positions in tokens_by_sample.items()
     }
     sample_layer_matrices: dict[str, dict[int, list[list[int]]]] = {}
@@ -174,10 +185,7 @@ def build_predicted_traffic(
             for record_sample_id, token_position, layer_id in grouped_records
             if record_sample_id == sample_id and layer_id == to_layer
         )
-        token_count = (len(token_positions) // num_gpus) * num_gpus
-        token_positions = token_positions[:token_count]
-        max_tokens = min(len(token_positions), 256)
-        token_positions = token_positions[:max_tokens]
+        token_positions = _normalize_token_positions(token_positions, num_gpus=num_gpus, max_tokens=256)
     matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
     predicted_rows = predicted_topk_by_sample.get(sample_id, {}).get((from_layer, to_layer), [])
     for token_position in token_positions:

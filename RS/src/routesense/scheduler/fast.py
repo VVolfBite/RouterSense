@@ -14,6 +14,10 @@ except Exception:  # pragma: no cover
     linear_sum_assignment = None
 
 
+_NO_IMPROVE_PATIENCE = 5
+_MIN_RELATIVE_IMPROVEMENT = 0.20
+
+
 @dataclass(frozen=True)
 class ChunkSpec:
     chunk_id: str
@@ -668,6 +672,19 @@ def _phase_orders_from_schedule_chunks(
     return phase_orders
 
 
+def _merge_subproblem_orders(
+    bucket_orders: list[tuple[float, list[ChunkSpec]]],
+) -> list[ChunkSpec]:
+    """Merge subproblem orders by sender grouping while preserving local order."""
+
+    all_chunks_with_meta: list[tuple[ChunkSpec, int, int]] = []
+    for bucket_index, (_score, ordered) in enumerate(bucket_orders):
+        for local_rank, chunk in enumerate(ordered):
+            all_chunks_with_meta.append((chunk, bucket_index, local_rank))
+    all_chunks_with_meta.sort(key=lambda item: (item[0].src_gpu, item[1], item[2]))
+    return [chunk for chunk, _bucket, _local in all_chunks_with_meta]
+
+
 def _subproblem_oracle_phase_order(
     phase_chunks: dict[int, list[ChunkSpec]],
     *,
@@ -948,6 +965,8 @@ def fast_schedule_iterated_greedy(
     rng = random.Random(0)
     flattened = [(phase, chunk) for phase, chunks in best_orders.items() for chunk in chunks]
     destroy_count = max(3, len(flattened) // 10) if flattened else 0
+    no_improve_count = 0
+    prev_best = float(best_payload["makespan"])
     for _ in range(iterations):
         candidate_orders = _clone_phase_orders(best_orders)
         flat_candidate = [(phase, chunk) for phase, chunks in candidate_orders.items() for chunk in chunks]
@@ -970,8 +989,15 @@ def fast_schedule_iterated_greedy(
             expert_compute_delay=expert_compute_delay,
         )
         if float(candidate_payload["makespan"]) < float(best_payload["makespan"]):
+            relative = (prev_best - float(candidate_payload["makespan"])) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = float(candidate_payload["makespan"])
             best_orders = candidate_orders
             best_payload = candidate_payload
+        else:
+            no_improve_count += 1
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
+            break
     best_payload["solve_time_ms"] = (time.perf_counter() - start) * 1000.0
     return best_payload
 
@@ -993,6 +1019,8 @@ def fast_schedule_tabu_search(
     tabu: dict[tuple[str, str], int] = {}
     tenure = 7
     iteration = 0
+    no_improve_count = 0
+    prev_best = best_makespan
     while time.perf_counter() - start <= 0.004:
         iteration += 1
         best_neighbor = None
@@ -1019,9 +1047,16 @@ def fast_schedule_tabu_search(
         tabu[best_pair] = tenure
         current = best_neighbor
         if best_neighbor_makespan < best_makespan:
+            relative = (prev_best - best_neighbor_makespan) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = best_neighbor_makespan
             best = _clone_phase_orders(best_neighbor)
             best_makespan = best_neighbor_makespan
+        else:
+            no_improve_count += 1
         if iteration >= 32:
+            break
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
             break
     payload = _schedule_phase_orders(best, strategy="tabu_search", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
     return payload
@@ -1040,6 +1075,8 @@ def fast_schedule_lns(
     base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
     best_orders = _extract_phase_orders_from_schedule(base["schedule"])
     best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    no_improve_count = 0
+    prev_best = best_makespan
     while time.perf_counter() - start <= 0.003:
         gpu_completion = _gpu_completion(best_orders, model=model, expert_compute_delay=expert_compute_delay)
         bottleneck_gpu = max(gpu_completion, key=gpu_completion.get)
@@ -1058,9 +1095,14 @@ def fast_schedule_lns(
             candidate_orders = _best_insert_position(candidate_orders, chunk)
         makespan = _evaluate_phase_orders(candidate_orders, model=model, expert_compute_delay=expert_compute_delay)
         if makespan < best_makespan:
+            relative = (prev_best - makespan) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = makespan
             best_orders = candidate_orders
             best_makespan = makespan
         else:
+            no_improve_count += 1
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
             break
     return _schedule_phase_orders(best_orders, strategy="lns", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
 
@@ -1082,6 +1124,8 @@ def fast_schedule_simulated_annealing(
     best = _clone_phase_orders(current)
     best_makespan = current_makespan
     temperature = max(current_makespan * 0.1, 1.0)
+    no_improve_count = 0
+    prev_best = best_makespan
     while time.perf_counter() - start <= 0.003:
         neighbor = _random_swap_orders(current, rng)
         makespan = _evaluate_phase_orders(neighbor, model=model, expert_compute_delay=expert_compute_delay)
@@ -1090,10 +1134,17 @@ def fast_schedule_simulated_annealing(
             current = neighbor
             current_makespan = makespan
             if makespan < best_makespan:
+                relative = (prev_best - makespan) / max(prev_best, 1e-9)
+                no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+                prev_best = makespan
                 best = _clone_phase_orders(neighbor)
                 best_makespan = makespan
+            else:
+                no_improve_count += 1
+        else:
+            no_improve_count += 1
         temperature *= 0.95
-        if temperature < 1e-3:
+        if temperature < 1e-3 or no_improve_count >= _NO_IMPROVE_PATIENCE:
             break
     return _schedule_phase_orders(best, strategy="simulated_annealing", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
 
@@ -1116,6 +1167,8 @@ def fast_schedule_lagrangian(
     best_makespan = float("inf")
     best_orders: dict[int, list[ChunkSpec]] | None = None
     best_lookup: dict[str, tuple[float, ...]] = {}
+    no_improve_count = 0
+    prev_best = float("inf")
 
     for iteration in range(max_iterations):
         phase_orders: dict[int, list[ChunkSpec]] = {}
@@ -1150,9 +1203,14 @@ def fast_schedule_lagrangian(
 
         makespan = _evaluate_phase_orders(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
         if makespan < best_makespan:
+            relative = 1.0 if prev_best == float("inf") else (prev_best - makespan) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = makespan
             best_makespan = makespan
             best_orders = _clone_phase_orders(phase_orders)
             best_lookup = dict(priority_lookup)
+        else:
+            no_improve_count += 1
 
         send_done, recv_done, _payload = _phase_completion_times(phase_orders, model=model, expert_compute_delay=expert_compute_delay)
         for phase in recv_done:
@@ -1167,6 +1225,8 @@ def fast_schedule_lagrangian(
             completion1 = recv_done[1][gpu]
             violation = completion1 - completion0 - expert_compute_delay
             lambda_g[gpu] = max(0.0, lambda_g[gpu] + step_size * violation)
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
+            break
     solve_time_ms = (time.perf_counter() - start) * 1000.0
     if best_orders is not None:
         payload = _schedule_phase_orders(
@@ -1202,6 +1262,8 @@ def fast_schedule_grasp(
     base_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     best_orders: dict[int, list[ChunkSpec]] | None = None
     best_makespan = float("inf")
+    no_improve_count = 0
+    prev_best = float("inf")
     for _ in range(5):
         if time.perf_counter() - start > 0.003:
             break
@@ -1228,8 +1290,15 @@ def fast_schedule_grasp(
             else:
                 no_improve += 1
         if current < best_makespan:
+            relative = 1.0 if prev_best == float("inf") else (prev_best - current) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = current
             best_makespan = current
             best_orders = local
+        else:
+            no_improve_count += 1
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
+            break
     assert best_orders is not None
     return _schedule_phase_orders(best_orders, strategy="grasp", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
 
@@ -1319,6 +1388,8 @@ def fast_schedule_critical_path_compression(
     base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
     best_orders = _extract_phase_orders_from_schedule(base["schedule"])
     best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    no_improve_count = 0
+    prev_best = best_makespan
     for _ in range(4):
         if time.perf_counter() - start > 0.0008:
             break
@@ -1361,6 +1432,8 @@ def fast_schedule_ibbr(
     base = fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay)
     best_orders = _extract_phase_orders_from_schedule(base["schedule"])
     best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    no_improve_count = 0
+    prev_best = best_makespan
     for _ in range(4):
         if time.perf_counter() - start > 0.003:
             break
@@ -1374,6 +1447,9 @@ def fast_schedule_ibbr(
                 candidate[phase][left], candidate[phase][right] = candidate[phase][right], candidate[phase][left]
                 makespan = _evaluate_phase_orders(candidate, model=model, expert_compute_delay=expert_compute_delay)
                 if makespan < best_makespan:
+                    relative = (prev_best - makespan) / max(prev_best, 1e-9)
+                    no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+                    prev_best = makespan
                     best_orders = candidate
                     best_makespan = makespan
                     improved = True
@@ -1381,6 +1457,8 @@ def fast_schedule_ibbr(
             if improved:
                 break
         if not improved:
+            no_improve_count += 1
+        if not improved or no_improve_count >= _NO_IMPROVE_PATIENCE:
             break
     return _schedule_phase_orders(best_orders, strategy="ibbr", solve_time_ms=(time.perf_counter() - start) * 1000.0, model=model, expert_compute_delay=expert_compute_delay)
 
@@ -1463,8 +1541,8 @@ def fast_schedule_ejection_chain_tabu(
     *,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
-    budget_ms: float = 4.0,
-    max_iters: int = 50,
+    budget_ms: float = 2.5,
+    max_iters: int = 20,
     tenure: int = 7,
 ) -> dict[str, Any]:
     """Cross-phase tabu search with shallow ejection chains.
@@ -1486,6 +1564,8 @@ def fast_schedule_ejection_chain_tabu(
     best = _clone_phase_orders(current)
     best_makespan = current_makespan
     tabu: dict[tuple[int, int], int] = {}
+    no_improve_count = 0
+    prev_best = best_makespan
 
     for _iteration in range(max_iters):
         if (time.perf_counter() - start) * 1000.0 >= budget_ms:
@@ -1521,6 +1601,9 @@ def fast_schedule_ejection_chain_tabu(
         tabu[(chosen_gpu, chosen_phase)] = tenure
 
         if candidate_makespan < best_makespan:
+            relative = (prev_best - candidate_makespan) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = candidate_makespan
             best = _clone_phase_orders(candidate)
             best_makespan = candidate_makespan
             current = candidate
@@ -1528,6 +1611,11 @@ def fast_schedule_ejection_chain_tabu(
         elif candidate_makespan < current_makespan * 1.005:
             current = candidate
             current_makespan = candidate_makespan
+            no_improve_count += 1
+        else:
+            no_improve_count += 1
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
+            break
 
     return _schedule_phase_orders(
         best,
@@ -1565,6 +1653,8 @@ def fast_schedule_lns_cp_repair(
     )
     best_orders = _extract_phase_orders_from_schedule(base["schedule"])
     best_makespan = _evaluate_phase_orders(best_orders, model=model, expert_compute_delay=expert_compute_delay)
+    no_improve_count = 0
+    prev_best = best_makespan
 
     for _iteration in range(max_repair_iters):
         if (time.perf_counter() - start) * 1000.0 >= budget_ms:
@@ -1617,8 +1707,15 @@ def fast_schedule_lns_cp_repair(
         candidate_orders[target_phase] = rebuilt
         candidate_makespan = _evaluate_phase_orders(candidate_orders, model=model, expert_compute_delay=expert_compute_delay)
         if candidate_makespan < best_makespan:
+            relative = (prev_best - candidate_makespan) / max(prev_best, 1e-9)
+            no_improve_count = 0 if relative >= _MIN_RELATIVE_IMPROVEMENT else no_improve_count + 1
+            prev_best = candidate_makespan
             best_orders = candidate_orders
             best_makespan = candidate_makespan
+        else:
+            no_improve_count += 1
+        if no_improve_count >= _NO_IMPROVE_PATIENCE:
+            break
 
     return _schedule_phase_orders(
         best_orders,
@@ -1664,26 +1761,27 @@ def fast_schedule_decomposed(
                 model=model,
             )
             if ordered is None:
-                ordered = sorted(bucket_chunks, key=lambda chunk: (chunk.size, -chunk.src_gpu, -chunk.dst_gpu), reverse=True)
+                sub_matrix = [[0] * num_gpus for _ in range(num_gpus)]
+                for chunk in bucket_chunks:
+                    sub_matrix[chunk.src_gpu][chunk.dst_gpu] = chunk.size
+                rounds = _birkhoff_decompose(sub_matrix)
+                round_rank = {}
+                for round_index, (_weight, edges) in enumerate(rounds):
+                    for src, dst in edges:
+                        round_rank.setdefault((src, dst), round_index)
+                ordered = sorted(
+                    bucket_chunks,
+                    key=lambda chunk: (round_rank.get((chunk.src_gpu, chunk.dst_gpu), 999), -chunk.size),
+                )
             score = float(sum(chunk.size for chunk in ordered))
             if phase < 2:
                 score += 0.25 * sum(chunk.size for chunk in phase_chunks[phase + 1] if chunk.src_gpu // group_size == dst_group)
             bucket_orders.append((score, ordered))
         bucket_orders.sort(key=lambda item: item[0], reverse=True)
-        merged: list[ChunkSpec] = []
-        positions = [0] * len(bucket_orders)
-        while True:
-            progress = False
-            for index, (_score, ordered) in enumerate(bucket_orders):
-                if positions[index] < len(ordered):
-                    merged.append(ordered[positions[index]])
-                    positions[index] += 1
-                    progress = True
-            if not progress:
-                break
-        phase_orders[phase] = merged
-        for order_index, chunk in enumerate(merged):
-            priority_lookup[chunk.chunk_id] = (float(len(merged) - order_index), float(chunk.size))
+        phase_orders[phase] = _merge_subproblem_orders(bucket_orders)
+        merged_order = phase_orders[phase]
+        for order_index, chunk in enumerate(merged_order):
+            priority_lookup[chunk.chunk_id] = (float(len(merged_order) - order_index), float(chunk.size))
 
     return _schedule_phase_orders(
         phase_orders,
@@ -1852,27 +1950,18 @@ def fast_schedule_pairwise(
     expert_compute_delay: float = 0.0,
 ) -> dict[str, Any]:
     candidates = [
-        fast_schedule_lookahead_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_phase_aware_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_barrier_aware_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_randomized_multistart_birkhoff(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_tabu_search(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_lns(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_simulated_annealing(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_lagrangian(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_grasp(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_ejection_chain_tabu(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_lns_cp_repair(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_decomposed(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_quantized_decomposed(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_completion_balanced(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_two_stage(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_critical_path_compression(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_ibbr(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_iterated_greedy(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_cp_local_swap(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
     ]
     eligible = [payload for payload in candidates if float(payload["solve_time_ms"]) <= 5.0]
     best_pool = eligible if eligible else candidates
