@@ -185,12 +185,15 @@ def replay_and_audit_schedule(
         sum(max(0.0, float(end) - float(start)) for start, end, _entry in recv_intervals[gpu])
         for gpu in range(num_gpus)
     ]
-    wave_count = len(
-        {
-            (float(entry["start"]), float(entry["end"]))
-            for entry in schedule
-        }
-    )
+    if any("wave_id" in entry for entry in schedule):
+        wave_count = len({int(entry["wave_id"]) for entry in schedule})
+    else:
+        wave_count = len(
+            {
+                (float(entry["start"]), float(entry["end"]))
+                for entry in schedule
+            }
+        )
     return {
         "scheduler_name": scheduler_name,
         "mode": mode,
@@ -351,6 +354,7 @@ def _run_global_matching_scheduler(
     price_decay: float,
     price_clip: float,
     iteration_budget: int,
+    atomic: bool,
 ) -> dict[str, Any]:
     start_time = time.perf_counter()
     flows = _collect_real_flows(
@@ -421,15 +425,20 @@ def _run_global_matching_scheduler(
         if wave_quantum is not None:
             duration = min(duration, float(wave_quantum))
         duration = max(duration, 1e-6)
+        wave_end = current_time
 
         for candidate in chosen:
             flow_id = str(candidate["flow_id"])
             phase = int(candidate["phase"])
             src = int(candidate["src_gpu"])
             dst = int(candidate["dst_gpu"])
-            residual[flow_id] = max(0.0, residual[flow_id] - duration)
-            inbound_remaining[(phase, dst)] = max(0.0, inbound_remaining[(phase, dst)] - duration)
-            end = current_time + duration
+            served = duration
+            if atomic:
+                served = max(0.0, residual[flow_id])
+            residual[flow_id] = max(0.0, residual[flow_id] - served)
+            inbound_remaining[(phase, dst)] = max(0.0, inbound_remaining[(phase, dst)] - served)
+            end = current_time + served
+            wave_end = max(wave_end, end)
             barrier_done[(phase, dst)] = max(barrier_done[(phase, dst)], end)
             if phase < 2 and inbound_remaining[(phase, dst)] <= 1e-9:
                 release_time[(phase + 1, dst)] = barrier_done[(phase, dst)] + (
@@ -440,14 +449,15 @@ def _run_global_matching_scheduler(
                     "chunk_id": f"{flow_id}_wave{wave_count}",
                     "flow_id": flow_id,
                     "phase": phase,
-                    "size": float(duration),
-                    "served_volume": float(duration),
+                    "size": float(served),
+                    "served_volume": float(served),
                     "src": src,
                     "dst": dst,
                     "src_gpu": src,
                     "dst_gpu": dst,
                     "start": current_time,
                     "end": end,
+                    "wave_id": wave_count,
                     "priority": [
                         float(candidate["score"]),
                         float(candidate["barrier_urgency"]),
@@ -456,7 +466,7 @@ def _run_global_matching_scheduler(
                     ],
                 }
             )
-        current_time += duration
+        current_time = wave_end if atomic else current_time + duration
         wave_count += 1
 
         if adaptive_prices:
@@ -492,6 +502,7 @@ def _run_global_matching_scheduler(
         "mode": mode,
         "prediction_used": prediction_confidence > 0.0 and mode == RUNTIME_LOOKAHEAD_MODE,
         "wave_count": wave_count,
+        "atomic": atomic,
         "audit": audit,
     }
 
@@ -517,7 +528,7 @@ def fast_schedule_u_gated_maxweight_matching(
         combine_matrix,
         next_dispatch_matrix,
         num_gpus,
-        strategy="O_gated_maxweight_matching",
+        strategy="U_gated_maxweight_matching",
         mode=mode,
         prediction_confidence=prediction_confidence,
         expert_compute_delay=expert_compute_delay,
@@ -533,6 +544,7 @@ def fast_schedule_u_gated_maxweight_matching(
         price_decay=0.0,
         price_clip=0.0,
         iteration_budget=1,
+        atomic=False,
     )
 
 
@@ -557,7 +569,7 @@ def fast_schedule_u_gated_greedy_maximal(
         combine_matrix,
         next_dispatch_matrix,
         num_gpus,
-        strategy="O_gated_greedy_maximal",
+        strategy="U_gated_greedy_maximal",
         mode=mode,
         prediction_confidence=prediction_confidence,
         expert_compute_delay=expert_compute_delay,
@@ -573,6 +585,7 @@ def fast_schedule_u_gated_greedy_maximal(
         price_decay=0.0,
         price_clip=0.0,
         iteration_budget=1,
+        atomic=False,
     )
 
 
@@ -597,7 +610,7 @@ def fast_schedule_u_barrier_criticality_global_matching(
         combine_matrix,
         next_dispatch_matrix,
         num_gpus,
-        strategy="O_barrier_criticality_global_matching",
+        strategy="U_barrier_criticality_global_matching",
         mode=mode,
         prediction_confidence=prediction_confidence,
         expert_compute_delay=expert_compute_delay,
@@ -613,6 +626,7 @@ def fast_schedule_u_barrier_criticality_global_matching(
         price_decay=0.0,
         price_clip=0.0,
         iteration_budget=1,
+        atomic=False,
     )
 
 
@@ -638,7 +652,7 @@ def fast_schedule_u_barrier_price_adaptive_matching(
         combine_matrix,
         next_dispatch_matrix,
         num_gpus,
-        strategy="O_barrier_price_adaptive_matching",
+        strategy="U_barrier_price_adaptive_matching",
         mode=mode,
         prediction_confidence=prediction_confidence,
         expert_compute_delay=expert_compute_delay,
@@ -654,4 +668,170 @@ def fast_schedule_u_barrier_price_adaptive_matching(
         price_decay=0.10,
         price_clip=4.0,
         iteration_budget=iteration_budget,
+        atomic=False,
+    )
+
+
+def fast_schedule_u_gated_maxweight_matching_atomic(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+    mode: str = EXECUTION_WINDOW_MODE,
+    prediction_confidence: float = 1.0,
+    wave_quantum: float | None = None,
+    max_waves: int = 256,
+) -> dict[str, Any]:
+    """Atomic-wave exact max-weight matching over the global ready set."""
+
+    del model
+    return _run_global_matching_scheduler(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        strategy="U_gated_maxweight_matching_atomic",
+        mode=mode,
+        prediction_confidence=prediction_confidence,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=True,
+        wave_quantum=wave_quantum,
+        max_waves=max_waves,
+        residual_weight=1.0,
+        barrier_weight=1.0,
+        age_weight=0.1,
+        prediction_weight=0.25,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=1,
+        atomic=True,
+    )
+
+
+def fast_schedule_u_gated_greedy_maximal_atomic(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+    mode: str = EXECUTION_WINDOW_MODE,
+    prediction_confidence: float = 1.0,
+    wave_quantum: float | None = None,
+    max_waves: int = 256,
+) -> dict[str, Any]:
+    """Atomic-wave maximal-matching baseline over the same ready set."""
+
+    del model
+    return _run_global_matching_scheduler(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        strategy="U_gated_greedy_maximal_atomic",
+        mode=mode,
+        prediction_confidence=prediction_confidence,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=False,
+        wave_quantum=wave_quantum,
+        max_waves=max_waves,
+        residual_weight=1.0,
+        barrier_weight=1.0,
+        age_weight=0.1,
+        prediction_weight=0.25,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=1,
+        atomic=True,
+    )
+
+
+def fast_schedule_u_barrier_criticality_global_matching_atomic(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+    mode: str = EXECUTION_WINDOW_MODE,
+    prediction_confidence: float = 1.0,
+    wave_quantum: float | None = None,
+    max_waves: int = 256,
+) -> dict[str, Any]:
+    """Atomic-wave global matching with stronger barrier-unlock prioritization."""
+
+    del model
+    return _run_global_matching_scheduler(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        strategy="U_barrier_criticality_global_matching_atomic",
+        mode=mode,
+        prediction_confidence=prediction_confidence,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=True,
+        wave_quantum=wave_quantum,
+        max_waves=max_waves,
+        residual_weight=0.75,
+        barrier_weight=1.75,
+        age_weight=0.15,
+        prediction_weight=0.35,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=1,
+        atomic=True,
+    )
+
+
+def fast_schedule_u_barrier_price_adaptive_matching_atomic(
+    dispatch_matrix: list[list[int]],
+    combine_matrix: list[list[int]],
+    next_dispatch_matrix: list[list[int]],
+    num_gpus: int,
+    *,
+    model: str = "full_duplex",
+    expert_compute_delay: float = 0.0,
+    mode: str = EXECUTION_WINDOW_MODE,
+    prediction_confidence: float = 1.0,
+    wave_quantum: float | None = None,
+    max_waves: int = 256,
+    iteration_budget: int = 4,
+) -> dict[str, Any]:
+    """Atomic-wave global matching with bounded adaptive barrier prices."""
+
+    del model
+    return _run_global_matching_scheduler(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        strategy="U_barrier_price_adaptive_matching_atomic",
+        mode=mode,
+        prediction_confidence=prediction_confidence,
+        expert_compute_delay=expert_compute_delay,
+        exact_matching=True,
+        wave_quantum=wave_quantum,
+        max_waves=max_waves,
+        residual_weight=0.65,
+        barrier_weight=1.25,
+        age_weight=0.10,
+        prediction_weight=0.25,
+        adaptive_prices=True,
+        price_step=0.15,
+        price_decay=0.10,
+        price_clip=4.0,
+        iteration_budget=iteration_budget,
+        atomic=True,
     )

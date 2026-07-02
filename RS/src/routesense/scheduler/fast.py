@@ -2014,9 +2014,13 @@ def fast_schedule_pairwise(
 ) -> dict[str, Any]:
     from .multiphase_global import (
         fast_schedule_u_barrier_criticality_global_matching,
+        fast_schedule_u_barrier_criticality_global_matching_atomic,
         fast_schedule_u_barrier_price_adaptive_matching,
+        fast_schedule_u_barrier_price_adaptive_matching_atomic,
         fast_schedule_u_gated_greedy_maximal,
+        fast_schedule_u_gated_greedy_maximal_atomic,
         fast_schedule_u_gated_maxweight_matching,
+        fast_schedule_u_gated_maxweight_matching_atomic,
     )
 
     candidates = [
@@ -2026,9 +2030,13 @@ def fast_schedule_pairwise(
         fast_schedule_lagrangian(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_ibbr(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_u_gated_greedy_maximal(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_u_gated_greedy_maximal_atomic(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_u_gated_maxweight_matching(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_u_gated_maxweight_matching_atomic(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_u_barrier_criticality_global_matching(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_u_barrier_criticality_global_matching_atomic(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_u_barrier_price_adaptive_matching(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
+        fast_schedule_u_barrier_price_adaptive_matching_atomic(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
     ]
     eligible = [payload for payload in candidates if float(payload["solve_time_ms"]) <= 5.0]
     best_pool = eligible if eligible else candidates

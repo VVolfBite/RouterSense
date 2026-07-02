@@ -6,9 +6,13 @@ from typing import Any, Callable
 from . import fast, greedy, oracle
 from .multiphase_global import (
     fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_criticality_global_matching_atomic,
     fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_barrier_price_adaptive_matching_atomic,
     fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_greedy_maximal_atomic,
     fast_schedule_u_gated_maxweight_matching,
+    fast_schedule_u_gated_maxweight_matching_atomic,
 )
 from .strategy import (
     SchedulingContext,
@@ -234,7 +238,7 @@ _register_function_strategy(
 )
 _register_function_strategy(
     "DCPLPTStrategy",
-    "O_cp_lpt",
+    "U_cp_lpt",
     fast.fast_schedule_cp_lpt,
     prediction_aware=True,
     description="Ours: critical-path LPT using next-phase later_work.",
@@ -258,54 +262,82 @@ _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pair
 _register_function_strategy("OracleStrategy", "oracle", oracle.pairwise_oracle, prediction_aware=True, description="CP-SAT upper bound over all provided phases.")
 _register_function_strategy(
     "DIBBRStrategy",
-    "O_ibbr",
+    "U_ibbr",
     fast.fast_schedule_ibbr,
     prediction_aware=False,
     description="Ours: iterated Birkhoff barrier repair.",
 )
 _register_function_strategy(
     "DLagrangianStrategy",
-    "O_lagrangian",
+    "U_lagrangian",
     fast.fast_schedule_lagrangian,
     prediction_aware=True,
     description="Ours: existing lagrangian-style cross-phase ordering.",
 )
 _register_function_strategy(
     "UBarrierCriticalityGlobalMatchingStrategy",
-    "O_barrier_criticality_global_matching",
+    "U_barrier_criticality_global_matching",
     fast_schedule_u_barrier_criticality_global_matching,
     prediction_aware=True,
     description="Ours: global ready-set max-weight matching with barrier criticality.",
 )
 _register_function_strategy(
     "UBarrierPriceAdaptiveMatchingStrategy",
-    "O_barrier_price_adaptive_matching",
+    "U_barrier_price_adaptive_matching",
     fast_schedule_u_barrier_price_adaptive_matching,
     prediction_aware=True,
     description="Ours: global ready-set matching with bounded adaptive barrier prices.",
 )
 _register_function_strategy(
     "UGatedMaxWeightMatchingStrategy",
-    "O_gated_maxweight_matching",
+    "U_gated_maxweight_matching",
     fast_schedule_u_gated_maxweight_matching,
     prediction_aware=True,
     description="Ours: exact global max-weight matching over currently released edges.",
 )
 _register_function_strategy(
     "UGatedGreedyMaximalStrategy",
-    "O_gated_greedy_maximal",
+    "U_gated_greedy_maximal",
     fast_schedule_u_gated_greedy_maximal,
     prediction_aware=True,
     description="Ours: greedy maximal matching over the same ready-set scores.",
+)
+_register_function_strategy(
+    "UGatedMaxWeightMatchingAtomicStrategy",
+    "U_gated_maxweight_matching_atomic",
+    fast_schedule_u_gated_maxweight_matching_atomic,
+    prediction_aware=True,
+    description="Ours: atomic-wave exact global max-weight matching over released edges.",
+)
+_register_function_strategy(
+    "UGatedGreedyMaximalAtomicStrategy",
+    "U_gated_greedy_maximal_atomic",
+    fast_schedule_u_gated_greedy_maximal_atomic,
+    prediction_aware=True,
+    description="Ours: atomic-wave greedy maximal matching over the same ready-set scores.",
+)
+_register_function_strategy(
+    "UBarrierCriticalityGlobalMatchingAtomicStrategy",
+    "U_barrier_criticality_global_matching_atomic",
+    fast_schedule_u_barrier_criticality_global_matching_atomic,
+    prediction_aware=True,
+    description="Ours: atomic-wave barrier-criticality global matching.",
+)
+_register_function_strategy(
+    "UBarrierPriceAdaptiveMatchingAtomicStrategy",
+    "U_barrier_price_adaptive_matching_atomic",
+    fast_schedule_u_barrier_price_adaptive_matching_atomic,
+    prediction_aware=True,
+    description="Ours: atomic-wave barrier-price adaptive global matching.",
 )
 
 # Backward-compatible aliases for older experiment artifacts.
 _register_function_strategy("AliasDBirkhoffStrategy", "D_birkhoff", fast.fast_schedule_birkhoff, prediction_aware=False, description="Alias for B_birkhoff.")
 _register_function_strategy("AliasDBarrierAwareBirkhoffStrategy", "D_barrier_aware_birkhoff", fast.fast_schedule_barrier_aware_birkhoff, prediction_aware=False, description="Alias for B_barrier_aware_birkhoff.")
-_register_function_strategy("AliasDCPLPTStrategy", "D_cp_lpt", fast.fast_schedule_cp_lpt, prediction_aware=True, description="Alias for O_cp_lpt.")
-_register_function_strategy("AliasDIBBRStrategy", "D_ibbr", fast.fast_schedule_ibbr, prediction_aware=False, description="Alias for O_ibbr.")
-_register_function_strategy("AliasDLagrangianStrategy", "D_lagrangian", fast.fast_schedule_lagrangian, prediction_aware=True, description="Alias for O_lagrangian.")
-_register_function_strategy("AliasUGatedGreedyMaximalStrategy", "U_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal, prediction_aware=True, description="Alias for O_gated_greedy_maximal.")
-_register_function_strategy("AliasUGatedMaxWeightMatchingStrategy", "U_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching, prediction_aware=True, description="Alias for O_gated_maxweight_matching.")
-_register_function_strategy("AliasUBarrierCriticalityStrategy", "U_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching, prediction_aware=True, description="Alias for O_barrier_criticality_global_matching.")
-_register_function_strategy("AliasUBarrierPriceAdaptiveStrategy", "U_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching, prediction_aware=True, description="Alias for O_barrier_price_adaptive_matching.")
+_register_function_strategy("AliasDCPLPTStrategy", "O_cp_lpt", fast.fast_schedule_cp_lpt, prediction_aware=True, description="Legacy alias for U_cp_lpt.")
+_register_function_strategy("AliasDIBBRStrategy", "O_ibbr", fast.fast_schedule_ibbr, prediction_aware=False, description="Legacy alias for U_ibbr.")
+_register_function_strategy("AliasDLagrangianStrategy", "O_lagrangian", fast.fast_schedule_lagrangian, prediction_aware=True, description="Legacy alias for U_lagrangian.")
+_register_function_strategy("AliasUGatedGreedyMaximalStrategy", "O_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal, prediction_aware=True, description="Legacy alias for U_gated_greedy_maximal.")
+_register_function_strategy("AliasUGatedMaxWeightMatchingStrategy", "O_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching, prediction_aware=True, description="Legacy alias for U_gated_maxweight_matching.")
+_register_function_strategy("AliasUBarrierCriticalityStrategy", "O_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching, prediction_aware=True, description="Legacy alias for U_barrier_criticality_global_matching.")
+_register_function_strategy("AliasUBarrierPriceAdaptiveStrategy", "O_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching, prediction_aware=True, description="Legacy alias for U_barrier_price_adaptive_matching.")

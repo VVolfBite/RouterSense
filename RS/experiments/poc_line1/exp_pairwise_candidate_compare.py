@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--algorithms",
         type=str,
-        default="B_birkhoff,B_barrier_aware_birkhoff,O_cp_lpt,O_lagrangian,O_ibbr,O_gated_greedy_maximal,O_gated_maxweight_matching,O_barrier_criticality_global_matching,O_barrier_price_adaptive_matching",
+        default="B_birkhoff,B_barrier_aware_birkhoff,U_cp_lpt,U_lagrangian,U_ibbr,U_gated_greedy_maximal,U_gated_maxweight_matching,U_barrier_criticality_global_matching,U_barrier_price_adaptive_matching",
     )
     parser.add_argument(
         "--phase2-source",

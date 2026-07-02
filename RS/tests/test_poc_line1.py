@@ -33,9 +33,11 @@ from routesense.evaluation import (
     fast_schedule_tabu_search,
     fast_schedule_two_stage,
     fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_criticality_global_matching_atomic,
     fast_schedule_u_barrier_price_adaptive_matching,
     fast_schedule_u_gated_greedy_maximal,
     fast_schedule_u_gated_maxweight_matching,
+    fast_schedule_u_gated_maxweight_matching_atomic,
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
     evaluate_gate2,
@@ -415,10 +417,10 @@ def test_new_candidate_schedulers_basic_shapes():
         (fast_schedule_decomposed, "decomposed"),
         (fast_schedule_quantized_decomposed, "quantized_decomposed"),
         (fast_schedule_birkhoff_exhaustive, "birkhoff_exhaustive"),
-        (fast_schedule_u_gated_greedy_maximal, "O_gated_greedy_maximal"),
-        (fast_schedule_u_gated_maxweight_matching, "O_gated_maxweight_matching"),
-        (fast_schedule_u_barrier_criticality_global_matching, "O_barrier_criticality_global_matching"),
-        (fast_schedule_u_barrier_price_adaptive_matching, "O_barrier_price_adaptive_matching"),
+        (fast_schedule_u_gated_greedy_maximal, "U_gated_greedy_maximal"),
+        (fast_schedule_u_gated_maxweight_matching, "U_gated_maxweight_matching"),
+        (fast_schedule_u_barrier_criticality_global_matching, "U_barrier_criticality_global_matching"),
+        (fast_schedule_u_barrier_price_adaptive_matching, "U_barrier_price_adaptive_matching"),
     ):
         result = scheduler(dispatch, combine, next_dispatch, 4)
         assert result["makespan"] > 0
@@ -498,18 +500,18 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
     assert "B_birkhoff_improvement_pct" in report["summary"]
-    assert "O_lagrangian_improvement_pct" in report["summary"]
-    assert "O_barrier_criticality_global_matching_improvement_pct" in report["summary"]
-    assert "O_barrier_price_adaptive_matching_improvement_pct" in report["summary"]
-    assert "O_cp_lpt_effective_improvement_pct" in report["summary"]
-    assert "O_cp_lpt_effective_latency_ms" in report["summary"]
-    assert report["summary"]["O_cp_lpt_prediction_aware"] is True
+    assert "U_lagrangian_improvement_pct" in report["summary"]
+    assert "U_barrier_criticality_global_matching_improvement_pct" in report["summary"]
+    assert "U_barrier_price_adaptive_matching_improvement_pct" in report["summary"]
+    assert "U_cp_lpt_effective_improvement_pct" in report["summary"]
+    assert "U_cp_lpt_effective_latency_ms" in report["summary"]
+    assert report["summary"]["U_cp_lpt_prediction_aware"] is True
     assert report["summary"]["B_birkhoff_prediction_aware"] is False
-    assert report["summary"]["O_barrier_criticality_global_matching_prediction_aware"] is True
+    assert report["summary"]["U_barrier_criticality_global_matching_prediction_aware"] is True
     assert "oracle_prediction_gap_pct" in report["summary"]
     assert "fast_latency_ms" in report["summary"]
-    assert "O_barrier_criticality_global_matching_latency_ms" in report["summary"]
-    assert "O_lagrangian_latency_ms" in report["summary"]
+    assert "U_barrier_criticality_global_matching_latency_ms" in report["summary"]
+    assert "U_lagrangian_latency_ms" in report["summary"]
     assert "oracle_perfect_solver_statuses" in report["summary"]
     assert "oracle_predicted_solver_statuses" in report["summary"]
     assert "gate2_decision" in report["summary"]
@@ -517,11 +519,11 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
     assert "B_birkhoff_makespan" in report["results"][0]
-    assert "O_barrier_criticality_global_matching_makespan" in report["results"][0]
-    assert "O_lagrangian_makespan" in report["results"][0]
-    assert "O_cp_lpt_effective_makespan" in report["results"][0]
-    assert "O_cp_lpt_effective_latency_ms" in report["results"][0]
-    assert "O_cp_lpt_prediction_aware" in report["results"][0]
+    assert "U_barrier_criticality_global_matching_makespan" in report["results"][0]
+    assert "U_lagrangian_makespan" in report["results"][0]
+    assert "U_cp_lpt_effective_makespan" in report["results"][0]
+    assert "U_cp_lpt_effective_latency_ms" in report["results"][0]
+    assert "U_cp_lpt_prediction_aware" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]
 
@@ -592,6 +594,36 @@ def test_runtime_lookahead_mode_emits_no_phase2_schedule_entries():
     )
     assert all(int(entry["phase"]) < 2 for entry in payload["schedule"])
     assert payload["audit"]["valid"] is True
+
+
+def test_atomic_global_matching_reports_wave_ids_and_valid_audit():
+    dispatch = [
+        [0, 5, 0, 0],
+        [0, 0, 4, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    combine = [
+        [0, 0, 0, 0],
+        [5, 0, 0, 0],
+        [0, 4, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    next_dispatch = [
+        [0, 0, 7, 0],
+        [0, 0, 0, 6],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    payload = fast_schedule_u_barrier_criticality_global_matching_atomic(dispatch, combine, next_dispatch, 4)
+    assert payload["atomic"] is True
+    assert payload["audit"]["valid"] is True
+    assert payload["audit"]["wave_count"] == payload["wave_count"]
+    assert all("wave_id" in entry for entry in payload["schedule"])
+
+    maximal = fast_schedule_u_gated_maxweight_matching_atomic(dispatch, combine, next_dispatch, 4)
+    assert maximal["atomic"] is True
+    assert maximal["audit"]["valid"] is True
 
 
 def test_prediction_confidence_zero_is_deterministic_blind():
