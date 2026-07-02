@@ -1,0 +1,68 @@
+{
+  "case": "cross_phase_shift",
+  "mode": "execution_window",
+  "prediction_confidence": 1.0,
+  "semantic_note": "Existing D/oracle schedulers are atomic per-(phase,src,dst) chunks; new U schedulers are fluid wave schedulers over residual flows. Cross-family makespan is therefore diagnostic, not an apples-to-apples upper-bound comparison.",
+  "results": {
+    "D_birkhoff": {
+      "makespan": 34.0,
+      "solve_time_ms": 0.9122639894485474,
+      "wave_count": null,
+      "audit_valid": null,
+      "mode": "execution_window"
+    },
+    "D_barrier_aware_birkhoff": {
+      "makespan": 34.0,
+      "solve_time_ms": 80.10467141866684,
+      "wave_count": null,
+      "audit_valid": null,
+      "mode": "execution_window"
+    },
+    "D_lagrangian": {
+      "makespan": 34.0,
+      "solve_time_ms": 4.550404846668243,
+      "wave_count": null,
+      "audit_valid": null,
+      "mode": "execution_window"
+    },
+    "D_ibbr": {
+      "makespan": 34.0,
+      "solve_time_ms": 1.1430680751800537,
+      "wave_count": null,
+      "audit_valid": null,
+      "mode": "execution_window"
+    },
+    "U_gated_greedy_maximal": {
+      "makespan": 34.0,
+      "solve_time_ms": 1.505829393863678,
+      "wave_count": 18,
+      "audit_valid": true,
+      "mode": "execution_window"
+    },
+    "U_gated_maxweight_matching": {
+      "makespan": 38.0,
+      "solve_time_ms": 2.7260929346084595,
+      "wave_count": 19,
+      "audit_valid": true,
+      "mode": "execution_window"
+    },
+    "U_barrier_criticality_global_matching": {
+      "makespan": 38.0,
+      "solve_time_ms": 1.7121434211730957,
+      "wave_count": 19,
+      "audit_valid": true,
+      "mode": "execution_window"
+    },
+    "U_barrier_price_adaptive_matching": {
+      "makespan": 38.0,
+      "solve_time_ms": 4.011958837509155,
+      "wave_count": 19,
+      "audit_valid": true,
+      "mode": "execution_window"
+    }
+  },
+  "oracle": {
+    "makespan": 34.0,
+    "solver_status": "OPTIMAL"
+  }
+}

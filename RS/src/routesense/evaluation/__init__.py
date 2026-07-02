@@ -20,7 +20,9 @@ from .cross_layer import (
 )
 from .dc_asymmetry import run_dc_asymmetry_analysis
 from ..scheduler import (
+    EXECUTION_WINDOW_MODE,
     PairwiseChunk,
+    RUNTIME_LOOKAHEAD_MODE,
     _pairwise_oracle_scipy,
     fast_schedule_barrier_aware_birkhoff,
     fast_schedule_birkhoff,
@@ -45,10 +47,15 @@ from ..scheduler import (
     fast_schedule_simulated_annealing,
     fast_schedule_tabu_search,
     fast_schedule_two_stage,
+    fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_maxweight_matching,
     greedy_schedule_multi_layer,
     greedy_schedule_pairwise,
     greedy_schedule_single_layer,
     pairwise_oracle,
+    replay_and_audit_schedule,
 )
 from .traffic_matrix import (
     TraceRecord,
@@ -83,6 +90,7 @@ __all__ = [
     "collect_environment_snapshot",
     "combine_matrix_from_dispatch",
     "evaluate_gate2",
+    "EXECUTION_WINDOW_MODE",
     "FAST_ALGORITHMS",
     "fast_schedule_barrier_aware_birkhoff",
     "fast_schedule_birkhoff",
@@ -107,6 +115,10 @@ __all__ = [
     "fast_schedule_simulated_annealing",
     "fast_schedule_tabu_search",
     "fast_schedule_two_stage",
+    "fast_schedule_u_barrier_criticality_global_matching",
+    "fast_schedule_u_barrier_price_adaptive_matching",
+    "fast_schedule_u_gated_greedy_maximal",
+    "fast_schedule_u_gated_maxweight_matching",
     "greedy_schedule_multi_layer",
     "greedy_schedule_pairwise",
     "greedy_schedule_single_layer",
@@ -115,6 +127,8 @@ __all__ = [
     "load_trace_jsonl",
     "PairwiseChunk",
     "pairwise_oracle",
+    "replay_and_audit_schedule",
+    "RUNTIME_LOOKAHEAD_MODE",
     "run_dc_asymmetry_analysis",
     "run_pairwise_analysis",
     "spearman_rank_correlation",

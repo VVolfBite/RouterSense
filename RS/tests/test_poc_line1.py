@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from routesense.evaluation import (
+    EXECUTION_WINDOW_MODE,
+    RUNTIME_LOOKAHEAD_MODE,
     analyze_cross_layer_correlation,
     analyze_cross_layer_predictability,
     build_owner_by_expert,
@@ -30,10 +32,15 @@ from routesense.evaluation import (
     fast_schedule_simulated_annealing,
     fast_schedule_tabu_search,
     fast_schedule_two_stage,
+    fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_maxweight_matching,
     greedy_schedule_single_layer,
     greedy_schedule_pairwise,
     evaluate_gate2,
     pairwise_oracle,
+    replay_and_audit_schedule,
     run_pairwise_analysis,
     spearman_rank_correlation,
 )
@@ -371,6 +378,10 @@ def test_all_fast_scheduler_variants_return_valid_schedule():
         fast_schedule_iterated_greedy,
         fast_schedule_cp_local_swap,
         fast_schedule_birkhoff_exhaustive,
+        fast_schedule_u_gated_greedy_maximal,
+        fast_schedule_u_gated_maxweight_matching,
+        fast_schedule_u_barrier_criticality_global_matching,
+        fast_schedule_u_barrier_price_adaptive_matching,
     ):
         payload = scheduler(dispatch, combine, next_dispatch, 4)
         assert payload["makespan"] >= 0
@@ -404,6 +415,10 @@ def test_new_candidate_schedulers_basic_shapes():
         (fast_schedule_decomposed, "decomposed"),
         (fast_schedule_quantized_decomposed, "quantized_decomposed"),
         (fast_schedule_birkhoff_exhaustive, "birkhoff_exhaustive"),
+        (fast_schedule_u_gated_greedy_maximal, "U_gated_greedy_maximal"),
+        (fast_schedule_u_gated_maxweight_matching, "U_gated_maxweight_matching"),
+        (fast_schedule_u_barrier_criticality_global_matching, "U_barrier_criticality_global_matching"),
+        (fast_schedule_u_barrier_price_adaptive_matching, "U_barrier_price_adaptive_matching"),
     ):
         result = scheduler(dispatch, combine, next_dispatch, 4)
         assert result["makespan"] > 0
@@ -482,28 +497,137 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
-    assert "birkhoff_improvement_pct" in report["summary"]
-    assert "ejection_chain_tabu_improvement_pct" in report["summary"]
-    assert "lagrangian_improvement_pct" in report["summary"]
-    assert "cp_lpt_effective_improvement_pct" in report["summary"]
-    assert "cp_lpt_effective_latency_ms" in report["summary"]
-    assert report["summary"]["cp_lpt_prediction_aware"] is True
-    assert report["summary"]["birkhoff_prediction_aware"] is False
+    assert "D_birkhoff_improvement_pct" in report["summary"]
+    assert "D_lagrangian_improvement_pct" in report["summary"]
+    assert "U_barrier_criticality_global_matching_improvement_pct" in report["summary"]
+    assert "U_barrier_price_adaptive_matching_improvement_pct" in report["summary"]
+    assert "D_cp_lpt_effective_improvement_pct" in report["summary"]
+    assert "D_cp_lpt_effective_latency_ms" in report["summary"]
+    assert report["summary"]["D_cp_lpt_prediction_aware"] is True
+    assert report["summary"]["D_birkhoff_prediction_aware"] is False
+    assert report["summary"]["U_barrier_criticality_global_matching_prediction_aware"] is True
     assert "oracle_prediction_gap_pct" in report["summary"]
     assert "fast_latency_ms" in report["summary"]
-    assert "ejection_chain_tabu_latency_ms" in report["summary"]
-    assert "lagrangian_latency_ms" in report["summary"]
+    assert "U_barrier_criticality_global_matching_latency_ms" in report["summary"]
+    assert "D_lagrangian_latency_ms" in report["summary"]
     assert "oracle_perfect_solver_statuses" in report["summary"]
     assert "oracle_predicted_solver_statuses" in report["summary"]
     assert "gate2_decision" in report["summary"]
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
-    assert "birkhoff_makespan" in report["results"][0]
-    assert "ejection_chain_tabu_makespan" in report["results"][0]
-    assert "lagrangian_makespan" in report["results"][0]
-    assert "cp_lpt_effective_makespan" in report["results"][0]
-    assert "cp_lpt_effective_latency_ms" in report["results"][0]
-    assert "cp_lpt_prediction_aware" in report["results"][0]
+    assert "D_birkhoff_makespan" in report["results"][0]
+    assert "U_barrier_criticality_global_matching_makespan" in report["results"][0]
+    assert "D_lagrangian_makespan" in report["results"][0]
+    assert "D_cp_lpt_effective_makespan" in report["results"][0]
+    assert "D_cp_lpt_effective_latency_ms" in report["results"][0]
+    assert "D_cp_lpt_prediction_aware" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]
+
+
+def test_replay_and_audit_schedule_validates_full_duplex_barrier_schedule():
+    dispatch = [
+        [0, 3, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    combine = [
+        [0, 0, 0, 0],
+        [3, 0, 0, 0],
+        [0, 2, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    next_dispatch = [
+        [0, 0, 4, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    payload = fast_schedule_u_barrier_criticality_global_matching(dispatch, combine, next_dispatch, 4)
+    audit = replay_and_audit_schedule(
+        schedule=payload["schedule"],
+        dispatch_matrix=dispatch,
+        combine_matrix=combine,
+        next_dispatch_matrix=next_dispatch,
+        num_gpus=4,
+        expert_compute_delay=0.0,
+        mode=EXECUTION_WINDOW_MODE,
+        scheduler_name=payload["strategy"],
+        planning_time_ms=payload["solve_time_ms"],
+        reported_makespan=payload["makespan"],
+        prediction_used=True,
+    )
+    assert audit["valid"] is True
+    assert audit["replay_makespan"] == payload["makespan"]
+
+
+def test_runtime_lookahead_mode_emits_no_phase2_schedule_entries():
+    dispatch = [
+        [0, 5, 0, 0],
+        [0, 0, 4, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    combine = [
+        [0, 0, 0, 0],
+        [5, 0, 0, 0],
+        [0, 4, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    next_dispatch = [
+        [0, 0, 8, 0],
+        [0, 0, 0, 6],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    payload = fast_schedule_u_gated_maxweight_matching(
+        dispatch,
+        combine,
+        next_dispatch,
+        4,
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        prediction_confidence=1.0,
+    )
+    assert all(int(entry["phase"]) < 2 for entry in payload["schedule"])
+    assert payload["audit"]["valid"] is True
+
+
+def test_prediction_confidence_zero_is_deterministic_blind():
+    dispatch = [
+        [0, 6, 0, 0],
+        [0, 0, 5, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    combine = [
+        [0, 0, 0, 0],
+        [6, 0, 0, 0],
+        [0, 5, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    next_dispatch = [
+        [0, 0, 9, 0],
+        [0, 0, 0, 7],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    a = fast_schedule_u_barrier_price_adaptive_matching(
+        dispatch,
+        combine,
+        next_dispatch,
+        4,
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        prediction_confidence=0.0,
+    )
+    b = fast_schedule_u_barrier_price_adaptive_matching(
+        dispatch,
+        combine,
+        next_dispatch,
+        4,
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        prediction_confidence=0.0,
+    )
+    assert a["makespan"] == b["makespan"]
+    assert a["wave_count"] == b["wave_count"]

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
 
 from . import fast, greedy, oracle
+from .multiphase_global import (
+    fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_maxweight_matching,
+)
 from .strategy import (
     SchedulingContext,
     SchedulingResult,
@@ -65,7 +72,13 @@ class _FunctionSchedulingStrategy(SchedulingStrategy):
         return self.strategy_description
 
     def solve(self, ctx: SchedulingContext) -> SchedulingResult:
-        payload = self.schedule_fn(*_ctx_args(ctx), **_ctx_kwargs(ctx))
+        kwargs = dict(_ctx_kwargs(ctx))
+        signature = inspect.signature(self.schedule_fn)
+        if "mode" in signature.parameters:
+            kwargs["mode"] = ctx.mode
+        if "prediction_confidence" in signature.parameters:
+            kwargs["prediction_confidence"] = ctx.prediction_confidence
+        payload = self.schedule_fn(*_ctx_args(ctx), **kwargs)
         if self.result_mode == "scalar":
             return _from_scalar(self.name, float(payload))
         return _from_mapping(self.name, payload)
@@ -107,6 +120,13 @@ _register_function_strategy(
     fast.fast_schedule_birkhoff,
     prediction_aware=False,
     description="Per-phase Birkhoff decomposition; next phase does not influence earlier phases.",
+)
+_register_function_strategy(
+    "DBirkhoffStrategy",
+    "D_birkhoff",
+    fast.fast_schedule_birkhoff,
+    prediction_aware=False,
+    description="D baseline: per-phase Birkhoff decomposition.",
 )
 _register_function_strategy(
     "BirkhoffExhaustiveStrategy",
@@ -162,6 +182,13 @@ _register_function_strategy(
     description="Searches Birkhoff variants but does not use phase-2 values to guide earlier phases.",
 )
 _register_function_strategy(
+    "DBarrierAwareBirkhoffStrategy",
+    "D_barrier_aware_birkhoff",
+    fast.fast_schedule_barrier_aware_birkhoff,
+    prediction_aware=False,
+    description="D baseline: Birkhoff variant search within phase-local space.",
+)
+_register_function_strategy(
     "RandomizedMultistartBirkhoffStrategy",
     "randomized_multistart_birkhoff",
     fast.fast_schedule_randomized_multistart_birkhoff,
@@ -169,6 +196,7 @@ _register_function_strategy(
     description="Randomized Birkhoff variant search.",
 )
 _register_function_strategy("TwoStageStrategy", "two_stage", fast.fast_schedule_two_stage, prediction_aware=False, description="Two-stage Birkhoff-based ordering.")
+_register_function_strategy("DTwoStageStrategy", "D_two_stage", fast.fast_schedule_two_stage, prediction_aware=False, description="D baseline: two-stage Birkhoff-based ordering.")
 _register_function_strategy(
     "DecomposedStrategy",
     "decomposed",
@@ -204,6 +232,13 @@ _register_function_strategy(
     prediction_aware=True,
     description="Critical-path LPT using later_work from next phase.",
 )
+_register_function_strategy(
+    "DCPLPTStrategy",
+    "D_cp_lpt",
+    fast.fast_schedule_cp_lpt,
+    prediction_aware=True,
+    description="D baseline: critical-path LPT using next-phase later_work.",
+)
 _register_function_strategy("CPLocalSwapStrategy", "cp_local_swap", fast.fast_schedule_cp_local_swap, prediction_aware=False, description="Local swap refinement over CP-LPT seed.")
 _register_function_strategy(
     "LookaheadLPTStrategy",
@@ -221,3 +256,45 @@ _register_function_strategy(
 )
 _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pairwise, description="Best-of candidate fast scheduler pool.")
 _register_function_strategy("OracleStrategy", "oracle", oracle.pairwise_oracle, prediction_aware=True, description="CP-SAT upper bound over all provided phases.")
+_register_function_strategy(
+    "DIBBRStrategy",
+    "D_ibbr",
+    fast.fast_schedule_ibbr,
+    prediction_aware=False,
+    description="D baseline: iterated Birkhoff barrier repair.",
+)
+_register_function_strategy(
+    "DLagrangianStrategy",
+    "D_lagrangian",
+    fast.fast_schedule_lagrangian,
+    prediction_aware=True,
+    description="D baseline: existing lagrangian-style cross-phase ordering.",
+)
+_register_function_strategy(
+    "UBarrierCriticalityGlobalMatchingStrategy",
+    "U_barrier_criticality_global_matching",
+    fast_schedule_u_barrier_criticality_global_matching,
+    prediction_aware=True,
+    description="U scheduler: global ready-set max-weight matching with barrier criticality.",
+)
+_register_function_strategy(
+    "UBarrierPriceAdaptiveMatchingStrategy",
+    "U_barrier_price_adaptive_matching",
+    fast_schedule_u_barrier_price_adaptive_matching,
+    prediction_aware=True,
+    description="U scheduler: global ready-set matching with bounded adaptive barrier prices.",
+)
+_register_function_strategy(
+    "UGatedMaxWeightMatchingStrategy",
+    "U_gated_maxweight_matching",
+    fast_schedule_u_gated_maxweight_matching,
+    prediction_aware=True,
+    description="U scheduler: exact global max-weight matching over currently released edges.",
+)
+_register_function_strategy(
+    "UGatedGreedyMaximalStrategy",
+    "U_gated_greedy_maximal",
+    fast_schedule_u_gated_greedy_maximal,
+    prediction_aware=True,
+    description="U baseline: greedy maximal matching over the same ready-set scores.",
+)

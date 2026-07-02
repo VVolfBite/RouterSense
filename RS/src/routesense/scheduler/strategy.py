@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from .multiphase_global import EXECUTION_WINDOW_MODE
+
 
 @dataclass
 class SchedulingContext:
@@ -15,6 +17,8 @@ class SchedulingContext:
     num_gpus: int
     model: str = "full_duplex"
     expert_compute_delay: float = 0.0
+    mode: str = EXECUTION_WINDOW_MODE
+    prediction_confidence: float = 1.0
 
 
 @dataclass

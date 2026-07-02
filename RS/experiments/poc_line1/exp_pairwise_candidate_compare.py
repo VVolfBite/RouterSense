@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--algorithms",
         type=str,
-        default="birkhoff,ibbr,ejection_chain_tabu,lns_cp_repair,cp_lpt,lagrangian",
+        default="D_birkhoff,D_barrier_aware_birkhoff,D_lagrangian,D_ibbr,D_cp_lpt,U_gated_greedy_maximal,U_gated_maxweight_matching,U_barrier_criticality_global_matching,U_barrier_price_adaptive_matching",
     )
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)

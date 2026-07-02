@@ -33,6 +33,15 @@ from .fast import (
     fast_schedule_tabu_search,
     fast_schedule_two_stage,
 )
+from .multiphase_global import (
+    EXECUTION_WINDOW_MODE,
+    RUNTIME_LOOKAHEAD_MODE,
+    fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_maxweight_matching,
+    replay_and_audit_schedule,
+)
 from .oracle import PairwiseChunk, pairwise_oracle, _pairwise_oracle_scipy
 from . import strategies as _strategies
 
@@ -67,10 +76,17 @@ __all__ = [
     "fast_schedule_simulated_annealing",
     "fast_schedule_tabu_search",
     "fast_schedule_two_stage",
+    "EXECUTION_WINDOW_MODE",
+    "RUNTIME_LOOKAHEAD_MODE",
+    "fast_schedule_u_barrier_criticality_global_matching",
+    "fast_schedule_u_barrier_price_adaptive_matching",
+    "fast_schedule_u_gated_greedy_maximal",
+    "fast_schedule_u_gated_maxweight_matching",
     "greedy_schedule_pairwise",
     "greedy_schedule_single_layer",
     "greedy_schedule_multi_layer",
     "PairwiseChunk",
     "pairwise_oracle",
     "_pairwise_oracle_scipy",
+    "replay_and_audit_schedule",
 ]

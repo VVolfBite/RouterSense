@@ -12,15 +12,13 @@ from ..scheduler import (
     fast_schedule_barrier_aware_birkhoff,
     fast_schedule_birkhoff,
     fast_schedule_cp_lpt,
-    fast_schedule_ejection_chain_tabu,
-    fast_schedule_grasp,
     fast_schedule_ibbr,
     fast_schedule_lagrangian,
-    fast_schedule_lns,
-    fast_schedule_lns_cp_repair,
     fast_schedule_pairwise,
-    fast_schedule_simulated_annealing,
-    fast_schedule_two_stage,
+    fast_schedule_u_barrier_criticality_global_matching,
+    fast_schedule_u_barrier_price_adaptive_matching,
+    fast_schedule_u_gated_greedy_maximal,
+    fast_schedule_u_gated_maxweight_matching,
     greedy_schedule_pairwise,
     pairwise_oracle,
 )
@@ -39,20 +37,27 @@ SchedulerFn = Callable[[list[list[int]], list[list[int]], list[list[int]], int],
 
 
 FAST_ALGORITHMS: list[tuple[str, SchedulerFn]] = [
-    ("cp_lpt", fast_schedule_cp_lpt),
-    ("birkhoff", fast_schedule_birkhoff),
-    ("barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
-    ("lns", fast_schedule_lns),
-    ("simulated_annealing", fast_schedule_simulated_annealing),
-    ("lagrangian", fast_schedule_lagrangian),
-    ("grasp", fast_schedule_grasp),
-    ("two_stage", fast_schedule_two_stage),
-    ("ibbr", fast_schedule_ibbr),
-    ("ejection_chain_tabu", fast_schedule_ejection_chain_tabu),
-    ("lns_cp_repair", fast_schedule_lns_cp_repair),
+    ("D_cp_lpt", fast_schedule_cp_lpt),
+    ("D_birkhoff", fast_schedule_birkhoff),
+    ("D_barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
+    ("D_lagrangian", fast_schedule_lagrangian),
+    ("D_ibbr", fast_schedule_ibbr),
+    ("U_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal),
+    ("U_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching),
+    ("U_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching),
+    ("U_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching),
 ]
 
-PREDICTION_AWARE_ALGORITHMS = {"cp_lpt", "lagrangian"}
+PREDICTION_AWARE_ALGORITHMS = {
+    "cp_lpt",
+    "lagrangian",
+    "D_cp_lpt",
+    "D_lagrangian",
+    "U_gated_greedy_maximal",
+    "U_gated_maxweight_matching",
+    "U_barrier_criticality_global_matching",
+    "U_barrier_price_adaptive_matching",
+}
 
 
 def compute_effective_makespan(
