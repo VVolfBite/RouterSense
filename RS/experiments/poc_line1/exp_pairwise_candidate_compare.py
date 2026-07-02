@@ -143,7 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--algorithms",
         type=str,
-        default="D_birkhoff,D_barrier_aware_birkhoff,D_lagrangian,D_ibbr,D_cp_lpt,U_gated_greedy_maximal,U_gated_maxweight_matching,U_barrier_criticality_global_matching,U_barrier_price_adaptive_matching",
+        default="B_birkhoff,B_barrier_aware_birkhoff,O_cp_lpt,O_lagrangian,O_ibbr,O_gated_greedy_maximal,O_gated_maxweight_matching,O_barrier_criticality_global_matching,O_barrier_price_adaptive_matching",
+    )
+    parser.add_argument(
+        "--phase2-source",
+        choices=["predicted", "actual"],
+        default="predicted",
+        help="Which phase-2 matrix the compared schedulers actually optimize against.",
     )
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)
@@ -190,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             hidden_window_ms=args.hidden_window_ms,
             token_to_ms_factor=args.token_to_ms_factor,
             next_mode=mode,
+            phase2_source=args.phase2_source,
             fast_algorithms=selected_algorithms,
             skip_oracle=args.skip_oracle,
             include_fast_best_of=not args.skip_fast_best_of,

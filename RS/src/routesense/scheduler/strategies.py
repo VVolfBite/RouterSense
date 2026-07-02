@@ -123,10 +123,10 @@ _register_function_strategy(
 )
 _register_function_strategy(
     "DBirkhoffStrategy",
-    "D_birkhoff",
+    "B_birkhoff",
     fast.fast_schedule_birkhoff,
     prediction_aware=False,
-    description="D baseline: per-phase Birkhoff decomposition.",
+    description="Baseline: per-phase Birkhoff decomposition.",
 )
 _register_function_strategy(
     "BirkhoffExhaustiveStrategy",
@@ -183,10 +183,10 @@ _register_function_strategy(
 )
 _register_function_strategy(
     "DBarrierAwareBirkhoffStrategy",
-    "D_barrier_aware_birkhoff",
+    "B_barrier_aware_birkhoff",
     fast.fast_schedule_barrier_aware_birkhoff,
     prediction_aware=False,
-    description="D baseline: Birkhoff variant search within phase-local space.",
+    description="Baseline: Birkhoff variant search within phase-local space.",
 )
 _register_function_strategy(
     "RandomizedMultistartBirkhoffStrategy",
@@ -234,10 +234,10 @@ _register_function_strategy(
 )
 _register_function_strategy(
     "DCPLPTStrategy",
-    "D_cp_lpt",
+    "O_cp_lpt",
     fast.fast_schedule_cp_lpt,
     prediction_aware=True,
-    description="D baseline: critical-path LPT using next-phase later_work.",
+    description="Ours: critical-path LPT using next-phase later_work.",
 )
 _register_function_strategy("CPLocalSwapStrategy", "cp_local_swap", fast.fast_schedule_cp_local_swap, prediction_aware=False, description="Local swap refinement over CP-LPT seed.")
 _register_function_strategy(
@@ -258,43 +258,54 @@ _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pair
 _register_function_strategy("OracleStrategy", "oracle", oracle.pairwise_oracle, prediction_aware=True, description="CP-SAT upper bound over all provided phases.")
 _register_function_strategy(
     "DIBBRStrategy",
-    "D_ibbr",
+    "O_ibbr",
     fast.fast_schedule_ibbr,
     prediction_aware=False,
-    description="D baseline: iterated Birkhoff barrier repair.",
+    description="Ours: iterated Birkhoff barrier repair.",
 )
 _register_function_strategy(
     "DLagrangianStrategy",
-    "D_lagrangian",
+    "O_lagrangian",
     fast.fast_schedule_lagrangian,
     prediction_aware=True,
-    description="D baseline: existing lagrangian-style cross-phase ordering.",
+    description="Ours: existing lagrangian-style cross-phase ordering.",
 )
 _register_function_strategy(
     "UBarrierCriticalityGlobalMatchingStrategy",
-    "U_barrier_criticality_global_matching",
+    "O_barrier_criticality_global_matching",
     fast_schedule_u_barrier_criticality_global_matching,
     prediction_aware=True,
-    description="U scheduler: global ready-set max-weight matching with barrier criticality.",
+    description="Ours: global ready-set max-weight matching with barrier criticality.",
 )
 _register_function_strategy(
     "UBarrierPriceAdaptiveMatchingStrategy",
-    "U_barrier_price_adaptive_matching",
+    "O_barrier_price_adaptive_matching",
     fast_schedule_u_barrier_price_adaptive_matching,
     prediction_aware=True,
-    description="U scheduler: global ready-set matching with bounded adaptive barrier prices.",
+    description="Ours: global ready-set matching with bounded adaptive barrier prices.",
 )
 _register_function_strategy(
     "UGatedMaxWeightMatchingStrategy",
-    "U_gated_maxweight_matching",
+    "O_gated_maxweight_matching",
     fast_schedule_u_gated_maxweight_matching,
     prediction_aware=True,
-    description="U scheduler: exact global max-weight matching over currently released edges.",
+    description="Ours: exact global max-weight matching over currently released edges.",
 )
 _register_function_strategy(
     "UGatedGreedyMaximalStrategy",
-    "U_gated_greedy_maximal",
+    "O_gated_greedy_maximal",
     fast_schedule_u_gated_greedy_maximal,
     prediction_aware=True,
-    description="U baseline: greedy maximal matching over the same ready-set scores.",
+    description="Ours: greedy maximal matching over the same ready-set scores.",
 )
+
+# Backward-compatible aliases for older experiment artifacts.
+_register_function_strategy("AliasDBirkhoffStrategy", "D_birkhoff", fast.fast_schedule_birkhoff, prediction_aware=False, description="Alias for B_birkhoff.")
+_register_function_strategy("AliasDBarrierAwareBirkhoffStrategy", "D_barrier_aware_birkhoff", fast.fast_schedule_barrier_aware_birkhoff, prediction_aware=False, description="Alias for B_barrier_aware_birkhoff.")
+_register_function_strategy("AliasDCPLPTStrategy", "D_cp_lpt", fast.fast_schedule_cp_lpt, prediction_aware=True, description="Alias for O_cp_lpt.")
+_register_function_strategy("AliasDIBBRStrategy", "D_ibbr", fast.fast_schedule_ibbr, prediction_aware=False, description="Alias for O_ibbr.")
+_register_function_strategy("AliasDLagrangianStrategy", "D_lagrangian", fast.fast_schedule_lagrangian, prediction_aware=True, description="Alias for O_lagrangian.")
+_register_function_strategy("AliasUGatedGreedyMaximalStrategy", "U_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal, prediction_aware=True, description="Alias for O_gated_greedy_maximal.")
+_register_function_strategy("AliasUGatedMaxWeightMatchingStrategy", "U_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching, prediction_aware=True, description="Alias for O_gated_maxweight_matching.")
+_register_function_strategy("AliasUBarrierCriticalityStrategy", "U_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching, prediction_aware=True, description="Alias for O_barrier_criticality_global_matching.")
+_register_function_strategy("AliasUBarrierPriceAdaptiveStrategy", "U_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching, prediction_aware=True, description="Alias for O_barrier_price_adaptive_matching.")

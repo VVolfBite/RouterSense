@@ -415,10 +415,10 @@ def test_new_candidate_schedulers_basic_shapes():
         (fast_schedule_decomposed, "decomposed"),
         (fast_schedule_quantized_decomposed, "quantized_decomposed"),
         (fast_schedule_birkhoff_exhaustive, "birkhoff_exhaustive"),
-        (fast_schedule_u_gated_greedy_maximal, "U_gated_greedy_maximal"),
-        (fast_schedule_u_gated_maxweight_matching, "U_gated_maxweight_matching"),
-        (fast_schedule_u_barrier_criticality_global_matching, "U_barrier_criticality_global_matching"),
-        (fast_schedule_u_barrier_price_adaptive_matching, "U_barrier_price_adaptive_matching"),
+        (fast_schedule_u_gated_greedy_maximal, "O_gated_greedy_maximal"),
+        (fast_schedule_u_gated_maxweight_matching, "O_gated_maxweight_matching"),
+        (fast_schedule_u_barrier_criticality_global_matching, "O_barrier_criticality_global_matching"),
+        (fast_schedule_u_barrier_price_adaptive_matching, "O_barrier_price_adaptive_matching"),
     ):
         result = scheduler(dispatch, combine, next_dispatch, 4)
         assert result["makespan"] > 0
@@ -497,31 +497,31 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     )
     assert report["summary"]["pair_count"] == 1
     assert "fast_improvement_pct" in report["summary"]
-    assert "D_birkhoff_improvement_pct" in report["summary"]
-    assert "D_lagrangian_improvement_pct" in report["summary"]
-    assert "U_barrier_criticality_global_matching_improvement_pct" in report["summary"]
-    assert "U_barrier_price_adaptive_matching_improvement_pct" in report["summary"]
-    assert "D_cp_lpt_effective_improvement_pct" in report["summary"]
-    assert "D_cp_lpt_effective_latency_ms" in report["summary"]
-    assert report["summary"]["D_cp_lpt_prediction_aware"] is True
-    assert report["summary"]["D_birkhoff_prediction_aware"] is False
-    assert report["summary"]["U_barrier_criticality_global_matching_prediction_aware"] is True
+    assert "B_birkhoff_improvement_pct" in report["summary"]
+    assert "O_lagrangian_improvement_pct" in report["summary"]
+    assert "O_barrier_criticality_global_matching_improvement_pct" in report["summary"]
+    assert "O_barrier_price_adaptive_matching_improvement_pct" in report["summary"]
+    assert "O_cp_lpt_effective_improvement_pct" in report["summary"]
+    assert "O_cp_lpt_effective_latency_ms" in report["summary"]
+    assert report["summary"]["O_cp_lpt_prediction_aware"] is True
+    assert report["summary"]["B_birkhoff_prediction_aware"] is False
+    assert report["summary"]["O_barrier_criticality_global_matching_prediction_aware"] is True
     assert "oracle_prediction_gap_pct" in report["summary"]
     assert "fast_latency_ms" in report["summary"]
-    assert "U_barrier_criticality_global_matching_latency_ms" in report["summary"]
-    assert "D_lagrangian_latency_ms" in report["summary"]
+    assert "O_barrier_criticality_global_matching_latency_ms" in report["summary"]
+    assert "O_lagrangian_latency_ms" in report["summary"]
     assert "oracle_perfect_solver_statuses" in report["summary"]
     assert "oracle_predicted_solver_statuses" in report["summary"]
     assert "gate2_decision" in report["summary"]
     assert "decision" in report["summary"]["gate2_decision"]
     assert len(report["results"]) == 1
     assert "fast_makespan" in report["results"][0]
-    assert "D_birkhoff_makespan" in report["results"][0]
-    assert "U_barrier_criticality_global_matching_makespan" in report["results"][0]
-    assert "D_lagrangian_makespan" in report["results"][0]
-    assert "D_cp_lpt_effective_makespan" in report["results"][0]
-    assert "D_cp_lpt_effective_latency_ms" in report["results"][0]
-    assert "D_cp_lpt_prediction_aware" in report["results"][0]
+    assert "B_birkhoff_makespan" in report["results"][0]
+    assert "O_barrier_criticality_global_matching_makespan" in report["results"][0]
+    assert "O_lagrangian_makespan" in report["results"][0]
+    assert "O_cp_lpt_effective_makespan" in report["results"][0]
+    assert "O_cp_lpt_effective_latency_ms" in report["results"][0]
+    assert "O_cp_lpt_prediction_aware" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]
 

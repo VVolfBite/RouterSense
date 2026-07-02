@@ -37,26 +37,26 @@ SchedulerFn = Callable[[list[list[int]], list[list[int]], list[list[int]], int],
 
 
 FAST_ALGORITHMS: list[tuple[str, SchedulerFn]] = [
-    ("D_cp_lpt", fast_schedule_cp_lpt),
-    ("D_birkhoff", fast_schedule_birkhoff),
-    ("D_barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
-    ("D_lagrangian", fast_schedule_lagrangian),
-    ("D_ibbr", fast_schedule_ibbr),
-    ("U_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal),
-    ("U_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching),
-    ("U_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching),
-    ("U_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching),
+    ("O_cp_lpt", fast_schedule_cp_lpt),
+    ("B_birkhoff", fast_schedule_birkhoff),
+    ("B_barrier_aware_birkhoff", fast_schedule_barrier_aware_birkhoff),
+    ("O_lagrangian", fast_schedule_lagrangian),
+    ("O_ibbr", fast_schedule_ibbr),
+    ("O_gated_greedy_maximal", fast_schedule_u_gated_greedy_maximal),
+    ("O_gated_maxweight_matching", fast_schedule_u_gated_maxweight_matching),
+    ("O_barrier_criticality_global_matching", fast_schedule_u_barrier_criticality_global_matching),
+    ("O_barrier_price_adaptive_matching", fast_schedule_u_barrier_price_adaptive_matching),
 ]
 
 PREDICTION_AWARE_ALGORITHMS = {
     "cp_lpt",
     "lagrangian",
-    "D_cp_lpt",
-    "D_lagrangian",
-    "U_gated_greedy_maximal",
-    "U_gated_maxweight_matching",
-    "U_barrier_criticality_global_matching",
-    "U_barrier_price_adaptive_matching",
+    "O_cp_lpt",
+    "O_lagrangian",
+    "O_gated_greedy_maximal",
+    "O_gated_maxweight_matching",
+    "O_barrier_criticality_global_matching",
+    "O_barrier_price_adaptive_matching",
 }
 
 
@@ -94,12 +94,15 @@ def run_pairwise_analysis(
     hidden_window_ms: float = 10.0,
     token_to_ms_factor: float = 0.5,
     next_mode: str = "predicted",
+    phase2_source: str = "predicted",
     fast_algorithms: list[tuple[str, SchedulerFn]] | None = None,
     skip_oracle: bool = False,
     include_fast_best_of: bool = True,
 ) -> dict[str, Any]:
     if next_mode not in {"predicted", "zeros"}:
         raise ValueError(f"unsupported next_mode {next_mode!r}")
+    if phase2_source not in {"predicted", "actual"}:
+        raise ValueError(f"unsupported phase2_source {phase2_source!r}")
     t0 = time.time()
     grouped = _group_records_by_sample_token_layer(records)
     print(f"[perf] _group_records: {time.time() - t0:.2f}s", flush=True)
@@ -237,11 +240,14 @@ def run_pairwise_analysis(
             if loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
+            scheduler_next_matrix = next_actual_matrix if phase2_source == "actual" else next_predicted_matrix
+            sorting_uniform_matrix = _uniform_next_matrix(scheduler_next_matrix)
+
             t_greedy = time.time()
             greedy_makespan = greedy_schedule_pairwise(
                 dispatch_matrix,
                 combine_matrix,
-                next_actual_matrix,
+                scheduler_next_matrix,
                 num_gpus,
                 model=model,
                 expert_compute_delay=expert_compute_delay,
@@ -259,7 +265,7 @@ def run_pairwise_analysis(
                     payload = scheduler(
                         dispatch_matrix,
                         combine_matrix,
-                        next_predicted_matrix,
+                        scheduler_next_matrix,
                         num_gpus,
                         model=model,
                         expert_compute_delay=expert_compute_delay,
@@ -283,7 +289,7 @@ def run_pairwise_analysis(
                 fast_result = fast_schedule_pairwise(
                     dispatch_matrix,
                     combine_matrix,
-                    next_predicted_matrix,
+                    scheduler_next_matrix,
                     num_gpus,
                     model=model,
                     expert_compute_delay=expert_compute_delay,
@@ -330,6 +336,7 @@ def run_pairwise_analysis(
                 "combine_matrix": combine_matrix,
                 "next_actual_matrix": next_actual_matrix,
                 "next_predicted_matrix": next_predicted_matrix,
+                "scheduler_next_matrix": scheduler_next_matrix,
                 "greedy_makespan": greedy_makespan,
                 "greedy_makespan_ms": greedy_e2e["greedy_makespan_ms"],
                 "greedy_latency_ms": greedy_latency_ms,
@@ -485,6 +492,7 @@ def run_pairwise_analysis(
         "hidden_window_ms": hidden_window_ms,
         "token_to_ms_factor": token_to_ms_factor,
         "next_mode": next_mode,
+        "phase2_source": phase2_source,
         "traffic_correlation": _summary_stats(traffic_correlations),
         "greedy_latency_ms": _summary_stats(greedy_latencies_ms),
         "greedy_makespan_ms": _summary_stats(greedy_makespans_ms),

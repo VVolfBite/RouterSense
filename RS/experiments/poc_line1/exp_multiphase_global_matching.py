@@ -72,16 +72,16 @@ def main() -> int:
 
     dispatch, combine, next_dispatch, num_gpus = _synthetic_case(args.case)
     baselines = {
-        "D_birkhoff": fast_schedule_birkhoff,
-        "D_barrier_aware_birkhoff": fast_schedule_barrier_aware_birkhoff,
-        "D_lagrangian": fast_schedule_lagrangian,
-        "D_ibbr": fast_schedule_ibbr,
+        "B_birkhoff": fast_schedule_birkhoff,
+        "B_barrier_aware_birkhoff": fast_schedule_barrier_aware_birkhoff,
+        "O_lagrangian": fast_schedule_lagrangian,
+        "O_ibbr": fast_schedule_ibbr,
     }
     candidates = {
-        "U_gated_greedy_maximal": fast_schedule_u_gated_greedy_maximal,
-        "U_gated_maxweight_matching": fast_schedule_u_gated_maxweight_matching,
-        "U_barrier_criticality_global_matching": fast_schedule_u_barrier_criticality_global_matching,
-        "U_barrier_price_adaptive_matching": fast_schedule_u_barrier_price_adaptive_matching,
+        "O_gated_greedy_maximal": fast_schedule_u_gated_greedy_maximal,
+        "O_gated_maxweight_matching": fast_schedule_u_gated_maxweight_matching,
+        "O_barrier_criticality_global_matching": fast_schedule_u_barrier_criticality_global_matching,
+        "O_barrier_price_adaptive_matching": fast_schedule_u_barrier_price_adaptive_matching,
     }
 
     results: dict[str, dict[str, object]] = {}
@@ -93,7 +93,7 @@ def main() -> int:
             num_gpus,
             mode=args.mode,
             prediction_confidence=args.prediction_confidence,
-        ) if name.startswith("U_") else fn(dispatch, combine, next_dispatch, num_gpus)
+        ) if name.startswith("O_gated") or "barrier_criticality" in name or "barrier_price" in name else fn(dispatch, combine, next_dispatch, num_gpus)
         results[name] = {
             "makespan": payload["makespan"],
             "solve_time_ms": payload["solve_time_ms"],
