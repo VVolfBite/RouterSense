@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--algorithms",
         type=str,
-        default="birkhoff,ibbr,ejection_chain_tabu,lns_cp_repair,quantized_decomposed,cp_lpt,lagrangian",
+        default="birkhoff,ibbr,ejection_chain_tabu,lns_cp_repair,cp_lpt,lagrangian",
     )
     parser.add_argument("--skip-oracle", action="store_true", default=False)
     parser.add_argument("--skip-fast-best-of", action="store_true", default=True)

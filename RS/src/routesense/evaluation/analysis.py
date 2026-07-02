@@ -19,7 +19,6 @@ from ..scheduler import (
     fast_schedule_lns,
     fast_schedule_lns_cp_repair,
     fast_schedule_pairwise,
-    fast_schedule_quantized_decomposed,
     fast_schedule_simulated_annealing,
     fast_schedule_two_stage,
     greedy_schedule_pairwise,
@@ -51,7 +50,6 @@ FAST_ALGORITHMS: list[tuple[str, SchedulerFn]] = [
     ("ibbr", fast_schedule_ibbr),
     ("ejection_chain_tabu", fast_schedule_ejection_chain_tabu),
     ("lns_cp_repair", fast_schedule_lns_cp_repair),
-    ("quantized_decomposed", fast_schedule_quantized_decomposed),
 ]
 
 PREDICTION_AWARE_ALGORITHMS = {"cp_lpt", "lagrangian"}
@@ -67,6 +65,14 @@ def compute_effective_makespan(
         return scheduling_makespan
     hidden_overlap = min(expert_compute_delay, phase0_makespan)
     return scheduling_makespan - hidden_overlap
+
+
+def _uniform_next_matrix(next_dispatch_matrix: list[list[int]]) -> list[list[int]]:
+    size = len(next_dispatch_matrix)
+    total = sum(sum(row) for row in next_dispatch_matrix)
+    nonzero = size * max(size - 1, 0)
+    avg = max(1, total // nonzero) if nonzero > 0 else 1
+    return [[0 if row == col else avg for col in range(size)] for row in range(size)]
 
 
 def run_pairwise_analysis(
@@ -119,6 +125,7 @@ def run_pairwise_analysis(
     algorithm_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_effective_improvements: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
+    algorithm_effective_latencies: dict[str, list[float]] = {name: [] for name, _ in selected_fast_algorithms}
     algorithm_failures: dict[str, list[str]] = {name: [] for name, _ in selected_fast_algorithms}
     results: list[dict[str, Any]] = []
     predicted_improvements: list[float] = []
@@ -180,9 +187,7 @@ def run_pairwise_analysis(
                 topk=topk,
                 token_index=token_index,
             )
-            if next_mode == "zeros":
-                size = len(next_predicted_matrix)
-                next_predicted_matrix = [[0] * size for _ in range(size)]
+            sorting_uniform_matrix = _uniform_next_matrix(next_predicted_matrix)
             if loop_counter <= 5 or loop_counter % 100 == 0:
                 print(f"[perf] build_predicted_traffic [{sample_id}..L{from_layer}->{to_layer}]: {time.time() - t_build:.3f}s", flush=True)
 
@@ -200,6 +205,10 @@ def run_pairwise_analysis(
             algorithm_results: dict[str, dict[str, Any]] = {}
             for name, scheduler in selected_fast_algorithms:
                 try:
+                    metadata = get_strategy_metadata(name)
+                    extra_kwargs: dict[str, Any] = {}
+                    if next_mode == "zeros" and bool(metadata["prediction_aware"]):
+                        extra_kwargs["sorting_next_dispatch_matrix"] = sorting_uniform_matrix
                     payload = scheduler(
                         dispatch_matrix,
                         combine_matrix,
@@ -207,6 +216,7 @@ def run_pairwise_analysis(
                         num_gpus,
                         model=model,
                         expert_compute_delay=expert_compute_delay,
+                        **extra_kwargs,
                     )
                 except Exception as exc:
                     algorithm_failures[name].append(type(exc).__name__)
@@ -318,9 +328,11 @@ def run_pairwise_analysis(
                 algorithm_improvements[name].append(improvement_pct)
                 algorithm_effective_improvements[name].append(effective_improvement_pct)
                 algorithm_latencies[name].append(latency_ms)
+                algorithm_effective_latencies[name].append(latency_ms)
                 result_row[f"{name}_makespan"] = makespan
                 result_row[f"{name}_effective_makespan"] = effective_makespan
                 result_row[f"{name}_latency_ms"] = latency_ms
+                result_row[f"{name}_effective_latency_ms"] = latency_ms
                 result_row[f"{name}_improvement_pct"] = improvement_pct
                 result_row[f"{name}_effective_improvement_pct"] = effective_improvement_pct
                 result_row[f"{name}_prediction_aware"] = prediction_aware
@@ -389,6 +401,7 @@ def run_pairwise_analysis(
         summary[f"{name}_improvement_pct"] = _summary_stats(algorithm_improvements[name])
         summary[f"{name}_effective_improvement_pct"] = _summary_stats(algorithm_effective_improvements[name])
         summary[f"{name}_latency_ms"] = _summary_stats(algorithm_latencies[name])
+        summary[f"{name}_effective_latency_ms"] = _summary_stats(algorithm_effective_latencies[name])
         summary[f"{name}_prediction_aware"] = bool(metadata["prediction_aware"])
         summary[f"{name}_description"] = str(metadata["description"])
         if algorithm_failures[name]:

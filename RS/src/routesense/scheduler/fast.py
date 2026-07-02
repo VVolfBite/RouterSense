@@ -260,16 +260,24 @@ def _phase_orders_cp_lpt(
     combine_matrix: list[list[int]],
     next_dispatch_matrix: list[list[int]],
     num_gpus: int,
+    *,
+    sorting_next_dispatch_matrix: list[list[int]] | None = None,
 ) -> tuple[dict[int, list[ChunkSpec]], dict[str, tuple[float, ...]]]:
     phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
-    critical = _critical_path_weights(phase_chunks, num_gpus)
+    critical_phase_chunks = _collect_phase_chunks(
+        dispatch_matrix,
+        combine_matrix,
+        sorting_next_dispatch_matrix if sorting_next_dispatch_matrix is not None else next_dispatch_matrix,
+        num_gpus,
+    )
+    critical = _critical_path_weights(critical_phase_chunks, num_gpus)
     priority_lookup: dict[str, tuple[float, ...]] = {}
     phase_orders: dict[int, list[ChunkSpec]] = {}
     for phase, chunks in phase_chunks.items():
         phase_orders[phase] = sorted(
             chunks,
             key=lambda chunk: (
-                critical[chunk.chunk_id],
+                critical.get(chunk.chunk_id, float(chunk.size)),
                 chunk.size,
                 -chunk.src_gpu,
                 -chunk.dst_gpu,
@@ -278,7 +286,7 @@ def _phase_orders_cp_lpt(
         )
         for chunk in phase_orders[phase]:
             priority_lookup[chunk.chunk_id] = (
-                critical[chunk.chunk_id],
+                critical.get(chunk.chunk_id, float(chunk.size)),
                 float(chunk.size),
                 float(-chunk.src_gpu),
                 float(-chunk.dst_gpu),
@@ -364,6 +372,7 @@ def fast_schedule_cp_lpt(
     *,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
+    sorting_next_dispatch_matrix: list[list[int]] | None = None,
 ) -> dict[str, Any]:
     """Critical-path LPT ordering.
 
@@ -372,7 +381,13 @@ def fast_schedule_cp_lpt(
         compute downstream later_work for phase-0/1 prioritization.
     """
     start = time.perf_counter()
-    phase_orders, priority_lookup = _phase_orders_cp_lpt(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
+    phase_orders, priority_lookup = _phase_orders_cp_lpt(
+        dispatch_matrix,
+        combine_matrix,
+        next_dispatch_matrix,
+        num_gpus,
+        sorting_next_dispatch_matrix=sorting_next_dispatch_matrix,
+    )
     return _schedule_phase_orders(
         phase_orders,
         strategy="cp_lpt",
@@ -1175,8 +1190,10 @@ def fast_schedule_lagrangian(
     *,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
-    max_iterations: int = 15,
+    max_iterations: int = 8,
     learning_rate: float = 0.1,
+    budget_ms: float = 5.0,
+    sorting_next_dispatch_matrix: list[list[int]] | None = None,
 ) -> dict[str, Any]:
     """Cross-phase Lagrangian ordering over all provided phase matrices.
 
@@ -1185,7 +1202,11 @@ def fast_schedule_lagrangian(
         three-phase objective and multiplier updates.
     """
     start = time.perf_counter()
-    matrices = _phase_matrices(dispatch_matrix, combine_matrix, next_dispatch_matrix)
+    matrices = _phase_matrices(
+        dispatch_matrix,
+        combine_matrix,
+        sorting_next_dispatch_matrix if sorting_next_dispatch_matrix is not None else next_dispatch_matrix,
+    )
     phase_chunks = _collect_phase_chunks(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus)
     lambda_g = [0.0] * num_gpus
     best_makespan = float("inf")
@@ -1195,6 +1216,8 @@ def fast_schedule_lagrangian(
     prev_best = float("inf")
 
     for iteration in range(max_iterations):
+        if (time.perf_counter() - start) * 1000.0 >= budget_ms:
+            break
         phase_orders: dict[int, list[ChunkSpec]] = {}
         priority_lookup: dict[str, tuple[float, ...]] = {}
         for phase, matrix in enumerate(matrices):
@@ -1577,8 +1600,8 @@ def fast_schedule_ejection_chain_tabu(
     *,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
-    budget_ms: float = 2.5,
-    max_iters: int = 20,
+    budget_ms: float = 1.5,
+    max_iters: int = 8,
     tenure: int = 7,
 ) -> dict[str, Any]:
     """Cross-phase tabu search with shallow ejection chains.
@@ -1674,8 +1697,8 @@ def fast_schedule_lns_cp_repair(
     *,
     model: str = "full_duplex",
     expert_compute_delay: float = 0.0,
-    budget_ms: float = 4.0,
-    max_repair_iters: int = 8,
+    budget_ms: float = 1.5,
+    max_repair_iters: int = 4,
 ) -> dict[str, Any]:
     """Large-neighborhood search with CP-SAT phase-local repair around the bottleneck GPU.
 
@@ -1999,7 +2022,6 @@ def fast_schedule_pairwise(
         fast_schedule_grasp(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_ejection_chain_tabu(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_lns_cp_repair(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
-        fast_schedule_quantized_decomposed(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_two_stage(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
         fast_schedule_ibbr(dispatch_matrix, combine_matrix, next_dispatch_matrix, num_gpus, model=model, expert_compute_delay=expert_compute_delay),
     ]

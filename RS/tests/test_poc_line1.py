@@ -485,8 +485,8 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     assert "birkhoff_improvement_pct" in report["summary"]
     assert "ejection_chain_tabu_improvement_pct" in report["summary"]
     assert "lagrangian_improvement_pct" in report["summary"]
-    assert "quantized_decomposed_improvement_pct" in report["summary"]
     assert "cp_lpt_effective_improvement_pct" in report["summary"]
+    assert "cp_lpt_effective_latency_ms" in report["summary"]
     assert report["summary"]["cp_lpt_prediction_aware"] is True
     assert report["summary"]["birkhoff_prediction_aware"] is False
     assert "oracle_prediction_gap_pct" in report["summary"]
@@ -502,8 +502,8 @@ def test_run_pairwise_analysis_reports_gate2_summary():
     assert "birkhoff_makespan" in report["results"][0]
     assert "ejection_chain_tabu_makespan" in report["results"][0]
     assert "lagrangian_makespan" in report["results"][0]
-    assert "quantized_decomposed_makespan" in report["results"][0]
     assert "cp_lpt_effective_makespan" in report["results"][0]
+    assert "cp_lpt_effective_latency_ms" in report["results"][0]
     assert "cp_lpt_prediction_aware" in report["results"][0]
     assert "oracle_prediction_gap_pct" in report["results"][0]
     assert "oracle_perfect_latency_ms" in report["results"][0]
