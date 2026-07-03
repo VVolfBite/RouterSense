@@ -6,6 +6,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 INVENTORY="${1:-$DEFAULT_INVENTORY}"
 STRATEGY="${2:-U_gated_maxweight_matching_atomic}"
 EXECUTION_MODE="${3:-scheduled_transport}"
+shift $(( $# >= 3 ? 3 : $# ))
+EXTRA_ARGS=("$@")
 MODEL="${MODEL:-allenai/OLMoE-1B-7B-0924-Instruct}"
 PROMPT="${PROMPT:-Explain mixture-of-experts routing in one paragraph.}"
 LAYER_INDEX="${LAYER_INDEX:-0}"
@@ -16,6 +18,7 @@ RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-${STRATEGY}-${EXECUTION_MODE}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/tmp/rs_wave_runs/${RUN_ID}}"
 REMOTE_OUTPUT_ROOT="${REMOTE_OUTPUT_ROOT:-$OUTPUT_ROOT}"
 REMOTE_RESULT_GLOB="${EXECUTION_MODE}_${STRATEGY}_layer*.json"
+REMOTE_BATCH_RESULT_GLOB="${EXECUTION_MODE}_${STRATEGY}_batch*.json"
 
 mkdir -p "$OUTPUT_ROOT"
 
@@ -104,6 +107,10 @@ LOCAL_MODEL_ARG=()
 if [[ -n "${LOCAL_MODEL_PATH:-}" ]]; then
   LOCAL_MODEL_ARG=(--model-path "$LOCAL_MODEL_PATH")
 fi
+REMOTE_EXTRA_ARGS=()
+for arg in "${EXTRA_ARGS[@]}"; do
+  REMOTE_EXTRA_ARGS+=("$(printf "%q" "$arg")")
+done
 
 REMOTE_CMD="$(cat <<EOF
 set -euo pipefail
@@ -125,6 +132,7 @@ torchrun --nnodes=$NNODES --nproc_per_node=1 --node_rank=$REMOTE_NODE_RANK \
   --prompt '$PROMPT' \
   --layer-index '$LAYER_INDEX' \
   --output-dir '$REMOTE_OUTPUT_ROOT' \
+  ${REMOTE_EXTRA_ARGS[*]:-} \
   > '$REMOTE_LOG' 2>&1
 EOF
 )"
@@ -150,6 +158,7 @@ LOCAL_CMD=(
   --prompt "$PROMPT"
   --layer-index "$LAYER_INDEX"
   --output-dir "$OUTPUT_ROOT"
+  "${EXTRA_ARGS[@]}"
 )
 
 sshpass -p "$SSH_PASSWORD" ssh \
@@ -170,7 +179,7 @@ sleep 5
 REMOTE_PID="$(tr -d '[:space:]' < "$OUTPUT_ROOT/remote.pid")"
 for _ in $(seq 1 60); do
   if sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_SSH_HOST" \
-    "ls '$REMOTE_OUTPUT_ROOT'/$REMOTE_RESULT_GLOB >/dev/null 2>&1 || ! kill -0 '$REMOTE_PID' 2>/dev/null"; then
+    "ls '$REMOTE_OUTPUT_ROOT'/$REMOTE_RESULT_GLOB '$REMOTE_OUTPUT_ROOT'/$REMOTE_BATCH_RESULT_GLOB >/dev/null 2>&1 || ! kill -0 '$REMOTE_PID' 2>/dev/null"; then
     break
   fi
   sleep 2
@@ -189,7 +198,7 @@ REMOTE_RESULT_PATH="$(
     -o UserKnownHostsFile=/dev/null \
     -p "$REMOTE_PORT" \
     "$REMOTE_USER@$REMOTE_SSH_HOST" \
-    "ls -t '$REMOTE_OUTPUT_ROOT'/$REMOTE_RESULT_GLOB | head -n 1"
+    "ls -t '$REMOTE_OUTPUT_ROOT'/$REMOTE_RESULT_GLOB '$REMOTE_OUTPUT_ROOT'/$REMOTE_BATCH_RESULT_GLOB 2>/dev/null | head -n 1"
 )"
 if [[ -z "$REMOTE_RESULT_PATH" ]]; then
   echo "remote result json not found under $REMOTE_OUTPUT_ROOT" >&2
@@ -211,16 +220,22 @@ import sys
 from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-ranks = payload["ranks"]
-summary = {
-    "run": payload["run"],
-    "rank_count": len(ranks),
-    "transport": ranks[0]["execution"]["wave_execution"]["transport"],
-    "dispatch_comm_ms": [round(rank["execution"]["wave_execution"]["dispatch_comm_ms"], 3) for rank in ranks],
-    "combine_comm_ms": [round(rank["execution"]["wave_execution"]["combine_comm_ms"], 3) for rank in ranks],
-    "max_abs_error": max(float(rank["execution"]["correctness"]["max_abs_error"]) for rank in ranks),
-    "token_conservation_pass": all(bool(rank["execution"]["correctness"]["token_conservation_pass"]) for rank in ranks),
-    "gate_weight_conservation_pass": all(bool(rank["execution"]["correctness"]["gate_weight_conservation_pass"]) for rank in ranks),
-}
+if "summary" in payload:
+    summary = {
+        "run": payload["run"],
+        "summary": payload["summary"],
+    }
+else:
+    ranks = payload["ranks"]
+    summary = {
+        "run": payload["run"],
+        "rank_count": len(ranks),
+        "transport": ranks[0]["execution"]["wave_execution"]["transport"],
+        "dispatch_comm_ms": [round(rank["execution"]["wave_execution"]["dispatch_comm_ms"], 3) for rank in ranks],
+        "combine_comm_ms": [round(rank["execution"]["wave_execution"]["combine_comm_ms"], 3) for rank in ranks],
+        "max_abs_error": max(float(rank["execution"]["correctness"]["max_abs_error"]) for rank in ranks),
+        "token_conservation_pass": all(bool(rank["execution"]["correctness"]["token_conservation_pass"]) for rank in ranks),
+        "gate_weight_conservation_pass": all(bool(rank["execution"]["correctness"]["gate_weight_conservation_pass"]) for rank in ranks),
+    }
 print(json.dumps(summary, indent=2))
 PY
