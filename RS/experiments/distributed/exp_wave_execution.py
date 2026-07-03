@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strategy", type=str, default="U_gated_maxweight_matching")
     parser.add_argument("--prompt", type=str, default="Explain mixture-of-experts routing in one paragraph.")
     parser.add_argument("--precision", type=str, default="fp16")
-    parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective"], default="native_baseline")
+    parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective", "scheduled_transport"], default="native_baseline")
     parser.add_argument("--compute-mode", choices=["actual_olmoe_expert", "simulated_delay"], default="actual_olmoe_expert")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--layer-index", type=int, default=0, help="Index into MoE layer ids, not raw transformer layer id.")

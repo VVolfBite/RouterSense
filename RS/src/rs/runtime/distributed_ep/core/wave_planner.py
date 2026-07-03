@@ -14,6 +14,9 @@ class ScheduledTransferOp:
     src_gpu: int
     dst_gpu: int
     size: int
+    release_time: float = 0.0
+    priority: tuple[float, ...] = ()
+    barrier_group: int | None = None
 
 
 @dataclass
@@ -179,6 +182,9 @@ def _phase_entries_to_waves(
                 src_gpu=src,
                 dst_gpu=dst,
                 size=size,
+                release_time=float(entry.get("release_time", 0.0)),
+                priority=tuple(float(value) for value in entry.get("priority", [])),
+                barrier_group=(int(entry["barrier_group"]) if entry.get("barrier_group") is not None else None),
             )
         )
         if src == rank:

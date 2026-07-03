@@ -201,7 +201,8 @@ class ScheduledAllToAllTransport(WaveTransportExecutor):
 
         for wave in wave_schedule:
             pair_offsets: dict[tuple[int, int], int] = {}
-            for op_index, op in enumerate(wave.scheduled_ops):
+            ordered_ops = sorted(wave.scheduled_ops, key=_scheduled_op_order_key)
+            for op_index, op in enumerate(ordered_ops):
                 micro_wave = _micro_wave_from_op(
                     wave=wave,
                     op=op,
@@ -420,6 +421,11 @@ def _micro_wave_from_op(
         route_items_by_pair={pair: list(selected)},
         scheduled_ops=[op],
     )
+
+
+def _scheduled_op_order_key(op: ScheduledTransferOp) -> tuple[float, tuple[float, ...], int, int]:
+    inverted_priority = tuple(-float(value) for value in op.priority)
+    return (float(op.release_time), inverted_priority, int(op.src_gpu), int(op.dst_gpu))
 
 
 def _aggregate_token_outputs(

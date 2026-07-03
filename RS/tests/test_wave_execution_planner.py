@@ -204,3 +204,66 @@ def test_scheduled_transport_splits_wave_by_transfer_order() -> None:
         [0, 0, 0, 0],
     ]
     assert result.wave_count == 4
+
+
+def test_scheduled_transport_prioritizes_release_then_priority() -> None:
+    import torch
+
+    plan = _sample_dispatch_plan()
+    result = DummySchedulingResult(
+        schedule=[
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 2, "size": 1, "served_volume": 1, "wave_id": 0, "release_time": 2.0, "priority": [1.0]},
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0, "release_time": 1.0, "priority": [1.0]},
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0, "release_time": 1.0, "priority": [3.0]},
+            {"phase": 0, "src_gpu": 3, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 0, "release_time": 3.0, "priority": [5.0]},
+            {"phase": 1, "src_gpu": 1, "dst_gpu": 0, "size": 2, "served_volume": 2, "wave_id": 0},
+            {"phase": 1, "src_gpu": 2, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 0},
+            {"phase": 1, "src_gpu": 0, "dst_gpu": 3, "size": 1, "served_volume": 1, "wave_id": 0},
+        ]
+    )
+    bundle = scheduling_result_to_wave_schedule(result, dispatch_plan=plan, rank=0, world_size=4)
+
+    class _StubExecutor:
+        def __init__(self) -> None:
+            self.rank = 0
+            self.world_size = 4
+            self.dtype = torch.float16
+            self.device = torch.device("cpu")
+            self.calls: list[list[int]] = []
+
+        def execute_waves(self, wave_schedule, *, phase, direction, token_buffer, hidden_size):
+            wave = wave_schedule[0]
+            self.calls.append(list(wave.output_split_sizes))
+            recv_rows = int(sum(wave.input_split_sizes))
+            return type(
+                "Result",
+                (),
+                {
+                    "phase": phase,
+                    "direction": direction,
+                    "total_comm_ms": 1.0,
+                    "total_pack_ms": 1.0,
+                    "total_unpack_ms": 1.0,
+                    "wave_count": 1,
+                    "timings": [],
+                    "received_route_items": [],
+                    "received_tensor": torch.empty((recv_rows, hidden_size), dtype=token_buffer.dtype),
+                },
+            )()
+
+    stub = _StubExecutor()
+    transport = ScheduledAllToAllTransport(stub)
+    transport.execute_schedule(
+        bundle.dispatch_waves,
+        phase=0,
+        direction="dispatch",
+        token_buffer=torch.zeros((4, 8), dtype=torch.float16),
+        hidden_size=8,
+    )
+
+    assert stub.calls == [
+        [0, 1, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 0],
+    ]
