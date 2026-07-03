@@ -1,186 +1,89 @@
-# N17：结果诊断 + 代码重构 + 下一步实验
+# N19：生成 AR Answer Request 报告
 
-## Part 1：结果诊断——为什么分布式没体现 POC1 增益
+## 任务
 
-### 现状
+基于当前 `report.md` 和 N18 诊断上下文，生成一份结构化的 **AR Answer Request** 报告，供其他模型逐条回答。
 
-| 指标 | native baseline | scheduled（最优） | 倍率 |
-|------|----------------|-----------------|------|
-| mean comm | ~2 ms | 8.13 ms | **4x 更差** |
-| samples/s | — | 5.2-5.3 | 4 组合几乎无差异 |
+输出路径：`RS/ar_answer_request.md`
 
-**核心问题**：调度后的通信比 native 一次 `all_to_all_single` 慢了 4 倍，所有策略表现几乎相同。
+---
 
-### 根因分析
+## 报告结构要求
 
-1. **NCCL 调用延迟地板**：每次 `all_to_all_single` 即使传 0 行数据，也有 ~0.5-1ms 的 NCCL 内部开销（kernel launch + sync）。native 调 1 次 ≈ 2ms；wave 调度拆成 N 个 wave = N 次 NCCL 调用 → 开销线性叠加。
+```markdown
+# AR Answer Request
 
-2. **Pack/Unpack 开销**：每个 wave 需要从 `token_buffer` 中提取对应行、拼接成连续 tensor、通信后再 unpack。这些 CPU+GPU 内存操作不在 POC1 的 makespan 模型里。
+## Context
+- 项目：RouterSENSE 分布式 MoE 调度系统
+- 核心命题：联合调度（U_gated）优于独立调度（Birkhoff）——POC1 离线已验证
+- 当前问题：真实 2-node 分布式推理中，调度 throughput 未超越 native baseline
+- 环境：2 node × 1 GPU, OLMoE-1B-7B-0924-Instruct, 64 samples, world_size=2
 
-3. **POC1 makespan 模型是纯理论值**：它衡量的是「在给定流量矩阵下，最优排序的理论 makespan」，假设通信时间与数据量成正比、无启动开销。真实 NCCL 不满足这个假设。
+## Q1：开销分解
+【背景】birkhoff+wave 的 scheduled comm（2.75ms）< native comm（3.41ms），调度确实减少了通信量，但 throughput 仍输 6%（5.39 vs 5.74 samples/s）。
+【请求】量化以下各项在 per-sample 总时间中的占比：
+- pack/unpack GPU 开销
+- NCCL 启动延迟（每次 all_to_all_single 的固定开销 × wave 数量）
+- control_plane 开销（report 显示 7-13ms，需要解释其构成）
+- 调度器求解时间（planner_ms）
 
-4. **策略间差异被噪声淹没**：birkhoff 和 U_gated_atomic 的调度质量差异（在 makespan 上可能 10-20%）在 8ms 的通信总时间里只有 ~1ms 差异，被 pack/unpack/NCCL 噪声覆盖。
+## Q2：control_plane_ms 构成
+【背景】native_baseline 的 control_plane_ms = 6.39ms，scheduled 为 7-13ms。native 不走调度路径却有 6.39ms。
+【请求】解释 control_plane_ms 包含哪些操作。列出代码路径和大致耗时分布。
 
-### 修正方向
+## Q3：2×2 矩阵理论增益上限
+【背景】POC1 在 8 GPU（8×8 矩阵）上 joint_gain=7pp。当前 2 GPU 只有 2×2 流量矩阵。
+【请求】
+- 在 2×2 流量矩阵下，最优调度相比 naive all-to-all 的理论通信量减少上限是多少？
+- Birkhoff 在 2×2 下是否已经是最优解？联合调度是否还有额外空间？
+- 给出数学推导或反例。
 
-调度增益在真实环境中的体现需要满足：
+## Q4：波数与 NCCL 调用次数
+【背景】wave 粒度下，每 wave 一次 all_to_all_single。
+【请求】
+- 当前 64-sample/2-GPU/OLMoE-1B 场景下，dispatch + combine 各产生多少个 wave？
+- 每个 wave 的平均 NCCL 通信量（bytes）是多少？
+- NCCL 启动延迟按 0.5ms 估算，多 wave 的总额外启动开销是多少 ms？
 
-```
-单波通信数据量 >> NCCL 启动开销
-```
+## Q5：代码优化空间
+【背景】wave_executor.py 中每个 wave 执行 pack → all_to_all_single → unpack，涉及 GPU gather/scatter 和 .clone()。
+【请求】
+- 评估 pack/unpack 的可优化空间（避免 clone、in-place scatter、cuda graph 等）
+- 估算优化后 per-wave 开销能降低多少 ms
+- 优化后 scheduled 能否超越 native？
 
-当前 2 节点 × 1 GPU、OLMoE-1B（64 tokens × 2048 hidden × fp16 = 128KB/token 层），流量矩阵规模太小。需要：
-- 更大 batch（128-256 samples）→ 每 wave 数据量更大 → NCCL 开销占比下降
-- 更大模型（Mixtral 8x7B）→ hidden_size 4096、更多 expert → 单 wave 数据量更大
-- 更多 GPU（4+）→ 流量矩阵更大 → 调度空间更有意义
+## Q6：实验设计建议
+【背景】需要在有限资源（2 node × 1 GPU）下最大化证明联合调度增益的机会。
+【请求】
+- 给出最小可行实验配置（batch size × 模型 × layer 数量）使调度增益可观测
+- 如果 2 GPU 不够，给出最低 GPU 数阈值
+- 是否可以通过增大 hidden_size 或 expert 数量（不换模型）来扩大通信面？
 
-## Part 2：代码重构
-
-### 2.1 `scheduler/` 目录重构
-
-**问题**：
-- `strategy.py`（基类 + 注册表）和 `strategies.py`（工厂）职责重叠
-- 具体策略文件（birkhoff/greedy/oracle 等）和框架文件混在同一层
-
-**目标结构**：
-
-```
-scheduler/
-  __init__.py         ← 对外导出（SchedulingContext, get_strategy 等）
-  _common.py          ← 通用工具（保持不变）
-  strategy.py         ← 基类 SchedulingStrategy + SchedulingContext + SchedulingResult + 注册表 + get_strategy()
-                       （合并 strategies.py 内容进来，删除 strategies.py）
-  strategies/         ← 具体策略实现子目录
-    __init__.py
-    greedy.py
-    birkhoff.py
-    oracle.py
-    local_search.py
-    cross_phase.py
-    global_matching.py
-    multiphase_global.py
-```
-
-**操作**：
-1. 将 `strategies.py` 的 `get_strategy()` 和注册逻辑合并到 `strategy.py`
-2. 删除 `strategies.py`
-3. 将 `greedy.py` / `birkhoff.py` / `oracle.py` / `local_search.py` / `cross_phase.py` / `global_matching.py` / `multiphase_global.py` 移入 `strategies/`
-4. `fast.py`（仅 4 行 re-export）删除，其导出在 `__init__.py` 中处理
-5. 更新 `__init__.py` 的 import 路径
-
-### 2.2 `core/` 目录审查
-
-**问题文件**：
-
-| 文件 | 行数 | 现状 | 建议 |
-|------|------|------|------|
-| `correctness.py` | 29 | 只有 `summarize_dispatch_plans()`，不是正确性验证 | 移到 `evaluation/` 或合并到 `manifest.py` |
-| `worker_loop.py` | 25 | 极小，只被 wave_executor 用 | 合并到 `wave_executor.py` |
-| `collective.py` | 121 | 旧 P2P 执行记录，与 `nccl_executor.py` 职责重叠 | 合并到 `nccl_executor.py`，删除 |
-
-**保留在 core/ 的文件**：
-
-```
-core/
-  __init__.py
-  manifest.py         ← 数据结构（DispatchPlan/RouteItem/WaveSpec）
-  placement.py        ← 专家放置
-  scheduler.py        ← facade
-  nccl_executor.py    ← NCCL 操作 + collective 记录（合并后）
-  wave_planner.py     ← 调度结果 → wave 转换
-  wave_executor.py    ← wave 执行 + worker_loop（合并后）
+## Q7：POC1 makespan 模型修正
+【背景】POC1 的 improvement_pct 基于纯 makespan 模型，不含 NCCL 启动、pack/unpack。
+【请求】
+- 如何在 makespan 模型中引入 NCCL 启动开销参数（α_ms）和 pack/unpack 开销参数（β_ms/wave）？
+- 用真实数据（2.75ms scheduled comm, ~2ms pack/unpack 估算）反推 α 和 β 的值
+- 修正后的模型是否仍能得出「联合调度优于独立调度」的结论？
 ```
 
-### 2.3 `experiments/` 目录重构
+---
 
-**问题**：
-- 命名不一致（有的 `exp_` 开头，有的 `distributed_` 开头，有的 `smoke` 在后）
-- 目录名 `poc_line1` 和 `distributed` 不够直观
+## 执行指令
 
-**目标结构**：
+读取以下文件后生成 `ar_answer_request.md`：
 
-```
-experiments/
-  poc/                ← 离线 POC 实验（原 poc_line1）
-    exp_trace.py
-    exp_oracle.py
-    exp_pairwise.py
-    exp_pairwise_candidate_compare.py
-    exp_pairwise_model_compare.py
-    exp_multiphase_global_matching.py
-    exp_ablation_fluid_vs_joint.py
-    exp_cross_layer.py
-    full_sequence_trace.py
-    full_sequence_trace_qwen.py
-    build_prompt_mix.py
-    pairwise_scheduler.py
+1. `RS/report.md` — 当前实验结果
+2. `RS/src/rs/runtime/distributed_ep/adapter/runner.py` — 调度注入入口
+3. `RS/src/rs/runtime/distributed_ep/core/wave_executor.py` — wave 执行细节
+4. `RS/src/rs/runtime/distributed_ep/core/wave_planner.py` — wave 规划
+5. `archive/backup/20260703_multimodel_u_scheduler_snapshot/artifacts/olmoe_n8_s64_summary.json` — POC1 基准
 
-  dep/                ← 真实部署/分布式实验（原 distributed）
-    exp_wave_execution.py          ← 主力实验
-    exp_scheduled_execution.py     ← 老版调度注入
-    exp_nccl_smoke.py              ← NCCL smoke
-    exp_olmoe_ep.py                ← OLMoE EP smoke
-    exp_link_smoke.py              ← 链路 smoke
-    smoke_nccl.py                  ← NCCL 连通性 smoke（原 distributed_nccl_smoke）
-    smoke_olmoe_ep.py              ← OLMoE EP smoke（原 distributed_olmoe_ep_smoke）
-    smoke_multinode.py             ← 多节点 smoke（原 future_multinode_smoke）
-    _bootstrap.py
-```
+生成后写入 `RS/ar_answer_request.md`。
 
-**命名规则**：
-- `exp_` = 正式实验（产出结果数据）
-- `smoke_` = 快速验证（通过/不通过）
-- `full_sequence_trace` = trace 采集工具（保留原名）
+## 格式要求
 
-### 2.4 引用更新
-
-所有 import 路径需要同步更新：
-- `from rs.scheduler.strategies import get_strategy` → `from rs.scheduler.strategy import get_strategy`
-- `from rs.scheduler.birkhoff import ...` → `from rs.scheduler.strategies.birkhoff import ...`
-- `experiments/distributed/` → `experiments/dep/`
-- `experiments/poc_line1/` → `experiments/poc/`
-
-测试文件（`tests/`）和脚本（`scripts/`）中引用这些路径的也需一并修改。
-
-## Part 3：下一步实验
-
-### 3.1 扩大 batch size（验证增益是否随规模出现）
-
-```bash
-# 128-sample 和 256-sample，只跑 wave 粒度
-for n in 128 256; do
-  for strat in U_gated_maxweight_matching_atomic birkhoff greedy; do
-    torchrun ... exp_wave_execution.py \
-      --strategy $strat \
-      --execution-mode scheduled_transport \
-      --transport-granularity wave \
-      --sample-limit $n
-  done
-done
-```
-
-关注：scheduled comm / native comm 的比值是否随 batch 增大而改善。
-
-### 3.2 Greedy 基线加入对比
-
-greedy 是最简单的调度策略，如果 U_gated/birkhoff 不能显著优于 greedy，说明调度本身在当前规模下没有增益。
-
-### 3.3 native_baseline 模式补跑
-
-为每个 batch size 都跑一次 `--execution-mode native_baseline`，作为真正的「无调度」基线。scheduled 要赢的不是其他调度策略，而是 native。
-
-## 验收标准
-
-### 代码重构
-- [ ] scheduler/ 合并 strategy.py + strategies.py，策略文件移入 strategies/
-- [ ] core/ 合并 correctness → manifest，合并 worker_loop → wave_executor，合并 collective → nccl_executor
-- [ ] experiments/ 重命名 poc_line1 → poc，distributed → dep
-- [ ] experiments/dep/ 内 smoke 文件统一 smoke_ 前缀
-- [ ] 所有 import 更新，`python -c "from rs.scheduler import get_strategy"` 不报错
-- [ ] `python -m pytest tests/` 全部通过
-
-### 实验
-- [ ] 128-sample + 256-sample wave 粒度矩阵完成
-- [ ] native_baseline 各 batch size 补跑完成
-- [ ] greedy 加入对比
-- [ ] report.md 更新含新结果 + 规模效应分析
+- 每个 Q 独立成节，包含「背景」和「请求」两部分
+- 请求必须是具体的、可量化回答的问题（禁止「请分析」类开放问题）
+- 所有数值引用标注来源文件
+- 报告长度控制在 200 行以内
