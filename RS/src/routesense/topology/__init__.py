@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Cluster topology utilities.
+
+This package is used by deployment-oriented tooling to parse inventory files,
+derive per-node paths, and render multi-node launch commands. It is part of the
+deployment/link-smoke path rather than the scheduler simulation stack.
+"""
+
 from .inventory import (
     Inventory,
     NodeSpec,

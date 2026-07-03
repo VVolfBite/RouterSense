@@ -7,7 +7,6 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from ..adapter.olmoe_adapter import execute_local_experts
 from .manifest import DispatchPlan, RouteItem
 from .wave_planner import WaveSpec
 
@@ -139,6 +138,8 @@ def execute_native_baseline(
     local_weights: Any,
 ) -> NativeBaselineResult:
     executor = CollectiveWaveExecutor(rank=rank, world_size=world_size, dtype=dtype, device=device)
+    from ..adapter.olmoe_adapter import execute_local_experts
+
     dispatch_wave = _single_wave_from_plan(dispatch_plan=dispatch_plan, phase=0, rank=rank, world_size=world_size)
     dispatch_result = executor.execute_waves(
         [dispatch_wave],

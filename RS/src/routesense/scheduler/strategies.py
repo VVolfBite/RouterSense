@@ -4,7 +4,7 @@ import inspect
 from typing import Any, Callable
 
 from . import fast, greedy, oracle
-from .multiphase_global import (
+from .global_matching import (
     fast_schedule_u_barrier_criticality_global_matching,
     fast_schedule_u_barrier_criticality_global_matching_atomic,
     fast_schedule_u_barrier_price_adaptive_matching,
