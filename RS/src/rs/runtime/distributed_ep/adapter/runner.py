@@ -269,7 +269,10 @@ def execute_scheduled_inference(
             max_waves=max_waves,
         )
         transport = (
-            ScheduledAllToAllTransport(wave_executor)
+            ScheduledAllToAllTransport(
+                wave_executor,
+                split_into_micro_ops=(strategy_name != "U_gated_maxweight_matching_atomic"),
+            )
             if execution_mode == "scheduled_transport"
             else NativeAllToAllTransport(wave_executor)
         )

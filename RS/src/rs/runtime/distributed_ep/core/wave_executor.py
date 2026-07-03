@@ -179,8 +179,9 @@ class ScheduledAllToAllTransport(WaveTransportExecutor):
 
     transport_name = "scheduled_all_to_all"
 
-    def __init__(self, executor: CollectiveWaveExecutor) -> None:
+    def __init__(self, executor: CollectiveWaveExecutor, *, split_into_micro_ops: bool = True) -> None:
         self.executor = executor
+        self.split_into_micro_ops = split_into_micro_ops
 
     def execute_schedule(
         self,
@@ -191,6 +192,15 @@ class ScheduledAllToAllTransport(WaveTransportExecutor):
         token_buffer: torch.Tensor,
         hidden_size: int,
     ) -> WaveExecutionResult:
+        if not self.split_into_micro_ops:
+            return self.executor.execute_waves(
+                wave_schedule,
+                phase=phase,
+                direction=direction,
+                token_buffer=token_buffer,
+                hidden_size=hidden_size,
+            )
+
         timings: list[WaveTimingRecord] = []
         received_route_items: list[RouteItem] = []
         received_parts: list[torch.Tensor] = []
