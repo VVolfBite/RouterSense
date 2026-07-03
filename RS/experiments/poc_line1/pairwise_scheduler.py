@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from routesense.evaluation import (  # noqa: E402
+from rs.evaluation import (  # noqa: E402
     FAST_ALGORITHMS,
     build_owner_by_expert,
     load_gate_weight_bundle,

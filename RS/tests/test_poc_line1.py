@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from routesense.evaluation import (
+from rs.evaluation import (
     EXECUTION_WINDOW_MODE,
     RUNTIME_LOOKAHEAD_MODE,
     analyze_cross_layer_correlation,
@@ -48,7 +48,7 @@ from routesense.evaluation import (
     run_pairwise_analysis,
     spearman_rank_correlation,
 )
-from routesense.trace.olmoe_router_trace import discover_moe_layer_ids
+from rs.trace.olmoe_router_trace import discover_moe_layer_ids
 
 
 def _make_record(
@@ -96,7 +96,7 @@ def test_discover_moe_layer_ids_from_dummy_model():
 
 
 def test_cross_layer_analysis_reports_expected_overlap():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
 
     records = []
     for token_position in range(12):
@@ -117,7 +117,7 @@ def test_spearman_rank_correlation_basic():
 
 
 def test_round_robin_and_skewed_placement():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
 
     records = [TraceRecord("req", "sample", 0, 0, expert_id, 0, 0.5, 8) for expert_id in range(20)]
     rr = build_owner_by_expert(records, placement="round_robin", num_gpus=4)
@@ -128,7 +128,7 @@ def test_round_robin_and_skewed_placement():
 
 
 def test_build_same_prompt_batches_uses_token_position_for_source_rank():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
 
     records = [
         TraceRecord("req", "sample-0", token_position, 0, token_position, 0, 0.5, 8)
@@ -172,7 +172,7 @@ def test_greedy_schedule_single_layer_has_positive_makespan():
 
 
 def test_batch_rank_correlation_uses_placement():
-    from routesense.evaluation.poc_line1 import TraceRecord, build_batch_rank_correlation
+    from rs.evaluation.poc_line1 import TraceRecord, build_batch_rank_correlation
 
     records = [
         TraceRecord("req", "sample-0", 0, 0, 10, 0, 0.8, 8),
@@ -187,7 +187,7 @@ def test_batch_rank_correlation_uses_placement():
 
 
 def test_cross_layer_predictability_prefetch_accuracy():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
     import torch
 
     records = [
@@ -227,7 +227,7 @@ def test_cross_layer_predictability_prefetch_accuracy():
 
 
 def test_build_predicted_traffic_uses_predicted_topk_layout():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
 
     grouped = {
         ("sample-0", 0, 1): [TraceRecord("req", "sample-0", 0, 1, 0, 0, 1.0, 2)],
@@ -496,7 +496,7 @@ def test_evaluate_gate2_decision_labels():
 
 
 def test_run_pairwise_analysis_reports_gate2_summary():
-    from routesense.evaluation.poc_line1 import TraceRecord
+    from rs.evaluation.poc_line1 import TraceRecord
     import torch
 
     records = []

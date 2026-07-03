@@ -23,8 +23,8 @@ The current RS mainline now includes:
 
 Main modules:
 
-- `RS/src/routesense/trace/olmoe_router_trace.py`
-- `RS/src/routesense/evaluation/poc_line1.py`
+- `RS/src/rs/trace/olmoe_router_trace.py`
+- `RS/src/rs/evaluation/poc_line1.py`
 - `RS/experiments/poc_line1/full_sequence_trace.py`
 - `RS/experiments/poc_line1/cross_layer_analysis.py`
 - `RS/experiments/poc_line1/oracle_vs_greedy.py`

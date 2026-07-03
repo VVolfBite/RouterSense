@@ -3,7 +3,7 @@ from __future__ import annotations
 """Runtime scheduler facade.
 
 This module exists to isolate the distributed EP runtime from the concrete
-algorithm package under ``routesense.scheduler``. It intentionally contains no
+algorithm package under ``rs.scheduler``. It intentionally contains no
 algorithm implementations; it only forwards to registered strategies.
 """
 

@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from routesense.evaluation import (  # noqa: E402
+from rs.evaluation import (  # noqa: E402
     FAST_ALGORITHMS,
     build_owner_by_expert,
     load_gate_weight_bundle,
@@ -19,7 +19,7 @@ from routesense.evaluation import (  # noqa: E402
     load_trace_jsonl,
     run_pairwise_analysis,
 )
-from routesense.scheduler import (  # noqa: E402
+from rs.scheduler import (  # noqa: E402
     fast_schedule_birkhoff_exhaustive,
     fast_schedule_completion_balanced,
     fast_schedule_cp_local_swap,

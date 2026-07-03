@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from routesense.runtime.distributed_ep.core.scheduler import Scheduler
-from routesense.scheduler import SchedulingContext, get_strategy, list_strategies
+from rs.runtime.distributed_ep.core.scheduler import Scheduler
+from rs.scheduler import SchedulingContext, get_strategy, list_strategies
 
 
 def test_strategy_registry_contains_expected_algorithms() -> None:

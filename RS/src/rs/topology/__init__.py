@@ -17,4 +17,12 @@ from .inventory import (
     load_inventory,
     render_torchrun_dry_run,
 )
-from .paths import resolve_inventory_path, resolve_node_artifact_root, resolve_node_model_cache, resolve_node_rs_root, resolve_rs_root
+from .paths import (
+    resolve_inventory_path,
+    resolve_model_path_for_node,
+    resolve_node_artifact_root,
+    resolve_node_model_cache,
+    resolve_node_rs_root,
+    resolve_preferred_model_path,
+    resolve_rs_root,
+)

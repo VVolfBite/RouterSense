@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from routesense.trace import (
+from rs.trace import (
     collect_qwen_moe_architecture_probe,
     collect_qwen_moe_full_sequence_trace,
     collect_qwen_moe_router_trace,

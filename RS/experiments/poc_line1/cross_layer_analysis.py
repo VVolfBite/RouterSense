@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from routesense.evaluation import (
+from rs.evaluation import (
     analyze_cross_layer_correlation,
     analyze_cross_layer_predictability,
     build_owner_by_expert,

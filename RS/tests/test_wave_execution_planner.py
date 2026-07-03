@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from routesense.runtime.distributed_ep.core import (
+from rs.runtime.distributed_ep.core import (
     DispatchPlan,
     DispatchShard,
     RouteItem,

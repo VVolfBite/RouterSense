@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from routesense.runtime.distributed_ep.adapter.expert_store import plan_local_expert_ids, summarize_residency
-from routesense.runtime.distributed_ep.adapter.expert_store import extract_local_expert_weights
-from routesense.runtime.distributed_ep.adapter.olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts
-from routesense.runtime.distributed_ep.core.collective import CollectiveOps
-from routesense.runtime.distributed_ep.core.correctness import summarize_dispatch_plans
-from routesense.runtime.distributed_ep.core.placement import PlacementStrategy
-from routesense.runtime.distributed_ep.core.worker_loop import WorkerLoop
+from rs.runtime.distributed_ep.adapter.expert_store import plan_local_expert_ids, summarize_residency
+from rs.runtime.distributed_ep.adapter.expert_store import extract_local_expert_weights
+from rs.runtime.distributed_ep.adapter.olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts
+from rs.runtime.distributed_ep.core.collective import CollectiveOps
+from rs.runtime.distributed_ep.core.correctness import summarize_dispatch_plans
+from rs.runtime.distributed_ep.core.placement import PlacementStrategy
+from rs.runtime.distributed_ep.core.worker_loop import WorkerLoop
 import torch
 
 

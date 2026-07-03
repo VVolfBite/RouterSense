@@ -5,27 +5,25 @@ import argparse
 import json
 import os
 import socket
-import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
+
+ROOT = ensure_src_on_path()
 
 import torch  # type: ignore
 
-from routesense.runtime import load_model_and_tokenizer
-from routesense.runtime.distributed_ep.adapter.runner import (
+from rs.runtime import load_model_and_tokenizer
+from rs.runtime.distributed_ep.adapter.runner import (
     DistributedRunnerConfig,
     _build_matrix_from_plan,
     build_distributed_runner_plan,
     execute_scheduled_inference,
     simulate_rank_execution,
 )
-from routesense.scheduler import SchedulingContext, get_strategy
-from routesense.trace import collect_olmoe_router_trace
+from rs.scheduler import SchedulingContext, get_strategy
+from rs.trace import collect_olmoe_router_trace
 
 
 def main(argv: list[str] | None = None) -> int:

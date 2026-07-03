@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from routesense.scheduler import (
+from rs.scheduler import (
     EXECUTION_WINDOW_MODE,
     RUNTIME_LOOKAHEAD_MODE,
     fast_schedule_barrier_aware_birkhoff,

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from routesense.runtime.distributed_ep.adapter.runner import _build_matrix_from_plan
-from routesense.runtime.distributed_ep.core.collective import CollectiveOps
-from routesense.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
-from routesense.runtime.distributed_ep.core.nccl_executor import NCCLExecutionResult, NCCLOpRecord
+from rs.runtime.distributed_ep.adapter.runner import _build_matrix_from_plan
+from rs.runtime.distributed_ep.core.collective import CollectiveOps
+from rs.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
+from rs.runtime.distributed_ep.core.nccl_executor import NCCLExecutionResult, NCCLOpRecord
 
 
 @dataclass

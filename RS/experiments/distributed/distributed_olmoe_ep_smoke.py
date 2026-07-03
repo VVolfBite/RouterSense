@@ -5,25 +5,23 @@ import argparse
 import json
 import os
 import socket
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
 
-from routesense.runtime import load_model_and_tokenizer, run_single_gpu_text_inference
-from routesense.runtime.distributed_ep.adapter.runner import (
+ROOT = ensure_src_on_path()
+
+from rs.runtime import load_model_and_tokenizer, run_single_gpu_text_inference
+from rs.runtime.distributed_ep.adapter.runner import (
     DistributedRunnerConfig,
     build_distributed_runner_plan,
     simulate_rank_execution,
 )
-from routesense.trace import collect_olmoe_router_trace, summarize_router_trace
+from rs.trace import collect_olmoe_router_trace, summarize_router_trace
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Phase 0C distributed OLMoE EP smoke.")
+    parser = argparse.ArgumentParser(description="Phase 0C OLMoE EP planning smoke on one visible rank.")
     parser.add_argument("--model-id", type=str, default="allenai/OLMoE-1B-7B-0924-Instruct")
     parser.add_argument("--inventory", type=str, default=str(ROOT / "deploy" / "inventory" / "hosts.local.yaml"))
     parser.add_argument("--model-path", type=str, default=None)
@@ -31,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-new-tokens", type=int, default=1)
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--node-rank", type=int, default=0)
+    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument("--gpu-name", type=str, default="cuda:0")
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "phase0c_distributed_ep_smoke"))
     args = parser.parse_args(argv)
     model_path = args.model_path
@@ -52,18 +54,23 @@ def main(argv: list[str] | None = None) -> int:
         precision=args.precision,
         device_index=args.device_index,
     )
-    runner_config = DistributedRunnerConfig(world_size=4, node_rank=0, model_id=args.model_id, origin_rank=0)
+    runner_config = DistributedRunnerConfig(
+        world_size=args.world_size,
+        node_rank=args.node_rank,
+        model_id=args.model_id,
+        origin_rank=args.rank,
+    )
     runner_plan = build_distributed_runner_plan(
         model=model,
         trace=trace,
         config=runner_config,
-        rank=0,
+        rank=args.rank,
         host=socket.gethostname(),
-        gpu_name="cuda:0",
+        gpu_name=args.gpu_name,
     )
     simulated = simulate_rank_execution(
         runner_plan.dispatch_plans,
-        rank=0,
+        rank=args.rank,
         bytes_per_row=int(runner_plan.adapter["hidden_size"]) * 2,
     )
     payload = {
@@ -82,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "simulated_rank0_execution": simulated,
         "status": "PHASE0C_PRE_GPU_EXECUTION_PLAN_READY",
+        "note": "This entrypoint validates planning and local execution wiring on one visible rank. Use exp_wave_execution.py or distributed_nccl_smoke.py for real multi-rank execution.",
     }
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)

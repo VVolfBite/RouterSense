@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+INVENTORY="${1:-$DEFAULT_INVENTORY}"
 APPLY=false
 FORCE=false
 for arg in "$@"; do
@@ -11,7 +10,7 @@ for arg in "$@"; do
   [[ "$arg" == "--force" ]] && FORCE=true
 done
 
-python - "$INVENTORY" "$APPLY" "$FORCE" "$ROOT" <<'PY'
+"$PYTHON_BIN" - "$INVENTORY" "$APPLY" "$FORCE" "$ROOT" <<'PY'
 from __future__ import annotations
 
 import json
@@ -22,9 +21,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from routesense.topology import inventory_cli_summary, load_inventory
+from rs.topology import inventory_cli_summary, load_inventory
 
-inventory = load_inventory(Path(sys.argv[1]))
+inventory_path = Path(sys.argv[1])
+inventory = load_inventory(inventory_path)
 apply_mode = sys.argv[2].lower() == "true"
 force_mode = sys.argv[3].lower() == "true"
 source_root = Path(sys.argv[4]).resolve()
@@ -32,7 +32,12 @@ password = os.environ.get("RSSH_PASSWORD") or os.environ.get("SSHPASS")
 if not password:
     raise RuntimeError("missing SSH password; set RSSH_PASSWORD or SSHPASS")
 
-payload = {"inventory": inventory_cli_summary(inventory), "apply_mode": apply_mode, "force_mode": force_mode, "targets": []}
+payload = {
+    "inventory": inventory_cli_summary(inventory, inventory_path=inventory_path),
+    "apply_mode": apply_mode,
+    "force_mode": force_mode,
+    "targets": [],
+}
 if not apply_mode:
     for node in inventory.nodes:
         payload["targets"].append(
@@ -51,15 +56,15 @@ if local_status and not force_mode:
     raise RuntimeError(f"local tree dirty; refuse to sync without --force: {local_status}")
 
 bundle_dir = Path(tempfile.mkdtemp(prefix="rs-bundle-"))
-bundle_path = bundle_dir / "routesense.gitbundle"
+bundle_path = bundle_dir / "rs.gitbundle"
 subprocess.run(["git", "bundle", "create", str(bundle_path), "HEAD"], cwd=source_root, check=True)
 
 for node in inventory.nodes:
     remote_root = str(node.paths.get("remote_rs_root") or "")
     if not remote_root:
         raise RuntimeError(f"missing remote_rs_root for {node.name}")
-    remote_bundle = f"{remote_root}/.routesense.gitbundle"
-    remote_clone = f"{remote_root}/.routesense.git"
+    remote_bundle = f"{remote_root}/.rs.gitbundle"
+    remote_clone = f"{remote_root}/.rs.git"
     ssh = [
         "sshpass",
         "-p",

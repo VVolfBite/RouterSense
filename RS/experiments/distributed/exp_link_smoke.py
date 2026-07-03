@@ -6,17 +6,15 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
 
-from routesense.topology import load_inventory
+ROOT = ensure_src_on_path()
+
+from rs.topology import load_inventory
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
@@ -240,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--key-path",
         type=str,
-        default=str(Path.home() / ".ssh" / "routesense_link_ed25519"),
+        default=str(Path.home() / ".ssh" / "rs_link_ed25519"),
     )
     args = parser.parse_args(argv)
 

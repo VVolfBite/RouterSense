@@ -14,9 +14,9 @@ if str(SRC) not in sys.path:
 
 import torch  # type: ignore
 
-from routesense.evaluation import collect_environment_snapshot, write_json
-from routesense.runtime import load_model_and_tokenizer
-from routesense.trace import collect_qwen_moe_architecture_probe, collect_qwen_moe_full_sequence_trace
+from rs.evaluation import collect_environment_snapshot, write_json
+from rs.runtime import load_model_and_tokenizer
+from rs.trace import collect_qwen_moe_architecture_probe, collect_qwen_moe_full_sequence_trace
 
 
 def _load_prompt_entries(path: Path, limit: int | None) -> list[dict[str, Any]]:

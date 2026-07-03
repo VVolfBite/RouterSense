@@ -3,16 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
 
-from routesense.runtime import load_model_and_tokenizer
-from routesense.runtime.distributed_ep.adapter.olmoe_adapter import probe_olmoe_adapter_config
+ROOT = ensure_src_on_path()
+
+from rs.runtime import load_model_and_tokenizer
+from rs.runtime.distributed_ep.adapter.olmoe_adapter import probe_olmoe_adapter_config
 
 
 def main(argv: list[str] | None = None) -> int:

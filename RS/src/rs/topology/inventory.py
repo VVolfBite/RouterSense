@@ -58,17 +58,17 @@ def inventory_summary(inventory: Inventory) -> dict[str, Any]:
     }
 
 
-def inventory_cli_summary(inventory: Inventory) -> dict[str, Any]:
+def inventory_cli_summary(inventory: Inventory, inventory_path: str | Path | None = None) -> dict[str, Any]:
     return {
         **inventory_summary(inventory),
-        "resolved_paths": inventory_paths(inventory),
+        "resolved_paths": inventory_paths(inventory, inventory_path=inventory_path),
     }
 
 
-def inventory_paths(inventory: Inventory) -> dict[str, Any]:
+def inventory_paths(inventory: Inventory, inventory_path: str | Path | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
         "rs_root": str(resolve_rs_root()),
-        "inventory_path": str(resolve_inventory_path()),
+        "inventory_path": str(resolve_inventory_path(inventory_path)),
     }
     for node in inventory.nodes:
         data[f"{node.name}_remote_rs_root"] = _stringify_path(resolve_node_rs_root(inventory, node.name))
@@ -78,14 +78,20 @@ def inventory_paths(inventory: Inventory) -> dict[str, Any]:
 
 
 def render_torchrun_dry_run(inventory: Inventory, *, nnodes: int = 2, nproc_per_node: int = 2) -> dict[str, Any]:
+    if inventory.nodes:
+        nnodes = len(inventory.nodes)
     master_node = _get_node(inventory, inventory.rendezvous.master_node)
     master_addr = str(master_node.host)
     master_port = int(inventory.rendezvous.master_port)
     interface_hint = ""
     rdzv_id = f"{inventory.cluster_name}-phase0c"
+    target_gpu_counts = {node.name: int(node.target_gpu_count) for node in inventory.nodes}
+    unique_proc_counts = sorted(set(target_gpu_counts.values()))
     payload = {
         "nnodes": nnodes,
-        "nproc_per_node": nproc_per_node,
+        "nproc_per_node": unique_proc_counts[0] if len(unique_proc_counts) == 1 else None,
+        "target_gpu_counts": target_gpu_counts,
+        "world_size": sum(target_gpu_counts.values()),
         "master_addr": master_addr,
         "master_port": master_port,
         "rendezvous_backend": inventory.rendezvous.backend,
@@ -97,7 +103,7 @@ def render_torchrun_dry_run(inventory: Inventory, *, nnodes: int = 2, nproc_per_
             node=node,
             node_rank=node.node_rank,
             nnodes=nnodes,
-            nproc_per_node=nproc_per_node,
+            nproc_per_node=int(node.target_gpu_count),
             master_addr=master_addr,
             master_port=master_port,
             rendezvous_id=rdzv_id,
@@ -125,7 +131,7 @@ def _render_torchrun_command(
         f"'{ ' '.join(env) } torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} "
         f"--node_rank={node_rank} --rdzv-backend=c10d --rdzv-id={rendezvous_id} "
         f"--rdzv-endpoint={master_addr}:{master_port} "
-        "RS/experiments/deployment/future_multinode_smoke.py --dry-run'"
+        "experiments/distributed/future_multinode_smoke.py --dry-run'"
     )
 
 

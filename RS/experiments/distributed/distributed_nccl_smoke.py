@@ -5,13 +5,11 @@ import argparse
 import json
 import os
 import socket
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
+
+ROOT = ensure_src_on_path()
 
 
 def _snapshot() -> dict[str, object]:
@@ -102,7 +100,7 @@ def _snapshot() -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Real 4-rank NCCL smoke.")
+    parser = argparse.ArgumentParser(description="Real multi-rank NCCL smoke.")
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "phase0c_nccl_smoke"))
     args = parser.parse_args(argv)
     import torch.distributed as dist  # type: ignore

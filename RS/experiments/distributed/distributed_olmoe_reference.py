@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+from _bootstrap import ensure_src_on_path
 
-from routesense.runtime import run_single_gpu_text_inference
+ROOT = ensure_src_on_path()
+
+from rs.runtime import run_single_gpu_text_inference
 
 
 def main(argv: list[str] | None = None) -> int:

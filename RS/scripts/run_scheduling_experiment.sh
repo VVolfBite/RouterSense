@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+INVENTORY="${1:-$DEFAULT_INVENTORY}"
 STRATEGY="${2:-best_of}"
 
 echo "=== Step 1: Check cluster access ==="
@@ -10,7 +10,7 @@ bash "$ROOT/scripts/check_cluster_access.sh" "$INVENTORY"
 
 echo
 echo "=== Step 2: Verify GPU environment ==="
-python3 "$ROOT/scripts/verify_gpu_env.py" || python3 "$ROOT/scripts/verify_cluster_gpu_env.py"
+"$PYTHON_BIN" "$ROOT/scripts/verify_gpu_env.py" || "$PYTHON_BIN" "$ROOT/scripts/verify_cluster_gpu_env.py"
 
 echo
 echo "=== Step 3: Sync repository to nodes ==="
@@ -22,14 +22,14 @@ bash "$ROOT/scripts/sync_model_cache.sh" "$INVENTORY" || echo "Model cache sync 
 
 echo
 echo "=== Step 5: Render torchrun commands ==="
-PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 - "$INVENTORY" "$STRATEGY" <<'PY'
+PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" - "$INVENTORY" "$STRATEGY" <<'PY'
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
-from routesense.topology import load_inventory
+from rs.topology import load_inventory
 
 inventory = load_inventory(Path(sys.argv[1]))
 strategy = sys.argv[2]

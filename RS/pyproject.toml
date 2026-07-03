@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "routesense"
+name = "rs"
 version = "0.2.0"
 description = "RouteSense: dependency-aware release scheduling for distributed MoE inference."
 requires-python = ">=3.10"

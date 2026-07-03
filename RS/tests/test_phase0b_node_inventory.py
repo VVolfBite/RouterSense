@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def test_node_inventory_is_symmetric():
-    from routesense.topology import load_inventory
+    from rs.topology import load_inventory
 
     inventory = load_inventory(Path(__file__).resolve().parents[1] / "deploy" / "inventory" / "hosts.example.yaml")
     assert inventory.cluster_name == "rs-2node-ep"

@@ -8,7 +8,7 @@ if [[ "${1:-}" == "--scope" ]]; then
 fi
 archive_path="${1:?missing archive path}"
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 expected_commit="$(git -C "$repo_root" rev-parse HEAD)"
 archive_commit="$(tar -xOf "$archive_path" SOURCE_COMMIT.txt | tr -d '\n')"
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+INVENTORY="${1:-$DEFAULT_INVENTORY}"
 APPLY=false
 for arg in "$@"; do
   [[ "$arg" == "--apply" ]] && APPLY=true
@@ -16,4 +16,3 @@ fi
 
 echo "apply mode not executed in this repository snapshot"
 exit 1
-

@@ -6,7 +6,7 @@ and curated result snapshots live under `archive/backup/`.
 
 ## Mainline
 
-- `RS/src/routesense/`
+- `RS/src/rs/`
   Mainline runtime, scheduler, trace, topology, oracle, and evaluation code.
 - `RS/deploy/`
   Inventory, dry-run launch contracts, and deployment helpers.
@@ -53,9 +53,9 @@ against accidental legacy imports.
 
 ## Operator Channel
 
-- `rs_channel/instruction/`
+- `RS/channel/ins/`
   Incoming operator instructions synchronized through git.
-- `rs_channel/reply/`
+- `RS/channel/reply/`
   Outgoing step reports.
 
 ## Current Phase

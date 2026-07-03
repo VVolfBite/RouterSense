@@ -12,11 +12,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from routesense.evaluation import collect_environment_snapshot, write_json
-from routesense.runtime import load_model_and_tokenizer
+from rs.evaluation import collect_environment_snapshot, write_json
+from rs.runtime import load_model_and_tokenizer
 import torch  # type: ignore
 
-from routesense.trace import collect_full_sequence_trace, collect_moe_architecture_probe
+from rs.trace import collect_full_sequence_trace, collect_moe_architecture_probe
 
 
 def _load_prompt_entries(path: Path, limit: int | None) -> list[dict[str, Any]]:

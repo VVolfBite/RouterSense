@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-INVENTORY="${1:-$ROOT/deploy/inventory/hosts.local.yaml}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+INVENTORY="${1:-$DEFAULT_INVENTORY}"
 NODE_NAME="${2:-node0}"
 
-python - "$INVENTORY" "$NODE_NAME" <<'PY'
+"$PYTHON_BIN" - "$INVENTORY" "$NODE_NAME" <<'PY'
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
-from routesense.topology import load_inventory, resolve_node_model_cache, resolve_node_rs_root
+from rs.topology import load_inventory, resolve_node_model_cache, resolve_node_rs_root
 
 inventory = load_inventory(Path(sys.argv[1]))
 node_name = sys.argv[2]

@@ -7,7 +7,7 @@ RouteSense is a MoE communication scheduling and deployment project. The work is
 1. offline scheduler research on trace-derived traffic matrices
 2. real distributed EP execution bring-up on top of NCCL collectives
 
-The repository root is `/root/autodl-tmp/RouterSense`. The formal mainline is under `RS/`.
+The repository root is environment-dependent. The formal mainline is under `RS/`.
 
 The current project claim is not "better routing weights." The main claim is:
 
@@ -43,21 +43,21 @@ Models confirmed on the current machine:
 
 `DeepSeek-V2-Lite` was planned but is not currently present in `/root/autodl-tmp/models/`.
 
-Current real deployment work is only wired for OLMoE. Qwen trace support exists, but real distributed adapter parity is not yet complete.
+Current real deployment work is only wired for OLMoE. Qwen trace support exists, but real distributed adapter parity is not yet complete. Older references below to `autodl-tmp`, SeetaCloud nodes, or `172.17.*` container addresses are historical context only and must not be treated as the current deployment environment.
 
 ## 4. Code Map
 
 Key directories:
 
-- `RS/src/routesense/scheduler/`
+- `RS/src/rs/scheduler/`
   Offline scheduling algorithms, oracle, strategy registry, global matching prototypes.
-- `RS/src/routesense/runtime/distributed_ep/core/`
+- `RS/src/rs/runtime/distributed_ep/core/`
   Manifest, placement, scheduler facade, wave planner, wave executor, NCCL/P2P execution helpers.
-- `RS/src/routesense/runtime/distributed_ep/adapter/`
+- `RS/src/rs/runtime/distributed_ep/adapter/`
   Model-specific bridge layer. OLMoE is the primary implemented adapter.
-- `RS/src/routesense/trace/`
+- `RS/src/rs/trace/`
   Trace extraction and trace schema handling.
-- `RS/src/routesense/evaluation/`
+- `RS/src/rs/evaluation/`
   Offline pairwise analysis and summary logic.
 - `RS/experiments/poc_line1/`
   Offline trace collection and scheduler experiments.
@@ -103,7 +103,7 @@ Examples:
 Recent audit fix already applied:
 
 - `phase_aware_greedy`, `decomposed`, `iterated_greedy`, `cp_local_swap`
-  are now marked `prediction_aware=True` in `src/routesense/scheduler/strategies.py`
+  are now marked `prediction_aware=True` in `src/rs/scheduler/strategies.py`
 
 ## 6. Offline Experiment Structure
 
@@ -353,8 +353,8 @@ A next Codex should read these first:
 
 Then inspect:
 
-- `RS/src/routesense/scheduler/`
-- `RS/src/routesense/runtime/distributed_ep/`
+- `RS/src/rs/scheduler/`
+- `RS/src/rs/runtime/distributed_ep/`
 - `RS/experiments/distributed/`
 - `RS/experiments/poc_line1/`
 

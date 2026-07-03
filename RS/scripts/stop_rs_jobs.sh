@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 PID_DIR="${PID_DIR:-$ROOT/deploy/logs}"
 
 shopt -s nullglob
@@ -12,4 +12,3 @@ for pidfile in "$PID_DIR"/*.pid; do
     echo "stopped pid=$pid from $pidfile"
   fi
 done
-

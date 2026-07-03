@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from routesense.runtime.distributed_ep.adapter.runner import _aggregate_matrix, build_distributed_runner_plan
-from routesense.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
+from rs.runtime.distributed_ep.adapter.runner import _aggregate_matrix, build_distributed_runner_plan
+from rs.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
 
 
 class _FakeReduceOp:
@@ -61,7 +61,7 @@ def test_build_distributed_runner_plan_builds_global_dispatch_plan() -> None:
 
     trace = {"records": [{"layer_id": 0, "expert_id": 0, "token_flat_index": 0, "topk_rank": 0, "routing_weight": 1.0}]}
 
-    import routesense.runtime.distributed_ep.adapter.runner as runner
+    import rs.runtime.distributed_ep.adapter.runner as runner
 
     original_probe = runner.probe_olmoe_adapter_config
     original_count = runner.count_local_expert_parameters

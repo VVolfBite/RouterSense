@@ -34,8 +34,8 @@ Current mainline `fast.py` and `oracle.py` already implement the following barri
 
 This is implemented in:
 
-- `src/routesense/scheduler/fast.py::_schedule_phase_orders`
-- `src/routesense/scheduler/oracle.py::pairwise_oracle`
+- `src/rs/scheduler/fast.py::_schedule_phase_orders`
+- `src/rs/scheduler/oracle.py::pairwise_oracle`
 
 No silent semantic change was made to those existing schedulers.
 
@@ -91,7 +91,7 @@ Therefore:
 
 New module:
 
-- `src/routesense/scheduler/multiphase_global.py`
+- `src/rs/scheduler/multiphase_global.py`
 
 Shared validator entry:
 
