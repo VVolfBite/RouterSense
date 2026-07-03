@@ -44,6 +44,23 @@ class NativeBaselineResult:
     local_expert_output: torch.Tensor
 
 
+class WaveTransportExecutor:
+    """Transport-level interface for scheduled collective execution."""
+
+    transport_name = "transport"
+
+    def execute_schedule(
+        self,
+        wave_schedule: list[WaveSpec],
+        *,
+        phase: int,
+        direction: str,
+        token_buffer: torch.Tensor,
+        hidden_size: int,
+    ) -> WaveExecutionResult:
+        raise NotImplementedError
+
+
 class CollectiveWaveExecutor:
     """Execute one all_to_all_single per wave."""
 
@@ -123,6 +140,63 @@ class CollectiveWaveExecutor:
             timings=timings,
             received_route_items=received_route_items,
             received_tensor=received_tensor,
+        )
+
+
+class NativeAllToAllTransport(WaveTransportExecutor):
+    """One all_to_all_single per wave using the existing wave executor."""
+
+    transport_name = "native_all_to_all"
+
+    def __init__(self, executor: CollectiveWaveExecutor) -> None:
+        self.executor = executor
+
+    def execute_schedule(
+        self,
+        wave_schedule: list[WaveSpec],
+        *,
+        phase: int,
+        direction: str,
+        token_buffer: torch.Tensor,
+        hidden_size: int,
+    ) -> WaveExecutionResult:
+        return self.executor.execute_waves(
+            wave_schedule,
+            phase=phase,
+            direction=direction,
+            token_buffer=token_buffer,
+            hidden_size=hidden_size,
+        )
+
+
+class ScheduledAllToAllTransport(WaveTransportExecutor):
+    """Explicit scheduling-injected transport path.
+
+    Today this still executes via all_to_all_single per scheduled wave, but it is
+    isolated as a distinct runtime surface so scheduling policy can evolve without
+    mutating the baseline collective path.
+    """
+
+    transport_name = "scheduled_all_to_all"
+
+    def __init__(self, executor: CollectiveWaveExecutor) -> None:
+        self.executor = executor
+
+    def execute_schedule(
+        self,
+        wave_schedule: list[WaveSpec],
+        *,
+        phase: int,
+        direction: str,
+        token_buffer: torch.Tensor,
+        hidden_size: int,
+    ) -> WaveExecutionResult:
+        return self.executor.execute_waves(
+            wave_schedule,
+            phase=phase,
+            direction=direction,
+            token_buffer=token_buffer,
+            hidden_size=hidden_size,
         )
 
 

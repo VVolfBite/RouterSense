@@ -4,7 +4,17 @@ from .collective import CollectiveOps, CollectiveRecord
 from .manifest import DispatchPlan, DispatchShard, DistributedManifest, RouteItem
 from .nccl_executor import NCCLExecutionResult, NCCLOpRecord, NCCLExecutor
 from .scheduler import Scheduler, SchedulerDecision
-from .wave_executor import CollectiveWaveExecutor, NativeBaselineResult, WaveExecutionResult, WaveTimingRecord, execute_native_baseline, verify_token_conservation
+from .wave_executor import (
+    CollectiveWaveExecutor,
+    NativeAllToAllTransport,
+    NativeBaselineResult,
+    ScheduledAllToAllTransport,
+    WaveExecutionResult,
+    WaveTimingRecord,
+    WaveTransportExecutor,
+    execute_native_baseline,
+    verify_token_conservation,
+)
 from .wave_planner import WaveScheduleBundle, WaveSpec, build_token_wave_mapping, scheduling_result_to_wave_schedule, verify_wave_conservation
 
 __all__ = [
@@ -16,11 +26,13 @@ __all__ = [
     "DispatchShard",
     "DistributedManifest",
     "execute_native_baseline",
+    "NativeAllToAllTransport",
     "NCCLExecutionResult",
     "NCCLOpRecord",
     "NCCLExecutor",
     "NativeBaselineResult",
     "RouteItem",
+    "ScheduledAllToAllTransport",
     "Scheduler",
     "SchedulerDecision",
     "scheduling_result_to_wave_schedule",
@@ -30,4 +42,5 @@ __all__ = [
     "WaveScheduleBundle",
     "WaveSpec",
     "WaveTimingRecord",
+    "WaveTransportExecutor",
 ]

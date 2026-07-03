@@ -7,7 +7,13 @@ from ..core.collective import CollectiveOps
 from ..core.correctness import summarize_dispatch_plans
 from ..core.manifest import DispatchPlan, DistributedManifest
 from ..core.nccl_executor import NCCLExecutor
-from ..core.wave_executor import CollectiveWaveExecutor, execute_native_baseline, verify_token_conservation
+from ..core.wave_executor import (
+    CollectiveWaveExecutor,
+    NativeAllToAllTransport,
+    ScheduledAllToAllTransport,
+    execute_native_baseline,
+    verify_token_conservation,
+)
 from ..core.wave_planner import scheduling_result_to_wave_schedule, verify_wave_conservation
 from ..core.placement import PlacementStrategy
 from ..core.worker_loop import WorkerLoop
@@ -198,7 +204,7 @@ def execute_scheduled_inference(
         world_size,
     )
 
-    if execution_mode in {"native_baseline", "wave_collective"}:
+    if execution_mode in {"native_baseline", "wave_collective", "scheduled_transport"}:
         if hidden_state_rows is None:
             raise RuntimeError(f"execution_mode={execution_mode} requires hidden_state_rows")
         if local_expert_weights is None:
@@ -262,12 +268,17 @@ def execute_scheduled_inference(
             world_size=world_size,
             max_waves=max_waves,
         )
+        transport = (
+            ScheduledAllToAllTransport(wave_executor)
+            if execution_mode == "scheduled_transport"
+            else NativeAllToAllTransport(wave_executor)
+        )
         wave_convert_end = time.perf_counter()
         wave_convert_ms = (wave_convert_end - planner_start) * 1000.0 - planner_ms
         verify_start = time.perf_counter()
         dispatch_conservation = verify_wave_conservation(bundle.dispatch_waves, rank=rank, dispatch_plan=active_plan, phase=0)
         combine_conservation = verify_wave_conservation(bundle.combine_waves, rank=rank, dispatch_plan=active_plan, phase=1)
-        dispatch_exec = wave_executor.execute_waves(
+        dispatch_exec = transport.execute_schedule(
             bundle.dispatch_waves,
             phase=0,
             direction="dispatch",
@@ -279,7 +290,7 @@ def execute_scheduled_inference(
             dispatch_exec.received_route_items,
             local_expert_weights,
         )
-        combine_exec = wave_executor.execute_waves(
+        combine_exec = transport.execute_schedule(
             bundle.combine_waves,
             phase=1,
             direction="combine",
@@ -328,6 +339,7 @@ def execute_scheduled_inference(
                 "combine_conservation": combine_conservation,
             },
             "wave_execution": {
+                "transport": transport.transport_name,
                 "dispatch_comm_ms": dispatch_exec.total_comm_ms,
                 "dispatch_pack_ms": dispatch_exec.total_pack_ms,
                 "dispatch_unpack_ms": dispatch_exec.total_unpack_ms,

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import torch
+
 from rs.runtime.distributed_ep.adapter.runner import _build_matrix_from_plan
+import rs.runtime.distributed_ep.adapter.runner as runner_module
 from rs.runtime.distributed_ep.core.collective import CollectiveOps
 from rs.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
 from rs.runtime.distributed_ep.core.nccl_executor import NCCLExecutionResult, NCCLOpRecord
+from rs.runtime.distributed_ep.core.wave_executor import WaveExecutionResult
 
 
 @dataclass
@@ -103,3 +107,113 @@ def test_collective_execute_scheduled_phase_filters_rank_chunks() -> None:
     assert executor.calls[0]["recv_chunks"] == [(2, 6)]
     assert collective.records[0].send_bytes == 4 * 16
     assert collective.records[0].recv_bytes == 6 * 16
+
+
+@dataclass
+class _DummyStrategyResult:
+    makespan: float = 1.0
+    solve_time_ms: float = 0.5
+    schedule: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class _DummyStrategy:
+    result: _DummyStrategyResult
+
+    def solve(self, ctx):
+        return self.result
+
+
+@dataclass
+class _DummyWaveBundle:
+    dispatch_waves: list[object]
+    combine_waves: list[object]
+    dispatch_token_indices: list[list[int]]
+    combine_token_indices: list[list[int]]
+
+
+@dataclass
+class _RecordingTransport:
+    calls: list[dict] = field(default_factory=list)
+    transport_name: str = "scheduled_all_to_all"
+
+    def execute_schedule(self, wave_schedule, *, phase, direction, token_buffer, hidden_size):
+        self.calls.append(
+            {
+                "phase": phase,
+                "direction": direction,
+                "wave_count": len(wave_schedule),
+                "hidden_size": hidden_size,
+                "rows": int(token_buffer.shape[0]),
+            }
+        )
+        rows = token_buffer.shape[0]
+        return WaveExecutionResult(
+            phase=phase,
+            direction=direction,
+            total_comm_ms=1.0,
+            total_pack_ms=2.0,
+            total_unpack_ms=3.0,
+            wave_count=len(wave_schedule),
+            received_route_items=[],
+            received_tensor=torch.zeros((rows, hidden_size), dtype=token_buffer.dtype),
+        )
+
+
+def test_execute_scheduled_inference_uses_scheduled_transport(monkeypatch) -> None:
+    recorded = _RecordingTransport()
+    strategy_result = _DummyStrategyResult(
+        schedule=[
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0},
+            {"phase": 1, "src_gpu": 1, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 0},
+        ]
+    )
+    dispatch_plan = DispatchPlan(layer_id=0, world_size=2, shards=[])
+
+    monkeypatch.setattr(runner_module, "get_strategy", lambda name: _DummyStrategy(strategy_result))
+    monkeypatch.setattr(
+        runner_module,
+        "scheduling_result_to_wave_schedule",
+        lambda *args, **kwargs: _DummyWaveBundle(
+            dispatch_waves=[object()],
+            combine_waves=[object()],
+            dispatch_token_indices=[[0]],
+            combine_token_indices=[[0]],
+        ),
+    )
+    monkeypatch.setattr(runner_module, "verify_wave_conservation", lambda *args, **kwargs: {"pass": True})
+    monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
+    monkeypatch.setattr(
+        runner_module,
+        "execute_native_baseline",
+        lambda **kwargs: type(
+            "Native",
+            (),
+            {
+                "final_output": torch.zeros((2, 4), dtype=torch.float16),
+                "combine_result": type("Combine", (), {"received_route_items": [], "total_comm_ms": 0.2})(),
+                "dispatch_result": type("Dispatch", (), {"total_comm_ms": 0.1})(),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_token_conservation",
+        lambda *args, **kwargs: {"token_conservation_pass": True, "gate_weight_conservation_pass": True},
+    )
+    monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", lambda executor: recorded)
+
+    result = runner_module.execute_scheduled_inference(
+        dispatch_plans=[dispatch_plan],
+        rank=0,
+        world_size=2,
+        strategy_name="greedy",
+        hidden_size=4,
+        local_expert_weights=object(),
+        hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
+        execution_mode="scheduled_transport",
+    )
+
+    assert result["execution_mode"] == "scheduled_transport"
+    assert result["wave_execution"]["transport"] == "scheduled_all_to_all"
+    assert [call["direction"] for call in recorded.calls] == ["dispatch", "combine"]
