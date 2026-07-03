@@ -161,8 +161,9 @@ def execute_scheduled_inference(
     import time
 
     matrix_start = time.perf_counter()
-    local_dispatch_matrix = _build_matrix_from_plan(active_plan, rank, "send")
-    local_combine_matrix = _build_matrix_from_plan(active_plan, rank, "recv")
+    matrix_builder = _build_rank_local_matrix_from_plan if use_distributed else _build_matrix_from_plan
+    local_dispatch_matrix = matrix_builder(active_plan, rank, "send")
+    local_combine_matrix = matrix_builder(active_plan, rank, "recv")
     matrix_build_ms = (time.perf_counter() - matrix_start) * 1000.0
     aggregate_start = time.perf_counter()
     dispatch_matrix = _aggregate_matrix(
@@ -179,7 +180,7 @@ def execute_scheduled_inference(
     )
     next_dispatch_matrix = (
         _aggregate_matrix(
-            _build_matrix_from_plan(dispatch_plans[plan_index + 1], rank, "send"),
+            matrix_builder(dispatch_plans[plan_index + 1], rank, "send"),
             use_distributed=use_distributed,
             world_size=world_size,
             device=getattr(executor, "device", None),
@@ -516,6 +517,25 @@ def _build_matrix_from_plan(
     if direction != "send":
         raise ValueError(f"unsupported direction: {direction}")
     return matrix
+
+
+def _build_rank_local_matrix_from_plan(
+    plan: DispatchPlan,
+    rank: int,
+    direction: str,
+) -> list[list[int]]:
+    matrix = [[0] * plan.world_size for _ in range(plan.world_size)]
+    if direction == "send":
+        for shard in plan.shards:
+            if int(shard.source_rank) == int(rank):
+                matrix[shard.source_rank][shard.destination_rank] += shard.rows
+        return matrix
+    if direction == "recv":
+        for shard in plan.shards:
+            if int(shard.destination_rank) == int(rank):
+                matrix[shard.destination_rank][shard.source_rank] += shard.rows
+        return matrix
+    raise ValueError(f"unsupported direction: {direction}")
 
 
 def _aggregate_matrix(

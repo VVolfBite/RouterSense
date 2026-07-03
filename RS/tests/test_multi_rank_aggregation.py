@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rs.runtime.distributed_ep.adapter.runner import _aggregate_matrix, build_distributed_runner_plan
+from rs.runtime.distributed_ep.adapter.runner import (
+    _aggregate_matrix,
+    _build_matrix_from_plan,
+    _build_rank_local_matrix_from_plan,
+    build_distributed_runner_plan,
+)
 from rs.runtime.distributed_ep.core.manifest import DispatchPlan, DispatchShard
 
 
@@ -97,3 +102,41 @@ def test_build_distributed_runner_plan_builds_global_dispatch_plan() -> None:
     dispatch_plan = plan.dispatch_plans[0]
     pairs = {(shard.source_rank, shard.destination_rank) for shard in dispatch_plan.shards}
     assert pairs == {(0, 1), (1, 2), (2, 3), (3, 0)}
+
+
+def test_build_rank_local_matrix_from_plan_only_emits_rank_contribution() -> None:
+    plan = DispatchPlan(
+        layer_id=0,
+        world_size=3,
+        shards=[
+            DispatchShard(source_rank=0, destination_rank=1, route_items=[type("Item", (), {"payload_rows": 2})()]),
+            DispatchShard(source_rank=1, destination_rank=2, route_items=[type("Item", (), {"payload_rows": 3})()]),
+            DispatchShard(source_rank=2, destination_rank=0, route_items=[type("Item", (), {"payload_rows": 5})()]),
+        ],
+    )
+
+    send_rank1 = _build_rank_local_matrix_from_plan(plan, 1, "send")
+    recv_rank1 = _build_rank_local_matrix_from_plan(plan, 1, "recv")
+    global_send = _build_matrix_from_plan(plan, 0, "send")
+    global_recv = _build_matrix_from_plan(plan, 0, "recv")
+
+    assert send_rank1 == [
+        [0, 0, 0],
+        [0, 0, 3],
+        [0, 0, 0],
+    ]
+    assert recv_rank1 == [
+        [0, 0, 0],
+        [2, 0, 0],
+        [0, 0, 0],
+    ]
+    assert global_send == [
+        [0, 2, 0],
+        [0, 0, 3],
+        [5, 0, 0],
+    ]
+    assert global_recv == [
+        [0, 0, 5],
+        [2, 0, 0],
+        [0, 3, 0],
+    ]
