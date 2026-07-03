@@ -182,7 +182,7 @@ _register_function_strategy(
     "IteratedGreedyStrategy",
     "iterated_greedy",
     fast.fast_schedule_iterated_greedy,
-    prediction_aware=False,
+    prediction_aware=True,
     description="Destroy-repair local search over existing phase orders.",
 )
 _register_function_strategy(
@@ -219,7 +219,7 @@ _register_function_strategy(
     "DecomposedStrategy",
     "decomposed",
     fast.fast_schedule_decomposed,
-    prediction_aware=False,
+    prediction_aware=True,
     description="Grouped subproblem decomposition.",
 )
 _register_function_strategy(
@@ -257,7 +257,7 @@ _register_function_strategy(
     prediction_aware=True,
     description="Ours: critical-path LPT using next-phase later_work.",
 )
-_register_function_strategy("CPLocalSwapStrategy", "cp_local_swap", fast.fast_schedule_cp_local_swap, prediction_aware=False, description="Local swap refinement over CP-LPT seed.")
+_register_function_strategy("CPLocalSwapStrategy", "cp_local_swap", fast.fast_schedule_cp_local_swap, prediction_aware=True, description="Local swap refinement over CP-LPT seed.")
 _register_function_strategy(
     "LookaheadLPTStrategy",
     "lookahead_lpt",
@@ -269,7 +269,7 @@ _register_function_strategy(
     "PhaseAwareGreedyStrategy",
     "phase_aware_greedy",
     fast.fast_schedule_phase_aware_greedy,
-    prediction_aware=False,
+    prediction_aware=True,
     description="Greedy with downstream phase-size proxy.",
 )
 _register_function_strategy("BestOfStrategy", "best_of", fast.fast_schedule_pairwise, description="Best-of candidate fast scheduler pool.")

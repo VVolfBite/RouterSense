@@ -30,26 +30,6 @@ from ._common import (
 )
 from .birkhoff import fast_schedule_barrier_aware_birkhoff, fast_schedule_birkhoff
 
-def _clone_phase_orders(phase_orders: dict[int, list[ChunkSpec]]) -> dict[int, list[ChunkSpec]]:
-    return {phase: list(chunks) for phase, chunks in phase_orders.items()}
-
-
-def _best_insert_position(
-    phase_orders: dict[int, list[ChunkSpec]],
-    chunk: ChunkSpec,
-) -> dict[int, list[ChunkSpec]]:
-    best_orders: dict[int, list[ChunkSpec]] | None = None
-    best_makespan = float("inf")
-    target_phase = chunk.phase
-    for position in range(len(phase_orders[target_phase]) + 1):
-        candidate = _clone_phase_orders(phase_orders)
-        candidate[target_phase].insert(position, chunk)
-        makespan = float(_schedule_phase_orders(candidate, strategy="tmp", solve_time_ms=0.0)["makespan"])
-        if makespan < best_makespan:
-            best_makespan = makespan
-            best_orders = candidate
-    return best_orders if best_orders is not None else phase_orders
-
 
 def fast_schedule_iterated_greedy(
     dispatch_matrix: list[list[int]],

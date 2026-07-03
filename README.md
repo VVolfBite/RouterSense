@@ -14,6 +14,9 @@ and curated result snapshots live under `archive/backup/`.
   Deployment smokes, distributed bring-up, and scheduler evaluation entrypoints.
 - `RS/docs/`
   Mainline technical docs and current design notes.
+- `RS/docs/handoff_next_codex.md`
+  Current operator handoff for the next Codex session. Read this first when
+  resuming work.
 - `RS/tests/`
   Mainline regression tests.
 - `RS/artifacts/`
@@ -61,6 +64,15 @@ The current mainline focus is the path from offline scheduler validation to
 real multi-GPU MoE communication execution under the `RS/` stack. Historical
 POC documents remain available for context, but they are not the source of
 truth for the deployment mainline.
+
+## Resume Point
+
+If a new Codex session needs to resume the project, start from:
+
+1. `README.md`
+2. `RS/docs/handoff_next_codex.md`
+3. `RS/docs/multiphase_global_matching_study.md`
+4. `RS/docs/phase0c_distributed_ep_contract.md`
 
 ## Current POC-Line1 Presets
 
