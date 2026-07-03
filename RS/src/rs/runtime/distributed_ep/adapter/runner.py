@@ -132,10 +132,14 @@ def execute_scheduled_inference(
     hidden_state_rows=None,
     plan_index: int = 0,
     max_waves: int | None = None,
+    transport_granularity: str = "wave",
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
     import torch  # type: ignore
+
+    if transport_granularity not in {"wave", "atomic"}:
+        raise ValueError(f"unsupported transport_granularity: {transport_granularity}")
 
     if not dispatch_plans:
         return {
@@ -271,7 +275,7 @@ def execute_scheduled_inference(
         transport = (
             ScheduledAllToAllTransport(
                 wave_executor,
-                split_into_micro_ops=(strategy_name != "U_gated_maxweight_matching_atomic"),
+                split_into_micro_ops=(transport_granularity == "atomic"),
             )
             if execution_mode == "scheduled_transport"
             else NativeAllToAllTransport(wave_executor)
@@ -343,6 +347,7 @@ def execute_scheduled_inference(
             },
             "wave_execution": {
                 "transport": transport.transport_name,
+                "transport_granularity": transport_granularity,
                 "dispatch_comm_ms": dispatch_exec.total_comm_ms,
                 "dispatch_pack_ms": dispatch_exec.total_pack_ms,
                 "dispatch_unpack_ms": dispatch_exec.total_unpack_ms,

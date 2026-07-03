@@ -181,6 +181,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--text-key", type=str, default="text")
     parser.add_argument("--precision", type=str, default="fp16")
     parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective", "scheduled_transport"], default="native_baseline")
+    parser.add_argument(
+        "--transport-granularity",
+        choices=["wave", "atomic"],
+        default="wave",
+        help="Transport granularity: 'wave' = one all_to_all per wave, 'atomic' = one all_to_all per transfer op. Independent of strategy.",
+    )
     parser.add_argument("--device-map", type=str, default=None)
     parser.add_argument("--max-memory-gb", type=str, default=None)
     parser.add_argument("--distributed-control-plane", action="store_true", default=False)
@@ -275,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             hidden_state_rows=hidden_state_rows,
             plan_index=plan_index,
             max_waves=(args.max_waves if args.max_waves > 0 else None),
+            transport_granularity=args.transport_granularity,
         )
         execution_wall_ms = (time.perf_counter() - execution_started) * 1000.0
         payload = {
@@ -321,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
                 "execution_mode": args.execution_mode,
                 "compute_mode": args.compute_mode,
                 "distributed_control_plane": args.distributed_control_plane,
+                "transport_granularity": args.transport_granularity,
                 "layer_id": layer_id,
                 "world_size": world_size,
                 "max_waves": args.max_waves,

@@ -201,7 +201,7 @@ def test_execute_scheduled_inference_uses_scheduled_transport(monkeypatch) -> No
         "verify_token_conservation",
         lambda *args, **kwargs: {"token_conservation_pass": True, "gate_weight_conservation_pass": True},
     )
-    monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", lambda executor: recorded)
+    monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", lambda executor, *, split_into_micro_ops: recorded)
 
     result = runner_module.execute_scheduled_inference(
         dispatch_plans=[dispatch_plan],
@@ -216,10 +216,74 @@ def test_execute_scheduled_inference_uses_scheduled_transport(monkeypatch) -> No
 
     assert result["execution_mode"] == "scheduled_transport"
     assert result["wave_execution"]["transport"] == "scheduled_all_to_all"
+    assert result["wave_execution"]["transport_granularity"] == "wave"
     assert [call["direction"] for call in recorded.calls] == ["dispatch", "combine"]
 
 
-def test_execute_scheduled_inference_keeps_atomic_strategy_wave_level(monkeypatch) -> None:
+def test_execute_scheduled_inference_respects_atomic_transport_granularity(monkeypatch) -> None:
+    strategy_result = _DummyStrategyResult(
+        schedule=[
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0},
+            {"phase": 1, "src_gpu": 1, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 0},
+        ]
+    )
+    dispatch_plan = DispatchPlan(layer_id=0, world_size=2, shards=[])
+    captured: dict[str, object] = {}
+
+    class _CapturingTransport(_RecordingTransport):
+        def __init__(self, executor, *, split_into_micro_ops: bool) -> None:
+            super().__init__()
+            captured["split_into_micro_ops"] = split_into_micro_ops
+
+    monkeypatch.setattr(runner_module, "get_strategy", lambda name: _DummyStrategy(strategy_result))
+    monkeypatch.setattr(
+        runner_module,
+        "scheduling_result_to_wave_schedule",
+        lambda *args, **kwargs: _DummyWaveBundle(
+            dispatch_waves=[object()],
+            combine_waves=[object()],
+            dispatch_token_indices=[[0]],
+            combine_token_indices=[[0]],
+        ),
+    )
+    monkeypatch.setattr(runner_module, "verify_wave_conservation", lambda *args, **kwargs: {"pass": True})
+    monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
+    monkeypatch.setattr(
+        runner_module,
+        "execute_native_baseline",
+        lambda **kwargs: type(
+            "Native",
+            (),
+            {
+                "final_output": torch.zeros((2, 4), dtype=torch.float16),
+                "combine_result": type("Combine", (), {"received_route_items": [], "total_comm_ms": 0.2})(),
+                "dispatch_result": type("Dispatch", (), {"total_comm_ms": 0.1})(),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_token_conservation",
+        lambda *args, **kwargs: {"token_conservation_pass": True, "gate_weight_conservation_pass": True},
+    )
+    monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", _CapturingTransport)
+
+    runner_module.execute_scheduled_inference(
+        dispatch_plans=[dispatch_plan],
+        rank=0,
+        world_size=2,
+        strategy_name="birkhoff",
+        hidden_size=4,
+        local_expert_weights=object(),
+        hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
+        execution_mode="scheduled_transport",
+        transport_granularity="atomic",
+    )
+
+    assert captured["split_into_micro_ops"] is True
+
+
+def test_execute_scheduled_inference_respects_wave_transport_granularity(monkeypatch) -> None:
     strategy_result = _DummyStrategyResult(
         schedule=[
             {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0},
@@ -276,6 +340,7 @@ def test_execute_scheduled_inference_keeps_atomic_strategy_wave_level(monkeypatc
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
         execution_mode="scheduled_transport",
+        transport_granularity="wave",
     )
 
     assert captured["split_into_micro_ops"] is False
