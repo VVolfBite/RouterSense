@@ -8,6 +8,7 @@
   - `wave`: one `all_to_all_single` per wave
   - `atomic`: one `all_to_all_single` per transfer op
 - The 64-sample fair benchmark matrix for `U_gated_maxweight_matching_atomic` and `birkhoff` has been completed.
+- `distributed_control_plane=true` no longer double-counts already-global matrices after the latest control-plane aggregation fix.
 
 ## N16 Fair Benchmark Matrix
 
@@ -22,12 +23,15 @@
 
 ### Important Note
 
-- `--distributed-control-plane` was requested in `reply.md`, but in the current implementation it double-counts already-global trace matrices and breaks correctness.
-- Real failure reproduced:
+- The original `distributed_control_plane=true` path was broken because each rank constructed a global matrix from the same full trace, then `all_reduce` summed those already-global matrices again.
+- Real failure that was reproduced before the fix:
   - `wave schedule over-consumed pair (0, 1) ... requested 156, available 78`
-- Therefore the fair benchmark matrix below was run with:
+- The control-plane path is now fixed by aggregating only each rank's local contribution matrix before `all_reduce`.
+- The fair benchmark matrix below was still run with:
   - `distributed_control_plane = false`
-- This keeps all four runs comparable and correct under the current code path.
+- Reason:
+  - those are the reference numbers already collected for the fair matrix
+  - the fix was validated afterward on real hardware with a dedicated smoke run
 
 ## Results Table
 
@@ -117,8 +121,20 @@ Conclusion:
   - `model-00007-of-00008.safetensors`
   - `model-00008-of-00008.safetensors`
 
+## Distributed Control-Plane Fix
+
+- Commit intent:
+  - local contribution matrices are now separated from global matrices in `execute_scheduled_inference`
+- Real post-fix smoke:
+  - strategy: `U_gated_maxweight_matching_atomic`
+  - granularity: `wave`
+  - sample count: `2`
+  - `distributed_control_plane = true`
+  - correctness: `pass`
+- Result file:
+  - `/tmp/rs_distributed_cp_fix_smoke/result.json`
+
 ## Next Immediate Actions
 
-- Fix `distributed_control_plane` semantics so it can be safely enabled for truly distributed matrix construction.
 - Extend the same fair matrix to `greedy`.
 - Finish remote Qwen shard backfill.
