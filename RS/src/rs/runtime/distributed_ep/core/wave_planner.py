@@ -8,6 +8,15 @@ from .manifest import DispatchPlan, RouteItem
 
 
 @dataclass
+class ScheduledTransferOp:
+    phase: int
+    wave_id: int
+    src_gpu: int
+    dst_gpu: int
+    size: int
+
+
+@dataclass
 class WaveSpec:
     wave_id: int
     phase: int
@@ -15,6 +24,8 @@ class WaveSpec:
     input_split_sizes: list[int]
     route_items_by_dst: dict[int, list[RouteItem]] = field(default_factory=dict)
     route_items_by_src: dict[int, list[RouteItem]] = field(default_factory=dict)
+    route_items_by_pair: dict[tuple[int, int], list[RouteItem]] = field(default_factory=dict)
+    scheduled_ops: list[ScheduledTransferOp] = field(default_factory=list)
 
     @property
     def total_send(self) -> int:
@@ -158,8 +169,18 @@ def _phase_entries_to_waves(
         if len(selected) != size:
             raise RuntimeError(
                 f"wave schedule over-consumed pair {pair} in phase {phase}: requested {size}, available {len(items) - offset}"
-            )
+        )
         pair_offsets[pair] += size
+        wave.route_items_by_pair.setdefault(pair, []).extend(selected)
+        wave.scheduled_ops.append(
+            ScheduledTransferOp(
+                phase=phase,
+                wave_id=wave_id,
+                src_gpu=src,
+                dst_gpu=dst,
+                size=size,
+            )
+        )
         if src == rank:
             wave.output_split_sizes[dst] += size
             wave.route_items_by_dst.setdefault(dst, []).extend(selected)

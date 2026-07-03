@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 
 from .manifest import DispatchPlan, RouteItem
-from .wave_planner import WaveSpec
+from .wave_planner import ScheduledTransferOp, WaveSpec
 
 
 @dataclass
@@ -191,12 +191,56 @@ class ScheduledAllToAllTransport(WaveTransportExecutor):
         token_buffer: torch.Tensor,
         hidden_size: int,
     ) -> WaveExecutionResult:
-        return self.executor.execute_waves(
-            wave_schedule,
+        timings: list[WaveTimingRecord] = []
+        received_route_items: list[RouteItem] = []
+        received_parts: list[torch.Tensor] = []
+        total_pack_ms = 0.0
+        total_comm_ms = 0.0
+        total_unpack_ms = 0.0
+        executed_steps = 0
+
+        for wave in wave_schedule:
+            pair_offsets: dict[tuple[int, int], int] = {}
+            for op_index, op in enumerate(wave.scheduled_ops):
+                micro_wave = _micro_wave_from_op(
+                    wave=wave,
+                    op=op,
+                    op_index=op_index,
+                    rank=self.executor.rank,
+                    world_size=self.executor.world_size,
+                    pair_offsets=pair_offsets,
+                )
+                result = self.executor.execute_waves(
+                    [micro_wave],
+                    phase=phase,
+                    direction=direction,
+                    token_buffer=token_buffer,
+                    hidden_size=hidden_size,
+                )
+                executed_steps += 1
+                total_pack_ms += result.total_pack_ms
+                total_comm_ms += result.total_comm_ms
+                total_unpack_ms += result.total_unpack_ms
+                timings.extend(result.timings)
+                received_route_items.extend(result.received_route_items)
+                if result.received_tensor is not None and result.received_tensor.numel() > 0:
+                    received_parts.append(result.received_tensor)
+
+        received_tensor = (
+            torch.cat(received_parts, dim=0)
+            if received_parts
+            else torch.empty((0, hidden_size), dtype=self.executor.dtype, device=self.executor.device)
+        )
+        return WaveExecutionResult(
             phase=phase,
             direction=direction,
-            token_buffer=token_buffer,
-            hidden_size=hidden_size,
+            total_comm_ms=total_comm_ms,
+            total_pack_ms=total_pack_ms,
+            total_unpack_ms=total_unpack_ms,
+            wave_count=executed_steps,
+            timings=timings,
+            received_route_items=received_route_items,
+            received_tensor=received_tensor,
         )
 
 
@@ -338,6 +382,44 @@ def _ordered_route_items_from_wave(wave: WaveSpec, *, direction: str) -> list[Ro
             items.extend(wave.route_items_by_src[peer])
         return items
     raise ValueError(f"unsupported direction: {direction}")
+
+
+def _micro_wave_from_op(
+    *,
+    wave: WaveSpec,
+    op: ScheduledTransferOp,
+    op_index: int,
+    rank: int,
+    world_size: int,
+    pair_offsets: dict[tuple[int, int], int],
+) -> WaveSpec:
+    pair = (int(op.src_gpu), int(op.dst_gpu))
+    pair_items = wave.route_items_by_pair.get(pair, [])
+    offset = pair_offsets.get(pair, 0)
+    selected = pair_items[offset : offset + int(op.size)]
+    pair_offsets[pair] = offset + int(op.size)
+
+    output_split_sizes = [0] * world_size
+    input_split_sizes = [0] * world_size
+    route_items_by_dst: dict[int, list[RouteItem]] = {}
+    route_items_by_src: dict[int, list[RouteItem]] = {}
+    if int(op.src_gpu) == rank:
+        output_split_sizes[int(op.dst_gpu)] = int(op.size)
+        route_items_by_dst[int(op.dst_gpu)] = list(selected)
+    if int(op.dst_gpu) == rank:
+        input_split_sizes[int(op.src_gpu)] = int(op.size)
+        route_items_by_src[int(op.src_gpu)] = list(selected)
+
+    return WaveSpec(
+        wave_id=wave.wave_id * 1000 + op_index,
+        phase=wave.phase,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        route_items_by_dst=route_items_by_dst,
+        route_items_by_src=route_items_by_src,
+        route_items_by_pair={pair: list(selected)},
+        scheduled_ops=[op],
+    )
 
 
 def _aggregate_token_outputs(
