@@ -20,17 +20,22 @@ from rs.runtime.distributed_ep.adapter.runner import (
     build_distributed_runner_plan,
     execute_scheduled_inference,
 )
+from rs.topology import load_inventory, resolve_preferred_model_path
 from rs.trace import collect_full_sequence_trace
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run native baseline vs wave-collective OLMoE execution.")
-    parser.add_argument("--model", type=str, default="allenai/OLMoE-1B-7B-0924")
+    parser.add_argument("--model", type=str, default="allenai/OLMoE-1B-7B-0924-Instruct")
+    parser.add_argument("--inventory", type=str, default=None)
+    parser.add_argument("--node-name", type=str, default=None)
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--strategy", type=str, default="U_gated_maxweight_matching")
     parser.add_argument("--prompt", type=str, default="Explain mixture-of-experts routing in one paragraph.")
     parser.add_argument("--precision", type=str, default="fp16")
     parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective", "scheduled_transport"], default="native_baseline")
+    parser.add_argument("--device-map", type=str, default=None)
+    parser.add_argument("--max-memory-gb", type=str, default=None)
     parser.add_argument("--compute-mode", choices=["actual_olmoe_expert", "simulated_delay"], default="actual_olmoe_expert")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--layer-index", type=int, default=0, help="Index into MoE layer ids, not raw transformer layer id.")
@@ -47,11 +52,20 @@ def main(argv: list[str] | None = None) -> int:
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
 
+    model_path = args.model_path
+    if model_path is None and args.inventory:
+        inventory = load_inventory(Path(args.inventory))
+        candidate = resolve_preferred_model_path(inventory, args.model, preferred_node_name=args.node_name)
+        if candidate is not None:
+            model_path = str(candidate)
+
     model, tokenizer, _, _, _ = load_model_and_tokenizer(
         model_id=args.model,
-        model_path=args.model_path,
+        model_path=model_path,
         precision=args.precision,
         device_index=local_rank,
+        device_map=args.device_map,
+        max_memory_gb=args.max_memory_gb,
     )
     trace = collect_full_sequence_trace(
         model,
@@ -103,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         "rank": rank,
         "world_size": world_size,
         "model": args.model,
+        "model_path": model_path,
         "execution_mode": args.execution_mode,
         "compute_mode": args.compute_mode,
         "strategy": args.strategy,
