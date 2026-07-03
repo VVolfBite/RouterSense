@@ -64,6 +64,10 @@ def scheduling_result_to_wave_schedule(
         schedule = []
     dispatch_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 0], max_waves=max_waves)
     combine_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 1], max_waves=max_waves)
+    if not dispatch_entries:
+        dispatch_entries = _default_phase_entries_from_plan(dispatch_plan=dispatch_plan, phase=0, max_waves=max_waves)
+    if not combine_entries:
+        combine_entries = _default_phase_entries_from_plan(dispatch_plan=dispatch_plan, phase=1, max_waves=max_waves)
     dispatch_waves = _phase_entries_to_waves(
         dispatch_entries,
         dispatch_plan=dispatch_plan,
@@ -97,6 +101,31 @@ def _cap_wave_entries(entries: list[dict[str, Any]], *, max_waves: int | None) -
             new_entry["wave_id"] = max_waves - 1
         remapped.append(new_entry)
     return remapped
+
+
+def _default_phase_entries_from_plan(
+    *,
+    dispatch_plan: DispatchPlan,
+    phase: int,
+    max_waves: int | None,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    wave_id = 0 if max_waves is None or max_waves > 0 else 0
+    for (src, dst), items in sorted(_route_items_by_pair(dispatch_plan=dispatch_plan, phase=phase).items()):
+        size = len(items)
+        if size <= 0:
+            continue
+        entries.append(
+            {
+                "phase": phase,
+                "wave_id": wave_id,
+                "src_gpu": src,
+                "dst_gpu": dst,
+                "size": size,
+                "served_volume": size,
+            }
+        )
+    return entries
 
 
 def build_token_wave_mapping(waves: list[WaveSpec], *, direction: str) -> list[list[int]]:

@@ -401,6 +401,7 @@ def test_execute_scheduled_inference_passes_fallback_schedule_into_wave_planner(
         execution_mode="scheduled_transport",
     )
 
-    assert captured["schedule"] == [
+    phase0_entries = [entry for entry in captured["schedule"] if int(entry["phase"]) == 0]
+    assert phase0_entries == [
         {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 3},
     ]

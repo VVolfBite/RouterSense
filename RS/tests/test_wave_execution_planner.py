@@ -108,6 +108,21 @@ def test_scheduling_result_to_wave_schedule_respects_max_waves() -> None:
     assert combine_report["pass"] is True
 
 
+def test_scheduling_result_to_wave_schedule_falls_back_to_plan_when_schedule_missing() -> None:
+    plan = _sample_dispatch_plan()
+    result = DummySchedulingResult(schedule=[])
+
+    bundle = scheduling_result_to_wave_schedule(result, dispatch_plan=plan, rank=0, world_size=4)
+
+    dispatch_report = verify_wave_conservation(bundle.dispatch_waves, rank=0, dispatch_plan=plan, phase=0)
+    combine_report = verify_wave_conservation(bundle.combine_waves, rank=0, dispatch_plan=plan, phase=1)
+
+    assert len(bundle.dispatch_waves) == 1
+    assert len(bundle.combine_waves) == 1
+    assert dispatch_report["pass"] is True
+    assert combine_report["pass"] is True
+
+
 def test_verify_token_conservation_checks_gate_weights() -> None:
     import torch
 

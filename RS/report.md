@@ -2,15 +2,68 @@
 
 ## Current Status
 
-- Real 2-node distributed execution is working on the current PPIO setup.
-- Scheduler strategy and transport execution granularity are now decoupled.
-- `transport_granularity` is now an explicit runtime dimension:
+- Real 2-node distributed OLMoE execution is working on the current PPIO setup.
+- Scheduler injection into the real cross-node EP transport is working.
+- `transport_granularity` is now a real runtime axis:
   - `wave`: one `all_to_all_single` per wave
   - `atomic`: one `all_to_all_single` per transfer op
-- The 64-sample fair benchmark matrix for `U_gated_maxweight_matching_atomic` and `birkhoff` has been completed.
-- `distributed_control_plane=true` no longer double-counts already-global matrices after the latest control-plane aggregation fix.
+- `distributed_control_plane=true` is working after the matrix aggregation fix.
+- `greedy` now also works in real distributed runs even when the strategy returns only a scalar makespan and no explicit schedule.
 
-## N16 Fair Benchmark Matrix
+## Critical Fixes In This Round
+
+### 1. Distributed control-plane aggregation fix
+
+Previous bug:
+
+- each rank built a full global matrix from the same full trace
+- `all_reduce` then summed already-global matrices again
+- real failure:
+  - `wave schedule over-consumed pair (0, 1) ... requested 156, available 78`
+
+Fix:
+
+- non-distributed path still uses the full global matrix
+- distributed path now builds only the local rank contribution matrix before `all_reduce`
+
+Relevant commits:
+
+- `b8dba1c` `Fix distributed control-plane matrix aggregation`
+- `d46669d` `Document distributed control-plane fix`
+
+### 2. Fallback schedule bridge fix
+
+Previous bug:
+
+- `execute_scheduled_inference()` computed a fallback schedule for strategies like `greedy`
+- but wave conversion still consumed the original empty `result.schedule`
+
+Fix:
+
+- wave conversion now receives the resolved effective schedule
+
+Related commit:
+
+- `a469e20` `Fix fallback schedule wave conversion`
+
+### 3. Wave-planner empty-phase fallback
+
+Previous bug:
+
+- some scalar-only strategies could still reach wave conversion with empty per-phase entries
+- real failure:
+  - `RuntimeError: incomplete wave allocation for phase 0: {(0, 1): 78, (1, 0): 81}`
+
+Fix:
+
+- if a phase has no schedule entries, `wave_planner` now synthesizes a one-wave default schedule directly from `DispatchPlan`
+
+Status:
+
+- targeted local regression checks passed
+- real `greedy + wave` run now passes on 2 nodes
+
+## N17 Real 2-Node 64-Sample Matrix
 
 ### Control Variables
 
@@ -18,97 +71,67 @@
 - Prompt file: `artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
 - Sample limit: `64`
 - Layer index: `0`
-- Execution mode: `scheduled_transport`
 - World size: `2`
+- `distributed_control_plane = true`
 
-### Important Note
+### Result Table
 
-- The original `distributed_control_plane=true` path was broken because each rank constructed a global matrix from the same full trace, then `all_reduce` summed those already-global matrices again.
-- Real failure that was reproduced before the fix:
-  - `wave schedule over-consumed pair (0, 1) ... requested 156, available 78`
-- The control-plane path is now fixed by aggregating only each rank's local contribution matrix before `all_reduce`.
-- The fair benchmark matrix below was still run with:
-  - `distributed_control_plane = false`
-- Reason:
-  - those are the reference numbers already collected for the fair matrix
-  - the fix was validated afterward on real hardware with a dedicated smoke run
-
-## Results Table
-
-| Strategy + Granularity | samples/s | tokens/s | mean scheduled comm (ms) | P50 (ms) | P95 (ms) | mean native (ms) | planner (ms) | correctness |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| `U_gated_maxweight_matching_atomic + wave` | `5.3156` | `170.1835` | `8.1347` | `1.9395` | `17.0423` | `2.0841` | `0.2711` | `pass` |
-| `U_gated_maxweight_matching_atomic + atomic` | `5.1954` | `166.3346` | `11.2786` | `2.8101` | `18.7167` | `1.9624` | `0.2714` | `pass` |
-| `birkhoff + wave` | `5.2884` | `169.3106` | `10.0073` | `2.5518` | `18.3399` | `2.0717` | `0.2442` | `pass` |
-| `birkhoff + atomic` | `5.3298` | `170.6366` | `9.2986` | `2.7351` | `12.0308` | `1.9136` | `0.2475` | `pass` |
-
-## Result Files
-
-- `U_gated_maxweight_matching_atomic + wave`
-  - `/tmp/rs_fair_benchmark/U_gated_maxweight_matching_atomic_wave/result.json`
-- `U_gated_maxweight_matching_atomic + atomic`
-  - `/tmp/rs_fair_benchmark/U_gated_maxweight_matching_atomic_atomic/result.json`
-- `birkhoff + wave`
-  - `/tmp/rs_fair_benchmark/birkhoff_wave/result.json`
-- `birkhoff + atomic`
-  - `/tmp/rs_fair_benchmark/birkhoff_atomic/result.json`
+| Strategy | Mode | Granularity | samples/s | mean scheduled comm (ms) | mean native comm (ms) | planner (ms) | control plane (ms) | correctness |
+|---|---|---|---:|---:|---:|---:|---:|---|
+| `U_gated_maxweight_matching_atomic` | `scheduled_transport` | `wave` | `5.3618` | `3.3961` | `2.0510` | `0.2686` | `8.2602` | `pass` |
+| `U_gated_maxweight_matching_atomic` | `scheduled_transport` | `atomic` | `5.2359` | `4.0536` | `1.9581` | `0.2716` | `9.8080` | `pass` |
+| `birkhoff` | `scheduled_transport` | `wave` | `5.3877` | `2.7490` | `2.0342` | `0.2456` | `7.9196` | `pass` |
+| `birkhoff` | `scheduled_transport` | `atomic` | `5.3432` | `3.8574` | `1.9559` | `0.2512` | `8.4458` | `pass` |
+| `greedy` | `scheduled_transport` | `wave` | `5.0007` | `3.2339` | `2.1309` | `0.0771` | `13.5766` | `pass` |
+| `greedy` | `scheduled_transport` | `atomic` | `5.3247` | `3.3229` | `2.0681` | `0.0802` | `7.2513` | `pass` |
+| `greedy` | `native_baseline` | `wave` | `5.7405` | `0.0000` | `3.4101` | `0.0770` | `6.3912` | `pass` |
 
 ## Interpretation
 
-### Algorithm Quality Comparison
+### Main conclusion
 
-Use matched granularity only.
+- Real distributed deployment is now working end-to-end.
+- Scheduler injection is correct.
+- On this current setup, scheduled transport does **not** beat native baseline on throughput.
 
-- `wave vs wave`
-  - `atomic` has lower mean scheduled comm than `birkhoff`
-    - `8.13 ms` vs `10.01 ms`
-  - `atomic` also has lower P50 and P95 comm
-    - P50: `1.94 ms` vs `2.55 ms`
-    - P95: `17.04 ms` vs `18.34 ms`
-  - Throughput is slightly higher for `atomic`
-    - `5.3156` vs `5.2884 samples/s`
-- `atomic vs atomic`
-  - `birkhoff` has lower mean scheduled comm than `atomic`
-    - `9.30 ms` vs `11.28 ms`
-  - `birkhoff` has much lower P95 comm
-    - `12.03 ms` vs `18.72 ms`
-  - Throughput is slightly higher for `birkhoff`
-    - `5.3298` vs `5.1954 samples/s`
+### What changed after the control-plane fix
 
-Conclusion:
-- Under `wave` execution, `U_gated_maxweight_matching_atomic` currently looks slightly better.
-- Under `atomic` execution, `birkhoff` currently looks slightly better.
-- So the algorithm ranking is not invariant to transport granularity, which means runtime execution shape is still materially interacting with scheduler quality.
+Before the fix, scheduled comm looked like roughly `8-11 ms`.
 
-### Granularity Cost Comparison
+After the fix, scheduled comm dropped to roughly:
 
-Use matched strategy only.
+- `2.75-3.40 ms` for `wave`
+- `3.32-4.05 ms` for `atomic`
 
-- `U_gated_maxweight_matching_atomic`
-  - `wave` beats `atomic` on scheduled comm
-    - `8.13 ms` vs `11.28 ms`
-  - `wave` also wins on throughput
-    - `5.3156` vs `5.1954 samples/s`
-- `birkhoff`
-  - `atomic` beats `wave` on scheduled comm
-    - `9.30 ms` vs `10.01 ms`
-  - `atomic` also slightly wins on throughput
-    - `5.3298` vs `5.2884 samples/s`
+This means the earlier matrix was not trustworthy for runtime performance comparison.
 
-Conclusion:
-- Granularity cost is strategy-dependent.
-- There is no universal “wave is always better” or “atomic is always better” conclusion from this matrix.
+### What the current data says
 
-## Control-Variable Check
+- Best scheduled throughput in this matrix:
+  - `birkhoff + wave` at `5.3877 samples/s`
+- Best overall throughput:
+  - `native_baseline` at `5.7405 samples/s`
+- Best scheduled mean communication:
+  - `birkhoff + wave` at `2.7490 ms`
+- `greedy` is now fully operational, but it is not outperforming the stronger schedulers.
 
-- Native comm means across all four runs:
-  - `2.0841`, `1.9624`, `2.0717`, `1.9136`
-- Range relative to minimum:
-  - about `8.91%`
+### Practical interpretation
 
-Conclusion:
-- Native comm variation is below the `20%` acceptance threshold.
-- Hardware/network control is stable enough for this benchmark set.
+- We have succeeded at the first real objective:
+  - verify that this environment can actually do distributed EP inference with custom scheduling logic
+- We have **not** yet shown a performance win over native transport at 2 nodes / OLMoE-1B / 64 samples.
+- Current evidence still supports the earlier hypothesis:
+  - this scale is probably too small for POC1-style schedule quality gains to dominate NCCL launch cost, packing overhead, and runtime noise
+
+## Result Files
+
+- `/tmp/rs_fair_benchmark_cp/U_gated_maxweight_matching_atomic_wave/result.json`
+- `/tmp/rs_fair_benchmark_cp/U_gated_maxweight_matching_atomic_atomic/result.json`
+- `/tmp/rs_fair_benchmark_cp/birkhoff_wave/result.json`
+- `/tmp/rs_fair_benchmark_cp/birkhoff_atomic/result.json`
+- `/tmp/rs_fair_benchmark_cp/greedy_wave/result.json`
+- `/tmp/rs_fair_benchmark_cp/greedy_atomic/result.json`
+- `/tmp/rs_fair_benchmark_cp/native_baseline/result.json`
 
 ## Qwen Download Status
 
@@ -116,25 +139,17 @@ Conclusion:
 - Local path: `/root/model-cache/Qwen1.5-MoE-A2.7B`
 - Remote path: `/vllm-workspace/models/Qwen1.5-MoE-A2.7B`
 - Local model is complete.
-- Remote model currently has metadata plus shards `00001`-`00006`.
-- Remote still needs:
+- Remote model is still incomplete.
+- Missing remote shards:
   - `model-00007-of-00008.safetensors`
   - `model-00008-of-00008.safetensors`
 
-## Distributed Control-Plane Fix
+## Recommended Next Steps
 
-- Commit intent:
-  - local contribution matrices are now separated from global matrices in `execute_scheduled_inference`
-- Real post-fix smoke:
-  - strategy: `U_gated_maxweight_matching_atomic`
-  - granularity: `wave`
-  - sample count: `2`
-  - `distributed_control_plane = true`
-  - correctness: `pass`
-- Result file:
-  - `/tmp/rs_distributed_cp_fix_smoke/result.json`
-
-## Next Immediate Actions
-
-- Extend the same fair matrix to `greedy`.
-- Finish remote Qwen shard backfill.
+- Run the same matrix at larger scale:
+  - `sample_limit = 128`
+  - `sample_limit = 256`
+- Keep `native_baseline` in every batch-size matrix.
+- After that, decide whether to:
+  - stay on OLMoE for scaling experiments
+  - or switch to a larger MoE model where the communication surface is bigger.
