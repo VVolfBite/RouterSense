@@ -344,3 +344,63 @@ def test_execute_scheduled_inference_respects_wave_transport_granularity(monkeyp
     )
 
     assert captured["split_into_micro_ops"] is False
+
+
+def test_execute_scheduled_inference_passes_fallback_schedule_into_wave_planner(monkeypatch) -> None:
+    strategy_result = _DummyStrategyResult(schedule=[])
+    dispatch_plan = DispatchPlan(
+        layer_id=0,
+        world_size=2,
+        shards=[
+            type("Shard", (), {"source_rank": 0, "destination_rank": 1, "rows": 3, "route_items": []})(),
+        ],
+    )
+    captured: dict[str, object] = {}
+
+    def _capture_wave_schedule(scheduling_result, **kwargs):
+        captured["schedule"] = list(scheduling_result.schedule)
+        return _DummyWaveBundle(
+            dispatch_waves=[object()],
+            combine_waves=[object()],
+            dispatch_token_indices=[[0]],
+            combine_token_indices=[[0]],
+        )
+
+    monkeypatch.setattr(runner_module, "get_strategy", lambda name: _DummyStrategy(strategy_result))
+    monkeypatch.setattr(runner_module, "scheduling_result_to_wave_schedule", _capture_wave_schedule)
+    monkeypatch.setattr(runner_module, "verify_wave_conservation", lambda *args, **kwargs: {"pass": True})
+    monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
+    monkeypatch.setattr(
+        runner_module,
+        "execute_native_baseline",
+        lambda **kwargs: type(
+            "Native",
+            (),
+            {
+                "final_output": torch.zeros((2, 4), dtype=torch.float16),
+                "combine_result": type("Combine", (), {"received_route_items": [], "total_comm_ms": 0.2})(),
+                "dispatch_result": type("Dispatch", (), {"total_comm_ms": 0.1})(),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_token_conservation",
+        lambda *args, **kwargs: {"token_conservation_pass": True, "gate_weight_conservation_pass": True},
+    )
+    monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", lambda executor, *, split_into_micro_ops: _RecordingTransport())
+
+    runner_module.execute_scheduled_inference(
+        dispatch_plans=[dispatch_plan],
+        rank=0,
+        world_size=2,
+        strategy_name="greedy",
+        hidden_size=4,
+        local_expert_weights=object(),
+        hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
+        execution_mode="scheduled_transport",
+    )
+
+    assert captured["schedule"] == [
+        {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 3},
+    ]

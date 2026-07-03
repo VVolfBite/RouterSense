@@ -50,6 +50,13 @@ class DistributedRunnerPlan:
     manifest: dict[str, Any]
 
 
+@dataclass
+class _ResolvedSchedulingResult:
+    makespan: float
+    solve_time_ms: float
+    schedule: list[dict[str, Any]]
+
+
 def build_distributed_runner_plan(
     *,
     model: Any,
@@ -208,6 +215,11 @@ def execute_scheduled_inference(
         next_dispatch_matrix,
         world_size,
     )
+    resolved_result = _ResolvedSchedulingResult(
+        makespan=result.makespan,
+        solve_time_ms=result.solve_time_ms,
+        schedule=schedule,
+    )
 
     if execution_mode in {"native_baseline", "wave_collective", "scheduled_transport"}:
         if hidden_state_rows is None:
@@ -267,7 +279,7 @@ def execute_scheduled_inference(
             }
 
         bundle = scheduling_result_to_wave_schedule(
-            result,
+            resolved_result,
             dispatch_plan=active_plan,
             rank=rank,
             world_size=world_size,
