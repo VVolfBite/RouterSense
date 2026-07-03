@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective", "scheduled_transport"], default="native_baseline")
     parser.add_argument("--device-map", type=str, default=None)
     parser.add_argument("--max-memory-gb", type=str, default=None)
+    parser.add_argument("--distributed-control-plane", action="store_true", default=False)
     parser.add_argument("--compute-mode", choices=["actual_olmoe_expert", "simulated_delay"], default="actual_olmoe_expert")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--layer-index", type=int, default=0, help="Index into MoE layer ids, not raw transformer layer id.")
@@ -105,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         strategy_name=args.strategy,
         hidden_size=int(runner_plan.adapter.get("hidden_size", hidden_state_rows.shape[-1])),
         expert_compute_delay=args.expert_compute_delay if args.compute_mode == "simulated_delay" else 0.0,
-        use_distributed=True,
+        use_distributed=args.distributed_control_plane,
         execution_mode=args.execution_mode,
         local_expert_weights=runner_plan.local_expert_weight_bundle,
         hidden_state_rows=hidden_state_rows,
@@ -137,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
                 "strategy": args.strategy,
                 "execution_mode": args.execution_mode,
                 "compute_mode": args.compute_mode,
+                "distributed_control_plane": args.distributed_control_plane,
                 "layer_id": layer_id,
                 "world_size": world_size,
                 "max_waves": args.max_waves,
