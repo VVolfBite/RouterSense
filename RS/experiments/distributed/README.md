@@ -35,3 +35,19 @@ Current compatibility shims:
   Scheduler-facing execution experiment harness.
 - `future_multinode_smoke.py`
   Dry-run only torchrun contract rendering.
+
+## Real Two-Node Bring-Up
+
+Use `scripts/run_real_cluster_wave.sh` to launch rank 0 remotely and rank 1 locally against a shared inventory.
+
+Example:
+
+```bash
+RSSH_PASSWORD='...' \
+bash scripts/run_real_cluster_wave.sh \
+  deploy/inventory/hosts.ppio.current.yaml \
+  U_gated_maxweight_matching_atomic \
+  scheduled_transport
+```
+
+The script copies the rank-0 JSON result and both logs back under `/tmp/rs_wave_runs/<run-id>/`.
