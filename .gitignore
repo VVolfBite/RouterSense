@@ -51,6 +51,7 @@ RS/artifacts/**/auxiliary/
 RS/artifacts/**/*.pt
 RS/artifacts/**/trace.jsonl
 RS/artifacts/**/prediction_rows.json
+RS/artifacts/deployment/
 archive/backup/**/auxiliary/
 archive/backup/**/*.pt
 archive/backup/**/trace.jsonl
@@ -65,6 +66,15 @@ archive/backup/**/prediction_rows.json
 !deploy/inventory/hosts.example.yaml
 !deploy/inventory/hosts.local.yaml.example
 deploy/inventory/hosts.local.yaml
+deploy/inventory/*.local.yaml
+!deploy/inventory/*.local.yaml.example
+!RS/deploy/inventory/
+!RS/deploy/inventory/README.md
+!RS/deploy/inventory/hosts.example.yaml
+!RS/deploy/inventory/hosts.local.yaml.example
+RS/deploy/inventory/hosts.local.yaml
+RS/deploy/inventory/*.local.yaml
+!RS/deploy/inventory/*.local.yaml.example
 !deploy/scripts/
 !deploy/scripts/*.sh
 !deploy/scripts/*.py
