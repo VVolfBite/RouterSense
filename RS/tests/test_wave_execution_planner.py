@@ -9,6 +9,7 @@ from routesense.runtime.distributed_ep.core import (
     build_token_wave_mapping,
     scheduling_result_to_wave_schedule,
     verify_wave_conservation,
+    verify_token_conservation,
 )
 
 
@@ -82,3 +83,59 @@ def test_build_token_wave_mapping_covers_expected_tokens() -> None:
     combine_send = build_token_wave_mapping(bundle.combine_waves, direction="send")
     assert dispatch_send == [[0, 1], [2]]
     assert combine_send == [[3], []]
+
+
+def test_scheduling_result_to_wave_schedule_respects_max_waves() -> None:
+    plan = _sample_dispatch_plan()
+    result = DummySchedulingResult(
+        schedule=[
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 0},
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "size": 1, "served_volume": 1, "wave_id": 1},
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 2, "size": 1, "served_volume": 1, "wave_id": 2},
+            {"phase": 0, "src_gpu": 3, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 2},
+            {"phase": 1, "src_gpu": 1, "dst_gpu": 0, "size": 2, "served_volume": 2, "wave_id": 0},
+            {"phase": 1, "src_gpu": 2, "dst_gpu": 0, "size": 1, "served_volume": 1, "wave_id": 2},
+            {"phase": 1, "src_gpu": 0, "dst_gpu": 3, "size": 1, "served_volume": 1, "wave_id": 1},
+        ]
+    )
+    bundle = scheduling_result_to_wave_schedule(result, dispatch_plan=plan, rank=0, world_size=4, max_waves=2)
+    assert len(bundle.dispatch_waves) == 2
+    assert len(bundle.combine_waves) == 2
+    dispatch_report = verify_wave_conservation(bundle.dispatch_waves, rank=0, dispatch_plan=plan, phase=0)
+    combine_report = verify_wave_conservation(bundle.combine_waves, rank=0, dispatch_plan=plan, phase=1)
+    assert dispatch_report["pass"] is True
+    assert combine_report["pass"] is True
+
+
+def test_verify_token_conservation_checks_gate_weights() -> None:
+    import torch
+
+    plan = _sample_dispatch_plan()
+    native = torch.ones((4, 2), dtype=torch.float32)
+    wave = torch.ones((4, 2), dtype=torch.float32)
+    native_items = [
+        _route_item(0, origin=0, destination=1, expert=10),
+        _route_item(1, origin=0, destination=1, expert=10),
+    ]
+    wave_items = [
+        _route_item(0, origin=0, destination=1, expert=10),
+        _route_item(1, origin=0, destination=1, expert=10),
+    ]
+    report = verify_token_conservation(
+        native,
+        wave,
+        plan,
+        native_route_items=native_items,
+        wave_route_items=wave_items,
+    )
+    assert report["gate_weight_conservation_pass"] is True
+
+    wave_items[1].routing_weight = 0.5
+    report = verify_token_conservation(
+        native,
+        wave,
+        plan,
+        native_route_items=native_items,
+        wave_route_items=wave_items,
+    )
+    assert report["gate_weight_conservation_pass"] is False

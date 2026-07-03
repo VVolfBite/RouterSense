@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 import torch
@@ -17,6 +18,8 @@ class WaveTimingRecord:
     pack_ms: float
     comm_ms: float
     unpack_ms: float
+    cpu_pack_ms: float = 0.0
+    cpu_unpack_ms: float = 0.0
 
 
 @dataclass
@@ -67,12 +70,9 @@ class CollectiveWaveExecutor:
         total_comm_ms = 0.0
         total_unpack_ms = 0.0
         for wave in wave_schedule:
-            pack_start = torch.cuda.Event(enable_timing=True)
-            comm_start = torch.cuda.Event(enable_timing=True)
-            comm_end = torch.cuda.Event(enable_timing=True)
-            unpack_end = torch.cuda.Event(enable_timing=True)
-
-            pack_start.record()
+            pack_start, comm_start, comm_end, unpack_end = _make_events(self.device)
+            _record_event(pack_start)
+            cpu_pack_start = time.perf_counter()
             input_tensor = _pack_wave_tensor(
                 wave=wave,
                 rank=self.rank,
@@ -81,30 +81,35 @@ class CollectiveWaveExecutor:
                 dtype=self.dtype,
                 device=self.device,
             )
+            cpu_pack_ms = (time.perf_counter() - cpu_pack_start) * 1000.0
             recv_rows = int(sum(wave.input_split_sizes))
             output_tensor = torch.empty(recv_rows * hidden_size, dtype=self.dtype, device=self.device)
-            comm_start.record()
+            _record_event(comm_start)
             dist.all_to_all_single(
                 output_tensor,
                 input_tensor,
                 output_split_sizes=[int(value) * hidden_size for value in wave.input_split_sizes],
                 input_split_sizes=[int(value) * hidden_size for value in wave.output_split_sizes],
             )
-            comm_end.record()
-            unpack_end.record()
-            torch.cuda.synchronize(self.device)
+            _record_event(comm_end)
+            cpu_unpack_start = time.perf_counter()
+            unpacked = torch.empty((0, hidden_size), dtype=self.dtype, device=self.device)
+            if recv_rows > 0:
+                unpacked = output_tensor.view(recv_rows, hidden_size).clone()
+                received_parts.append(unpacked)
+            cpu_unpack_ms = (time.perf_counter() - cpu_unpack_start) * 1000.0
+            _record_event(unpack_end)
+            _sync_device(self.device)
 
-            pack_ms = float(pack_start.elapsed_time(comm_start))
-            comm_ms = float(comm_start.elapsed_time(comm_end))
-            unpack_ms = float(comm_end.elapsed_time(unpack_end))
+            pack_ms = _elapsed_ms(pack_start, comm_start)
+            comm_ms = _elapsed_ms(comm_start, comm_end)
+            unpack_ms = _elapsed_ms(comm_end, unpack_end)
             total_pack_ms += pack_ms
             total_comm_ms += comm_ms
             total_unpack_ms += unpack_ms
-            timings.append(WaveTimingRecord(wave.wave_id, pack_ms, comm_ms, unpack_ms))
+            timings.append(WaveTimingRecord(wave.wave_id, pack_ms, comm_ms, unpack_ms, cpu_pack_ms, cpu_unpack_ms))
             recv_items = _ordered_route_items_from_wave(wave, direction="recv")
             received_route_items.extend(recv_items)
-            if recv_rows > 0:
-                received_parts.append(output_tensor.view(recv_rows, hidden_size))
 
         received_tensor = (
             torch.cat(received_parts, dim=0) if received_parts else torch.empty((0, hidden_size), dtype=self.dtype, device=self.device)
@@ -176,15 +181,23 @@ def verify_token_conservation(
     native_output: torch.Tensor,
     wave_output: torch.Tensor,
     dispatch_plan: DispatchPlan,
+    *,
+    native_route_items: list[RouteItem] | None = None,
+    wave_route_items: list[RouteItem] | None = None,
 ) -> dict[str, Any]:
     import torch.nn.functional as F
 
     max_abs = float((native_output - wave_output).abs().max().item()) if native_output.numel() else 0.0
     mean_abs = float((native_output - wave_output).abs().mean().item()) if native_output.numel() else 0.0
     cosine = float(F.cosine_similarity(native_output.flatten(), wave_output.flatten(), dim=0).item()) if native_output.numel() else 1.0
+    gate_weight_pass = True
+    if native_route_items is not None and wave_route_items is not None:
+        native_weights = sorted((int(item.token_flat_index), float(item.routing_weight)) for item in native_route_items)
+        wave_weights = sorted((int(item.token_flat_index), float(item.routing_weight)) for item in wave_route_items)
+        gate_weight_pass = native_weights == wave_weights
     return {
         "token_conservation_pass": tuple(native_output.shape) == tuple(wave_output.shape),
-        "gate_weight_conservation_pass": dispatch_plan.total_cross_node_routes() >= 0,
+        "gate_weight_conservation_pass": gate_weight_pass,
         "max_abs_error": max_abs,
         "mean_abs_error": mean_abs,
         "cosine_similarity": cosine,
@@ -267,3 +280,30 @@ def _aggregate_token_outputs(
     for row_index, item in enumerate(route_items):
         output[int(item.token_flat_index)] += received_tensor[row_index]
     return output
+
+
+def _make_events(device: torch.device):
+    if device.type != "cuda":
+        return None, None, None, None
+    return (
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+    )
+
+
+def _record_event(event) -> None:
+    if event is not None:
+        event.record()
+
+
+def _elapsed_ms(start_event, end_event) -> float:
+    if start_event is None or end_event is None:
+        return 0.0
+    return float(start_event.elapsed_time(end_event))
+
+
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)

@@ -39,10 +39,11 @@ def scheduling_result_to_wave_schedule(
     dispatch_plan: DispatchPlan,
     rank: int,
     world_size: int,
+    max_waves: int | None = None,
 ) -> WaveScheduleBundle:
     schedule = list(getattr(scheduling_result, "schedule", None) or scheduling_result.get("schedule", []))
-    dispatch_entries = [entry for entry in schedule if int(entry.get("phase", 0)) == 0]
-    combine_entries = [entry for entry in schedule if int(entry.get("phase", 0)) == 1]
+    dispatch_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 0], max_waves=max_waves)
+    combine_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 1], max_waves=max_waves)
     dispatch_waves = _phase_entries_to_waves(
         dispatch_entries,
         dispatch_plan=dispatch_plan,
@@ -63,6 +64,19 @@ def scheduling_result_to_wave_schedule(
         dispatch_token_indices=build_token_wave_mapping(dispatch_waves, direction="send"),
         combine_token_indices=build_token_wave_mapping(combine_waves, direction="send"),
     )
+
+
+def _cap_wave_entries(entries: list[dict[str, Any]], *, max_waves: int | None) -> list[dict[str, Any]]:
+    if max_waves is None or max_waves <= 0:
+        return list(entries)
+    remapped: list[dict[str, Any]] = []
+    for entry in entries:
+        new_entry = dict(entry)
+        wave_id = int(new_entry.get("wave_id", 0))
+        if wave_id >= max_waves:
+            new_entry["wave_id"] = max_waves - 1
+        remapped.append(new_entry)
+    return remapped
 
 
 def build_token_wave_mapping(waves: list[WaveSpec], *, direction: str) -> list[list[int]]:

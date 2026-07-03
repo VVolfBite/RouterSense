@@ -125,6 +125,7 @@ def execute_scheduled_inference(
     local_expert_weights: Any | None = None,
     hidden_state_rows=None,
     plan_index: int = 0,
+    max_waves: int | None = None,
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
@@ -147,8 +148,13 @@ def execute_scheduled_inference(
     )
 
     active_plan = dispatch_plans[plan_index]
+    import time
+
+    matrix_start = time.perf_counter()
     local_dispatch_matrix = _build_matrix_from_plan(active_plan, rank, "send")
     local_combine_matrix = _build_matrix_from_plan(active_plan, rank, "recv")
+    matrix_build_ms = (time.perf_counter() - matrix_start) * 1000.0
+    aggregate_start = time.perf_counter()
     dispatch_matrix = _aggregate_matrix(
         local_dispatch_matrix,
         use_distributed=use_distributed,
@@ -171,6 +177,7 @@ def execute_scheduled_inference(
         if len(dispatch_plans) > plan_index + 1
         else [[0] * world_size for _ in range(world_size)]
     )
+    all_reduce_ms = (time.perf_counter() - aggregate_start) * 1000.0
 
     strategy = get_strategy(strategy_name)
     ctx = SchedulingContext(
@@ -181,7 +188,9 @@ def execute_scheduled_inference(
         model="full_duplex",
         expert_compute_delay=expert_compute_delay,
     )
+    planner_start = time.perf_counter()
     result = strategy.solve(ctx)
+    planner_ms = (time.perf_counter() - planner_start) * 1000.0
     schedule = list(result.schedule) if result.schedule else _fallback_schedule(
         dispatch_matrix,
         combine_matrix,
@@ -201,6 +210,7 @@ def execute_scheduled_inference(
             device=getattr(executor, "device", None) or (f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"),
         )
         if execution_mode == "native_baseline":
+            verify_start = time.perf_counter()
             native = execute_native_baseline(
                 rank=rank,
                 world_size=world_size,
@@ -211,7 +221,14 @@ def execute_scheduled_inference(
                 dtype=wave_executor.dtype,
                 local_weights=local_expert_weights,
             )
-            correctness = verify_token_conservation(native.final_output, native.final_output, active_plan)
+            correctness = verify_token_conservation(
+                native.final_output,
+                native.final_output,
+                active_plan,
+                native_route_items=native.combine_result.received_route_items,
+                wave_route_items=native.combine_result.received_route_items,
+            )
+            conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
             return {
                 "strategy": strategy_name,
                 "execution_mode": execution_mode,
@@ -219,6 +236,13 @@ def execute_scheduled_inference(
                     "makespan": result.makespan,
                     "solve_time_ms": result.solve_time_ms,
                     "chunk_count": len(schedule),
+                },
+                "control_plane_ms": {
+                    "matrix_build_ms": matrix_build_ms,
+                    "all_reduce_ms": all_reduce_ms,
+                    "planner_ms": planner_ms,
+                    "wave_convert_ms": 0.0,
+                    "conservation_check_ms": conservation_check_ms,
                 },
                 "native_baseline": {
                     "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
@@ -236,7 +260,11 @@ def execute_scheduled_inference(
             dispatch_plan=active_plan,
             rank=rank,
             world_size=world_size,
+            max_waves=max_waves,
         )
+        wave_convert_end = time.perf_counter()
+        wave_convert_ms = (wave_convert_end - planner_start) * 1000.0 - planner_ms
+        verify_start = time.perf_counter()
         dispatch_conservation = verify_wave_conservation(bundle.dispatch_waves, rank=rank, dispatch_plan=active_plan, phase=0)
         combine_conservation = verify_wave_conservation(bundle.combine_waves, rank=rank, dispatch_plan=active_plan, phase=1)
         dispatch_exec = wave_executor.execute_waves(
@@ -270,6 +298,14 @@ def execute_scheduled_inference(
             local_weights=local_expert_weights,
         )
         correctness = verify_token_conservation(native.final_output, final_output, active_plan)
+        correctness = verify_token_conservation(
+            native.final_output,
+            final_output,
+            active_plan,
+            native_route_items=native.combine_result.received_route_items,
+            wave_route_items=combine_exec.received_route_items,
+        )
+        conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
         return {
             "strategy": strategy_name,
             "execution_mode": execution_mode,
@@ -277,6 +313,13 @@ def execute_scheduled_inference(
                 "makespan": result.makespan,
                 "solve_time_ms": result.solve_time_ms,
                 "chunk_count": len(schedule),
+            },
+            "control_plane_ms": {
+                "matrix_build_ms": matrix_build_ms,
+                "all_reduce_ms": all_reduce_ms,
+                "planner_ms": planner_ms,
+                "wave_convert_ms": wave_convert_ms,
+                "conservation_check_ms": conservation_check_ms,
             },
             "wave_schedule": {
                 "dispatch_wave_count": len(bundle.dispatch_waves),

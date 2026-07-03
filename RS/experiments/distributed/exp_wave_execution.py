@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compute-mode", choices=["actual_olmoe_expert", "simulated_delay"], default="actual_olmoe_expert")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--layer-index", type=int, default=0, help="Index into MoE layer ids, not raw transformer layer id.")
+    parser.add_argument("--max-waves", type=int, default=0, help="Cap the number of execution waves; 0 means uncapped.")
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "wave_execution"))
     args = parser.parse_args(argv)
 
@@ -97,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         local_expert_weights=runner_plan.local_expert_weight_bundle,
         hidden_state_rows=hidden_state_rows,
         plan_index=plan_index,
+        max_waves=(args.max_waves if args.max_waves > 0 else None),
     )
     wall_ms = (time.perf_counter() - started) * 1000.0
     payload = {
@@ -124,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                 "compute_mode": args.compute_mode,
                 "layer_id": layer_id,
                 "world_size": world_size,
+                "max_waves": args.max_waves,
             },
             "ranks": gathered,
         }
