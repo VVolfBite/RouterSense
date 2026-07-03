@@ -2,6 +2,7 @@ cluster_name: rs-ppio-current
 nodes:
   - name: node0
     host: 172.20.139.12
+    ssh_host: proxy.cn-south-1.gpu-instance.ppinfra.com
     port: 47769
     ssh_user: root
     node_rank: 0

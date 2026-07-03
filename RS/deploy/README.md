@@ -10,6 +10,14 @@ bash scripts/check_repo_parity.sh
 bash scripts/launch_remote.sh
 ```
 
+Recommended environment preparation after repo sync:
+
+```bash
+export RSSH_PASSWORD='<ssh-password>'
+bash scripts/sync_repo.sh deploy/inventory/hosts.ppio.current.yaml --apply --force
+bash scripts/prepare_cluster_env.sh deploy/inventory/hosts.ppio.current.yaml --apply
+```
+
 Single-GPU executor smoke:
 
 ```bash

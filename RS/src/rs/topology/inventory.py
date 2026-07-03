@@ -19,6 +19,7 @@ from .paths import (
 class NodeSpec:
     name: str
     host: str
+    ssh_host: str | None
     port: int
     ssh_user: str
     node_rank: int
@@ -127,7 +128,7 @@ def _render_torchrun_command(
     if interface_hint:
         env.append(f"NCCL_SOCKET_IFNAME={interface_hint}")
     return (
-        f"ssh -p {node.port} {node.ssh_user}@{node.host} "
+        f"ssh -p {node.port} {node.ssh_user}@{node.ssh_host or node.host} "
         f"'{ ' '.join(env) } torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} "
         f"--node_rank={node_rank} --rdzv-backend=c10d --rdzv-id={rendezvous_id} "
         f"--rdzv-endpoint={master_addr}:{master_port} "
@@ -139,6 +140,7 @@ def _load_node_spec(payload: dict[str, Any]) -> NodeSpec:
     return NodeSpec(
         name=str(payload["name"]),
         host=str(payload["host"]),
+        ssh_host=str(payload["ssh_host"]) if payload.get("ssh_host") else None,
         port=int(payload.get("port", 22)),
         ssh_user=str(payload["ssh_user"]),
         node_rank=int(payload["node_rank"]),

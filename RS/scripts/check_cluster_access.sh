@@ -37,7 +37,7 @@ def ssh(node, command: str) -> str:
         "ConnectTimeout=20",
         "-p",
         str(getattr(node, "port")),
-        f'{getattr(node, "ssh_user")}@{getattr(node, "host")}',
+        f'{getattr(node, "ssh_user")}@{getattr(node, "ssh_host") or getattr(node, "host")}',
         command,
     ]
     return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
