@@ -22,7 +22,20 @@ def _snapshot() -> dict[str, object]:
     world_size = dist.get_world_size()
     device = torch.device(f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}")
     torch.cuda.set_device(device)
-    results = {"rank": rank, "world_size": world_size, "device": str(device), "hostname": socket.gethostname()}
+    cuda_props = torch.cuda.get_device_properties(device)
+    nccl_version = getattr(torch.cuda.nccl, "version", lambda: None)()
+    results = {
+        "rank": rank,
+        "world_size": world_size,
+        "device": str(device),
+        "hostname": socket.gethostname(),
+        "gpu": {
+            "name": cuda_props.name,
+            "total_memory_gb": round(cuda_props.total_memory / (1024**3), 2),
+            "multi_processor_count": int(cuda_props.multi_processor_count),
+        },
+        "nccl_version": nccl_version,
+    }
 
     def run_all_reduce(size: int) -> dict[str, object]:
         tensor = torch.arange(size, device=device, dtype=torch.float32) + rank
@@ -54,9 +67,37 @@ def _snapshot() -> dict[str, object]:
         ok = bool(recv.shape == send.shape and torch.allclose(recv, expected))
         return {"size": size, "ok": ok}
 
+    def run_all_to_all_asymmetric() -> dict[str, object]:
+        send_counts = [rank + peer + 1 for peer in range(world_size)]
+        send_chunks = [
+            torch.full((count,), rank * 100 + peer, dtype=torch.float32, device=device)
+            for peer, count in enumerate(send_counts)
+        ]
+        send_tensor = torch.cat(send_chunks) if send_chunks else torch.empty((0,), dtype=torch.float32, device=device)
+        recv_counts = [peer + rank + 1 for peer in range(world_size)]
+        recv_tensor = torch.empty(sum(recv_counts), dtype=torch.float32, device=device)
+        dist.all_to_all_single(
+            recv_tensor,
+            send_tensor,
+            output_split_sizes=recv_counts,
+            input_split_sizes=send_counts,
+        )
+        expected = []
+        for src in range(world_size):
+            count = src + rank + 1
+            expected.extend([src * 100 + rank] * count)
+        expected_tensor = torch.tensor(expected, dtype=torch.float32, device=device)
+        ok = bool(recv_tensor.shape == expected_tensor.shape and torch.allclose(recv_tensor, expected_tensor))
+        return {
+            "send_counts": send_counts,
+            "recv_counts": recv_counts,
+            "ok": ok,
+        }
+
     results["all_reduce"] = [run_all_reduce(256), run_all_reduce(16384), run_all_reduce(262144)]
     results["all_gather"] = [run_all_gather(256), run_all_gather(16384), run_all_gather(262144)]
     results["all_to_all_single"] = [run_all_to_all(256), run_all_to_all(16384), run_all_to_all(262144)]
+    results["all_to_all_single_asymmetric"] = run_all_to_all_asymmetric()
     return results
 
 

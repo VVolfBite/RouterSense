@@ -35,7 +35,7 @@ def test_aggregate_matrix_uses_all_reduce_result() -> None:
     assert aggregated == [[11, 12], [13, 14]]
 
 
-def test_build_distributed_runner_plan_uses_rank_as_origin() -> None:
+def test_build_distributed_runner_plan_builds_global_dispatch_plan() -> None:
     class _AdapterConfig:
         num_experts = 4
 
@@ -67,25 +67,22 @@ def test_build_distributed_runner_plan_uses_rank_as_origin() -> None:
     original_count = runner.count_local_expert_parameters
     original_residency = runner.summarize_residency
     original_extract = runner.extract_local_expert_weights
-    original_build = runner.build_dispatch_plan_from_trace
     try:
         runner.probe_olmoe_adapter_config = lambda model: _AdapterConfig()
         runner.count_local_expert_parameters = lambda experts_module, local_expert_ids: 0
         runner.summarize_residency = lambda local_expert_ids, local_parameter_count=0: type("Residency", (), {"to_dict": lambda self: {"local_expert_ids": list(local_expert_ids)}})()
         runner.extract_local_expert_weights = lambda experts_module, local_expert_ids: _LocalWeights()
-
-        seen: dict[str, int] = {}
-
-        def _fake_build(layer_records, owner_by_expert, origin_rank, layer_id, world_size):
-            del layer_records, owner_by_expert
-            seen["origin_rank"] = origin_rank
-            return DispatchPlan(layer_id=layer_id, world_size=world_size, shards=[DispatchShard(source_rank=origin_rank, destination_rank=1, route_items=[])])
-
-        runner.build_dispatch_plan_from_trace = _fake_build
         config = runner.DistributedRunnerConfig(world_size=4, node_rank=0, model_id="test", origin_rank=0)
-        build_distributed_runner_plan(
+        plan = build_distributed_runner_plan(
             model=_Model(),
-            trace=trace,
+            trace={
+                "records": [
+                    {"layer_id": 0, "expert_id": 1, "token_position": 0, "topk_rank": 0, "routing_weight": 1.0},
+                    {"layer_id": 0, "expert_id": 2, "token_position": 1, "topk_rank": 0, "routing_weight": 1.0},
+                    {"layer_id": 0, "expert_id": 3, "token_position": 2, "topk_rank": 0, "routing_weight": 1.0},
+                    {"layer_id": 0, "expert_id": 0, "token_position": 3, "topk_rank": 0, "routing_weight": 1.0},
+                ]
+            },
             config=config,
             rank=3,
             host="host",
@@ -96,6 +93,7 @@ def test_build_distributed_runner_plan_uses_rank_as_origin() -> None:
         runner.count_local_expert_parameters = original_count
         runner.summarize_residency = original_residency
         runner.extract_local_expert_weights = original_extract
-        runner.build_dispatch_plan_from_trace = original_build
 
-    assert seen["origin_rank"] == 3
+    dispatch_plan = plan.dispatch_plans[0]
+    pairs = {(shard.source_rank, shard.destination_rank) for shard in dispatch_plan.shards}
+    assert pairs == {(0, 1), (1, 2), (2, 3), (3, 0)}

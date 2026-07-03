@@ -18,7 +18,7 @@ from .expert_store import (
     plan_local_expert_ids,
     summarize_residency,
 )
-from .olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts, probe_olmoe_adapter_config
+from .olmoe_adapter import execute_local_experts, probe_olmoe_adapter_config
 
 
 @dataclass
@@ -423,6 +423,7 @@ def _build_layer_dispatch_plans(
     origin_rank: int,
     world_size: int,
 ) -> list[DispatchPlan]:
+    del origin_rank  # The runtime plan is global per layer, not per-rank local-only.
     records = trace.get("records", [])
     by_layer: dict[int, list[dict[str, Any]]] = {}
     for record in records:
@@ -430,15 +431,55 @@ def _build_layer_dispatch_plans(
     plans: list[DispatchPlan] = []
     for layer_id, layer_records in sorted(by_layer.items()):
         plans.append(
-            build_dispatch_plan_from_trace(
+            _build_global_dispatch_plan_from_trace(
                 layer_records,
                 owner_by_expert=owner_by_expert,
-                origin_rank=origin_rank,
                 layer_id=layer_id,
                 world_size=world_size,
             )
         )
     return plans
+
+
+def _build_global_dispatch_plan_from_trace(
+    trace_records: list[dict[str, Any]],
+    *,
+    owner_by_expert: dict[int, int],
+    layer_id: int,
+    world_size: int,
+    request_id: str = "request-0",
+    generation_step: int = 0,
+) -> DispatchPlan:
+    from ..core.manifest import DispatchShard, RouteItem
+
+    shard_map: dict[tuple[int, int], DispatchShard] = {}
+    for record in trace_records:
+        token_position = int(record.get("token_position", record.get("token_flat_index", 0)))
+        src_rank = token_position % world_size
+        expert_id = int(record["expert_id"])
+        dst_rank = int(owner_by_expert[expert_id])
+        if src_rank == dst_rank:
+            continue
+        route_item = RouteItem(
+            request_id=str(record.get("request_id", request_id)),
+            generation_step=int(record.get("generation_step", generation_step)),
+            layer_id=layer_id,
+            token_flat_index=token_position,
+            route_rank_within_topk=int(record.get("expert_rank_within_topk", record.get("topk_rank", 0))),
+            origin_rank=src_rank,
+            destination_rank=dst_rank,
+            expert_id=expert_id,
+            payload_rows=int(record.get("payload_rows", 1)),
+            routing_weight=float(record["routing_weight"]),
+            is_cross_node=src_rank != dst_rank,
+        )
+        key = (src_rank, dst_rank)
+        shard = shard_map.setdefault(
+            key,
+            DispatchShard(source_rank=src_rank, destination_rank=dst_rank),
+        )
+        shard.route_items.append(route_item)
+    return DispatchPlan(layer_id=layer_id, world_size=world_size, shards=list(shard_map.values()))
 
 
 def _build_matrix_from_plan(
