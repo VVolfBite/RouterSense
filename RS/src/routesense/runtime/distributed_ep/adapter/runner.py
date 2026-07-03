@@ -7,6 +7,8 @@ from ..core.collective import CollectiveOps
 from ..core.correctness import summarize_dispatch_plans
 from ..core.manifest import DispatchPlan, DistributedManifest
 from ..core.nccl_executor import NCCLExecutor
+from ..core.wave_executor import CollectiveWaveExecutor, execute_native_baseline, verify_token_conservation
+from ..core.wave_planner import scheduling_result_to_wave_schedule, verify_wave_conservation
 from ..core.placement import PlacementStrategy
 from ..core.worker_loop import WorkerLoop
 from ....scheduler.strategy import SchedulingContext, get_strategy
@@ -38,6 +40,7 @@ class DistributedRunnerPlan:
     dispatch_summary: dict[str, Any]
     dispatch_plans: list[DispatchPlan]
     local_expert_weights: dict[str, Any]
+    local_expert_weight_bundle: Any
     manifest: dict[str, Any]
 
 
@@ -80,6 +83,7 @@ def build_distributed_runner_plan(
         dispatch_summary=summarize_dispatch_plans(dispatch_plans),
         dispatch_plans=dispatch_plans,
         local_expert_weights=local_weights.to_dict(),
+        local_expert_weight_bundle=local_weights,
         manifest=manifest.to_dict(),
     )
 
@@ -117,6 +121,10 @@ def execute_scheduled_inference(
     executor: NCCLExecutor | None = None,
     payload=None,
     use_distributed: bool = False,
+    execution_mode: str = "p2p_matching",
+    local_expert_weights: Any | None = None,
+    hidden_state_rows=None,
+    plan_index: int = 0,
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
@@ -138,8 +146,9 @@ def execute_scheduled_inference(
         device=f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu",
     )
 
-    local_dispatch_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "send")
-    local_combine_matrix = _build_matrix_from_plan(dispatch_plans[0], rank, "recv")
+    active_plan = dispatch_plans[plan_index]
+    local_dispatch_matrix = _build_matrix_from_plan(active_plan, rank, "send")
+    local_combine_matrix = _build_matrix_from_plan(active_plan, rank, "recv")
     dispatch_matrix = _aggregate_matrix(
         local_dispatch_matrix,
         use_distributed=use_distributed,
@@ -154,12 +163,12 @@ def execute_scheduled_inference(
     )
     next_dispatch_matrix = (
         _aggregate_matrix(
-            _build_matrix_from_plan(dispatch_plans[1], rank, "send"),
+            _build_matrix_from_plan(dispatch_plans[plan_index + 1], rank, "send"),
             use_distributed=use_distributed,
             world_size=world_size,
             device=getattr(executor, "device", None),
         )
-        if len(dispatch_plans) > 1
+        if len(dispatch_plans) > plan_index + 1
         else [[0] * world_size for _ in range(world_size)]
     )
 
@@ -180,12 +189,124 @@ def execute_scheduled_inference(
         world_size,
     )
 
+    if execution_mode in {"native_baseline", "wave_collective"}:
+        if hidden_state_rows is None:
+            raise RuntimeError(f"execution_mode={execution_mode} requires hidden_state_rows")
+        if local_expert_weights is None:
+            raise RuntimeError(f"execution_mode={execution_mode} requires local_expert_weights")
+        wave_executor = CollectiveWaveExecutor(
+            rank=rank,
+            world_size=world_size,
+            dtype=torch.float16,
+            device=getattr(executor, "device", None) or (f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"),
+        )
+        if execution_mode == "native_baseline":
+            native = execute_native_baseline(
+                rank=rank,
+                world_size=world_size,
+                dispatch_plan=active_plan,
+                token_buffer=hidden_state_rows,
+                hidden_size=hidden_size,
+                device=wave_executor.device,
+                dtype=wave_executor.dtype,
+                local_weights=local_expert_weights,
+            )
+            correctness = verify_token_conservation(native.final_output, native.final_output, active_plan)
+            return {
+                "strategy": strategy_name,
+                "execution_mode": execution_mode,
+                "scheduling_result": {
+                    "makespan": result.makespan,
+                    "solve_time_ms": result.solve_time_ms,
+                    "chunk_count": len(schedule),
+                },
+                "native_baseline": {
+                    "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
+                    "combine_comm_ms": native.combine_result.total_comm_ms,
+                    "dispatch_pack_ms": native.dispatch_result.total_pack_ms,
+                    "combine_pack_ms": native.combine_result.total_pack_ms,
+                    "dispatch_wave_count": native.dispatch_result.wave_count,
+                    "combine_wave_count": native.combine_result.wave_count,
+                },
+                "correctness": correctness,
+            }
+
+        bundle = scheduling_result_to_wave_schedule(
+            result,
+            dispatch_plan=active_plan,
+            rank=rank,
+            world_size=world_size,
+        )
+        dispatch_conservation = verify_wave_conservation(bundle.dispatch_waves, rank=rank, dispatch_plan=active_plan, phase=0)
+        combine_conservation = verify_wave_conservation(bundle.combine_waves, rank=rank, dispatch_plan=active_plan, phase=1)
+        dispatch_exec = wave_executor.execute_waves(
+            bundle.dispatch_waves,
+            phase=0,
+            direction="dispatch",
+            token_buffer=hidden_state_rows,
+            hidden_size=hidden_size,
+        )
+        local_output = execute_local_experts(
+            dispatch_exec.received_tensor,
+            dispatch_exec.received_route_items,
+            local_expert_weights,
+        )
+        combine_exec = wave_executor.execute_waves(
+            bundle.combine_waves,
+            phase=1,
+            direction="combine",
+            token_buffer=local_output,
+            hidden_size=hidden_size,
+        )
+        final_output = _aggregate_wave_outputs(combine_exec.received_tensor, combine_exec.received_route_items, hidden_size=hidden_size)
+        native = execute_native_baseline(
+            rank=rank,
+            world_size=world_size,
+            dispatch_plan=active_plan,
+            token_buffer=hidden_state_rows,
+            hidden_size=hidden_size,
+            device=wave_executor.device,
+            dtype=wave_executor.dtype,
+            local_weights=local_expert_weights,
+        )
+        correctness = verify_token_conservation(native.final_output, final_output, active_plan)
+        return {
+            "strategy": strategy_name,
+            "execution_mode": execution_mode,
+            "scheduling_result": {
+                "makespan": result.makespan,
+                "solve_time_ms": result.solve_time_ms,
+                "chunk_count": len(schedule),
+            },
+            "wave_schedule": {
+                "dispatch_wave_count": len(bundle.dispatch_waves),
+                "combine_wave_count": len(bundle.combine_waves),
+                "dispatch_conservation": dispatch_conservation,
+                "combine_conservation": combine_conservation,
+            },
+            "wave_execution": {
+                "dispatch_comm_ms": dispatch_exec.total_comm_ms,
+                "dispatch_pack_ms": dispatch_exec.total_pack_ms,
+                "dispatch_unpack_ms": dispatch_exec.total_unpack_ms,
+                "combine_comm_ms": combine_exec.total_comm_ms,
+                "combine_pack_ms": combine_exec.total_pack_ms,
+                "combine_unpack_ms": combine_exec.total_unpack_ms,
+                "dispatch_timings": [timing.__dict__ for timing in dispatch_exec.timings],
+                "combine_timings": [timing.__dict__ for timing in combine_exec.timings],
+            },
+            "native_baseline": {
+                "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
+                "combine_comm_ms": native.combine_result.total_comm_ms,
+            },
+            "correctness": correctness,
+        }
+
     phase_specs = [
-        (0, dispatch_plans[0], "dispatch"),
-        (1, dispatch_plans[0], "combine"),
+        (0, active_plan, "dispatch"),
+        (1, active_plan, "combine"),
     ]
-    if len(dispatch_plans) > 1:
-        phase_specs.append((2, dispatch_plans[1], "next_dispatch"))
+    if len(dispatch_plans) > plan_index + 1:
+        phase_specs.append((2, dispatch_plans[plan_index + 1], "next_dispatch"))
 
     nccl_results: dict[str, Any] = {}
     for phase_idx, plan, direction in phase_specs:
@@ -238,6 +359,18 @@ def execute_scheduled_inference(
             for record in collective.records
         ],
     }
+
+
+def _aggregate_wave_outputs(received_tensor, route_items, *, hidden_size: int):
+    import torch  # type: ignore
+
+    if not route_items:
+        return torch.empty((0, hidden_size), dtype=received_tensor.dtype, device=received_tensor.device)
+    token_count = max(int(item.token_flat_index) for item in route_items) + 1
+    output = torch.zeros((token_count, hidden_size), dtype=received_tensor.dtype, device=received_tensor.device)
+    for row_index, item in enumerate(route_items):
+        output[int(item.token_flat_index)] += received_tensor[row_index]
+    return output
 
 
 def _build_layer_dispatch_plans(

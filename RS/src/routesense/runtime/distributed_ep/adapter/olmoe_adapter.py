@@ -54,7 +54,7 @@ def build_dispatch_plan_from_trace(
             generation_step=generation_step,
             layer_id=layer_id,
             token_flat_index=int(record["token_position"]),
-            route_rank_within_topk=int(record["expert_rank_within_topk"]),
+            route_rank_within_topk=int(record.get("expert_rank_within_topk", record.get("topk_rank", 0))),
             origin_rank=origin_rank,
             destination_rank=destination_rank,
             expert_id=expert_id,
