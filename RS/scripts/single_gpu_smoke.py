@@ -19,6 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inventory", type=str, default=None)
     parser.add_argument("--node-name", type=str, default=None)
     parser.add_argument("--model-path", type=str, default=None)
+    parser.add_argument("--device-map", type=str, default=None)
+    parser.add_argument("--max-memory-gb", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "single_gpu_olmoe_smoke"))
     args = parser.parse_args(argv)
     model_id = "allenai/OLMoE-1B-7B-0924-Instruct"
@@ -38,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         max_new_tokens=16,
         precision="bf16",
         device_index=0,
+        device_map=args.device_map,
+        max_memory_gb=args.max_memory_gb,
         output_dir=args.output_dir,
     )
     print(json.dumps(result.to_dict(), indent=2))

@@ -19,6 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--device-map", type=str, default=None)
+    parser.add_argument("--max-memory-gb", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "phase0c_architecture_probe"))
     args = parser.parse_args(argv)
     model, _, _, _, source = load_model_and_tokenizer(
@@ -26,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
         model_path=args.model_path,
         precision=args.precision,
         device_index=args.device_index,
+        device_map=args.device_map,
+        max_memory_gb=args.max_memory_gb,
     )
     adapter = probe_olmoe_adapter_config(model)
     moe_layer = model.model.layers[0].mlp

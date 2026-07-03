@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--device-map", type=str, default=None)
+    parser.add_argument("--max-memory-gb", type=str, default=None)
     parser.add_argument("--revision", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "single_gpu_text_infer"))
     args = parser.parse_args(argv)
@@ -45,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         precision=args.precision,
         device_index=args.device_index,
         revision=args.revision,
+        device_map=args.device_map,
+        max_memory_gb=args.max_memory_gb,
         output_dir=args.output_dir,
     )
     print(json.dumps(result.to_dict(), indent=2))

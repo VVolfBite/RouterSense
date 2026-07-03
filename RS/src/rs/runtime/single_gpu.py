@@ -113,6 +113,21 @@ def load_model_and_tokenizer(
     return model, tokenizer, resolved_revision, resolved_device, str(dtype).replace("torch.", "")
 
 
+def _resolve_input_device(model: Any, resolved_device: str, device_index: int):
+    import torch  # type: ignore
+
+    if not resolved_device.startswith("device_map:"):
+        return torch.device(resolved_device)
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if isinstance(hf_device_map, dict):
+        for target in hf_device_map.values():
+            if isinstance(target, str) and target.startswith("cuda"):
+                return torch.device(target)
+            if isinstance(target, int):
+                return torch.device(f"cuda:{target}")
+    return torch.device(f"cuda:{device_index}")
+
+
 def run_single_gpu_text_inference(
     *,
     model_id: str,
@@ -122,6 +137,8 @@ def run_single_gpu_text_inference(
     precision: str = "bf16",
     device_index: int = 0,
     revision: str | None = None,
+    device_map: str | None = None,
+    max_memory_gb: str | None = None,
     output_dir: str | Path | None = None,
 ) -> SingleGPUInferenceResult:
     import torch  # type: ignore
@@ -132,10 +149,14 @@ def run_single_gpu_text_inference(
         precision=precision,
         device_index=device_index,
         revision=revision,
+        device_map=device_map,
+        max_memory_gb=max_memory_gb,
     )
     encoded = tokenizer(prompt, return_tensors="pt")
-    encoded = {key: value.to(device) for key, value in encoded.items()}
-    torch.cuda.reset_peak_memory_stats(device_index)
+    input_device = _resolve_input_device(model, device, device_index)
+    encoded = {key: value.to(input_device) for key, value in encoded.items()}
+    if input_device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(input_device)
     start = time.perf_counter()
     with torch.inference_mode():
         generated = model.generate(
@@ -157,8 +178,8 @@ def run_single_gpu_text_inference(
         prefill_ms=total_ms,
         decode_ms=0.0,
         total_ms=total_ms,
-        peak_allocated_mb=round(torch.cuda.max_memory_allocated(device_index) / (1024 * 1024), 2),
-        peak_reserved_mb=round(torch.cuda.max_memory_reserved(device_index) / (1024 * 1024), 2),
+        peak_allocated_mb=round(torch.cuda.max_memory_allocated(input_device) / (1024 * 1024), 2) if input_device.type == "cuda" else 0.0,
+        peak_reserved_mb=round(torch.cuda.max_memory_reserved(input_device) / (1024 * 1024), 2) if input_device.type == "cuda" else 0.0,
         model_revision=resolved_revision,
         device=device,
         dtype=dtype,
