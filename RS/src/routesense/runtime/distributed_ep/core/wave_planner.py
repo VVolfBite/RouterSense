@@ -41,7 +41,13 @@ def scheduling_result_to_wave_schedule(
     world_size: int,
     max_waves: int | None = None,
 ) -> WaveScheduleBundle:
-    schedule = list(getattr(scheduling_result, "schedule", None) or scheduling_result.get("schedule", []))
+    schedule_attr = getattr(scheduling_result, "schedule", None)
+    if schedule_attr is not None:
+        schedule = list(schedule_attr)
+    elif isinstance(scheduling_result, dict):
+        schedule = list(scheduling_result.get("schedule", []))
+    else:
+        schedule = []
     dispatch_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 0], max_waves=max_waves)
     combine_entries = _cap_wave_entries([entry for entry in schedule if int(entry.get("phase", 0)) == 1], max_waves=max_waves)
     dispatch_waves = _phase_entries_to_waves(
