@@ -9,7 +9,7 @@ from pathlib import Path
 def test_verify_env_contract() -> None:
     script = Path("integrations/megatron_ep/verify_env.py")
     proc = subprocess.run(
-        [sys.executable, str(script), "--model", "/root/autodl-tmp/models/OLMoE-1B-7B-0125"],
+        [sys.executable, str(script), "--model", "/root/autodl-tmp/models/OLMoE-1B-7B-0924"],
         check=False,
         capture_output=True,
         text=True,

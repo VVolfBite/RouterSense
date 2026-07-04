@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from integrations.megatron_ep.native_runtime import validate_observer_mode
 from integrations.megatron_ep.routersense.dispatcher_facade import RouterSenseDispatcherFacade
 from integrations.megatron_ep.routersense.observer import RouterSenseObserver
 
@@ -24,3 +25,8 @@ def test_noop_facade_passthrough() -> None:
     assert seen["args"] == (1,)
     assert seen["kwargs"] == {"x": 2}
     assert facade.facade_mode == "no_op_native_passthrough"
+
+
+def test_observer_mode_validation() -> None:
+    assert validate_observer_mode("off") == "off"
+    assert validate_observer_mode("lightweight") == "lightweight"
