@@ -66,6 +66,20 @@ def test_online_unimplemented_result_has_world_size_claim_gate() -> None:
     assert payload["implemented"] is False
 
 
+def test_world_size_one_native_parity_result_uses_truthful_scope() -> None:
+    payload = build_online_unimplemented_result(
+        run_id="online-run",
+        world_size=1,
+        transport_backend=ONLINE_NATIVE_A2A_EP,
+        extra={"implemented": True},
+    )
+    payload["execution_mode"] = "online_native_a2a_ep_world_size_1_parity"
+    payload["expert_residency_mode"] = "full_model_local_weight_extract_for_parity"
+    assert payload["claim_scope"] == "correctness_and_calibration_only"
+    assert payload["performance_claim_eligible"] is False
+    assert payload["expert_residency_mode"] == "full_model_local_weight_extract_for_parity"
+
+
 def test_offline_oracle_counterfactual_is_not_deployable() -> None:
     payload = build_calibrated_counterfactual_result(
         run_id="offline-calibrated",

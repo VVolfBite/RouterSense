@@ -24,11 +24,14 @@ def test_refactor_structure_exists() -> None:
         root / "experiments/poc_line1/exp_oracle.py",
         root / "experiments/poc_line1/exp_pairwise.py",
         root / "experiments/offline/exp_router_prediction.py",
+        root / "experiments/offline/_bootstrap.py",
         root / "experiments/offline/fit_ep_cost_model.py",
         root / "experiments/offline/exp_calibrated_schedule.py",
         root / "experiments/online/collect_native_ep_trace.py",
+        root / "experiments/online/_bootstrap.py",
         root / "experiments/online/bench_native_ep.py",
         root / "experiments/online/bench_scheduled_ep.py",
+        root / "experiments/legacy/_bootstrap.py",
         root / "experiments/legacy/exp_trace_replay.py",
     ]
     for path in required:
