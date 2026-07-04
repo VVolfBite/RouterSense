@@ -48,13 +48,15 @@ def main(argv: list[str] | None = None) -> int:
                     "entrypoint": "bench_native_ep",
                     "output_dir": args.output_dir,
                     "implemented": True,
-                    "implemented_scope": "world_size_1_layer_parity_only",
+                    "implemented_scope": "world_size_1_local_moe_reconstruction_parity",
                     "correctness_status": (
                         "passed" if parity["parity"]["numerical_correctness_pass"] else "failed"
                     ),
                 },
             ),
-            "execution_mode": "online_native_a2a_ep_world_size_1_parity",
+            "execution_mode": "world_size_1_local_moe_reconstruction_parity",
+            "trace_origin": "observed_single_rank_local_moe",
+            "is_real_ep_runtime": False,
             "expert_residency_mode": "full_model_local_weight_extract_for_parity",
             "correctness_status": "passed" if parity["parity"]["numerical_correctness_pass"] else "failed",
             "numerical_correctness_pass": parity["parity"]["numerical_correctness_pass"],

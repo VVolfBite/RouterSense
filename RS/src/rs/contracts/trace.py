@@ -8,6 +8,7 @@ from .route import ExpertBucketRecord, LayerRouteTrace
 
 class TraceOrigin:
     SINGLE_GPU_PROXY_ROUTER = "single_gpu_proxy_router"
+    OBSERVED_SINGLE_RANK_LOCAL_MOE = "observed_single_rank_local_moe"
     OBSERVED_ONLINE_NATIVE_EP = "observed_online_native_ep"
     OBSERVED_ONLINE_SCHEDULED_EP = "observed_online_scheduled_ep"
     LEGACY_TRACE_REPLAY = "legacy_trace_replay"

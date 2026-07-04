@@ -22,6 +22,7 @@ def build_online_result_envelope(
     expert_residency_mode: str,
     correctness_status: str,
     execution_mode: str,
+    is_real_ep_runtime: bool = True,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     claim_scope, performance_claim_eligible = online_claim_scope_for_world_size(world_size)
@@ -31,7 +32,7 @@ def build_online_result_envelope(
         claim_scope=claim_scope,
         trace_origin=trace_origin,
         future_information_mode=future_information_mode,
-        is_real_ep_runtime=True,
+        is_real_ep_runtime=is_real_ep_runtime,
         source_ownership_mode=source_ownership_mode,
         expert_residency_mode=expert_residency_mode,
         transport_backend=transport_backend,
@@ -63,6 +64,7 @@ def build_online_unimplemented_result(
         expert_residency_mode="full_checkpoint_then_prune",
         correctness_status="unsupported",
         execution_mode="online_ep_runtime_unimplemented",
+        is_real_ep_runtime=False,
         extra={
             "implemented": False,
             **(extra or {}),

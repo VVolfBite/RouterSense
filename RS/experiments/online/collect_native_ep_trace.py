@@ -11,7 +11,7 @@ from _bootstrap import ensure_src_on_path
 ensure_src_on_path()
 
 from rs.online import build_online_unimplemented_result
-from rs.online.olmoe_ep import collect_world_size_one_observed_native_ep_trace, export_native_ep_trace_artifacts
+from rs.online.olmoe_ep import collect_world_size_one_local_moe_observed_trace, export_single_rank_local_moe_trace_artifacts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run_id = f"online-native-trace-{uuid.uuid4().hex[:12]}"
     if int(args.world_size) == 1:
-        observed = collect_world_size_one_observed_native_ep_trace(
+        observed = collect_world_size_one_local_moe_observed_trace(
             model_id=args.model,
             model_path=args.model_path,
             prompt_text=args.prompt,
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
             precision=args.precision,
             device_index=args.device_index,
         )
-        jsonl_path, metadata_path = export_native_ep_trace_artifacts(
+        jsonl_path, metadata_path = export_single_rank_local_moe_trace_artifacts(
             output_dir=args.output_dir,
             run_id=run_id,
             trace=observed.execution_trace,
@@ -43,21 +43,27 @@ def main(argv: list[str] | None = None) -> int:
                 **observed.metadata,
                 "entrypoint": "collect_native_ep_trace",
                 "implemented": True,
-                "implemented_scope": "world_size_1_observed_native_ep_trace",
+                "implemented_scope": "world_size_1_local_moe_reconstruction_observation",
                 "expert_residency_mode": "full_model_local_weight_extract_for_parity",
                 "correctness_status": (
                     "passed" if observed.parity.numerical_correctness_pass else "failed"
                 ),
+                "is_real_ep_runtime": False,
+                "is_real_ep_transport": False,
+                "is_transport_calibration_trace": False,
             },
         )
         payload = {
             "pipeline": "online",
-            "execution_mode": "online_native_a2a_ep_world_size_1_observed_trace",
-            "trace_origin": "observed_online_native_ep",
+            "execution_mode": "world_size_1_local_moe_reconstruction_observation",
+            "trace_origin": "observed_single_rank_local_moe",
             "future_information_mode": "none",
             "correctness_status": "passed" if observed.parity.numerical_correctness_pass else "failed",
             "numerical_correctness_pass": observed.parity.numerical_correctness_pass,
             "performance_claim_eligible": False,
+            "is_real_ep_runtime": False,
+            "is_real_ep_transport": False,
+            "is_transport_calibration_trace": False,
             "jsonl_path": str(jsonl_path),
             "metadata_path": str(metadata_path),
             "parity": observed.parity.to_dict(),

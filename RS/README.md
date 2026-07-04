@@ -35,8 +35,8 @@ Important scope boundary:
 
 - `offline` may use oracle/full-trace information and must not be presented as
   deployed EP runtime measurement
-- `online` is the future real EP runtime namespace, but Phase 1 does not
-  implement it yet
+- `online` now contains a verified `world_size=1` local-MoE reconstruction
+  parity harness, but it is not yet a real multi-rank EP runtime
 - the old distributed execution harness is now explicitly
   `legacy_trace_replay`
 - current 2-rank results are only eligible for wiring, correctness protocol,
@@ -56,9 +56,31 @@ Important scope boundary:
   `experiments/offline/exp_calibrated_schedule.py`
 - online native EP placeholder:
   `experiments/online/bench_native_ep.py`
+- online single-rank local-MoE observation:
+  `experiments/online/collect_native_ep_trace.py`
 - online scheduled EP placeholder:
   `experiments/online/bench_scheduled_ep.py`
 - deprecated legacy replay shim:
   `experiments/legacy/exp_trace_replay.py`
 
 This tree is the only formal RouteSense development path. Legacy POC code remains outside `RS/`.
+
+## Online Boundary
+
+Current online-adjacent capability is intentionally narrow:
+
+- `bench_native_ep.py --world-size 1` verifies single-layer local-MoE
+  reconstruction parity against a captured HuggingFace OLMoE `mlp(...)` output
+- `collect_native_ep_trace.py --world-size 1` exports a
+  `trace_origin=observed_single_rank_local_moe` artifact
+
+This does not constitute:
+
+- native A2A EP execution
+- real remote-route transport
+- transport-calibrated observation
+- multi-rank expert residency validation
+
+`fit_ep_cost_model.py` now rejects the single-rank local-MoE artifact. Formal
+calibrated offline analysis remains gated on future multi-rank
+`observed_online_native_ep` traces with real transport and timing data.

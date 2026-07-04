@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     metadata_path = Path(args.trace_metadata)
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert_online_native_ep_observation(metadata)
+    assert_online_native_ep_observation(metadata, metadata_path)
     print(json.dumps({"status": "accepted", "trace_metadata": str(metadata_path)}, indent=2))
     return 0
 

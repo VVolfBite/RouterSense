@@ -8,17 +8,19 @@ The mainline now has an auditable three-lane split:
 - `online`
 - `legacy`
 
-And the online lane has advanced beyond pure scaffolding in one narrow but real
-scope:
+The only verified online-adjacent execution capability is now:
 
 - `world_size=1`
 - `OLMoE`
-- single MoE layer parity
-- real local route build
-- real local expert execution
-- real top-k combine
+- single-layer local-MoE reconstruction parity
 
-This is the current verified ceiling before true multi-rank native A2A work.
+This means the code can capture router logits and MoE layer inputs/outputs from
+an already completed HuggingFace forward, rebuild the local expert
+contributions with copied weights, and verify numerical agreement for the
+tested prompt and layer.
+
+It does not yet constitute native EP runtime execution, native A2A transport,
+distributed expert residency, or transport-calibrated online observation.
 
 ## What Is True Right Now
 
@@ -44,23 +46,25 @@ It still does not implement the calibrated simulator itself.
 
 ### `online`
 
-The formal online lane now supports a real single-GPU parity path:
+The formal online lane now supports a verified single-rank local-MoE
+reconstruction harness:
 
-- local input partition with `source_rank = rank`
 - route identity built from request/microbatch/layer/local token/top-k slot
 - explicit local route preservation
-- local expert execution using real OLMoE weights
-- combine back into token output space
-- numerical parity against the actual HuggingFace OLMoE `mlp(...)` output
+- copied local expert weights extracted from a real OLMoE checkpoint
+- local expert reconstruction and top-k combine
+- numerical parity against the captured HuggingFace OLMoE `mlp(...)` output
 
 It does not yet support:
 
 - `world_size > 1` native A2A dispatch/combine
+- real remote-route transport
 - online distributed correctness
 - scheduled P2P transport
 - deployable online prediction
+- transport-calibrated observation for offline fitting
 
-## Single-GPU Verified Result
+## Single-Rank Verified Result
 
 Environment used:
 
@@ -82,9 +86,11 @@ python experiments/online/bench_native_ep.py \
   --output-dir artifacts/online/bench_native_ep_smoke
 ```
 
-Observed result:
+Observed result from the current truthful envelope:
 
-- `execution_mode = online_native_a2a_ep_world_size_1_parity`
+- `execution_mode = world_size_1_local_moe_reconstruction_parity`
+- `trace_origin = observed_single_rank_local_moe`
+- `is_real_ep_runtime = false`
 - `claim_scope = correctness_and_calibration_only`
 - `performance_claim_eligible = false`
 - `correctness_status = passed`
@@ -97,13 +103,13 @@ Observed result:
 
 Interpretation:
 
-- the single-GPU online parity path is numerically aligned with the real OLMoE
-  MoE block for the tested layer and prompt
-- this validates the local route build, local expert execution, and top-k
-  combine semantics for `world_size=1`
-- it does not validate distributed transport
+- the single-rank reconstruction path is numerically aligned with the real
+  OLMoE MoE block for the tested layer and prompt
+- this validates local route build, copied-weight local expert reconstruction,
+  and top-k combine semantics for `world_size=1`
+- it does not validate distributed transport, multi-rank ownership, or A2A
 
-## Single-GPU Observed Native Trace
+## Single-Rank Local-MoE Observation
 
 Command:
 
@@ -118,18 +124,20 @@ python experiments/online/collect_native_ep_trace.py \
   --output-dir artifacts/online/native_ep_trace_smoke
 ```
 
-Observed result:
+Observed result from the current truthful envelope:
 
-- `execution_mode = online_native_a2a_ep_world_size_1_observed_trace`
-- `trace_origin = observed_online_native_ep`
+- `execution_mode = world_size_1_local_moe_reconstruction_observation`
+- `trace_origin = observed_single_rank_local_moe`
+- `is_real_ep_runtime = false`
+- `is_real_ep_transport = false`
+- `is_transport_calibration_trace = false`
 - `correctness_status = passed`
 - trace artifacts were written:
   - `artifacts/online/native_ep_trace_smoke/<run_id>.jsonl`
   - `artifacts/online/native_ep_trace_smoke/<run_id>_metadata.json`
   - `artifacts/online/native_ep_trace_smoke/<run_id>_summary.json`
 
-This matters because the offline calibrated-analysis gate now accepts this
-metadata provenance:
+This observation is intentionally not accepted by the calibrated offline gate:
 
 ```bash
 python experiments/offline/fit_ep_cost_model.py \
@@ -138,7 +146,15 @@ python experiments/offline/fit_ep_cost_model.py \
 
 Result:
 
-- `status = accepted`
+- rejected unless the artifact is a real multi-rank
+  `trace_origin = observed_online_native_ep` trace with:
+  - `world_size >= 2`
+  - `is_real_ep_runtime = true`
+  - `transport_backend = online_native_a2a_ep`
+  - remote routes
+  - stage timings
+  - expert bucket records
+  - schema version 2 trace events in the JSONL artifact
 
 ## Compatibility Fixes Applied
 
@@ -159,10 +175,11 @@ Allowed now:
 
 - the repo has a real offline/online/legacy boundary
 - legacy replay cannot masquerade as online EP
-- offline calibrated analysis enforces provenance
+- offline calibrated analysis no longer accepts single-rank local-MoE
+  reconstruction artifacts as native EP observation
 - online scheduler hint mode rejects `oracle_full_trace`
-- single-GPU online OLMoE MoE-layer parity is verified
-- single-GPU observed online-native trace export is verified
+- single-rank OLMoE local-MoE reconstruction parity is verified
+- single-rank local-MoE observation export is verified
 
 Not allowed now:
 
@@ -172,19 +189,22 @@ Not allowed now:
 - matching-realized runtime benefit
 - calibrated offline milliseconds as measured deployment time
 - deployable prediction benefit
+- treating `world_size=1` local-MoE observation as real DEP data
 
 ## Current Runnable Commands
 
 Runnable and meaningful:
 
 - `python experiments/offline/exp_router_prediction.py ...`
-- `python experiments/offline/fit_ep_cost_model.py --trace-metadata ...`
 - `python experiments/online/bench_native_ep.py --world-size 1 ...`
 - `python experiments/online/collect_native_ep_trace.py --world-size 1 ...`
 - `python experiments/legacy/exp_trace_replay.py ...`
 
-Present but still not implemented:
+Present, but either gated or still not implemented:
 
+- `python experiments/offline/fit_ep_cost_model.py --trace-metadata ...`
+  - only for future real multi-rank native EP traces; current single-rank local
+    observation is rejected
 - `python experiments/offline/exp_calibrated_schedule.py ...`
 - `python experiments/online/bench_native_ep.py --world-size > 1 ...`
 - `python experiments/online/bench_scheduled_ep.py ...`
@@ -219,4 +239,4 @@ It is:
 - then distributed correctness
 
 That is the point where the project genuinely crosses from verified single-GPU
-online semantics into real multi-rank EP runtime work.
+local-MoE reconstruction into real multi-rank EP runtime work.

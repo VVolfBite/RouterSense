@@ -144,6 +144,7 @@ def build_route_partition_for_layer(
     router_logits: torch.Tensor,
     owner_by_expert: dict[int, int],
     top_k: int,
+    trace_origin: str = TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE,
 ) -> OnlineRoutePartition:
     if hidden_states.ndim != 2:
         raise ValueError(f"hidden_states must be [tokens, hidden], got {tuple(hidden_states.shape)}")
@@ -207,8 +208,8 @@ def build_route_partition_for_layer(
 
     return OnlineRoutePartition(
         layer_trace=LayerRouteTrace(
-            trace_origin="observed_online_native_ep",
-            future_information_mode="none",
+            trace_origin=trace_origin,
+            future_information_mode=FutureInformationMode.NONE,
             layer_id=int(layer_id),
             route_records=route_records,
         ),
@@ -238,6 +239,7 @@ def execute_world_size_one_local_layer(
     layer_id: int,
     partition: InputPartition,
     top_k: int,
+    trace_origin: str = TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE,
 ) -> WorldSizeOneExecution:
     owner_by_expert = {int(expert_id): 0 for expert_id in local_expert_weights.local_expert_ids}
     route_partition = build_route_partition_for_layer(
@@ -250,6 +252,7 @@ def execute_world_size_one_local_layer(
         router_logits=router_logits,
         owner_by_expert=owner_by_expert,
         top_k=int(top_k),
+        trace_origin=trace_origin,
     )
     if route_partition.remote_route_records:
         raise RuntimeError("world_size=1 execution must not produce remote routes")
@@ -382,6 +385,25 @@ def collect_world_size_one_observed_native_ep_trace(
     precision: str = "fp16",
     device_index: int = 0,
 ) -> WorldSizeOneObservedTrace:
+    return collect_world_size_one_local_moe_observed_trace(
+        model_id=model_id,
+        model_path=model_path,
+        prompt_text=prompt_text,
+        layer_index=layer_index,
+        precision=precision,
+        device_index=device_index,
+    )
+
+
+def collect_world_size_one_local_moe_observed_trace(
+    *,
+    model_id: str,
+    model_path: str | None,
+    prompt_text: str,
+    layer_index: int = 0,
+    precision: str = "fp16",
+    device_index: int = 0,
+) -> WorldSizeOneObservedTrace:
     model, tokenizer, resolved_revision, resolved_device, dtype = load_model_and_tokenizer(
         model_id=model_id,
         model_path=model_path,
@@ -443,6 +465,7 @@ def collect_world_size_one_observed_native_ep_trace(
         layer_id=layer_id,
         partition=partition,
         top_k=int(model.config.num_experts_per_tok),
+        trace_origin=TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE,
     )
     abs_error = (execution.output - mlp_output.to(execution.output.dtype)).abs()
     parity = WorldSizeOneParityResult(
@@ -457,7 +480,7 @@ def collect_world_size_one_observed_native_ep_trace(
         remote_route_count=len(execution.route_partition.remote_route_records),
     )
     execution_trace = EpExecutionTrace(
-        trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
+        trace_origin=TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE,
         future_information_mode=FutureInformationMode.NONE,
         route_traces=[execution.route_partition.layer_trace],
         stage_timings=[
@@ -474,6 +497,9 @@ def collect_world_size_one_observed_native_ep_trace(
             "layer_id": layer_id,
             "token_count": int(mlp_input.shape[0]),
             "top_k": int(model.config.num_experts_per_tok),
+            "is_real_ep_runtime": False,
+            "is_real_ep_transport": False,
+            "is_transport_calibration_trace": False,
         },
     )
     return WorldSizeOneObservedTrace(
