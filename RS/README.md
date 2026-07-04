@@ -35,8 +35,11 @@ Important scope boundary:
 
 - `offline` may use oracle/full-trace information and must not be presented as
   deployed EP runtime measurement
-- `online` now contains a verified `world_size=1` local-MoE reconstruction
-  parity harness, but it is not yet a real multi-rank EP runtime
+- `online` now contains:
+  - a verified `world_size=1` local-MoE reconstruction parity harness
+  - a verified `world_size=2` route-partition and metadata/count-agreement
+    harness
+  - but it is not yet a real EP runtime
 - the old distributed execution harness is now explicitly
   `legacy_trace_replay`
 - current 2-rank results are only eligible for wiring, correctness protocol,
@@ -73,14 +76,27 @@ Current online-adjacent capability is intentionally narrow:
   reconstruction parity against a captured HuggingFace OLMoE `mlp(...)` output
 - `collect_native_ep_trace.py --world-size 1` exports a
   `trace_origin=observed_single_rank_local_moe` artifact
+- `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only ...`
+  verifies rank-local route construction, local/remote partition, placement
+  hashing, and distributed send/recv count agreement
+- `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only ...`
+  exports a truthful
+  `trace_origin=observed_online_ws2_route_partition` artifact
 
 This does not constitute:
 
 - native A2A EP execution
 - real remote-route transport
+- hidden-state dispatch/combine
+- remote expert compute
+- distributed numerical MoE parity
 - transport-calibrated observation
 - multi-rank expert residency validation
 
 `fit_ep_cost_model.py` now rejects the single-rank local-MoE artifact. Formal
-calibrated offline analysis remains gated on future multi-rank
-`observed_online_native_ep` traces with real transport and timing data.
+calibrated offline analysis also rejects the `world_size=2`
+`observed_online_ws2_route_partition` artifact because it still lacks real
+dispatch/combine hidden transport, expert compute, and distributed numerical
+correctness. Formal calibrated offline analysis remains gated on future
+multi-rank `observed_online_native_ep` traces with real transport and timing
+data.

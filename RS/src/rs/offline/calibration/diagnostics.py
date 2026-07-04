@@ -22,6 +22,11 @@ def _default_jsonl_path(metadata_path: str | Path) -> Path:
 
 def assert_online_native_ep_observation(metadata: dict[str, Any], metadata_path: str | Path | None = None) -> None:
     trace_origin = metadata.get("trace_origin")
+    if trace_origin == TraceOrigin.OBSERVED_ONLINE_WS2_ROUTE_PARTITION:
+        raise RuntimeError(
+            "calibrated offline analysis rejects observed_online_ws2_route_partition: "
+            "missing real dispatch/combine hidden transport, expert compute, and distributed numerical correctness"
+        )
     _require(
         trace_origin == TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
         "calibrated offline analysis requires trace_origin=observed_online_native_ep; "

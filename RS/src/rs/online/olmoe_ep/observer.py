@@ -42,6 +42,23 @@ def build_single_rank_local_moe_observer_metadata(*, run_id: str, extra: dict[st
     )
 
 
+def build_ws2_route_partition_observer_metadata(*, run_id: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    return build_result_envelope(
+        run_id=run_id,
+        pipeline=ONLINE_PIPELINE,
+        claim_scope="distributed_route_partition_and_count_agreement_only",
+        trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_ROUTE_PARTITION,
+        future_information_mode=FutureInformationMode.NONE,
+        is_real_ep_runtime=False,
+        source_ownership_mode="dist_rank_local_prompt",
+        expert_residency_mode="full_checkpoint_then_local_extract",
+        transport_backend="torch_distributed_metadata_agreement",
+        correctness_status="not_checked",
+        performance_claim_eligible=False,
+        extra=extra or {},
+    )
+
+
 def export_native_ep_trace_artifacts(
     *,
     output_dir: str | Path,
@@ -66,6 +83,22 @@ def export_single_rank_local_moe_trace_artifacts(
     extra_metadata: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     metadata = build_single_rank_local_moe_observer_metadata(run_id=run_id, extra=extra_metadata or {})
+    return write_online_trace_artifacts(
+        output_dir=output_dir,
+        run_id=run_id,
+        trace=trace,
+        metadata=metadata,
+    )
+
+
+def export_ws2_route_partition_trace_artifacts(
+    *,
+    output_dir: str | Path,
+    run_id: str,
+    trace: EpExecutionTrace,
+    extra_metadata: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    metadata = build_ws2_route_partition_observer_metadata(run_id=run_id, extra=extra_metadata or {})
     return write_online_trace_artifacts(
         output_dir=output_dir,
         run_id=run_id,
