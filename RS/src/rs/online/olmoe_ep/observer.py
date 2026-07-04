@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ...contracts import ONLINE_PIPELINE, TraceOrigin, FutureInformationMode, build_result_envelope
+from ...contracts import EpExecutionTrace
+from ..observer_io import write_online_trace_artifacts
 
 
 def build_native_ep_observer_metadata(*, run_id: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -19,4 +22,20 @@ def build_native_ep_observer_metadata(*, run_id: str, extra: dict[str, Any] | No
         correctness_status="not_checked",
         performance_claim_eligible=False,
         extra=extra or {},
+    )
+
+
+def export_native_ep_trace_artifacts(
+    *,
+    output_dir: str | Path,
+    run_id: str,
+    trace: EpExecutionTrace,
+    extra_metadata: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    metadata = build_native_ep_observer_metadata(run_id=run_id, extra=extra_metadata or {})
+    return write_online_trace_artifacts(
+        output_dir=output_dir,
+        run_id=run_id,
+        trace=trace,
+        metadata=metadata,
     )
