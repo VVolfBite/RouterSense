@@ -11,7 +11,7 @@ class ExpertResidency:
     local_expert_ids: list[int] = field(default_factory=list)
     local_parameter_count: int = 0
     non_owner_parameter_count: int = 0
-    weight_residency_mode: str = "physically_sharded_experts"
+    weight_residency_mode: str = "rank_local_expert_weight_cache_from_full_model"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -42,7 +42,7 @@ def summarize_residency(local_expert_ids: list[int], *, local_parameter_count: i
         local_expert_ids=sorted(local_expert_ids),
         local_parameter_count=local_parameter_count,
         non_owner_parameter_count=0,
-        weight_residency_mode="physically_sharded_experts",
+        weight_residency_mode="rank_local_expert_weight_cache_from_full_model",
     )
 
 

@@ -2,174 +2,129 @@
 
 ## Current Conclusion
 
-- The old N17 `2 nodes x 1 GPU` throughput table is **not** a valid end-to-end `native` vs `scheduled` performance comparison.
-- It **does** prove one important thing:
-  - RouteSense can inject scheduled transport into the real OLMoE EP path and pass correctness checks.
-- It does **not** prove:
-  - `scheduled` communication is already faster than `native`
-  - control-plane overhead is the dominant cause of the throughput gap
-  - joint scheduling has been fairly tested at a scale where it should beat `native`
+- The current distributed mainline in `RS/` supports `trace_replay`, not a
+  real EP runtime.
+- The current 2-rank environment is valid for wiring, correctness protocol
+  bring-up, and collective calibration.
+- The current 2-rank environment is not valid for production EP performance
+  claims, joint-scheduling benefit claims, or online prediction claims.
 
-## Why The Old N17 Benchmark Was Invalid
+## Scope Correction
 
-The old harness mixed several different costs into the scheduled timed path:
+The old wording around `native_baseline`, `wave_collective`, and
+`scheduled_transport` overstated what the code was doing.
 
-1. trace collection
-2. scheduled dispatch / expert / combine execution
-3. a full native reference replay inside the same scheduled sample
-4. correctness comparison
+The current mainline now uses:
 
-That means the old scheduled `batch_wall_ms` was not measuring a production scheduled path.
+- `execution_mode=trace_replay|real_ep`
+- `transport_execution_mode=unscheduled_collective_replay`
+- `transport_execution_mode=wave_collective_replay`
+- `transport_execution_mode=scheduled_collective_partition_replay`
 
-There was a second fairness issue:
+And the current code explicitly rejects:
 
-- `native_baseline` still ran matrix construction, matrix aggregation, and scheduler preamble before entering the native transport branch.
+- `execution_mode=real_ep`
 
-So the old comparison was polluted on both sides:
+Current result JSON now carries:
 
-- scheduled was too expensive because it included validation replay
-- native was too expensive because it still paid scheduler-side setup
+- `execution_mode=trace_replay`
+- `claim_scope=transport_replay_only`
+- `is_real_ep_runtime=false`
+- `uses_oracle_future_trace=true`
+- `baseline_semantics=unscheduled_collective_replay|scheduled_collective_replay`
+- `correctness_status=not_checked|passed|failed|unsupported`
 
-## Code Fixes Applied In This Round
+## What The Current Mainline Actually Proves
 
-### 1. Native baseline now short-circuits scheduler preamble
+It proves:
 
-File:
+- the trace-derived dispatch plan can be materialized into distributed replay
+  execution
+- scheduled and unscheduled collective replay paths can both be invoked through
+  the same bridge
+- the benchmark/reporting path can now say when correctness was not checked,
+  instead of fabricating a pass
 
-- [runner.py](D:/Project/Test/RouterSense/RS/src/rs/runtime/distributed_ep/adapter/runner.py:126)
+It does not yet prove:
 
-What changed:
+- real EP token ownership semantics
+- real EP model sharding semantics
+- online prediction benefit
+- offline makespan gains turning into NCCL wall-clock gains
+- fair production-native versus scheduled runtime performance
 
-- `execution_mode=native_baseline` now returns before matrix build, all-reduce, planner solve, and wave conversion.
-- Native control-plane fields are now zeroed except optional self-check timing.
+## Important Terminology Corrections
 
-Why:
+The repository now treats the following older terms as obsolete for the formal
+mainline:
 
-- This makes the benchmarked native branch much closer to an actual one-shot transport baseline.
+- `native_baseline`
+  replaced by `unscheduled_collective_replay`
+- `scheduled_transport`
+  replaced by `scheduled_collective_partition_replay`
+- `wave_collective`
+  replaced by `wave_collective_replay`
+- `physically_sharded_experts`
+  replaced by `rank_local_expert_weight_cache_from_full_model`
 
-### 2. Validation replay is now optional
+The last rename matters because the current adapter still derives rank-local
+expert weights from a full model load. That is not physical sharding.
 
-Files:
+## Benchmark Interpretation Boundary
 
-- [runner.py](D:/Project/Test/RouterSense/RS/src/rs/runtime/distributed_ep/adapter/runner.py:143)
-- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:171)
+Even with the naming cleanup, current trace replay still has hard limits:
 
-What changed:
+- `future_trace` is oracle lookahead, not prediction
+- `trace_replay` is not a real EP runtime
+- a collective replay backend is not the same thing as realizing endpoint
+  matching on the wire
+- current 2-rank experiments do not have the topology needed to validate the
+  core multi-matching argument from the offline PoC line
 
-- Added `verify_correctness` plumbing in the runner.
-- Added CLI flag:
-  - `--validation off|sampled|always`
-- Added:
-  - `--validation-every N`
+So any current benchmark should be described as:
 
-Default:
+- transport replay benchmark
+- replay correctness protocol benchmark
+- collective calibration benchmark
 
-- `--validation off`
+Not as:
 
-Why:
+- production EP benchmark
+- scheduler speedup benchmark
+- online serving benchmark
 
-- Scheduled transport no longer pays for a full native replay inside the timed benchmark path unless explicitly requested.
+## Validation Semantics
 
-### 3. Trace time is now outside benchmark throughput time
+Current output semantics are now stricter:
 
-File:
+- when validation is disabled, the result reports
+  `correctness_status=not_checked`
+- the harness no longer reports a fake correctness pass when no validation was
+  executed
+- batch summaries now tolerate `not_checked` results instead of crashing during
+  error aggregation
 
-- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:224)
+This is still not the final correctness design. The remaining work is to
+replace weak replay checks with full route-identity, ownership, completeness,
+and numerical validation.
 
-What changed:
+## Current Allowed Claims
 
-- `trace_ms` is still recorded per sample.
-- `batch_wall_ms` now accumulates only the cross-rank critical-path sample execution time used for benchmark throughput.
-- Validation time is subtracted from `sample_wall_ms`.
+Until the remaining semantic issues are fixed, the mainline should limit itself
+to the following claims:
 
-Why:
+- the distributed replay wiring is live
+- current transport modes can be invoked and audited explicitly
+- the benchmark/output schema now exposes replay-only scope instead of implying
+  a real EP runtime
 
-- The benchmark now measures control-plane + transport + local expert execution, not trace extraction.
+## Current Disallowed Claims
 
-### 4. Batch timing now uses cross-rank critical path
+The mainline should not currently claim:
 
-File:
-
-- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:312)
-
-What changed:
-
-- Per-sample batch accounting now uses the max `sample_wall_ms` across gathered rank payloads.
-
-Why:
-
-- Collective runtime is determined by the slowest participating rank, not by rank 0 local wall time.
-
-## Current Theoretical Position
-
-For the current `2 x 1 GPU` setup, the user-supplied reasoning is correct in substance:
-
-- the cross-rank nontrivial traffic is effectively a `2 x 2` exchange
-- native already executes one `all_to_all_single` per phase
-- without real communication-compute overlap, wave splitting does not create new matching freedom
-- extra waves mainly introduce launch, pack/unpack, allocation, and synchronization overhead
-
-So the right expectation is:
-
-- this environment is suitable for correctness and calibration
-- it is not the right environment to expect joint scheduling to beat native on throughput
-
-## What The Old N17 Result Should Now Be Called
-
-The most accurate statement is:
-
-- N17 verified real scheduled-transport injection and correctness under a real 2-node OLMoE execution chain.
-- N17 did **not** produce a fair native-vs-scheduled throughput comparison.
-- N17 did **not** test joint scheduling at a scale where the PoC mechanism should be expected to win.
-
-## New Benchmark Controls
-
-Current recommended benchmark modes:
-
-1. performance mode
-   - `--validation off`
-2. periodic regression mode
-   - `--validation sampled --validation-every 64`
-3. correctness mode
-   - `--validation always`
-
-## Validation Status
-
-Local regression run completed after this change:
-
-- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest RS\tests\test_scheduled_execution_bridge.py -q`
-- result: `8 passed`
-
-Coverage added in this round:
-
-- native baseline skips scheduler preamble
-- scheduled execution skips native replay when validation is off
-
-## What Still Needs To Be Done
-
-These changes fix benchmark boundaries, but they do **not** yet solve the main runtime bottlenecks.
-
-Still pending:
-
-1. export per-wave diagnostics:
-   - wave count
-   - bytes
-   - pack/unpack timings
-   - rank-critical timing
-2. remove avoidable executor materialization overhead:
-   - `.clone()`
-   - repeated `torch.cat`
-   - Python row packing
-3. rerun a clean calibration benchmark on `2 x 1 GPU`
-4. move to at least `4 GPUs`, and preferably `8 GPUs`, for a meaningful joint-scheduling performance test
-
-## Immediate Next Step
-
-Do **not** use the old N17 table as evidence that scheduled communication is already faster than native.
-
-The next valid step is:
-
-1. rerun the benchmark with the new timing boundaries
-2. persist per-wave execution details
-3. treat `2 x 1 GPU` only as a calibration environment
-4. promote the real performance experiment to `N >= 4`, ideally `N = 8`
+- real EP runtime support
+- native EP baseline support
+- online prediction benefit
+- production NCCL speedup from current offline schedule results
+- fair end-to-end throughput superiority of scheduled transport on the current
+  2-rank setup

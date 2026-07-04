@@ -17,6 +17,11 @@ import torch  # type: ignore
 
 from rs.runtime import load_model_and_tokenizer
 from rs.runtime.distributed_ep.adapter.runner import (
+    REAL_EP_MODE,
+    SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
+    TRACE_REPLAY_MODE,
+    UNSCHEDULED_COLLECTIVE_REPLAY,
+    WAVE_COLLECTIVE_REPLAY,
     DistributedRunnerConfig,
     build_distributed_runner_plan,
     execute_scheduled_inference,
@@ -89,6 +94,53 @@ def _summarize_numeric(values: list[float]) -> dict[str, float]:
     }
 
 
+def _summarize_correctness(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses: list[str] = []
+    token_conservation_values: list[bool] = []
+    gate_weight_values: list[bool] = []
+    max_abs_errors: list[float] = []
+    mean_abs_errors: list[float] = []
+    cosine_similarities: list[float] = []
+
+    for sample in samples:
+        for rank_payload in sample.get("ranks", []):
+            correctness = rank_payload["execution"].get("correctness", {})
+            statuses.append(str(correctness.get("correctness_status", "unsupported")))
+
+            token_conservation = correctness.get("token_conservation_pass")
+            if token_conservation is not None:
+                token_conservation_values.append(bool(token_conservation))
+
+            gate_weight = correctness.get("gate_weight_conservation_pass")
+            if gate_weight is not None:
+                gate_weight_values.append(bool(gate_weight))
+
+            max_abs_error = correctness.get("max_abs_error")
+            if max_abs_error is not None:
+                max_abs_errors.append(float(max_abs_error))
+
+            mean_abs_error = correctness.get("mean_abs_error")
+            if mean_abs_error is not None:
+                mean_abs_errors.append(float(mean_abs_error))
+
+            cosine_similarity = correctness.get("cosine_similarity")
+            if cosine_similarity is not None:
+                cosine_similarities.append(float(cosine_similarity))
+
+    status_counts: dict[str, int] = {}
+    for status in statuses:
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    return {
+        "status_counts": status_counts,
+        "token_conservation_pass": all(token_conservation_values) if token_conservation_values else None,
+        "gate_weight_conservation_pass": all(gate_weight_values) if gate_weight_values else None,
+        "max_abs_error": max(max_abs_errors) if max_abs_errors else None,
+        "mean_abs_error": (sum(mean_abs_errors) / len(mean_abs_errors)) if mean_abs_errors else None,
+        "cosine_similarity_p50": _summarize_numeric(cosine_similarities)["p50"] if cosine_similarities else None,
+    }
+
+
 def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
     samples = list(result.get("samples", []))
     if not samples:
@@ -119,7 +171,7 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
             execution = rank_payload["execution"]
             control = execution.get("control_plane_ms", {})
             wave_execution = execution.get("wave_execution", {})
-            native = execution.get("native_baseline", {})
+            native = execution.get("unscheduled_collective_replay", {})
             scheduled_total = float(wave_execution.get("dispatch_comm_ms", 0.0)) + float(wave_execution.get("combine_comm_ms", 0.0))
             native_total = float(native.get("dispatch_comm_ms", 0.0)) + float(native.get("combine_comm_ms", 0.0))
             planner_ms.append(float(control.get("planner_ms", 0.0)))
@@ -154,28 +206,12 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
         "native_comm_ms": _summarize_numeric(native_comm_ms),
         "communication_saved_ms": _summarize_numeric(communication_saved_ms),
         "communication_ratio_vs_native": _summarize_numeric(communication_ratio),
-        "correctness": {
-            "token_conservation_pass": all(
-                bool(rank_payload["execution"]["correctness"]["token_conservation_pass"])
-                for sample in samples
-                for rank_payload in sample.get("ranks", [])
-            ),
-            "gate_weight_conservation_pass": all(
-                bool(rank_payload["execution"]["correctness"]["gate_weight_conservation_pass"])
-                for sample in samples
-                for rank_payload in sample.get("ranks", [])
-            ),
-            "max_abs_error": max(
-                float(rank_payload["execution"]["correctness"]["max_abs_error"])
-                for sample in samples
-                for rank_payload in sample.get("ranks", [])
-            ),
-        },
+        "correctness": _summarize_correctness(samples),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run native baseline vs wave-collective OLMoE execution.")
+    parser = argparse.ArgumentParser(description="Run trace-replay distributed transport experiments for OLMoE.")
     parser.add_argument("--model", type=str, default="allenai/OLMoE-1B-7B-0924-Instruct")
     parser.add_argument("--inventory", type=str, default=None)
     parser.add_argument("--node-name", type=str, default=None)
@@ -186,7 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sample-limit", type=int, default=1)
     parser.add_argument("--text-key", type=str, default="text")
     parser.add_argument("--precision", type=str, default="fp16")
-    parser.add_argument("--execution-mode", choices=["native_baseline", "wave_collective", "scheduled_transport"], default="native_baseline")
+    parser.add_argument("--runtime-mode", choices=[TRACE_REPLAY_MODE, REAL_EP_MODE], default=TRACE_REPLAY_MODE)
+    parser.add_argument(
+        "--execution-mode",
+        choices=[UNSCHEDULED_COLLECTIVE_REPLAY, WAVE_COLLECTIVE_REPLAY, SCHEDULED_COLLECTIVE_PARTITION_REPLAY],
+        default=UNSCHEDULED_COLLECTIVE_REPLAY,
+    )
     parser.add_argument(
         "--transport-granularity",
         choices=["wave", "atomic"],
@@ -209,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validation-every", type=int, default=64, help="When --validation=sampled, validate every Nth sample.")
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "wave_execution"))
     args = parser.parse_args(argv)
+    if args.runtime_mode == REAL_EP_MODE:
+        raise RuntimeError(
+            "runtime_mode=real_ep is not implemented in the current RS mainline; "
+            "only trace_replay is currently supported"
+        )
 
     import torch.distributed as dist  # type: ignore
 
@@ -300,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             max_waves=(args.max_waves if args.max_waves > 0 else None),
             transport_granularity=args.transport_granularity,
             verify_correctness=should_validate,
+            runtime_mode=args.runtime_mode,
         )
         execution_wall_ms = (time.perf_counter() - execution_started) * 1000.0
         validation_ms = float(execution.get("control_plane_ms", {}).get("conservation_check_ms", 0.0))
@@ -312,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             "world_size": world_size,
             "model": args.model,
             "model_path": model_path,
-            "execution_mode": args.execution_mode,
+            "execution_mode": args.runtime_mode,
+            "transport_execution_mode": args.execution_mode,
             "compute_mode": args.compute_mode,
             "strategy": args.strategy,
             "layer_id": layer_id,
@@ -346,10 +394,24 @@ def main(argv: list[str] | None = None) -> int:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
         result = {
+            "execution_mode": args.runtime_mode,
+            "claim_scope": "transport_replay_only",
+            "is_real_ep_runtime": False,
+            "uses_oracle_future_trace": True,
+            "baseline_semantics": (
+                "unscheduled_collective_replay"
+                if args.execution_mode == UNSCHEDULED_COLLECTIVE_REPLAY
+                else "scheduled_collective_replay"
+            ),
             "run": {
                 "model": args.model,
                 "strategy": args.strategy,
-                "execution_mode": args.execution_mode,
+                "execution_mode": args.runtime_mode,
+                "transport_execution_mode": args.execution_mode,
+                "claim_scope": "transport_replay_only",
+                "is_real_ep_runtime": False,
+                "uses_oracle_future_trace": True,
+                "replay_sample_count": len(samples),
                 "compute_mode": args.compute_mode,
                 "distributed_control_plane": args.distributed_control_plane,
                 "transport_granularity": args.transport_granularity,
@@ -365,6 +427,16 @@ def main(argv: list[str] | None = None) -> int:
             "samples": gathered_samples,
         }
         result["summary"] = _summarize_batch(result)
+        result["correctness_status"] = (
+            "not_checked"
+            if result["summary"]["correctness"]["status_counts"].get("not_checked")
+            and len(result["summary"]["correctness"]["status_counts"]) == 1
+            else "failed"
+            if result["summary"]["correctness"]["status_counts"].get("failed")
+            else "passed"
+            if result["summary"]["correctness"]["status_counts"].get("passed")
+            else "unsupported"
+        )
         suffix = f"batch{len(samples)}" if len(samples) > 1 else f"layer{layer_id}"
         (out / f"{args.execution_mode}_{args.strategy}_{suffix}.json").write_text(
             json.dumps(result, indent=2),

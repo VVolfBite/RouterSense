@@ -30,7 +30,7 @@ Current compatibility shims:
 - `distributed_olmoe_ep_smoke.py`
   OLMoE EP planning smoke on one visible rank.
 - `exp_wave_execution.py`
-  Real execution comparison between native baseline and wave-collective execution.
+  Trace-replay distributed transport experiment harness.
 - `exp_scheduled_execution.py`
   Scheduler-facing execution experiment harness.
 - `future_multinode_smoke.py`
@@ -47,7 +47,14 @@ RSSH_PASSWORD='...' \
 bash scripts/run_real_cluster_wave.sh \
   deploy/inventory/hosts.ppio.current.yaml \
   U_gated_maxweight_matching_atomic \
-  scheduled_transport
+  scheduled_collective_partition_replay
 ```
 
 The script copies the rank-0 JSON result and both logs back under `/tmp/rs_wave_runs/<run-id>/`.
+
+Important boundary:
+
+- `exp_wave_execution.py` currently supports `runtime_mode=trace_replay` only
+- `real_ep` is not implemented
+- current results are replay-scope transport measurements, not production EP
+  runtime measurements

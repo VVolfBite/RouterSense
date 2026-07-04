@@ -94,7 +94,7 @@ def test_correctness_summary_counts_routes():
 
 def test_residency_summary_is_physically_sharded():
     residency = summarize_residency([1, 3], local_parameter_count=1024)
-    assert residency.weight_residency_mode == "physically_sharded_experts"
+    assert residency.weight_residency_mode == "rank_local_expert_weight_cache_from_full_model"
     assert residency.non_owner_parameter_count == 0
 
 

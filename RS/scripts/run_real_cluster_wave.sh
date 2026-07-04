@@ -5,7 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 INVENTORY="${1:-$DEFAULT_INVENTORY}"
 STRATEGY="${2:-U_gated_maxweight_matching_atomic}"
-EXECUTION_MODE="${3:-scheduled_transport}"
+EXECUTION_MODE="${3:-scheduled_collective_partition_replay}"
 shift $(( $# >= 3 ? 3 : $# ))
 EXTRA_ARGS=("$@")
 MODEL="${MODEL:-allenai/OLMoE-1B-7B-0924-Instruct}"

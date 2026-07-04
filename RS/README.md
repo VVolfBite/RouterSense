@@ -19,6 +19,20 @@
 
 ## Current Phase
 
-The current mainline is being prepared for real distributed OLMoE bring-up. Single-node validation lives in `scripts/`, and distributed EP code is being rebuilt under `src/rs/runtime/distributed_ep/` with a strict `core/adapter` split.
+The current mainline is being prepared for a semantically correct distributed
+OLMoE bring-up. Single-node validation lives in `scripts/`, and distributed EP
+code is being rebuilt under `src/rs/runtime/distributed_ep/` with a strict
+`core/adapter` split.
+
+Important scope boundary:
+
+- the distributed execution harness currently supports `trace_replay`
+  only
+- `real_ep` is not implemented and must not silently fall back
+- current 2-rank results are only eligible for wiring, correctness protocol,
+  and collective calibration claims
+- current future-trace use is oracle lookahead, not online prediction
+- offline scheduler wins are not evidence of NCCL wall-clock speedup until the
+  transport backend realizes the corresponding execution semantics
 
 This tree is the only formal RouteSense development path. Legacy POC code remains outside `RS/`.

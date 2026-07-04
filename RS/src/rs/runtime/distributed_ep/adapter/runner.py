@@ -11,7 +11,7 @@ from ..core.wave_executor import (
     CollectiveWaveExecutor,
     NativeAllToAllTransport,
     ScheduledAllToAllTransport,
-    execute_native_baseline,
+    execute_unscheduled_collective_replay,
     verify_token_conservation,
 )
 from ..core.wave_planner import scheduling_result_to_wave_schedule, verify_wave_conservation
@@ -55,6 +55,41 @@ class _ResolvedSchedulingResult:
     makespan: float
     solve_time_ms: float
     schedule: list[dict[str, Any]]
+
+
+TRACE_REPLAY_MODE = "trace_replay"
+REAL_EP_MODE = "real_ep"
+
+UNSCHEDULED_COLLECTIVE_REPLAY = "unscheduled_collective_replay"
+WAVE_COLLECTIVE_REPLAY = "wave_collective_replay"
+SCHEDULED_COLLECTIVE_PARTITION_REPLAY = "scheduled_collective_partition_replay"
+
+
+def _correctness_payload(*, status: str = "unsupported", report: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
+        "correctness_status": status,
+        "numerical_correctness_pass": None,
+        "token_conservation_pass": None,
+        "gate_weight_conservation_pass": None,
+        "max_abs_error": None,
+        "mean_abs_error": None,
+        "cosine_similarity": None,
+    }
+    if report is not None:
+        payload.update(report)
+        payload["numerical_correctness_pass"] = bool(report.get("token_conservation_pass"))
+        payload["correctness_status"] = "passed" if bool(report.get("token_conservation_pass")) else "failed"
+    return payload
+
+
+def _baseline_semantics_for_mode(execution_mode: str) -> str:
+    if execution_mode == UNSCHEDULED_COLLECTIVE_REPLAY:
+        return "unscheduled_collective_replay"
+    if execution_mode == SCHEDULED_COLLECTIVE_PARTITION_REPLAY:
+        return "scheduled_collective_replay"
+    if execution_mode == WAVE_COLLECTIVE_REPLAY:
+        return "scheduled_collective_replay"
+    return execution_mode
 
 
 def build_distributed_runner_plan(
@@ -134,13 +169,14 @@ def execute_scheduled_inference(
     executor: NCCLExecutor | None = None,
     payload=None,
     use_distributed: bool = False,
-    execution_mode: str = "p2p_matching",
+    execution_mode: str = UNSCHEDULED_COLLECTIVE_REPLAY,
     local_expert_weights: Any | None = None,
     hidden_state_rows=None,
     plan_index: int = 0,
     max_waves: int | None = None,
     transport_granularity: str = "wave",
     verify_correctness: bool = True,
+    runtime_mode: str = TRACE_REPLAY_MODE,
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
@@ -148,10 +184,22 @@ def execute_scheduled_inference(
 
     if transport_granularity not in {"wave", "atomic"}:
         raise ValueError(f"unsupported transport_granularity: {transport_granularity}")
+    if runtime_mode != TRACE_REPLAY_MODE:
+        raise RuntimeError(
+            "real_ep runtime mode is not implemented in the current RS mainline; "
+            "only trace_replay is currently supported"
+        )
 
     if not dispatch_plans:
         return {
             "strategy": strategy_name,
+            "execution_mode": runtime_mode,
+            "transport_execution_mode": execution_mode,
+            "claim_scope": "transport_replay_only",
+            "is_real_ep_runtime": False,
+            "uses_oracle_future_trace": True,
+            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+            "correctness": _correctness_payload(status="unsupported"),
             "scheduling_result": {"makespan": 0.0, "solve_time_ms": 0.0, "chunk_count": 0},
             "nccl_execution": {},
             "collective_records": [],
@@ -168,7 +216,7 @@ def execute_scheduled_inference(
     active_plan = dispatch_plans[plan_index]
     import time
 
-    if execution_mode == "native_baseline":
+    if execution_mode == UNSCHEDULED_COLLECTIVE_REPLAY:
         if hidden_state_rows is None:
             raise RuntimeError(f"execution_mode={execution_mode} requires hidden_state_rows")
         if local_expert_weights is None:
@@ -180,7 +228,7 @@ def execute_scheduled_inference(
             device=getattr(executor, "device", None) or (f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"),
         )
         execution_start = time.perf_counter()
-        native = execute_native_baseline(
+        native = execute_unscheduled_collective_replay(
             rank=rank,
             world_size=world_size,
             dispatch_plan=active_plan,
@@ -191,28 +239,27 @@ def execute_scheduled_inference(
             local_weights=local_expert_weights,
         )
         execution_ms = (time.perf_counter() - execution_start) * 1000.0
-        correctness = {
-            "token_conservation_pass": True,
-            "gate_weight_conservation_pass": True,
-            "max_abs_error": 0.0,
-            "mean_abs_error": 0.0,
-            "cosine_similarity": 1.0,
-        }
+        correctness = _correctness_payload(status="not_checked")
         if verify_correctness:
             verify_start = time.perf_counter()
-            correctness = verify_token_conservation(
+            correctness = _correctness_payload(report=verify_token_conservation(
                 native.final_output,
                 native.final_output,
                 active_plan,
                 native_route_items=native.combine_result.received_route_items,
                 wave_route_items=native.combine_result.received_route_items,
-            )
+            ))
             conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
         else:
             conservation_check_ms = 0.0
         return {
             "strategy": strategy_name,
-            "execution_mode": execution_mode,
+            "execution_mode": runtime_mode,
+            "transport_execution_mode": execution_mode,
+            "claim_scope": "transport_replay_only",
+            "is_real_ep_runtime": False,
+            "uses_oracle_future_trace": True,
+            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
             "verify_correctness": verify_correctness,
             "scheduling_result": {
                 "makespan": 0.0,
@@ -226,7 +273,7 @@ def execute_scheduled_inference(
                 "wave_convert_ms": 0.0,
                 "conservation_check_ms": conservation_check_ms,
             },
-            "native_baseline": {
+            "unscheduled_collective_replay": {
                 "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
                 "combine_comm_ms": native.combine_result.total_comm_ms,
                 "dispatch_pack_ms": native.dispatch_result.total_pack_ms,
@@ -292,7 +339,7 @@ def execute_scheduled_inference(
         schedule=schedule,
     )
 
-    if execution_mode in {"native_baseline", "wave_collective", "scheduled_transport"}:
+    if execution_mode in {UNSCHEDULED_COLLECTIVE_REPLAY, WAVE_COLLECTIVE_REPLAY, SCHEDULED_COLLECTIVE_PARTITION_REPLAY}:
         if hidden_state_rows is None:
             raise RuntimeError(f"execution_mode={execution_mode} requires hidden_state_rows")
         if local_expert_weights is None:
@@ -315,7 +362,7 @@ def execute_scheduled_inference(
                 wave_executor,
                 split_into_micro_ops=(transport_granularity == "atomic"),
             )
-            if execution_mode == "scheduled_transport"
+            if execution_mode == SCHEDULED_COLLECTIVE_PARTITION_REPLAY
             else NativeAllToAllTransport(wave_executor)
         )
         wave_convert_end = time.perf_counter()
@@ -344,15 +391,9 @@ def execute_scheduled_inference(
         )
         final_output = _aggregate_wave_outputs(combine_exec.received_tensor, combine_exec.received_route_items, hidden_size=hidden_size)
         native_comm = {"dispatch_comm_ms": 0.0, "combine_comm_ms": 0.0}
-        correctness = {
-            "token_conservation_pass": bool(dispatch_conservation.get("pass", False) and combine_conservation.get("pass", False)),
-            "gate_weight_conservation_pass": True,
-            "max_abs_error": 0.0,
-            "mean_abs_error": 0.0,
-            "cosine_similarity": 1.0,
-        }
+        correctness = _correctness_payload(status="not_checked")
         if verify_correctness:
-            native = execute_native_baseline(
+            native = execute_unscheduled_collective_replay(
                 rank=rank,
                 world_size=world_size,
                 dispatch_plan=active_plan,
@@ -366,17 +407,22 @@ def execute_scheduled_inference(
                 "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
                 "combine_comm_ms": native.combine_result.total_comm_ms,
             }
-            correctness = verify_token_conservation(
+            correctness = _correctness_payload(report=verify_token_conservation(
                 native.final_output,
                 final_output,
                 active_plan,
                 native_route_items=native.combine_result.received_route_items,
                 wave_route_items=combine_exec.received_route_items,
-            )
+            ))
         conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0 if verify_correctness else 0.0
         return {
             "strategy": strategy_name,
-            "execution_mode": execution_mode,
+            "execution_mode": runtime_mode,
+            "transport_execution_mode": execution_mode,
+            "claim_scope": "transport_replay_only",
+            "is_real_ep_runtime": False,
+            "uses_oracle_future_trace": True,
+            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
             "verify_correctness": verify_correctness,
             "scheduling_result": {
                 "makespan": result.makespan,
@@ -408,7 +454,7 @@ def execute_scheduled_inference(
                 "dispatch_timings": [timing.__dict__ for timing in dispatch_exec.timings],
                 "combine_timings": [timing.__dict__ for timing in combine_exec.timings],
             },
-            "native_baseline": {
+            "unscheduled_collective_replay": {
                 "dispatch_comm_ms": native_comm["dispatch_comm_ms"],
                 "combine_comm_ms": native_comm["combine_comm_ms"],
             },
@@ -457,6 +503,13 @@ def execute_scheduled_inference(
 
     return {
         "strategy": strategy_name,
+        "execution_mode": runtime_mode,
+        "transport_execution_mode": execution_mode,
+        "claim_scope": "transport_replay_only",
+        "is_real_ep_runtime": False,
+        "uses_oracle_future_trace": True,
+        "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+        "correctness": _correctness_payload(status="unsupported"),
         "scheduling_result": {
             "makespan": result.makespan,
             "solve_time_ms": result.solve_time_ms,

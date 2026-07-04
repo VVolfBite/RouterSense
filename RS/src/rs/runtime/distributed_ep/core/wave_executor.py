@@ -36,7 +36,7 @@ class WaveExecutionResult:
 
 
 @dataclass
-class NativeBaselineResult:
+class UnscheduledCollectiveReplayResult:
     dispatch_result: WaveExecutionResult
     combine_result: WaveExecutionResult
     final_output: torch.Tensor
@@ -255,7 +255,7 @@ class ScheduledAllToAllTransport(WaveTransportExecutor):
         )
 
 
-def execute_native_baseline(
+def execute_unscheduled_collective_replay(
     *,
     rank: int,
     world_size: int,
@@ -265,7 +265,7 @@ def execute_native_baseline(
     device: torch.device,
     dtype: torch.dtype,
     local_weights: Any,
-) -> NativeBaselineResult:
+) -> UnscheduledCollectiveReplayResult:
     executor = CollectiveWaveExecutor(rank=rank, world_size=world_size, dtype=dtype, device=device)
     from ..adapter.olmoe_adapter import execute_local_experts
 
@@ -298,7 +298,7 @@ def execute_native_baseline(
         device=device,
     )
     combine_result.aggregated_output = final_output
-    return NativeBaselineResult(
+    return UnscheduledCollectiveReplayResult(
         dispatch_result=dispatch_result,
         combine_result=combine_result,
         final_output=final_output,

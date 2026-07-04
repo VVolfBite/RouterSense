@@ -60,10 +60,19 @@ against accidental legacy imports.
 
 ## Current Phase
 
-The current mainline focus is the path from offline scheduler validation to
-real multi-GPU MoE communication execution under the `RS/` stack. Historical
+The current mainline focus is the path from offline scheduler validation to a
+semantically correct distributed EP runtime under the `RS/` stack. Historical
 POC documents remain available for context, but they are not the source of
 truth for the deployment mainline.
+
+At the moment, the distributed execution path in `RS/` should be treated as
+`trace_replay`, not as a real EP runtime:
+
+- `trace_replay` is the only supported runtime mode today.
+- current 2-rank runs are valid for wiring, correctness protocol bring-up, and
+  collective calibration only.
+- current results do not justify production EP performance claims, online
+  prediction claims, or NCCL speedup claims from offline makespan numbers.
 
 ## Resume Point
 

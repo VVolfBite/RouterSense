@@ -34,8 +34,8 @@ This file is intended for path resolution and dry-run reference. It should not b
 1. Confirm repo present on both nodes.
 2. Confirm model cache present on both nodes.
 3. Run `distributed_nccl_smoke.py` under `torchrun` across 2 ranks.
-4. Run `exp_wave_execution.py` in `native_baseline`.
-5. Run `exp_wave_execution.py` in `wave_collective`.
+4. Run `exp_wave_execution.py` in `unscheduled_collective_replay`.
+5. Run `exp_wave_execution.py` in `wave_collective_replay` or `scheduled_collective_partition_replay`.
 
 ## Manual Torchrun Skeleton
 
@@ -66,7 +66,8 @@ If the NCCL smoke passes, swap the script path to:
 ```bash
 experiments/distributed/exp_wave_execution.py \
   --model-path <node-local-model-path> \
-  --execution-mode native_baseline
+  --runtime-mode trace_replay \
+  --execution-mode unscheduled_collective_replay
 ```
 
 and then:
@@ -74,7 +75,8 @@ and then:
 ```bash
 experiments/distributed/exp_wave_execution.py \
   --model-path <node-local-model-path> \
-  --execution-mode wave_collective \
+  --runtime-mode trace_replay \
+  --execution-mode wave_collective_replay \
   --strategy U_gated_maxweight_matching
 ```
 
@@ -82,3 +84,9 @@ experiments/distributed/exp_wave_execution.py \
 
 - Remote model download completed at `/vllm-workspace/models/OLMoE-1B-7B-0924-Instruct`
 - Local model download is still incomplete and may need either a retry or a remote-to-local copy
+
+## Scope Boundary
+
+These bring-up steps currently validate only `trace_replay` distributed wiring.
+They do not validate a real EP runtime, online prediction, or production EP
+performance.

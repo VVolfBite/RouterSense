@@ -55,11 +55,10 @@ def _sample_plan() -> DispatchPlan:
 
 def test_build_matrix_from_plan_send_and_recv() -> None:
     plan = _sample_plan()
-    plan.shards[0].route_items = []  # explicit no-op, keeps rows=0
+    plan.shards[0].route_items = []
     plan.shards[1].route_items = []
     plan.shards[2].route_items = []
 
-    # Rebuild with implicit row counts via subclassed property substitute is not needed here.
     plan = DispatchPlan(
         layer_id=3,
         world_size=4,
@@ -185,7 +184,7 @@ def test_execute_scheduled_inference_uses_scheduled_transport(monkeypatch) -> No
     monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: type(
             "Native",
             (),
@@ -211,10 +210,13 @@ def test_execute_scheduled_inference_uses_scheduled_transport(monkeypatch) -> No
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="scheduled_transport",
+        execution_mode=runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
-    assert result["execution_mode"] == "scheduled_transport"
+    assert result["execution_mode"] == runner_module.TRACE_REPLAY_MODE
+    assert result["transport_execution_mode"] == runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY
+    assert result["baseline_semantics"] == "scheduled_collective_replay"
     assert result["wave_execution"]["transport"] == "scheduled_all_to_all"
     assert result["wave_execution"]["transport_granularity"] == "wave"
     assert [call["direction"] for call in recorded.calls] == ["dispatch", "combine"]
@@ -250,7 +252,7 @@ def test_execute_scheduled_inference_respects_atomic_transport_granularity(monke
     monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: type(
             "Native",
             (),
@@ -276,8 +278,9 @@ def test_execute_scheduled_inference_respects_atomic_transport_granularity(monke
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="scheduled_transport",
+        execution_mode=runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
         transport_granularity="atomic",
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
     assert captured["split_into_micro_ops"] is True
@@ -313,7 +316,7 @@ def test_execute_scheduled_inference_respects_wave_transport_granularity(monkeyp
     monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: type(
             "Native",
             (),
@@ -339,8 +342,9 @@ def test_execute_scheduled_inference_respects_wave_transport_granularity(monkeyp
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="scheduled_transport",
+        execution_mode=runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
         transport_granularity="wave",
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
     assert captured["split_into_micro_ops"] is False
@@ -372,7 +376,7 @@ def test_execute_scheduled_inference_passes_fallback_schedule_into_wave_planner(
     monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: type(
             "Native",
             (),
@@ -398,7 +402,8 @@ def test_execute_scheduled_inference_passes_fallback_schedule_into_wave_planner(
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="scheduled_transport",
+        execution_mode=runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
     phase0_entries = [entry for entry in captured["schedule"] if int(entry["phase"]) == 0]
@@ -407,13 +412,13 @@ def test_execute_scheduled_inference_passes_fallback_schedule_into_wave_planner(
     ]
 
 
-def test_execute_scheduled_inference_native_baseline_skips_scheduler(monkeypatch) -> None:
+def test_execute_scheduled_inference_unscheduled_collective_replay_skips_scheduler(monkeypatch) -> None:
     dispatch_plan = DispatchPlan(layer_id=0, world_size=2, shards=[])
 
     monkeypatch.setattr(runner_module, "get_strategy", lambda name: (_ for _ in ()).throw(AssertionError("scheduler should not run")))
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: type(
             "Native",
             (),
@@ -433,13 +438,15 @@ def test_execute_scheduled_inference_native_baseline_skips_scheduler(monkeypatch
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="native_baseline",
+        execution_mode=runner_module.UNSCHEDULED_COLLECTIVE_REPLAY,
         verify_correctness=False,
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
     assert result["control_plane_ms"]["matrix_build_ms"] == 0.0
     assert result["control_plane_ms"]["planner_ms"] == 0.0
-    assert result["native_baseline"]["dispatch_comm_ms"] == 0.1
+    assert result["unscheduled_collective_replay"]["dispatch_comm_ms"] == 0.1
+    assert result["correctness"]["correctness_status"] == "not_checked"
 
 
 def test_execute_scheduled_inference_skips_native_replay_when_validation_off(monkeypatch) -> None:
@@ -467,7 +474,7 @@ def test_execute_scheduled_inference_skips_native_replay_when_validation_off(mon
     monkeypatch.setattr(runner_module, "execute_local_experts", lambda tensor, route_items, local_weights: tensor)
     monkeypatch.setattr(
         runner_module,
-        "execute_native_baseline",
+        "execute_unscheduled_collective_replay",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("native replay should be skipped")),
     )
     monkeypatch.setattr(runner_module, "ScheduledAllToAllTransport", lambda executor, *, split_into_micro_ops: recorded)
@@ -480,10 +487,12 @@ def test_execute_scheduled_inference_skips_native_replay_when_validation_off(mon
         hidden_size=4,
         local_expert_weights=object(),
         hidden_state_rows=torch.zeros((2, 4), dtype=torch.float16),
-        execution_mode="scheduled_transport",
+        execution_mode=runner_module.SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
         verify_correctness=False,
+        runtime_mode=runner_module.TRACE_REPLAY_MODE,
     )
 
     assert result["verify_correctness"] is False
-    assert result["native_baseline"]["dispatch_comm_ms"] == 0.0
+    assert result["unscheduled_collective_replay"]["dispatch_comm_ms"] == 0.0
     assert result["control_plane_ms"]["conservation_check_ms"] == 0.0
+    assert result["correctness"]["correctness_status"] == "not_checked"
