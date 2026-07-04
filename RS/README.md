@@ -79,15 +79,19 @@ Current online-adjacent capability is intentionally narrow:
 - `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only ...`
   verifies rank-local route construction, local/remote partition, placement
   hashing, and distributed send/recv count agreement
+- `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only --hidden-dispatch-only ...`
+  additionally performs truthful hidden-state dispatch on the remote routes
 - `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only ...`
   exports a truthful
   `trace_origin=observed_online_ws2_route_partition` artifact
+- `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only --hidden-dispatch-only ...`
+  exports a truthful
+  `trace_origin=observed_online_ws2_hidden_dispatch` artifact
 
 This does not constitute:
 
-- native A2A EP execution
-- real remote-route transport
-- hidden-state dispatch/combine
+- native A2A EP runtime completion
+- hidden-state combine
 - remote expert compute
 - distributed numerical MoE parity
 - transport-calibrated observation
@@ -97,6 +101,8 @@ This does not constitute:
 calibrated offline analysis also rejects the `world_size=2`
 `observed_online_ws2_route_partition` artifact because it still lacks real
 dispatch/combine hidden transport, expert compute, and distributed numerical
-correctness. Formal calibrated offline analysis remains gated on future
-multi-rank `observed_online_native_ep` traces with real transport and timing
-data.
+correctness. It also rejects the `observed_online_ws2_hidden_dispatch` artifact
+because it still lacks expert compute, inverse combine, and distributed
+numerical correctness. Formal calibrated offline analysis remains gated on
+future multi-rank `observed_online_native_ep` traces with real transport and
+timing data.

@@ -290,6 +290,7 @@ class WS2CountAgreementResult:
 class WS2RoutePartitionOnlyResult:
     rank: int
     trace: EpExecutionTrace
+    hidden_states: torch.Tensor
     partition: OnlineRoutePartition
     placement: OnlineExpertPlacement
     manifest: RankManifest
@@ -680,6 +681,7 @@ def run_world_size_two_route_partition_only(
     return WS2RoutePartitionOnlyResult(
         rank=rank,
         trace=trace,
+        hidden_states=hidden_states,
         partition=partition,
         placement=placement,
         manifest=manifest,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,20 @@ from _bootstrap import ensure_src_on_path
 ensure_src_on_path()
 
 from rs.online import build_online_unimplemented_result
-from rs.online.olmoe_ep import run_world_size_one_native_parity, run_world_size_two_route_partition_only
+from rs.online.olmoe_ep import (
+    build_ws2_hidden_dispatch_trace,
+    execute_ws2_hidden_dispatch_only,
+    run_world_size_one_native_parity,
+    run_world_size_two_route_partition_only,
+)
+
+
+def _resolve_run_id(prefix: str, explicit_run_id: str | None, world_size: int) -> str:
+    if explicit_run_id:
+        return explicit_run_id
+    if int(world_size) > 1:
+        return str(os.environ.get("TORCHELASTIC_RUN_ID", f"{prefix}-shared"))
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,12 +44,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--atol", type=float, default=5e-3)
     parser.add_argument("--rtol", type=float, default=5e-3)
     parser.add_argument("--route-partition-only", action="store_true")
+    parser.add_argument("--hidden-dispatch-only", action="store_true")
     parser.add_argument("--validate-metadata", action="store_true")
     parser.add_argument("--allow-identical-prompts", action="store_true")
     parser.add_argument("--dist-backend", type=str, default="gloo")
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="artifacts/online/bench_native_ep")
     args = parser.parse_args(argv)
-    run_id = f"online-native-bench-{uuid.uuid4().hex[:12]}"
+    run_id = _resolve_run_id("online-native-bench", args.run_id, args.world_size)
     if int(args.world_size) == 1:
         parity = run_world_size_one_native_parity(
             model_id=args.model,
@@ -111,6 +127,25 @@ def main(argv: list[str] | None = None) -> int:
                 "gathered_manifest_hashes": observed.agreement.gathered_manifest_hashes,
                 "metadata_details": observed.agreement.validation.details,
             }
+            if bool(args.hidden_dispatch_only):
+                hidden_dispatch = execute_ws2_hidden_dispatch_only(
+                    hidden_states=observed.hidden_states,
+                    partition=observed.partition,
+                    manifest=observed.manifest,
+                    placement=observed.placement,
+                    agreement=observed.agreement,
+                )
+                payload.update(
+                    {
+                        "execution_mode": "online_ws2_hidden_dispatch_only",
+                        "trace_origin": "observed_online_ws2_hidden_dispatch",
+                        "claim_scope": "distributed_hidden_dispatch_only",
+                        "is_real_ep_transport": True,
+                        "correctness_status": hidden_dispatch.validation.correctness_status,
+                        "hidden_dispatch_transport": hidden_dispatch.transport_record.to_dict(),
+                        "received_remote_route_count": len(hidden_dispatch.received_routes),
+                    }
+                )
         finally:
             if dist.is_initialized():
                 dist.destroy_process_group()

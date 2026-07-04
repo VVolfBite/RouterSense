@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -14,11 +15,22 @@ ensure_src_on_path()
 
 from rs.online import build_online_unimplemented_result
 from rs.online.olmoe_ep import (
+    build_ws2_hidden_dispatch_trace,
     collect_world_size_one_local_moe_observed_trace,
+    execute_ws2_hidden_dispatch_only,
+    export_ws2_hidden_dispatch_trace_artifacts,
     export_single_rank_local_moe_trace_artifacts,
     export_ws2_route_partition_trace_artifacts,
     run_world_size_two_route_partition_only,
 )
+
+
+def _resolve_run_id(prefix: str, explicit_run_id: str | None, world_size: int) -> str:
+    if explicit_run_id:
+        return explicit_run_id
+    if int(world_size) > 1:
+        return str(os.environ.get("TORCHELASTIC_RUN_ID", f"{prefix}-shared"))
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,12 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--precision", type=str, default="fp16")
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--route-partition-only", action="store_true")
+    parser.add_argument("--hidden-dispatch-only", action="store_true")
     parser.add_argument("--validate-metadata", action="store_true")
     parser.add_argument("--allow-identical-prompts", action="store_true")
     parser.add_argument("--dist-backend", type=str, default="gloo")
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="artifacts/online/native_ep_trace")
     args = parser.parse_args(argv)
-    run_id = f"online-native-trace-{uuid.uuid4().hex[:12]}"
+    run_id = _resolve_run_id("online-native-trace", args.run_id, args.world_size)
     if int(args.world_size) == 1:
         observed = collect_world_size_one_local_moe_observed_trace(
             model_id=args.model,
@@ -100,33 +114,72 @@ def main(argv: list[str] | None = None) -> int:
                 allow_identical_prompts=bool(args.allow_identical_prompts),
             )
             rank_suffix = f"rank{observed.rank}"
-            jsonl_path, metadata_path = export_ws2_route_partition_trace_artifacts(
+            trace = observed.trace
+            export_fn = export_ws2_route_partition_trace_artifacts
+            trace_origin = "observed_online_ws2_route_partition"
+            execution_mode = "online_ws2_route_partition_only"
+            claim_scope = "distributed_route_partition_and_count_agreement_only"
+            transport_payload = observed.agreement.transport_record.to_dict()
+            correctness_status = observed.agreement.validation.correctness_status
+            is_real_ep_transport = False
+            implemented_scope = "world_size_2_route_partition_and_count_agreement_only"
+            extra_metadata = {
+                **observed.metadata,
+                "entrypoint": "collect_native_ep_trace",
+                "implemented": True,
+                "implemented_scope": implemented_scope,
+                "rank": observed.rank,
+                "placement_hash": observed.placement.placement_hash,
+                "manifest_hash": observed.manifest.manifest_hash,
+                "request_protocol_hash": observed.manifest.request_protocol_hash,
+                "gathered_send_count_matrix": observed.agreement.gathered_send_count_matrix,
+                "gathered_manifest_hashes": observed.agreement.gathered_manifest_hashes,
+            }
+            if bool(args.hidden_dispatch_only):
+                hidden_dispatch = execute_ws2_hidden_dispatch_only(
+                    hidden_states=observed.hidden_states,
+                    partition=observed.partition,
+                    manifest=observed.manifest,
+                    placement=observed.placement,
+                    agreement=observed.agreement,
+                )
+                trace = build_ws2_hidden_dispatch_trace(
+                    partition=observed.partition,
+                    placement=observed.placement,
+                    manifest=observed.manifest,
+                    hidden_dispatch=hidden_dispatch,
+                )
+                export_fn = export_ws2_hidden_dispatch_trace_artifacts
+                trace_origin = "observed_online_ws2_hidden_dispatch"
+                execution_mode = "online_ws2_hidden_dispatch_only"
+                claim_scope = "distributed_hidden_dispatch_only"
+                transport_payload = hidden_dispatch.transport_record.to_dict()
+                correctness_status = hidden_dispatch.validation.correctness_status
+                is_real_ep_transport = True
+                implemented_scope = "world_size_2_hidden_dispatch_only"
+                extra_metadata.update(
+                    {
+                        "implemented_scope": implemented_scope,
+                        "dispatch_transport_operation": hidden_dispatch.transport_record.to_dict(),
+                        "received_remote_route_count": len(hidden_dispatch.received_routes),
+                    }
+                )
+            jsonl_path, metadata_path = export_fn(
                 output_dir=args.output_dir,
                 run_id=f"{run_id}-{rank_suffix}",
-                trace=observed.trace,
-                extra_metadata={
-                    **observed.metadata,
-                    "entrypoint": "collect_native_ep_trace",
-                    "implemented": True,
-                    "implemented_scope": "world_size_2_route_partition_and_count_agreement_only",
-                    "rank": observed.rank,
-                    "placement_hash": observed.placement.placement_hash,
-                    "manifest_hash": observed.manifest.manifest_hash,
-                    "request_protocol_hash": observed.manifest.request_protocol_hash,
-                    "gathered_send_count_matrix": observed.agreement.gathered_send_count_matrix,
-                    "gathered_manifest_hashes": observed.agreement.gathered_manifest_hashes,
-                },
+                trace=trace,
+                extra_metadata=extra_metadata,
             )
             payload = {
                 "pipeline": "online",
-                "execution_mode": "online_ws2_route_partition_only",
-                "trace_origin": "observed_online_ws2_route_partition",
+                "execution_mode": execution_mode,
+                "trace_origin": trace_origin,
                 "future_information_mode": "none",
-                "claim_scope": "distributed_route_partition_and_count_agreement_only",
-                "correctness_status": observed.agreement.validation.correctness_status,
+                "claim_scope": claim_scope,
+                "correctness_status": correctness_status,
                 "performance_claim_eligible": False,
                 "is_real_ep_runtime": False,
-                "is_real_ep_transport": False,
+                "is_real_ep_transport": is_real_ep_transport,
                 "is_transport_calibration_trace": False,
                 "rank": observed.rank,
                 "jsonl_path": str(jsonl_path),
@@ -137,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
                 "local_route_count": len(observed.partition.local_routes),
                 "remote_route_count": len(observed.partition.remote_send_routes),
                 "per_peer_send_rows": observed.partition.per_peer_send_rows,
-                "transport_operation": observed.agreement.transport_record.to_dict(),
+                "transport_operation": transport_payload,
             }
         finally:
             if dist.is_initialized():

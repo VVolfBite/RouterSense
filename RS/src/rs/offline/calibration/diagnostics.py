@@ -27,6 +27,11 @@ def assert_online_native_ep_observation(metadata: dict[str, Any], metadata_path:
             "calibrated offline analysis rejects observed_online_ws2_route_partition: "
             "missing real dispatch/combine hidden transport, expert compute, and distributed numerical correctness"
         )
+    if trace_origin == TraceOrigin.OBSERVED_ONLINE_WS2_HIDDEN_DISPATCH:
+        raise RuntimeError(
+            "calibrated offline analysis rejects observed_online_ws2_hidden_dispatch: "
+            "missing expert compute, inverse combine, and distributed numerical correctness"
+        )
     _require(
         trace_origin == TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
         "calibrated offline analysis requires trace_origin=observed_online_native_ep; "

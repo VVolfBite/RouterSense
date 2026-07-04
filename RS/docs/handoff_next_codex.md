@@ -42,7 +42,10 @@ Current status is split in two:
 - Phase 2b partially completed:
   - `world_size=2` route partition and metadata/count agreement
   - truthful `observed_online_ws2_route_partition` observation export
-- Phase 2c not completed:
+- Phase 2c partially completed:
+  - `world_size=2` hidden-state dispatch only
+  - truthful `observed_online_ws2_hidden_dispatch` observation export
+- Phase 2d not completed:
   - real multi-rank native A2A EP runtime
   - real `observed_online_native_ep` traces
 
@@ -97,6 +100,8 @@ Key rules already enforced:
   `observed_online_native_ep` input
 - offline calibrated analysis must explicitly reject
   `observed_online_ws2_route_partition`
+- offline calibrated analysis must explicitly reject
+  `observed_online_ws2_hidden_dispatch`
 - online scheduler hint mode must reject `oracle_full_trace`
 - all-to-all backend is not marked as matching-realized
 
@@ -110,6 +115,8 @@ Runnable now:
 4. `experiments/online/collect_native_ep_trace.py --world-size 1`
 5. `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only`
 6. `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only`
+7. `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only --hidden-dispatch-only`
+8. `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only --hidden-dispatch-only`
 
 Present but expected to fail fast or reject non-qualifying input:
 
@@ -121,9 +128,9 @@ Present but expected to fail fast or reject non-qualifying input:
    except the ws2 `--route-partition-only` metadata path
 5. `experiments/online/bench_scheduled_ep.py`
 
-That is intentional. The verified single-rank local-MoE harness exists, and the
-verified ws2 metadata-only route-partition stage exists, but the real
-multi-rank online runtime still does not.
+That is intentional. The verified single-rank local-MoE harness exists, the
+verified ws2 route-partition stage exists, and the verified ws2 hidden-dispatch
+stage exists, but the real multi-rank online runtime still does not.
 
 ## 6. What To Work On Next
 
@@ -131,11 +138,12 @@ Next real milestone is Phase 2:
 
 1. real online native EP ownership and routing
 2. ws2 count agreement for route metadata
-3. native variable-size hidden dispatch/combine
+3. native variable-size hidden dispatch
 4. owner-rank expert compute
-5. world-size-2 distributed numerical correctness
-6. real online observer trace export
-7. world-size-4 calibrated offline inputs
+5. inverse combine
+6. world-size-2 distributed numerical correctness
+7. real online observer trace export
+8. world-size-4 calibrated offline inputs
 
 Do not skip to scheduled P2P benchmark claims before native online EP is
 implemented and validated.

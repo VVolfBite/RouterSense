@@ -17,6 +17,7 @@ The only verified online-adjacent execution capability is now:
 - rank-local route construction
 - local/remote partition
 - distributed metadata/count agreement
+- truthful hidden-state dispatch on remote routes
 
 This means the code can capture router logits and MoE layer inputs/outputs from
 an already completed HuggingFace forward, rebuild the local expert
@@ -28,10 +29,9 @@ current layer router output using `source_rank = dist.get_rank()`, partition
 them into local and remote sends, compute a stable expert placement, and verify
 send/recv count agreement plus manifest/placement/request-protocol consistency.
 
-It does not yet constitute native EP runtime execution, native A2A transport,
-distributed expert residency, hidden-state dispatch/combine, remote expert
-compute, distributed numerical parity, or transport-calibrated online
-observation.
+It does not yet constitute native EP runtime execution, distributed expert
+residency, hidden-state combine, remote expert compute, distributed numerical
+parity, or transport-calibrated online observation.
 
 ## What Is True Right Now
 
@@ -77,7 +77,7 @@ It does not yet support:
 - deployable online prediction
 - transport-calibrated observation for offline fitting
 
-It now also supports a narrow `world_size=2` metadata-only distributed stage:
+It now also supports a narrow `world_size=2` distributed stage:
 
 - real rank-local prompts
 - `source_rank = dist.get_rank()`
@@ -86,9 +86,10 @@ It now also supports a narrow `world_size=2` metadata-only distributed stage:
 - rank manifest hash
 - tensor-based send/recv count agreement
 - truthful `TransportOperationRecord` with `phase=count_exchange`
+- optional hidden-state dispatch for remote routes only
+- truthful `TransportOperationRecord` with `phase=dispatch`
 
-That stage does not move hidden states and must not be presented as native A2A
-execution.
+This stage still must not be presented as completed native EP execution.
 
 ## Single-Rank Verified Result
 
@@ -239,8 +240,65 @@ This stage is exported as:
 
 This stage still does not provide:
 
-- hidden-state A2A dispatch
 - remote expert execution
+- inverse combine
+- distributed MoE numerical parity
+- offline calibrated scheduling input
+
+## WS=2 Hidden Dispatch Only
+
+Additional command shape:
+
+```bash
+torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py \
+  --world-size 2 \
+  --model-path <MODEL_PATH> \
+  --prompt-rank0 "<PROMPT_0>" \
+  --prompt-rank1 "<PROMPT_1>" \
+  --layer-index 0 \
+  --precision fp16 \
+  --route-partition-only \
+  --hidden-dispatch-only \
+  --validate-metadata \
+  --output-dir artifacts/online/bench_native_ep_ws2
+```
+
+And trace export:
+
+```bash
+torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py \
+  --world-size 2 \
+  --model-path <MODEL_PATH> \
+  --prompt-rank0 "<PROMPT_0>" \
+  --prompt-rank1 "<PROMPT_1>" \
+  --layer-index 0 \
+  --precision fp16 \
+  --route-partition-only \
+  --hidden-dispatch-only \
+  --validate-metadata \
+  --output-dir artifacts/online/native_ep_trace_ws2
+```
+
+This stage verifies:
+
+- all ws2 route-partition/count-agreement preconditions still hold
+- remote-route hidden states are actually transferred as tensors
+- compact route metadata is transferred as tensors alongside the hidden payload
+- receiver-side route digests match sender-side remote-route digests
+- receiver-side hidden digests match sender-side hidden payload digests
+
+This stage is exported as:
+
+- `execution_mode = online_ws2_hidden_dispatch_only`
+- `trace_origin = observed_online_ws2_hidden_dispatch`
+- `claim_scope = distributed_hidden_dispatch_only`
+- `is_real_ep_runtime = false`
+- `is_real_ep_transport = true`
+- `is_transport_calibration_trace = false`
+
+This stage still does not provide:
+
+- owner-rank expert compute
 - inverse combine
 - distributed MoE numerical parity
 - offline calibrated scheduling input
@@ -267,16 +325,19 @@ Allowed now:
 - offline calibrated analysis no longer accepts single-rank local-MoE
   reconstruction artifacts as native EP observation
 - offline calibrated analysis also rejects the ws2 partition-only trace
+- offline calibrated analysis also rejects the ws2 hidden-dispatch trace
 - online scheduler hint mode rejects `oracle_full_trace`
 - single-rank OLMoE local-MoE reconstruction parity is verified
 - single-rank local-MoE observation export is verified
 - `world_size=2` rank-local route construction, local/remote partition, and
   distributed count agreement are verified
+- `world_size=2` hidden-state dispatch-only transport is verified
 
 Not allowed now:
 
 - multi-rank online native EP performance
 - actual A2A dispatch
+- distributed EP combine
 - distributed online numerical correctness
 - scheduled transport speedup
 - matching-realized runtime benefit
@@ -284,6 +345,7 @@ Not allowed now:
 - deployable prediction benefit
 - treating `world_size=1` local-MoE observation as real DEP data
 - treating `observed_online_ws2_route_partition` as transport calibration input
+- treating `observed_online_ws2_hidden_dispatch` as calibrated runtime input
 
 ## Current Runnable Commands
 
@@ -293,14 +355,17 @@ Runnable and meaningful:
 - `python experiments/online/bench_native_ep.py --world-size 1 ...`
 - `python experiments/online/collect_native_ep_trace.py --world-size 1 ...`
 - `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only ...`
+- `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only --hidden-dispatch-only ...`
 - `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only ...`
+- `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only --hidden-dispatch-only ...`
 - `python experiments/legacy/exp_trace_replay.py ...`
 
 Present, but either gated or still not implemented:
 
 - `python experiments/offline/fit_ep_cost_model.py --trace-metadata ...`
   - only for future real multi-rank native EP traces; current single-rank local
-    observation and ws2 partition-only observation are both rejected
+    observation, ws2 partition-only observation, and ws2 hidden-dispatch
+    observation are all rejected
 - `python experiments/offline/exp_calibrated_schedule.py ...`
 - `python experiments/online/bench_native_ep.py --world-size > 1 ...`
   - except the metadata-only ws2 `--route-partition-only` path
@@ -329,11 +394,11 @@ test failures.
 
 The next real milestone is:
 
-- keep the current ws2 route-partition/count-agreement stage truthful
-- add hidden tensor dispatch after count agreement
-- then add owner-rank expert compute
+- keep the current ws2 route-partition/count-agreement and hidden-dispatch
+  stages truthful
+- add owner-rank expert compute
 - then add inverse combine
 - then add distributed numerical correctness
 
-That is the sequence required to cross from auditable ws2 metadata agreement
-into a real multi-rank EP runtime.
+That is the sequence required to cross from auditable ws2 dispatch-only
+execution into a real multi-rank EP runtime.
