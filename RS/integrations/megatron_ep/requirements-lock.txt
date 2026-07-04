@@ -1,0 +1,5 @@
+torch==2.8.0
+transformers==5.12.1
+megatron-core==0.18.0
+megatron-bridge==0.5.0
+transformer-engine==2.16.1

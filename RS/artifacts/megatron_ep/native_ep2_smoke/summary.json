@@ -1,0 +1,21 @@
+{
+  "pipeline": "host_runtime_native_ep",
+  "host_runtime": "megatron_core",
+  "model_family": "olmoe",
+  "ep_size": 2,
+  "dispatcher": "alltoall",
+  "backend": "nccl",
+  "forward_completed": false,
+  "remote_dispatch_exercised": false,
+  "remote_combine_exercised": false,
+  "is_legacy_harness": false,
+  "performance_claim_eligible": false,
+  "status": "blocked_environment",
+  "reason": "verify_env_failed",
+  "details": {
+    "model": "/root/autodl-tmp/models/OLMoE-1B-7B-0125",
+    "precision": "bf16",
+    "prompt_file": "/root/autodl-tmp/RouterSense/RS/integrations/megatron_ep/config/prompts.json",
+    "note": "Megatron Core / Bridge native smoke not executed because environment is blocked."
+  }
+}

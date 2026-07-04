@@ -1,0 +1,10 @@
+model: allenai/OLMoE-1B-7B-0125
+tensor_parallel_size: 1
+pipeline_parallel_size: 1
+data_parallel_size: 1
+expert_parallel_size: 2
+precision: bf16
+dispatcher: alltoall
+future_hint_mode: none
+facade_mode: no_op_native_passthrough
+scheduler_mode: disabled
