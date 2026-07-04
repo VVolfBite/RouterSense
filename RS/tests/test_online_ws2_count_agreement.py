@@ -14,6 +14,7 @@ from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
     build_online_route_partition,
+    build_request_identity_tables,
     build_rank_manifest,
     build_request_protocol_hash,
     build_ws2_partition_trace,
@@ -53,10 +54,17 @@ def _ws2_worker(rank: int, world_size: int, port: int, out_dir: str, mismatch: s
             microbatch_id="mb-0",
             layer_id=0,
         )
+        request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(
+            prompts_by_rank=prompts_by_rank,
+        )
+        if mismatch == "request_table" and rank == 1:
+            request_table_hash = "0" * 64
         partition = build_online_route_partition(
             run_id=run_id,
-            request_id=f"request-rank-{rank}",
-            microbatch_id="mb-0",
+            request_id=request_id_table[rank],
+            microbatch_id=microbatch_id_table[0],
+            request_numeric_id=rank,
+            microbatch_numeric_id=0,
             layer_id=0,
             source_rank=rank,
             source_node_id=0,
@@ -71,12 +79,14 @@ def _ws2_worker(rank: int, world_size: int, port: int, out_dir: str, mismatch: s
             placement=placement,
             prompt_text=prompts_by_rank[rank],
             request_protocol_hash=request_protocol_hash,
+            request_table_hash=request_table_hash,
         )
         agreement = run_distributed_count_agreement(
             partition=partition,
             manifest=manifest,
             placement=placement,
             validate_metadata=True,
+            rank_device=torch.device("cpu"),
         )
         trace = build_ws2_partition_trace(
             partition=partition,
@@ -129,9 +139,16 @@ def test_online_ws2_count_agreement(tmp_path) -> None:
     assert rank1["transport"]["send_counts"][0] == rank0["transport"]["recv_counts"][1]
 
 
-@pytest.mark.parametrize("mismatch", ["run_id", "placement", "protocol"])
+@pytest.mark.parametrize("mismatch", ["run_id", "placement", "protocol", "request_table"])
 def test_online_ws2_mismatch_fails_fast(tmp_path, mismatch: str) -> None:
     out_dir = tmp_path / mismatch
     out_dir.mkdir()
     with pytest.raises(Exception):
         mp.spawn(_ws2_worker, args=(2, _free_port(), str(out_dir), mismatch), nprocs=2, join=True)
+
+
+def test_ws2_request_table_hash_mismatch_fails(tmp_path) -> None:
+    out_dir = tmp_path / "request_table"
+    out_dir.mkdir()
+    with pytest.raises(Exception):
+        mp.spawn(_ws2_worker, args=(2, _free_port(), str(out_dir), "request_table"), nprocs=2, join=True)

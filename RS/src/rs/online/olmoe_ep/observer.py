@@ -55,7 +55,14 @@ def build_ws2_route_partition_observer_metadata(*, run_id: str, extra: dict[str,
         transport_backend="torch_distributed_metadata_agreement",
         correctness_status="not_checked",
         performance_claim_eligible=False,
-        extra=extra or {},
+        extra={
+            "verified_backend": None,
+            "gloo_test_mode": False,
+            "is_gpu_transport_verified": False,
+            "is_complete_ep_dispatch": False,
+            "is_transport_calibration_trace": False,
+            **(extra or {}),
+        },
     )
 
 
@@ -63,7 +70,7 @@ def build_ws2_hidden_dispatch_observer_metadata(*, run_id: str, extra: dict[str,
     return build_result_envelope(
         run_id=run_id,
         pipeline=ONLINE_PIPELINE,
-        claim_scope="distributed_hidden_dispatch_only",
+        claim_scope="distributed_route_partition_count_agreement_and_dispatch_only",
         trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_HIDDEN_DISPATCH,
         future_information_mode=FutureInformationMode.NONE,
         is_real_ep_runtime=False,
@@ -72,7 +79,14 @@ def build_ws2_hidden_dispatch_observer_metadata(*, run_id: str, extra: dict[str,
         transport_backend="torch_distributed_hidden_dispatch_only",
         correctness_status="not_checked",
         performance_claim_eligible=False,
-        extra=extra or {},
+        extra={
+            "verified_backend": None,
+            "gloo_test_mode": False,
+            "is_gpu_transport_verified": False,
+            "is_complete_ep_dispatch": False,
+            "is_transport_calibration_trace": False,
+            **(extra or {}),
+        },
     )
 
 

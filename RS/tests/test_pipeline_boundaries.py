@@ -54,14 +54,15 @@ def test_all_to_all_backend_is_not_matching_realized() -> None:
     assert transport_backend_realizes_matching("scheduled_p2p") is True
 
 
-def test_online_unimplemented_result_has_world_size_claim_gate() -> None:
+def test_online_unimplemented_result_fails_closed() -> None:
     payload = build_online_unimplemented_result(
         run_id="online-run",
         world_size=2,
         transport_backend=ONLINE_NATIVE_A2A_EP,
     )
     assert payload["pipeline"] == "online"
-    assert payload["claim_scope"] == "correctness_and_calibration_only"
+    assert payload["claim_scope"] == "unsupported"
+    assert payload["trace_origin"] == "not_collected"
     assert payload["performance_claim_eligible"] is False
     assert payload["implemented"] is False
 
@@ -77,7 +78,7 @@ def test_world_size_one_native_parity_result_uses_truthful_scope() -> None:
     payload["trace_origin"] = TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE
     payload["is_real_ep_runtime"] = False
     payload["expert_residency_mode"] = "full_model_local_weight_extract_for_parity"
-    assert payload["claim_scope"] == "correctness_and_calibration_only"
+    assert payload["claim_scope"] == "unsupported"
     assert payload["performance_claim_eligible"] is False
     assert payload["trace_origin"] == TraceOrigin.OBSERVED_SINGLE_RANK_LOCAL_MOE
     assert payload["is_real_ep_runtime"] is False

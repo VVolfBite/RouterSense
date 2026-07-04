@@ -11,6 +11,7 @@ from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
     build_online_route_partition,
+    build_request_identity_tables,
     build_rank_manifest,
     build_request_protocol_hash,
     build_ws2_hidden_dispatch_trace,
@@ -31,10 +32,15 @@ def test_offline_gate_rejects_ws2_hidden_dispatch_trace(tmp_path) -> None:
         placement = build_online_expert_placement(world_size=1, expert_count=2, rank_to_node_id=[0])
         hidden_states = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
         router_logits = torch.tensor([[3.0, 1.0]], dtype=torch.float32)
+        request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(
+            prompts_by_rank=["prompt-0"],
+        )
         partition = build_online_route_partition(
             run_id="run-0",
-            request_id="req-0",
-            microbatch_id="mb-0",
+            request_id=request_id_table[0],
+            microbatch_id=microbatch_id_table[0],
+            request_numeric_id=0,
+            microbatch_numeric_id=0,
             layer_id=0,
             source_rank=0,
             source_node_id=0,
@@ -53,12 +59,14 @@ def test_offline_gate_rejects_ws2_hidden_dispatch_trace(tmp_path) -> None:
                 microbatch_id="mb-0",
                 layer_id=0,
             ),
+            request_table_hash=request_table_hash,
         )
         agreement = run_distributed_count_agreement(
             partition=partition,
             manifest=manifest,
             placement=placement,
             validate_metadata=False,
+            rank_device=torch.device("cpu"),
         )
         dispatch = execute_ws2_hidden_dispatch_only(
             hidden_states=hidden_states,
@@ -66,6 +74,8 @@ def test_offline_gate_rejects_ws2_hidden_dispatch_trace(tmp_path) -> None:
             manifest=manifest,
             placement=placement,
             agreement=agreement,
+            request_id_table=request_id_table,
+            microbatch_id_table=microbatch_id_table,
         )
         trace = build_ws2_hidden_dispatch_trace(
             partition=partition,

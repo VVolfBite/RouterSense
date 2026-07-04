@@ -13,6 +13,8 @@ def test_online_ws2_route_partition_preserves_local_and_remote_sets() -> None:
         run_id="run-0",
         request_id="req-0",
         microbatch_id="mb-0",
+        request_numeric_id=0,
+        microbatch_numeric_id=0,
         layer_id=0,
         source_rank=0,
         source_node_id=0,

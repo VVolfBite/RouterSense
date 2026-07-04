@@ -14,6 +14,7 @@ from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
     build_online_route_partition,
+    build_request_identity_tables,
     build_rank_manifest,
     build_request_protocol_hash,
     build_ws2_hidden_dispatch_trace,
@@ -43,10 +44,15 @@ def _dispatch_worker(rank: int, world_size: int, port: int, out_dir: str) -> Non
     dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=world_size)
     try:
         placement = build_online_expert_placement(world_size=world_size, expert_count=4, rank_to_node_id=[0, 0])
+        request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(
+            prompts_by_rank=["prompt-0", "prompt-1"],
+        )
         partition = build_online_route_partition(
             run_id="dispatch-run",
-            request_id=f"rank-{rank}-request",
-            microbatch_id="mb-0",
+            request_id=request_id_table[rank],
+            microbatch_id=microbatch_id_table[0],
+            request_numeric_id=rank,
+            microbatch_numeric_id=0,
             layer_id=0,
             source_rank=rank,
             source_node_id=0,
@@ -65,12 +71,14 @@ def _dispatch_worker(rank: int, world_size: int, port: int, out_dir: str) -> Non
                 microbatch_id="mb-0",
                 layer_id=0,
             ),
+            request_table_hash=request_table_hash,
         )
         agreement = run_distributed_count_agreement(
             partition=partition,
             manifest=manifest,
             placement=placement,
             validate_metadata=True,
+            rank_device=torch.device("cpu"),
         )
         dispatch = execute_ws2_hidden_dispatch_only(
             hidden_states=_hidden_states(rank),
@@ -78,6 +86,8 @@ def _dispatch_worker(rank: int, world_size: int, port: int, out_dir: str) -> Non
             manifest=manifest,
             placement=placement,
             agreement=agreement,
+            request_id_table=request_id_table,
+            microbatch_id_table=microbatch_id_table,
         )
         trace = build_ws2_hidden_dispatch_trace(
             partition=partition,
@@ -122,10 +132,9 @@ def test_online_ws2_hidden_dispatch(tmp_path) -> None:
     assert rank1["correctness_status"] == "metadata_passed"
     assert rank0["transport"]["hidden_payload_transferred"] is True
     assert rank1["transport"]["hidden_payload_transferred"] is True
-    assert rank0["transport"]["phase"] == "dispatch"
-    assert rank1["transport"]["phase"] == "dispatch"
+    assert rank0["transport"]["phase"] == "dispatch_only"
+    assert rank1["transport"]["phase"] == "dispatch_only"
     assert rank0["received_route_count"] == rank0["transport"]["recv_rows"]
     assert rank1["received_route_count"] == rank1["transport"]["recv_rows"]
     assert rank0["transport"]["send_counts"][1] == rank1["transport"]["recv_counts"][0]
     assert rank1["transport"]["send_counts"][0] == rank0["transport"]["recv_counts"][1]
-

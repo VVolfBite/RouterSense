@@ -33,6 +33,7 @@ from .ws2_stage1 import (
     build_online_expert_placement,
     build_online_layer_route_trace,
     build_online_route_partition,
+    build_request_identity_tables,
     build_rank_manifest,
     build_request_protocol_hash,
     build_ws2_partition_trace,
@@ -43,6 +44,12 @@ from .ws2_stage2 import (
     WS2HiddenDispatchResult,
     build_ws2_hidden_dispatch_trace,
     execute_ws2_hidden_dispatch_only,
+)
+from .ws2_native_ep import (
+    WS2LocalLayerObservation,
+    WS2NativeEPMoELayerResult,
+    execute_ws2_native_ep_layer_from_observation,
+    run_world_size_two_native_ep_moe_layer,
 )
 
 __all__ = [
@@ -61,6 +68,7 @@ __all__ = [
     "build_online_expert_placement",
     "build_online_layer_route_trace",
     "build_online_route_partition",
+    "build_request_identity_tables",
     "build_rank_manifest",
     "build_request_protocol_hash",
     "build_ws2_partition_trace",
@@ -78,8 +86,12 @@ __all__ = [
     "run_world_size_two_route_partition_only",
     "build_ws2_hidden_dispatch_trace",
     "execute_ws2_hidden_dispatch_only",
+    "execute_ws2_native_ep_layer_from_observation",
+    "run_world_size_two_native_ep_moe_layer",
     "require_online_native_ep_runtime",
     "WS2CountAgreementResult",
     "WS2HiddenDispatchResult",
+    "WS2LocalLayerObservation",
+    "WS2NativeEPMoELayerResult",
     "WS2RoutePartitionOnlyResult",
 ]

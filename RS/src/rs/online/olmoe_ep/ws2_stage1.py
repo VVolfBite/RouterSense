@@ -23,6 +23,11 @@ from ...contracts import (
     ValidationResult,
     stable_hash_dict,
 )
+from ..distributed_runtime import (
+    DistributedDeviceInfo,
+    capture_distributed_device_info,
+    collective_device_for_backend,
+)
 from ...runtime import load_model_and_tokenizer
 from ...runtime.distributed_ep.adapter.olmoe_adapter import probe_olmoe_adapter_config
 
@@ -31,29 +36,43 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _hash_to_tensor(hash_hex: str) -> torch.Tensor:
+def _hash_to_tensor(hash_hex: str, *, device: torch.device | None = None) -> torch.Tensor:
     if len(hash_hex) != 64:
         raise ValueError(f"expected sha256 hex length 64, got {len(hash_hex)}")
-    return torch.tensor(list(hash_hex.encode("ascii")), dtype=torch.uint8)
+    return torch.tensor(list(hash_hex.encode("ascii")), dtype=torch.uint8, device=device)
 
 
 def _tensor_to_hash(tensor: torch.Tensor) -> str:
     return bytes(int(value) for value in tensor.tolist()).decode("ascii")
 
 
-def _all_gather_fixed_hash(local_hash: str) -> list[str]:
+def _all_gather_fixed_hash(local_hash: str, *, device: torch.device) -> list[str]:
     world_size = dist.get_world_size()
-    local = _hash_to_tensor(local_hash)
+    local = _hash_to_tensor(local_hash, device=device)
     gathered = [torch.empty_like(local) for _ in range(world_size)]
     dist.all_gather(gathered, local)
     return [_tensor_to_hash(item) for item in gathered]
 
 
-def _all_gather_int64_vector(local_vector: torch.Tensor) -> torch.Tensor:
+def _all_gather_int64_vector(local_vector: torch.Tensor, *, device: torch.device) -> torch.Tensor:
     world_size = dist.get_world_size()
+    local_vector = local_vector.to(device=device, dtype=torch.int64)
     gathered = [torch.empty_like(local_vector) for _ in range(world_size)]
     dist.all_gather(gathered, local_vector)
     return torch.stack(gathered, dim=0)
+
+
+def build_request_identity_tables(*, prompts_by_rank: list[str]) -> tuple[list[str], list[str], str]:
+    request_ids = [f"request-{rank}" for rank in range(len(prompts_by_rank))]
+    microbatch_ids = ["ws2-mb-0"]
+    request_table_hash = stable_hash_dict(
+        {
+            "request_ids": request_ids,
+            "microbatch_ids": microbatch_ids,
+            "prompt_digests": [_sha256_text(prompt) for prompt in prompts_by_rank],
+        }
+    )
+    return request_ids, microbatch_ids, request_table_hash
 
 
 def build_online_expert_placement(
@@ -104,6 +123,8 @@ def build_online_route_partition(
     run_id: str,
     request_id: str,
     microbatch_id: str,
+    request_numeric_id: int,
+    microbatch_numeric_id: int,
     layer_id: int,
     source_rank: int,
     source_node_id: int,
@@ -155,6 +176,8 @@ def build_online_route_partition(
                     local_token_index=int(token_index),
                     topk_slot=int(topk_slot),
                     expert_id=int(expert_id),
+                    request_numeric_id=int(request_numeric_id),
+                    microbatch_numeric_id=int(microbatch_numeric_id),
                 ),
                 routing_weight=float(weight),
                 payload_rows=1,
@@ -183,6 +206,8 @@ def build_online_route_partition(
         run_id=run_id,
         request_id=request_id,
         microbatch_id=microbatch_id,
+        request_numeric_id=int(request_numeric_id),
+        microbatch_numeric_id=int(microbatch_numeric_id),
         layer_id=int(layer_id),
         rank=int(source_rank),
         world_size=int(placement.world_size),
@@ -217,17 +242,21 @@ def build_rank_manifest(
     placement: OnlineExpertPlacement,
     prompt_text: str,
     request_protocol_hash: str,
+    request_table_hash: str,
 ) -> RankManifest:
     payload = {
         "run_id": partition.run_id,
         "request_id": partition.request_id,
         "microbatch_id": partition.microbatch_id,
+        "request_numeric_id": partition.request_numeric_id,
+        "microbatch_numeric_id": partition.microbatch_numeric_id,
         "layer_id": partition.layer_id,
         "rank": partition.rank,
         "world_size": partition.world_size,
         "node_id": partition.node_id,
         "placement_hash": placement.placement_hash,
         "request_protocol_hash": request_protocol_hash,
+        "request_table_hash": request_table_hash,
         "prompt_digest": _sha256_text(prompt_text),
         "route_count": len(partition.all_routes),
         "local_route_count": len(partition.local_routes),
@@ -239,12 +268,15 @@ def build_rank_manifest(
         run_id=partition.run_id,
         request_id=partition.request_id,
         microbatch_id=partition.microbatch_id,
+        request_numeric_id=partition.request_numeric_id,
+        microbatch_numeric_id=partition.microbatch_numeric_id,
         layer_id=partition.layer_id,
         rank=partition.rank,
         world_size=partition.world_size,
         node_id=partition.node_id,
         placement_hash=placement.placement_hash,
         request_protocol_hash=request_protocol_hash,
+        request_table_hash=request_table_hash,
         prompt_digest=_sha256_text(prompt_text),
         route_count=len(partition.all_routes),
         local_route_count=len(partition.local_routes),
@@ -278,6 +310,7 @@ class WS2CountAgreementResult:
     gathered_run_id_hashes: list[str]
     gathered_manifest_hashes: list[str]
     gathered_request_protocol_hashes: list[str]
+    gathered_request_table_hashes: list[str]
     gathered_placement_hashes: list[str]
     gathered_layer_ids: list[int]
     gathered_send_count_matrix: list[list[int]]
@@ -289,12 +322,17 @@ class WS2CountAgreementResult:
 @dataclass(frozen=True)
 class WS2RoutePartitionOnlyResult:
     rank: int
+    backend: str
+    device_info: DistributedDeviceInfo
     trace: EpExecutionTrace
     hidden_states: torch.Tensor
     partition: OnlineRoutePartition
     placement: OnlineExpertPlacement
     manifest: RankManifest
     agreement: WS2CountAgreementResult
+    request_id_table: list[str]
+    microbatch_id_table: list[str]
+    request_table_hash: str
     metadata: dict[str, Any]
 
 
@@ -304,6 +342,7 @@ def run_distributed_count_agreement(
     manifest: RankManifest,
     placement: OnlineExpertPlacement,
     validate_metadata: bool,
+    rank_device: torch.device,
     operation_id: str = "count-exchange-0",
 ) -> WS2CountAgreementResult:
     if not dist.is_initialized():
@@ -314,25 +353,39 @@ def run_distributed_count_agreement(
         raise RuntimeError(f"partition world_size {partition.world_size} does not match dist world_size {world_size}")
     if rank != partition.rank:
         raise RuntimeError(f"partition rank {partition.rank} does not match dist rank {rank}")
+    backend = str(dist.get_backend()).lower()
+    collective_device = collective_device_for_backend(backend, rank_device)
 
     send_counts_tensor = torch.tensor(
         [int(partition.per_peer_send_rows.get(peer, 0)) for peer in range(world_size)],
         dtype=torch.int64,
+        device=collective_device,
     )
     send_bytes_tensor = torch.tensor(
         [int(partition.per_peer_send_bytes.get(peer, 0)) for peer in range(world_size)],
         dtype=torch.int64,
+        device=collective_device,
     )
-    digest_row = torch.stack([_hash_to_tensor(_pair_digest(partition, destination_rank=peer)) for peer in range(world_size)], dim=0)
+    digest_row = torch.stack(
+        [
+            _hash_to_tensor(_pair_digest(partition, destination_rank=peer), device=collective_device)
+            for peer in range(world_size)
+        ],
+        dim=0,
+    )
 
     started = time.perf_counter()
-    gathered_send_counts = _all_gather_int64_vector(send_counts_tensor)
-    gathered_send_bytes = _all_gather_int64_vector(send_bytes_tensor)
-    gathered_run_id_hashes = _all_gather_fixed_hash(_sha256_text(partition.run_id))
-    gathered_manifest_hashes = _all_gather_fixed_hash(manifest.manifest_hash)
-    gathered_request_protocol_hashes = _all_gather_fixed_hash(manifest.request_protocol_hash)
-    gathered_placement_hashes = _all_gather_fixed_hash(placement.placement_hash)
-    gathered_layer_ids = _all_gather_int64_vector(torch.tensor([int(partition.layer_id)], dtype=torch.int64))
+    gathered_send_counts = _all_gather_int64_vector(send_counts_tensor, device=collective_device)
+    gathered_send_bytes = _all_gather_int64_vector(send_bytes_tensor, device=collective_device)
+    gathered_run_id_hashes = _all_gather_fixed_hash(_sha256_text(partition.run_id), device=collective_device)
+    gathered_manifest_hashes = _all_gather_fixed_hash(manifest.manifest_hash, device=collective_device)
+    gathered_request_protocol_hashes = _all_gather_fixed_hash(manifest.request_protocol_hash, device=collective_device)
+    gathered_request_table_hashes = _all_gather_fixed_hash(manifest.request_table_hash, device=collective_device)
+    gathered_placement_hashes = _all_gather_fixed_hash(placement.placement_hash, device=collective_device)
+    gathered_layer_ids = _all_gather_int64_vector(
+        torch.tensor([int(partition.layer_id)], dtype=torch.int64, device=collective_device),
+        device=collective_device,
+    )
     gathered_digest_rows = [torch.empty_like(digest_row) for _ in range(world_size)]
     dist.all_gather(gathered_digest_rows, digest_row)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -351,6 +404,7 @@ def run_distributed_count_agreement(
         "manifest_hashes": gathered_manifest_hashes,
         "placement_hashes": gathered_placement_hashes,
         "request_protocol_hashes": gathered_request_protocol_hashes,
+        "request_table_hashes": gathered_request_table_hashes,
         "layer_ids": [int(value[0].item()) for value in gathered_layer_ids],
     }
 
@@ -366,6 +420,10 @@ def run_distributed_count_agreement(
         if len(set(gathered_request_protocol_hashes)) != 1:
             raise RuntimeError(
                 f"request protocol hash mismatch on rank {rank}: {gathered_request_protocol_hashes}"
+            )
+        if len(set(gathered_request_table_hashes)) != 1:
+            raise RuntimeError(
+                f"request table hash mismatch on rank {rank}: {gathered_request_table_hashes}"
             )
         if len(set(gathered_run_id_hashes)) != 1:
             raise RuntimeError(f"run id mismatch across ranks on rank {rank}: {gathered_run_id_hashes}")
@@ -421,7 +479,10 @@ def run_distributed_count_agreement(
             world_size=world_size,
             operation_id=operation_id,
             phase="count_exchange",
-            backend=str(dist.get_backend()),
+            backend=backend,
+            verified_backend="nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
+            device=str(collective_device),
+            local_rank=None if rank_device.index is None else int(rank_device.index),
             operation_kind="metadata_agreement",
             hidden_payload_transferred=False,
             send_counts=[int(value) for value in send_counts_tensor.tolist()],
@@ -430,8 +491,12 @@ def run_distributed_count_agreement(
             recv_rows=recv_rows,
             send_bytes=send_bytes,
             recv_bytes=recv_bytes,
-            post_ms=elapsed_ms,
-            wait_ms=0.0,
+            pack_ms=0.0,
+            post_ms=None,
+            wait_ms=elapsed_ms,
+            collective_post_ms=None,
+            collective_wait_ms=elapsed_ms,
+            unpack_ms=0.0,
             wall_elapsed_ms=elapsed_ms,
             success=False,
             details={"error": str(exc)},
@@ -441,6 +506,7 @@ def run_distributed_count_agreement(
             gathered_run_id_hashes=gathered_run_id_hashes,
             gathered_manifest_hashes=gathered_manifest_hashes,
             gathered_request_protocol_hashes=gathered_request_protocol_hashes,
+            gathered_request_table_hashes=gathered_request_table_hashes,
             gathered_placement_hashes=gathered_placement_hashes,
             gathered_layer_ids=[int(value[0].item()) for value in gathered_layer_ids],
             gathered_send_count_matrix=[[int(value) for value in row.tolist()] for row in gathered_send_counts],
@@ -463,7 +529,10 @@ def run_distributed_count_agreement(
         world_size=world_size,
         operation_id=operation_id,
         phase="count_exchange",
-        backend=str(dist.get_backend()),
+        backend=backend,
+        verified_backend="nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
+        device=str(collective_device),
+        local_rank=None if rank_device.index is None else int(rank_device.index),
         operation_kind="metadata_agreement",
         hidden_payload_transferred=False,
         send_counts=[int(value) for value in send_counts_tensor.tolist()],
@@ -472,14 +541,19 @@ def run_distributed_count_agreement(
         recv_rows=recv_rows,
         send_bytes=send_bytes,
         recv_bytes=recv_bytes,
-        post_ms=elapsed_ms,
-        wait_ms=0.0,
+        pack_ms=0.0,
+        post_ms=None,
+        wait_ms=elapsed_ms,
+        collective_post_ms=None,
+        collective_wait_ms=elapsed_ms,
+        unpack_ms=0.0,
         wall_elapsed_ms=elapsed_ms,
         success=True,
         details={
             "placement_hash": placement.placement_hash,
             "manifest_hash": manifest.manifest_hash,
             "request_protocol_hash": manifest.request_protocol_hash,
+            "request_table_hash": manifest.request_table_hash,
         },
     )
     return WS2CountAgreementResult(
@@ -487,6 +561,7 @@ def run_distributed_count_agreement(
         gathered_run_id_hashes=gathered_run_id_hashes,
         gathered_manifest_hashes=gathered_manifest_hashes,
         gathered_request_protocol_hashes=gathered_request_protocol_hashes,
+        gathered_request_table_hashes=gathered_request_table_hashes,
         gathered_placement_hashes=gathered_placement_hashes,
         gathered_layer_ids=[int(value[0].item()) for value in gathered_layer_ids],
         gathered_send_count_matrix=[[int(value) for value in row.tolist()] for row in gathered_send_counts],
@@ -521,9 +596,12 @@ def build_ws2_partition_trace(
             "layer_id": partition.layer_id,
             "request_id": partition.request_id,
             "microbatch_id": partition.microbatch_id,
+            "request_numeric_id": partition.request_numeric_id,
+            "microbatch_numeric_id": partition.microbatch_numeric_id,
             "node_id": partition.node_id,
             "placement_hash": placement.placement_hash,
             "manifest_hash": manifest.manifest_hash,
+            "request_table_hash": manifest.request_table_hash,
         },
         online_route_traces=[build_online_layer_route_trace(partition=partition)],
         rank_manifests=[manifest],
@@ -597,8 +675,9 @@ def run_world_size_two_route_partition_only(
     prompts_by_rank: list[str],
     layer_index: int,
     precision: str,
-    device_index: int,
+    rank_device: torch.device,
     validate_metadata: bool,
+    backend: str,
     allow_identical_prompts: bool = False,
 ) -> WS2RoutePartitionOnlyResult:
     if not dist.is_initialized():
@@ -612,6 +691,8 @@ def run_world_size_two_route_partition_only(
     if not allow_identical_prompts and prompts_by_rank[0] == prompts_by_rank[1]:
         raise RuntimeError("prompt-rank0 and prompt-rank1 must differ unless allow_identical_prompts=true")
 
+    if rank_device.type == "cuda":
+        torch.cuda.set_device(rank_device)
     prompt_text = prompts_by_rank[rank]
     hidden_states, router_logits, layer_id, observation_metadata = _capture_local_layer_observation(
         model_id=model_id,
@@ -619,7 +700,13 @@ def run_world_size_two_route_partition_only(
         prompt_text=prompt_text,
         layer_index=layer_index,
         precision=precision,
-        device_index=device_index,
+        device_index=(rank_device.index if rank_device.type == "cuda" else 0),
+    )
+    device_info = capture_distributed_device_info(
+        rank=rank,
+        world_size=world_size,
+        backend=backend,
+        rank_device=rank_device,
     )
     rank_to_node_id = [0 for _ in range(world_size)]
     placement = build_online_expert_placement(
@@ -627,8 +714,13 @@ def run_world_size_two_route_partition_only(
         expert_count=int(router_logits.shape[-1]),
         rank_to_node_id=rank_to_node_id,
     )
-    request_id = f"rank-{rank}-request"
-    microbatch_id = "ws2-mb-0"
+    request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(
+        prompts_by_rank=prompts_by_rank,
+    )
+    request_numeric_id = int(rank)
+    microbatch_numeric_id = 0
+    request_id = request_id_table[request_numeric_id]
+    microbatch_id = microbatch_id_table[microbatch_numeric_id]
     request_protocol_hash = build_request_protocol_hash(
         prompts_by_rank=prompts_by_rank,
         microbatch_id=microbatch_id,
@@ -638,6 +730,8 @@ def run_world_size_two_route_partition_only(
         run_id=run_id,
         request_id=request_id,
         microbatch_id=microbatch_id,
+        request_numeric_id=request_numeric_id,
+        microbatch_numeric_id=microbatch_numeric_id,
         layer_id=layer_id,
         source_rank=rank,
         source_node_id=rank_to_node_id[rank],
@@ -651,12 +745,14 @@ def run_world_size_two_route_partition_only(
         placement=placement,
         prompt_text=prompt_text,
         request_protocol_hash=request_protocol_hash,
+        request_table_hash=request_table_hash,
     )
     agreement = run_distributed_count_agreement(
         partition=partition,
         manifest=manifest,
         placement=placement,
         validate_metadata=validate_metadata,
+        rank_device=rank_device,
     )
     trace = build_ws2_partition_trace(
         partition=partition,
@@ -677,14 +773,25 @@ def run_world_size_two_route_partition_only(
         "transport_backend": "torch_distributed_metadata_agreement",
         "route_partition_only": True,
         "validate_metadata": bool(validate_metadata),
+        "backend": str(backend).lower(),
+        "verified_backend": "nccl_gpu" if str(backend).lower() == "nccl" else "gloo_cpu_test_only",
+        "gloo_test_mode": str(backend).lower() == "gloo",
+        "is_gpu_transport_verified": str(backend).lower() == "nccl",
+        "device_info": device_info.to_dict(),
+        "request_table_hash": request_table_hash,
     }
     return WS2RoutePartitionOnlyResult(
         rank=rank,
+        backend=str(backend).lower(),
+        device_info=device_info,
         trace=trace,
         hidden_states=hidden_states,
         partition=partition,
         placement=placement,
         manifest=manifest,
         agreement=agreement,
+        request_id_table=request_id_table,
+        microbatch_id_table=microbatch_id_table,
+        request_table_hash=request_table_hash,
         metadata=metadata,
     )

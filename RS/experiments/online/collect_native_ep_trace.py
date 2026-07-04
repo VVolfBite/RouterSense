@@ -7,6 +7,7 @@ import os
 import uuid
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
 
 from _bootstrap import ensure_src_on_path
@@ -14,6 +15,11 @@ from _bootstrap import ensure_src_on_path
 ensure_src_on_path()
 
 from rs.online import build_online_unimplemented_result
+from rs.online.distributed_runtime import (
+    assert_distinct_cuda_device_mapping,
+    resolve_backend,
+    resolve_distributed_device,
+)
 from rs.online.olmoe_ep import (
     build_ws2_hidden_dispatch_trace,
     collect_world_size_one_local_moe_observed_trace,
@@ -33,6 +39,16 @@ def _resolve_run_id(prefix: str, explicit_run_id: str | None, world_size: int) -
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _result_exit_code(payload: dict[str, object]) -> int:
+    execution_mode = str(payload.get("execution_mode", ""))
+    correctness_status = str(payload.get("correctness_status", ""))
+    if execution_mode == "world_size_1_local_moe_reconstruction_observation":
+        return 0 if payload.get("numerical_correctness_pass") is True else 2
+    if execution_mode in {"online_ws2_route_partition_only", "online_ws2_hidden_dispatch_only"}:
+        return 0 if correctness_status == "metadata_passed" else 2
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Collect online native EP trace.")
     parser.add_argument("--world-size", type=int, default=1)
@@ -43,16 +59,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-rank1", type=str, default=None)
     parser.add_argument("--layer-index", type=int, default=0)
     parser.add_argument("--precision", type=str, default="fp16")
-    parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--device-index", type=int, default=None)
     parser.add_argument("--route-partition-only", action="store_true")
     parser.add_argument("--hidden-dispatch-only", action="store_true")
     parser.add_argument("--validate-metadata", action="store_true")
     parser.add_argument("--allow-identical-prompts", action="store_true")
-    parser.add_argument("--dist-backend", type=str, default="gloo")
+    parser.add_argument("--backend", type=str, choices=("nccl", "gloo"), default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="artifacts/online/native_ep_trace")
     args = parser.parse_args(argv)
     run_id = _resolve_run_id("online-native-trace", args.run_id, args.world_size)
+    backend = resolve_backend(world_size=args.world_size, requested_backend=args.backend)
+    rank_device = resolve_distributed_device(
+        requested_device_index=args.device_index,
+        world_size=args.world_size,
+        backend=backend,
+    )
     if int(args.world_size) == 1:
         observed = collect_world_size_one_local_moe_observed_trace(
             model_id=args.model,
@@ -60,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_text=args.prompt,
             layer_index=args.layer_index,
             precision=args.precision,
-            device_index=args.device_index,
+            device_index=(rank_device.index if rank_device.type == "cuda" else 0),
         )
         jsonl_path, metadata_path = export_single_rank_local_moe_trace_artifacts(
             output_dir=args.output_dir,
@@ -96,9 +118,16 @@ def main(argv: list[str] | None = None) -> int:
             "parity": observed.parity.to_dict(),
         }
     elif int(args.world_size) == 2 and bool(args.route_partition_only):
+        if backend == "nccl":
+            torch.cuda.set_device(rank_device)
         if not dist.is_initialized():
-            dist.init_process_group(backend=args.dist_backend)
+            dist.init_process_group(backend=backend)
         try:
+            distinct_device_indices = assert_distinct_cuda_device_mapping(
+                backend=backend,
+                rank_device=rank_device,
+                world_size=args.world_size,
+            )
             observed = run_world_size_two_route_partition_only(
                 run_id=run_id,
                 model_id=args.model,
@@ -109,8 +138,9 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 layer_index=args.layer_index,
                 precision=args.precision,
-                device_index=args.device_index,
+                rank_device=rank_device,
                 validate_metadata=bool(args.validate_metadata),
+                backend=backend,
                 allow_identical_prompts=bool(args.allow_identical_prompts),
             )
             rank_suffix = f"rank{observed.rank}"
@@ -129,9 +159,17 @@ def main(argv: list[str] | None = None) -> int:
                 "implemented": True,
                 "implemented_scope": implemented_scope,
                 "rank": observed.rank,
+                "backend": backend,
+                "verified_backend": "nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
+                "gloo_test_mode": backend == "gloo",
+                "is_gpu_transport_verified": backend == "nccl",
+                "is_complete_ep_dispatch": False,
+                "device_info": observed.device_info.to_dict(),
+                "distinct_cuda_device_indices": distinct_device_indices,
                 "placement_hash": observed.placement.placement_hash,
                 "manifest_hash": observed.manifest.manifest_hash,
                 "request_protocol_hash": observed.manifest.request_protocol_hash,
+                "request_table_hash": observed.request_table_hash,
                 "gathered_send_count_matrix": observed.agreement.gathered_send_count_matrix,
                 "gathered_manifest_hashes": observed.agreement.gathered_manifest_hashes,
             }
@@ -142,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                     manifest=observed.manifest,
                     placement=observed.placement,
                     agreement=observed.agreement,
+                    request_id_table=observed.request_id_table,
+                    microbatch_id_table=observed.microbatch_id_table,
                 )
                 trace = build_ws2_hidden_dispatch_trace(
                     partition=observed.partition,
@@ -152,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 export_fn = export_ws2_hidden_dispatch_trace_artifacts
                 trace_origin = "observed_online_ws2_hidden_dispatch"
                 execution_mode = "online_ws2_hidden_dispatch_only"
-                claim_scope = "distributed_hidden_dispatch_only"
+                claim_scope = "distributed_route_partition_count_agreement_and_dispatch_only"
                 transport_payload = hidden_dispatch.transport_record.to_dict()
                 correctness_status = hidden_dispatch.validation.correctness_status
                 is_real_ep_transport = True
@@ -177,16 +217,25 @@ def main(argv: list[str] | None = None) -> int:
                 "future_information_mode": "none",
                 "claim_scope": claim_scope,
                 "correctness_status": correctness_status,
+                "numerical_correctness_pass": None,
                 "performance_claim_eligible": False,
                 "is_real_ep_runtime": False,
                 "is_real_ep_transport": is_real_ep_transport,
+                "is_complete_ep_dispatch": False,
                 "is_transport_calibration_trace": False,
                 "rank": observed.rank,
+                "backend": backend,
+                "verified_backend": "nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
+                "gloo_test_mode": backend == "gloo",
+                "is_gpu_transport_verified": backend == "nccl",
+                "device_info": observed.device_info.to_dict(),
+                "distinct_cuda_device_indices": distinct_device_indices,
                 "jsonl_path": str(jsonl_path),
                 "metadata_path": str(metadata_path),
                 "placement_hash": observed.placement.placement_hash,
                 "manifest_hash": observed.manifest.manifest_hash,
                 "request_protocol_hash": observed.manifest.request_protocol_hash,
+                "request_table_hash": observed.request_table_hash,
                 "local_route_count": len(observed.partition.local_routes),
                 "remote_route_count": len(observed.partition.remote_send_routes),
                 "per_peer_send_rows": observed.partition.per_peer_send_rows,
@@ -216,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = output_dir / output_name
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))
-    return 0 if payload.get("numerical_correctness_pass") is True else 2
+    return _result_exit_code(payload)
 
 
 if __name__ == "__main__":

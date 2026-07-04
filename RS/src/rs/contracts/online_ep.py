@@ -25,6 +25,8 @@ class OnlineRouteIdentity:
     local_token_index: int
     topk_slot: int
     expert_id: int
+    request_numeric_id: int = 0
+    microbatch_numeric_id: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -86,6 +88,8 @@ class OnlineRoutePartition:
     run_id: str
     request_id: str
     microbatch_id: str
+    request_numeric_id: int
+    microbatch_numeric_id: int
     layer_id: int
     rank: int
     world_size: int
@@ -102,6 +106,8 @@ class OnlineRoutePartition:
             "run_id": self.run_id,
             "request_id": self.request_id,
             "microbatch_id": self.microbatch_id,
+            "request_numeric_id": self.request_numeric_id,
+            "microbatch_numeric_id": self.microbatch_numeric_id,
             "layer_id": self.layer_id,
             "rank": self.rank,
             "world_size": self.world_size,
@@ -136,12 +142,15 @@ class RankManifest:
     run_id: str
     request_id: str
     microbatch_id: str
+    request_numeric_id: int
+    microbatch_numeric_id: int
     layer_id: int
     rank: int
     world_size: int
     node_id: int
     placement_hash: str
     request_protocol_hash: str
+    request_table_hash: str
     prompt_digest: str
     route_count: int
     local_route_count: int
@@ -157,10 +166,13 @@ class RankManifest:
 class TransportOperationRecord:
     run_id: str
     rank: int
+    local_rank: int | None
     world_size: int
     operation_id: str
     phase: str
     backend: str
+    verified_backend: str | None
+    device: str | None
     operation_kind: str
     hidden_payload_transferred: bool
     send_counts: list[int]
@@ -169,10 +181,18 @@ class TransportOperationRecord:
     recv_rows: int
     send_bytes: int
     recv_bytes: int
-    post_ms: float
-    wait_ms: float
     wall_elapsed_ms: float
     success: bool
+    hidden_bytes: int | None = None
+    metadata_int_bytes: int | None = None
+    metadata_float_bytes: int | None = None
+    pack_ms: float | None = None
+    post_ms: float | None = None
+    wait_ms: float | None = None
+    collective_post_ms: float | None = None
+    collective_wait_ms: float | None = None
+    unpack_ms: float | None = None
+    cuda_elapsed_ms: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
