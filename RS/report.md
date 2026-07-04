@@ -1,144 +1,222 @@
 # RouteSense Report
 
-## Current State
+## Current Conclusion
 
-The mainline is now explicitly split into three semantic lanes:
+The mainline now has an auditable three-lane split:
 
 - `offline`
 - `online`
 - `legacy`
 
-This split is about truth conditions, not just folder names.
+And the online lane has advanced beyond pure scaffolding in one narrow but real
+scope:
 
-## What Each Lane Means
+- `world_size=1`
+- `OLMoE`
+- single MoE layer parity
+- real local route build
+- real local expert execution
+- real top-k combine
 
-### `offline`
+This is the current verified ceiling before true multi-rank native A2A work.
 
-Allowed:
-
-- oracle future trace
-- full-sequence single-GPU router observation
-- calibrated counterfactual analysis
-- scheduler research
-
-Not allowed:
-
-- production EP throughput claims
-- online runtime claims
-- claiming deployable prediction when using oracle future trace
-
-### `online`
-
-Target meaning:
-
-- real per-rank local input ownership
-- real expert residency
-- real EP dispatch/compute/combine execution
-- no future ground truth in the hot path
-
-Current status:
-
-- package skeleton and metadata contracts exist
-- Phase 1 does not yet implement a working online EP runtime
+## What Is True Right Now
 
 ### `legacy`
 
-Meaning:
-
-- deprecated compatibility path for the old distributed trace replay harness
-
-Current old distributed path is now classified as:
+The old distributed replay harness is now explicitly:
 
 - `pipeline=legacy`
 - `execution_mode=legacy_trace_replay`
 - `trace_origin=legacy_trace_replay`
 
-It is not the formal online runtime.
+It is not the formal online EP runtime.
 
-## Code Facts The Mainline Now Explicitly Admits
+### `offline`
 
-The old distributed replay path still has these semantics:
+The formal offline lane supports:
 
-- each rank loads a full model
-- each rank traces the same prompt
-- future router truth is available through full trace collection
-- source ownership is synthetic
-- expert residency comes from full-model extraction, not physical sharding
-- transport is custom replay, not real host EP runtime dispatch/combine
+- router prediction collection
+- oracle/full-trace analysis inputs
+- provenance-gated calibrated-analysis inputs
 
-That is why the path is now marked `legacy_trace_replay` everywhere relevant.
+It still does not implement the calibrated simulator itself.
 
-## Result Semantics
+### `online`
 
-Formal result metadata now includes:
+The formal online lane now supports a real single-GPU parity path:
 
-- `pipeline`
-- `claim_scope`
-- `trace_origin`
-- `future_information_mode`
-- `is_real_ep_runtime`
-- `source_ownership_mode`
-- `expert_residency_mode`
-- `transport_backend`
-- `correctness_status`
-- `performance_claim_eligible`
+- local input partition with `source_rank = rank`
+- route identity built from request/microbatch/layer/local token/top-k slot
+- explicit local route preservation
+- local expert execution using real OLMoE weights
+- combine back into token output space
+- numerical parity against the actual HuggingFace OLMoE `mlp(...)` output
 
-Important implications:
+It does not yet support:
 
-- offline router trace outputs are explicitly non-performance-claimable
-- offline calibrated analysis must reject non-online-native observations
-- legacy replay outputs cannot masquerade as online EP results
+- `world_size > 1` native A2A dispatch/combine
+- online distributed correctness
+- scheduled P2P transport
+- deployable online prediction
 
-## What Can Be Claimed Now
+## Single-GPU Verified Result
 
-Allowed:
+Environment used:
 
-- the repository now has an auditable offline/online/legacy boundary
-- legacy replay outputs are explicitly labeled as replay-only
-- offline calibrated analysis now has an input provenance gate
-- online scheduler bridge API now explicitly rejects `oracle_full_trace`
+- machine: local workstation
+- GPU: `NVIDIA GeForce RTX 4080`
+- model path: `D:\Project\Test\OLMoE`
+- runtime path: `experiments/online/bench_native_ep.py`
 
-Not allowed:
+Command:
 
-- real online EP performance
-- native EP baseline performance
-- matching-realized scheduled transport performance
+```bash
+python experiments/online/bench_native_ep.py \
+  --world-size 1 \
+  --model-path D:\Project\Test\OLMoE \
+  --prompt "Explain MoE routing briefly." \
+  --layer-index 0 \
+  --precision fp16 \
+  --device-index 0 \
+  --output-dir artifacts/online/bench_native_ep_smoke
+```
+
+Observed result:
+
+- `execution_mode = online_native_a2a_ep_world_size_1_parity`
+- `claim_scope = correctness_and_calibration_only`
+- `performance_claim_eligible = false`
+- `correctness_status = passed`
+- `numerical_correctness_pass = true`
+- `max_abs_error = 0.0001220703125`
+- `mean_abs_error = 2.5033950805664062e-06`
+- `route_count = 56`
+- `local_route_count = 56`
+- `remote_route_count = 0`
+
+Interpretation:
+
+- the single-GPU online parity path is numerically aligned with the real OLMoE
+  MoE block for the tested layer and prompt
+- this validates the local route build, local expert execution, and top-k
+  combine semantics for `world_size=1`
+- it does not validate distributed transport
+
+## Single-GPU Observed Native Trace
+
+Command:
+
+```bash
+python experiments/online/collect_native_ep_trace.py \
+  --world-size 1 \
+  --model-path D:\Project\Test\OLMoE \
+  --prompt "Explain MoE routing briefly." \
+  --layer-index 0 \
+  --precision fp16 \
+  --device-index 0 \
+  --output-dir artifacts/online/native_ep_trace_smoke
+```
+
+Observed result:
+
+- `execution_mode = online_native_a2a_ep_world_size_1_observed_trace`
+- `trace_origin = observed_online_native_ep`
+- `correctness_status = passed`
+- trace artifacts were written:
+  - `artifacts/online/native_ep_trace_smoke/<run_id>.jsonl`
+  - `artifacts/online/native_ep_trace_smoke/<run_id>_metadata.json`
+  - `artifacts/online/native_ep_trace_smoke/<run_id>_summary.json`
+
+This matters because the offline calibrated-analysis gate now accepts this
+metadata provenance:
+
+```bash
+python experiments/offline/fit_ep_cost_model.py \
+  --trace-metadata artifacts/online/native_ep_trace_smoke/<run_id>_metadata.json
+```
+
+Result:
+
+- `status = accepted`
+
+## Compatibility Fixes Applied
+
+One real implementation issue surfaced during local validation:
+
+- the local OLMoE checkpoint stores experts as `ModuleList`
+- the earlier code assumed packed `gate_up_proj/down_proj`
+
+This is now fixed:
+
+- `extract_local_expert_weights()` accepts both packed and `ModuleList` expert
+  layouts
+- the online feature probe now truthfully reports which layout is present
+
+## What Can Be Claimed
+
+Allowed now:
+
+- the repo has a real offline/online/legacy boundary
+- legacy replay cannot masquerade as online EP
+- offline calibrated analysis enforces provenance
+- online scheduler hint mode rejects `oracle_full_trace`
+- single-GPU online OLMoE MoE-layer parity is verified
+- single-GPU observed online-native trace export is verified
+
+Not allowed now:
+
+- multi-rank online native EP performance
+- distributed online correctness
+- scheduled transport speedup
+- matching-realized runtime benefit
+- calibrated offline milliseconds as measured deployment time
 - deployable prediction benefit
-- offline oracle makespan interpreted as measured NCCL speedup
 
-## What Is Implemented In Phase 1
+## Current Runnable Commands
 
-Implemented:
+Runnable and meaningful:
 
-- `src/rs/contracts/`
-- `src/rs/offline/`
-- `src/rs/online/`
-- `src/rs/legacy/`
-- `experiments/offline/`
-- `experiments/online/`
-- `experiments/legacy/`
-- legacy replay result relabeling
-- boundary tests for provenance and future-information rules
+- `python experiments/offline/exp_router_prediction.py ...`
+- `python experiments/offline/fit_ep_cost_model.py --trace-metadata ...`
+- `python experiments/online/bench_native_ep.py --world-size 1 ...`
+- `python experiments/online/collect_native_ep_trace.py --world-size 1 ...`
+- `python experiments/legacy/exp_trace_replay.py ...`
 
-Not implemented yet:
+Present but still not implemented:
 
-- real online native A2A EP
-- online observer
-- calibrated offline simulator
-- scheduled P2P online backend
+- `python experiments/offline/exp_calibrated_schedule.py ...`
+- `python experiments/online/bench_native_ep.py --world-size > 1 ...`
+- `python experiments/online/bench_scheduled_ep.py ...`
 
-## Current Recommended Usage
+## Tests Run
 
-Runnable now:
+Targeted regressions:
 
-- offline router prediction collection
-- legacy trace replay compatibility harness
+- `python -m pytest RS/tests/test_online_native_runtime.py RS/tests/test_pipeline_boundaries.py RS/tests/test_scheduled_execution_bridge.py RS/tests/test_wave_execution_planner.py RS/tests/test_distributed_ep_scaffold.py -q`
+  - `35 passed`
+- `python -m pytest RS/tests/test_structure_refactor.py RS/tests/test_online_expert_store.py RS/tests/test_online_native_runtime.py -q`
+  - `7 passed`
+- `python -m pytest RS/tests/test_online_expert_store.py RS/tests/test_online_native_runtime.py RS/tests/test_pipeline_boundaries.py -q`
+  - `13 passed`
 
-Present but intentionally failing fast:
+Focused package/boundary suite:
 
-- online native EP benchmark
-- online scheduled EP benchmark
-- calibrated offline schedule simulator
+- `python -m pytest RS/tests/test_pipeline_boundaries.py RS/tests/test_structure_refactor.py RS/tests/test_scheduled_execution_bridge.py RS/tests/test_wave_execution_planner.py RS/tests/test_distributed_ep_scaffold.py RS/tests/test_package_source_only.py -q`
+  - `33 passed, 4 skipped`
 
-That failure behavior is intentional. Phase 1 favors semantic correctness over
-premature benchmarkability.
+The `4 skipped` are Windows-side archive-shell prerequisites, not semantic
+test failures.
+
+## Immediate Next Step
+
+The next real milestone is no longer another rename or metadata pass.
+
+It is:
+
+- `world_size=2` native online A2A metadata/count agreement
+- then hidden tensor dispatch/combine
+- then distributed correctness
+
+That is the point where the project genuinely crosses from verified single-GPU
+online semantics into real multi-rank EP runtime work.
