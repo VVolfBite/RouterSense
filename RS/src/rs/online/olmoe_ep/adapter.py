@@ -1,9 +1,6 @@
 from __future__ import annotations
 
+from .runtime import feature_probe_online_olmoe_runtime
 
 def probe_online_olmoe_adapter_support(model) -> dict[str, object]:
-    del model
-    return {
-        "supported": False,
-        "reason": "online OLMoE EP adapter is not implemented yet in the RS mainline",
-    }
+    return feature_probe_online_olmoe_runtime(model)
