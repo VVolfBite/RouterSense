@@ -1,128 +1,123 @@
 # RouteSense Handoff For Next Codex
 
-## 1. Mainline Status
+## 1. Boundary First
 
-The formal mainline is `RS/`. Historical POC material under `legacy/` is
-reference only and must not be used to mask gaps in the current runtime.
+The formal mainline now has three lanes:
 
-Current distributed runtime status:
+- `offline`
+- `online`
+- `legacy`
 
-- supported runtime mode: `trace_replay`
-- unsupported runtime mode: `real_ep`
-- current claim scope: `transport_replay_only`
-- current future information mode in the replay path: oracle lookahead, not
-  online prediction
+Treat them as different truth domains.
 
-This means the current distributed path is a replay harness for distributed MoE
-transport behavior, not yet a true expert-parallel runtime.
+## 2. What They Mean
 
-## 2. What Was Corrected In Phase A
+### `offline`
 
-The mainline previously mixed misleading names and success semantics. Current
-mainline terminology is now:
+Use for:
 
-- `unscheduled_collective_replay`
-- `wave_collective_replay`
-- `scheduled_collective_partition_replay`
+- router prediction analysis
+- oracle/full-trace studies
+- calibrated counterfactual analysis
 
-Obsolete names that should not be reintroduced in formal docs or reports:
+Do not use for:
 
-- `native_baseline`
-- `wave_collective`
-- `scheduled_transport`
+- production EP latency claims
+- deployable prediction claims when using oracle future trace
 
-The adapter residency description was also corrected:
+### `online`
 
-- old: `physically_sharded_experts`
-- current: `rank_local_expert_weight_cache_from_full_model`
+Reserved for:
 
-That wording matters because the current adapter still derives rank-local
-weights from a full-model load and therefore is not physically sharded.
+- real per-rank local input ownership
+- real expert residency
+- real EP execution
+- no future truth in the runtime hot path
 
-## 3. Current Result JSON Contract
+Current Phase 1 status:
 
-Current replay results should explicitly expose:
+- package skeleton exists
+- real runtime is not implemented yet
 
-- `execution_mode=trace_replay`
-- `claim_scope=transport_replay_only`
-- `is_real_ep_runtime=false`
-- `uses_oracle_future_trace=true`
-- `baseline_semantics=unscheduled_collective_replay|scheduled_collective_replay`
-- `correctness_status=not_checked|passed|failed|unsupported`
+### `legacy`
 
-Validation-disabled runs must report:
+Use only for:
 
-- `correctness_status=not_checked`
+- deprecated compatibility path of the current distributed trace replay harness
 
-They must not fabricate a correctness pass.
+The current old harness must be described as:
 
-## 4. Current Capability Boundary
+- `execution_mode=legacy_trace_replay`
+- `pipeline=legacy`
+- `trace_origin=legacy_trace_replay`
 
-What the current code can support:
+It is not online EP runtime.
 
-- trace collection from the full model
-- trace-derived dispatch-plan construction
-- distributed collective replay over those plans
-- scheduled-versus-unscheduled replay bridge wiring
-- replay-scope correctness plumbing and reporting
+## 3. New Mainline Layout
 
-What the current code does not yet support:
+Important new package roots:
 
-- real EP source ownership semantics
-- full local-route preservation and combine semantics
-- real EP baseline semantics
-- online prediction semantics
-- network-realized matching execution semantics
+- `src/rs/contracts/`
+- `src/rs/offline/`
+- `src/rs/online/`
+- `src/rs/legacy/`
 
-Do not describe the current code as "real EP runtime", "native EP baseline",
-or "online prediction" until those pieces are implemented and tested.
+Important new experiment roots:
 
-## 5. Benchmark Interpretation Rule
+- `experiments/offline/`
+- `experiments/online/`
+- `experiments/legacy/`
 
-Current 2-rank experiments are only suitable for:
+## 4. Provenance Rules
 
-- wiring
-- correctness protocol
-- collective calibration
+Current shared metadata contract includes:
 
-They are not suitable for:
+- `pipeline`
+- `claim_scope`
+- `trace_origin`
+- `future_information_mode`
+- `is_real_ep_runtime`
+- `source_ownership_mode`
+- `expert_residency_mode`
+- `transport_backend`
+- `correctness_status`
+- `performance_claim_eligible`
 
-- scheduler speedup claims
-- joint-scheduling benefit claims
-- production EP throughput claims
+Key rules already enforced:
 
-Reason:
+- legacy replay cannot present itself as online
+- offline calibrated analysis must reject non-`observed_online_native_ep` input
+- online scheduler hint mode must reject `oracle_full_trace`
+- all-to-all backend is not marked as matching-realized
 
-- current runtime is still replay-only
-- current future-trace use is oracle lookahead
-- current collective backend does not realize endpoint matching semantics
-- a 2-rank topology does not expose the multi-matching structure that the
-  offline PoC relied on
+## 5. Current Runnable Entry Points
 
-## 6. Files To Read First
+Runnable now:
 
-If resuming work, read these first:
+1. `experiments/offline/exp_router_prediction.py`
+2. `experiments/legacy/exp_trace_replay.py`
 
-1. `README.md`
-2. `RS/README.md`
-3. `RS/report.md`
-4. `RS/experiments/distributed/exp_wave_execution.py`
-5. `RS/src/rs/runtime/distributed_ep/adapter/runner.py`
-6. `RS/src/rs/runtime/distributed_ep/core/wave_executor.py`
-7. `RS/src/rs/runtime/distributed_ep/core/wave_planner.py`
-8. `RS/src/rs/runtime/distributed_ep/core/manifest.py`
-9. `RS/tests/test_scheduled_execution_bridge.py`
+Present but expected to fail fast:
 
-## 7. Immediate Next Technical Priorities
+1. `experiments/offline/fit_ep_cost_model.py`
+2. `experiments/offline/exp_calibrated_schedule.py`
+3. `experiments/online/collect_native_ep_trace.py`
+4. `experiments/online/bench_native_ep.py`
+5. `experiments/online/bench_scheduled_ep.py`
 
-After Phase A, the next priorities should remain:
+That is intentional. Phase 1 is about truthful boundaries, not pretending the
+online runtime exists.
 
-1. restore real dispatch/combine semantics
-2. remove synthetic default source ownership
-3. stop dropping local routes
-4. replace weak replay validation with explicit route and numerical checks
-5. add manifest invariants and distributed consistency failures
-6. then repair timing fairness and benchmark protocol
+## 6. What To Work On Next
 
-Do not jump straight to larger performance runs before those semantic fixes are
-in place.
+Next real milestone is Phase 2:
+
+1. real online native EP ownership and routing
+2. full-checkpoint-then-prune expert residency
+3. native variable-size A2A dispatch/combine
+4. world-size-1 parity
+5. world-size-2 correctness
+6. online observer trace export
+
+Do not skip to scheduled P2P benchmark claims before native online EP is
+implemented and validated.

@@ -6,6 +6,10 @@ from pathlib import Path
 def test_refactor_structure_exists() -> None:
     root = Path(__file__).resolve().parents[1]
     required = [
+        root / "src/rs/contracts/result.py",
+        root / "src/rs/offline/router_prediction/metadata.py",
+        root / "src/rs/online/olmoe_ep/runtime.py",
+        root / "src/rs/legacy/trace_replay/metadata.py",
         root / "src/rs/scheduler/oracle.py",
         root / "src/rs/scheduler/greedy.py",
         root / "src/rs/scheduler/fast.py",
@@ -19,6 +23,13 @@ def test_refactor_structure_exists() -> None:
         root / "experiments/poc_line1/exp_cross_layer.py",
         root / "experiments/poc_line1/exp_oracle.py",
         root / "experiments/poc_line1/exp_pairwise.py",
+        root / "experiments/offline/exp_router_prediction.py",
+        root / "experiments/offline/fit_ep_cost_model.py",
+        root / "experiments/offline/exp_calibrated_schedule.py",
+        root / "experiments/online/collect_native_ep_trace.py",
+        root / "experiments/online/bench_native_ep.py",
+        root / "experiments/online/bench_scheduled_ep.py",
+        root / "experiments/legacy/exp_trace_replay.py",
     ]
     for path in required:
         assert path.exists(), path

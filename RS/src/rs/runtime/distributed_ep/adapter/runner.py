@@ -18,6 +18,7 @@ from ..core.wave_planner import scheduling_result_to_wave_schedule, verify_wave_
 from ..core.placement import PlacementStrategy
 from ..core.worker_loop import WorkerLoop
 from ....scheduler.strategy import SchedulingContext, get_strategy
+from ....legacy.trace_replay import LEGACY_TRACE_REPLAY_MODE
 from .expert_store import (
     count_local_expert_parameters,
     extract_local_expert_weights,
@@ -57,7 +58,7 @@ class _ResolvedSchedulingResult:
     schedule: list[dict[str, Any]]
 
 
-TRACE_REPLAY_MODE = "trace_replay"
+TRACE_REPLAY_MODE = LEGACY_TRACE_REPLAY_MODE
 REAL_EP_MODE = "real_ep"
 
 UNSCHEDULED_COLLECTIVE_REPLAY = "unscheduled_collective_replay"
@@ -90,6 +91,23 @@ def _baseline_semantics_for_mode(execution_mode: str) -> str:
     if execution_mode == WAVE_COLLECTIVE_REPLAY:
         return "scheduled_collective_replay"
     return execution_mode
+
+
+def _legacy_metadata(*, execution_mode: str, correctness_status: str) -> dict[str, Any]:
+    return {
+        "pipeline": "legacy",
+        "execution_mode": LEGACY_TRACE_REPLAY_MODE,
+        "claim_scope": "transport_replay_only",
+        "trace_origin": "legacy_trace_replay",
+        "future_information_mode": "oracle_full_trace",
+        "is_real_ep_runtime": False,
+        "source_ownership_mode": "synthetic_token_position_modulo_partition",
+        "expert_residency_mode": "rank_local_expert_weight_cache_from_full_model",
+        "uses_oracle_future_trace": True,
+        "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+        "correctness_status": correctness_status,
+        "performance_claim_eligible": False,
+    }
 
 
 def build_distributed_runner_plan(
@@ -187,18 +205,14 @@ def execute_scheduled_inference(
     if runtime_mode != TRACE_REPLAY_MODE:
         raise RuntimeError(
             "real_ep runtime mode is not implemented in the current RS mainline; "
-            "only trace_replay is currently supported"
+            "only legacy_trace_replay is currently supported by this compatibility path"
         )
 
     if not dispatch_plans:
         return {
             "strategy": strategy_name,
-            "execution_mode": runtime_mode,
             "transport_execution_mode": execution_mode,
-            "claim_scope": "transport_replay_only",
-            "is_real_ep_runtime": False,
-            "uses_oracle_future_trace": True,
-            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+            **_legacy_metadata(execution_mode=execution_mode, correctness_status="unsupported"),
             "correctness": _correctness_payload(status="unsupported"),
             "scheduling_result": {"makespan": 0.0, "solve_time_ms": 0.0, "chunk_count": 0},
             "nccl_execution": {},
@@ -254,12 +268,8 @@ def execute_scheduled_inference(
             conservation_check_ms = 0.0
         return {
             "strategy": strategy_name,
-            "execution_mode": runtime_mode,
             "transport_execution_mode": execution_mode,
-            "claim_scope": "transport_replay_only",
-            "is_real_ep_runtime": False,
-            "uses_oracle_future_trace": True,
-            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+            **_legacy_metadata(execution_mode=execution_mode, correctness_status=correctness["correctness_status"]),
             "verify_correctness": verify_correctness,
             "scheduling_result": {
                 "makespan": 0.0,
@@ -417,12 +427,8 @@ def execute_scheduled_inference(
         conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0 if verify_correctness else 0.0
         return {
             "strategy": strategy_name,
-            "execution_mode": runtime_mode,
             "transport_execution_mode": execution_mode,
-            "claim_scope": "transport_replay_only",
-            "is_real_ep_runtime": False,
-            "uses_oracle_future_trace": True,
-            "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+            **_legacy_metadata(execution_mode=execution_mode, correctness_status=correctness["correctness_status"]),
             "verify_correctness": verify_correctness,
             "scheduling_result": {
                 "makespan": result.makespan,
@@ -503,12 +509,8 @@ def execute_scheduled_inference(
 
     return {
         "strategy": strategy_name,
-        "execution_mode": runtime_mode,
         "transport_execution_mode": execution_mode,
-        "claim_scope": "transport_replay_only",
-        "is_real_ep_runtime": False,
-        "uses_oracle_future_trace": True,
-        "baseline_semantics": _baseline_semantics_for_mode(execution_mode),
+        **_legacy_metadata(execution_mode=execution_mode, correctness_status="unsupported"),
         "correctness": _correctness_payload(status="unsupported"),
         "scheduling_result": {
             "makespan": result.makespan,

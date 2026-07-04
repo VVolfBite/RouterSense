@@ -1,130 +1,144 @@
 # RouteSense Report
 
-## Current Conclusion
+## Current State
 
-- The current distributed mainline in `RS/` supports `trace_replay`, not a
-  real EP runtime.
-- The current 2-rank environment is valid for wiring, correctness protocol
-  bring-up, and collective calibration.
-- The current 2-rank environment is not valid for production EP performance
-  claims, joint-scheduling benefit claims, or online prediction claims.
+The mainline is now explicitly split into three semantic lanes:
 
-## Scope Correction
+- `offline`
+- `online`
+- `legacy`
 
-The old wording around `native_baseline`, `wave_collective`, and
-`scheduled_transport` overstated what the code was doing.
+This split is about truth conditions, not just folder names.
 
-The current mainline now uses:
+## What Each Lane Means
 
-- `execution_mode=trace_replay|real_ep`
-- `transport_execution_mode=unscheduled_collective_replay`
-- `transport_execution_mode=wave_collective_replay`
-- `transport_execution_mode=scheduled_collective_partition_replay`
+### `offline`
 
-And the current code explicitly rejects:
+Allowed:
 
-- `execution_mode=real_ep`
+- oracle future trace
+- full-sequence single-GPU router observation
+- calibrated counterfactual analysis
+- scheduler research
 
-Current result JSON now carries:
+Not allowed:
 
-- `execution_mode=trace_replay`
-- `claim_scope=transport_replay_only`
-- `is_real_ep_runtime=false`
-- `uses_oracle_future_trace=true`
-- `baseline_semantics=unscheduled_collective_replay|scheduled_collective_replay`
-- `correctness_status=not_checked|passed|failed|unsupported`
+- production EP throughput claims
+- online runtime claims
+- claiming deployable prediction when using oracle future trace
 
-## What The Current Mainline Actually Proves
+### `online`
 
-It proves:
+Target meaning:
 
-- the trace-derived dispatch plan can be materialized into distributed replay
-  execution
-- scheduled and unscheduled collective replay paths can both be invoked through
-  the same bridge
-- the benchmark/reporting path can now say when correctness was not checked,
-  instead of fabricating a pass
+- real per-rank local input ownership
+- real expert residency
+- real EP dispatch/compute/combine execution
+- no future ground truth in the hot path
 
-It does not yet prove:
+Current status:
 
-- real EP token ownership semantics
-- real EP model sharding semantics
-- online prediction benefit
-- offline makespan gains turning into NCCL wall-clock gains
-- fair production-native versus scheduled runtime performance
+- package skeleton and metadata contracts exist
+- Phase 1 does not yet implement a working online EP runtime
 
-## Important Terminology Corrections
+### `legacy`
 
-The repository now treats the following older terms as obsolete for the formal
-mainline:
+Meaning:
 
-- `native_baseline`
-  replaced by `unscheduled_collective_replay`
-- `scheduled_transport`
-  replaced by `scheduled_collective_partition_replay`
-- `wave_collective`
-  replaced by `wave_collective_replay`
-- `physically_sharded_experts`
-  replaced by `rank_local_expert_weight_cache_from_full_model`
+- deprecated compatibility path for the old distributed trace replay harness
 
-The last rename matters because the current adapter still derives rank-local
-expert weights from a full model load. That is not physical sharding.
+Current old distributed path is now classified as:
 
-## Benchmark Interpretation Boundary
+- `pipeline=legacy`
+- `execution_mode=legacy_trace_replay`
+- `trace_origin=legacy_trace_replay`
 
-Even with the naming cleanup, current trace replay still has hard limits:
+It is not the formal online runtime.
 
-- `future_trace` is oracle lookahead, not prediction
-- `trace_replay` is not a real EP runtime
-- a collective replay backend is not the same thing as realizing endpoint
-  matching on the wire
-- current 2-rank experiments do not have the topology needed to validate the
-  core multi-matching argument from the offline PoC line
+## Code Facts The Mainline Now Explicitly Admits
 
-So any current benchmark should be described as:
+The old distributed replay path still has these semantics:
 
-- transport replay benchmark
-- replay correctness protocol benchmark
-- collective calibration benchmark
+- each rank loads a full model
+- each rank traces the same prompt
+- future router truth is available through full trace collection
+- source ownership is synthetic
+- expert residency comes from full-model extraction, not physical sharding
+- transport is custom replay, not real host EP runtime dispatch/combine
 
-Not as:
+That is why the path is now marked `legacy_trace_replay` everywhere relevant.
 
-- production EP benchmark
-- scheduler speedup benchmark
-- online serving benchmark
+## Result Semantics
 
-## Validation Semantics
+Formal result metadata now includes:
 
-Current output semantics are now stricter:
+- `pipeline`
+- `claim_scope`
+- `trace_origin`
+- `future_information_mode`
+- `is_real_ep_runtime`
+- `source_ownership_mode`
+- `expert_residency_mode`
+- `transport_backend`
+- `correctness_status`
+- `performance_claim_eligible`
 
-- when validation is disabled, the result reports
-  `correctness_status=not_checked`
-- the harness no longer reports a fake correctness pass when no validation was
-  executed
-- batch summaries now tolerate `not_checked` results instead of crashing during
-  error aggregation
+Important implications:
 
-This is still not the final correctness design. The remaining work is to
-replace weak replay checks with full route-identity, ownership, completeness,
-and numerical validation.
+- offline router trace outputs are explicitly non-performance-claimable
+- offline calibrated analysis must reject non-online-native observations
+- legacy replay outputs cannot masquerade as online EP results
 
-## Current Allowed Claims
+## What Can Be Claimed Now
 
-Until the remaining semantic issues are fixed, the mainline should limit itself
-to the following claims:
+Allowed:
 
-- the distributed replay wiring is live
-- current transport modes can be invoked and audited explicitly
-- the benchmark/output schema now exposes replay-only scope instead of implying
-  a real EP runtime
+- the repository now has an auditable offline/online/legacy boundary
+- legacy replay outputs are explicitly labeled as replay-only
+- offline calibrated analysis now has an input provenance gate
+- online scheduler bridge API now explicitly rejects `oracle_full_trace`
 
-## Current Disallowed Claims
+Not allowed:
 
-The mainline should not currently claim:
+- real online EP performance
+- native EP baseline performance
+- matching-realized scheduled transport performance
+- deployable prediction benefit
+- offline oracle makespan interpreted as measured NCCL speedup
 
-- real EP runtime support
-- native EP baseline support
-- online prediction benefit
-- production NCCL speedup from current offline schedule results
-- fair end-to-end throughput superiority of scheduled transport on the current
-  2-rank setup
+## What Is Implemented In Phase 1
+
+Implemented:
+
+- `src/rs/contracts/`
+- `src/rs/offline/`
+- `src/rs/online/`
+- `src/rs/legacy/`
+- `experiments/offline/`
+- `experiments/online/`
+- `experiments/legacy/`
+- legacy replay result relabeling
+- boundary tests for provenance and future-information rules
+
+Not implemented yet:
+
+- real online native A2A EP
+- online observer
+- calibrated offline simulator
+- scheduled P2P online backend
+
+## Current Recommended Usage
+
+Runnable now:
+
+- offline router prediction collection
+- legacy trace replay compatibility harness
+
+Present but intentionally failing fast:
+
+- online native EP benchmark
+- online scheduled EP benchmark
+- calibrated offline schedule simulator
+
+That failure behavior is intentional. Phase 1 favors semantic correctness over
+premature benchmarkability.

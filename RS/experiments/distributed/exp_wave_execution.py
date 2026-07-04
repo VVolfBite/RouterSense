@@ -17,6 +17,7 @@ import torch  # type: ignore
 
 from rs.runtime import load_model_and_tokenizer
 from rs.runtime.distributed_ep.adapter.runner import (
+    LEGACY_TRACE_REPLAY_MODE,
     REAL_EP_MODE,
     SCHEDULED_COLLECTIVE_PARTITION_REPLAY,
     TRACE_REPLAY_MODE,
@@ -211,7 +212,12 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run trace-replay distributed transport experiments for OLMoE.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Deprecated compatibility shim for legacy distributed trace replay. "
+            "This is not the formal online EP runtime."
+        )
+    )
     parser.add_argument("--model", type=str, default="allenai/OLMoE-1B-7B-0924-Instruct")
     parser.add_argument("--inventory", type=str, default=None)
     parser.add_argument("--node-name", type=str, default=None)
@@ -253,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.runtime_mode == REAL_EP_MODE:
         raise RuntimeError(
             "runtime_mode=real_ep is not implemented in the current RS mainline; "
-            "only trace_replay is currently supported"
+            "only legacy_trace_replay is currently supported by this deprecated compatibility path"
         )
 
     import torch.distributed as dist  # type: ignore
@@ -359,7 +365,8 @@ def main(argv: list[str] | None = None) -> int:
             "world_size": world_size,
             "model": args.model,
             "model_path": model_path,
-            "execution_mode": args.runtime_mode,
+            "pipeline": "legacy",
+            "execution_mode": LEGACY_TRACE_REPLAY_MODE,
             "transport_execution_mode": args.execution_mode,
             "compute_mode": args.compute_mode,
             "strategy": args.strategy,
@@ -394,8 +401,11 @@ def main(argv: list[str] | None = None) -> int:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
         result = {
-            "execution_mode": args.runtime_mode,
+            "pipeline": "legacy",
+            "execution_mode": LEGACY_TRACE_REPLAY_MODE,
             "claim_scope": "transport_replay_only",
+            "trace_origin": "legacy_trace_replay",
+            "future_information_mode": "oracle_full_trace",
             "is_real_ep_runtime": False,
             "uses_oracle_future_trace": True,
             "baseline_semantics": (
@@ -403,12 +413,19 @@ def main(argv: list[str] | None = None) -> int:
                 if args.execution_mode == UNSCHEDULED_COLLECTIVE_REPLAY
                 else "scheduled_collective_replay"
             ),
+            "source_ownership_mode": "synthetic_token_position_modulo_partition",
+            "expert_residency_mode": "rank_local_expert_weight_cache_from_full_model",
+            "performance_claim_eligible": False,
+            "deprecated_entrypoint": True,
             "run": {
                 "model": args.model,
                 "strategy": args.strategy,
-                "execution_mode": args.runtime_mode,
+                "pipeline": "legacy",
+                "execution_mode": LEGACY_TRACE_REPLAY_MODE,
                 "transport_execution_mode": args.execution_mode,
                 "claim_scope": "transport_replay_only",
+                "trace_origin": "legacy_trace_replay",
+                "future_information_mode": "oracle_full_trace",
                 "is_real_ep_runtime": False,
                 "uses_oracle_future_trace": True,
                 "replay_sample_count": len(samples),

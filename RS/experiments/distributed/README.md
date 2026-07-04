@@ -30,7 +30,7 @@ Current compatibility shims:
 - `distributed_olmoe_ep_smoke.py`
   OLMoE EP planning smoke on one visible rank.
 - `exp_wave_execution.py`
-  Trace-replay distributed transport experiment harness.
+  Deprecated compatibility shim for legacy distributed trace replay.
 - `exp_scheduled_execution.py`
   Scheduler-facing execution experiment harness.
 - `future_multinode_smoke.py`
@@ -54,7 +54,9 @@ The script copies the rank-0 JSON result and both logs back under `/tmp/rs_wave_
 
 Important boundary:
 
-- `exp_wave_execution.py` currently supports `runtime_mode=trace_replay` only
-- `real_ep` is not implemented
-- current results are replay-scope transport measurements, not production EP
-  runtime measurements
+- `exp_wave_execution.py` is now a deprecated `legacy_trace_replay`
+  compatibility path
+- it is not the formal online EP benchmark entrypoint
+- use `experiments/legacy/exp_trace_replay.py` if this old harness is still
+  needed explicitly
+- use `experiments/offline/*` and `experiments/online/*` for the formal split
