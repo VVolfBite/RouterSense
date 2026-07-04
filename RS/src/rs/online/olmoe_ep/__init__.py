@@ -3,10 +3,12 @@ from __future__ import annotations
 from .observer import (
     build_native_ep_observer_metadata,
     build_single_rank_local_moe_observer_metadata,
+    build_ws2_native_ep_moe_layer_harness_metadata,
     build_ws2_hidden_dispatch_observer_metadata,
     build_ws2_route_partition_observer_metadata,
     export_native_ep_trace_artifacts,
     export_single_rank_local_moe_trace_artifacts,
+    export_ws2_native_ep_moe_layer_harness_trace_artifacts,
     export_ws2_hidden_dispatch_trace_artifacts,
     export_ws2_route_partition_trace_artifacts,
 )
@@ -63,6 +65,7 @@ __all__ = [
     "build_full_checkpoint_then_prune_audit",
     "build_native_ep_observer_metadata",
     "build_single_rank_local_moe_observer_metadata",
+    "build_ws2_native_ep_moe_layer_harness_metadata",
     "build_ws2_hidden_dispatch_observer_metadata",
     "build_ws2_route_partition_observer_metadata",
     "build_online_expert_placement",
@@ -78,6 +81,7 @@ __all__ = [
     "execute_world_size_one_local_layer",
     "export_native_ep_trace_artifacts",
     "export_single_rank_local_moe_trace_artifacts",
+    "export_ws2_native_ep_moe_layer_harness_trace_artifacts",
     "export_ws2_hidden_dispatch_trace_artifacts",
     "export_ws2_route_partition_trace_artifacts",
     "feature_probe_online_olmoe_runtime",

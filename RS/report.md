@@ -8,7 +8,7 @@ The mainline now has an auditable three-lane split:
 - `online`
 - `legacy`
 
-The only verified online-adjacent execution capability is now:
+The currently implemented online execution capability is now:
 
 - `world_size=1`
 - `OLMoE`
@@ -29,9 +29,9 @@ current layer router output using `source_rank = dist.get_rank()`, partition
 them into local and remote sends, compute a stable expert placement, and verify
 send/recv count agreement plus manifest/placement/request-protocol consistency.
 
-It does not yet constitute native EP runtime execution, distributed expert
-residency, hidden-state combine, remote expert compute, distributed numerical
-parity, or transport-calibrated online observation.
+It does not yet constitute full-model native EP runtime execution, true expert
+shard checkpoint loading, multi-layer EP forward replacement, serving-time
+prefill runtime, or multi-node deployment validation.
 
 ## What Is True Right Now
 
@@ -66,16 +66,21 @@ reconstruction harness:
 - local expert reconstruction and top-k combine
 - numerical parity against the captured HuggingFace OLMoE `mlp(...)` output
 
-It does not yet support:
+It now supports, in the WS=2 layer harness:
 
-- `world_size > 1` native A2A dispatch/combine
-- hidden-state transport
-- remote expert compute
-- inverse combine
-- distributed numerical correctness
-- scheduled P2P transport
-- deployable online prediction
-- transport-calibrated observation for offline fitting
+- variable-size dispatch A2A
+- owner-rank expert compute
+- inverse combine A2A
+- distributed layer-output numerical parity
+
+What still remains unverified or incomplete:
+
+- real two-GPU NCCL artifact
+- true expert shard checkpoint loading
+- full-model multi-layer EP forward replacement
+- serving / prefill end-to-end performance
+- multi-node
+- scheduler integration
 
 It now also supports a narrow `world_size=2` distributed stage:
 
@@ -396,9 +401,8 @@ The next real milestone is:
 
 - keep the current ws2 route-partition/count-agreement and hidden-dispatch
   stages truthful
-- add owner-rank expert compute
-- then add inverse combine
-- then add distributed numerical correctness
-
-That is the sequence required to cross from auditable ws2 dispatch-only
-execution into a real multi-rank EP runtime.
+- keep the implemented ws2 MoE-layer harness truthful
+- obtain a real two-GPU NCCL artifact for the existing
+  dispatch -> owner compute -> inverse combine -> numerical parity path
+- then replace harness-style observation/reconstruction with a true EP
+  multi-layer runtime

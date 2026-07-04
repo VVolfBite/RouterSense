@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import socket
+
 import torch
 import torch.distributed as dist
 
 from rs.contracts import TraceOrigin
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
     build_online_route_partition,
@@ -15,13 +18,20 @@ from rs.online.olmoe_ep import (
 )
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def test_online_ws2_trace_identity(tmp_path) -> None:
     if not dist.is_initialized():
         dist.init_process_group(
             backend="gloo",
-            init_method=f"file:///{(tmp_path / 'pg_init_trace').as_posix()}",
+            init_method=f"tcp://127.0.0.1:{_free_port()}",
             rank=0,
             world_size=1,
+            timeout=distributed_timeout(),
         )
     try:
         placement = build_online_expert_placement(world_size=1, expert_count=2, rank_to_node_id=[0])

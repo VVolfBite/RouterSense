@@ -10,6 +10,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.olmoe_ep.ws2_native_ep import (
     WS2LocalLayerObservation,
     assert_single_node_hostnames,
@@ -124,7 +125,13 @@ def _build_observation(rank: int, *, remote: bool) -> WS2LocalLayerObservation:
 
 
 def _native_ep_worker(rank: int, port: int, out_dir: str, remote: bool) -> None:
-    dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=2)
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=2,
+        timeout=distributed_timeout(),
+    )
     try:
         result = execute_ws2_native_ep_layer_from_observation(
             run_id="ws2-native-ep",
@@ -157,7 +164,13 @@ def _native_ep_worker(rank: int, port: int, out_dir: str, remote: bool) -> None:
 
 
 def _require_remote_worker(rank: int, port: int) -> None:
-    dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=2)
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=2,
+        timeout=distributed_timeout(),
+    )
     try:
         execute_ws2_native_ep_layer_from_observation(
             run_id="ws2-native-ep",

@@ -9,6 +9,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from rs.contracts import TraceOrigin
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
     build_online_route_partition,
@@ -38,7 +39,13 @@ def _router_logits(rank: int) -> torch.Tensor:
 
 
 def _identity_worker(rank: int, port: int, out_dir: str) -> None:
-    dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=2)
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=2,
+        timeout=distributed_timeout(),
+    )
     try:
         prompts_by_rank = ["rank0 prompt", "rank1 prompt"]
         request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(

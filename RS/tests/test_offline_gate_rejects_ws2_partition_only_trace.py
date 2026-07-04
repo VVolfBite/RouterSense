@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import socket
 
 import torch
 
 from rs.contracts import TraceOrigin
 from rs.offline.calibration import assert_online_native_ep_observation
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
@@ -18,15 +20,22 @@ from rs.online.olmoe_ep import (
 )
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def test_offline_gate_rejects_ws2_partition_only_trace(tmp_path) -> None:
     import torch.distributed as dist
 
     if not dist.is_initialized():
         dist.init_process_group(
             backend="gloo",
-            init_method=f"file:///{(tmp_path / 'pg_init_gate').as_posix()}",
+            init_method=f"tcp://127.0.0.1:{_free_port()}",
             rank=0,
             world_size=1,
+            timeout=distributed_timeout(),
         )
     try:
         placement = build_online_expert_placement(world_size=1, expert_count=2, rank_to_node_id=[0])

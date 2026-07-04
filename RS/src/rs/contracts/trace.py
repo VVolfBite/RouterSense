@@ -13,6 +13,7 @@ class TraceOrigin:
     OBSERVED_SINGLE_RANK_LOCAL_MOE = "observed_single_rank_local_moe"
     OBSERVED_ONLINE_WS2_ROUTE_PARTITION = "observed_online_ws2_route_partition"
     OBSERVED_ONLINE_WS2_HIDDEN_DISPATCH = "observed_online_ws2_hidden_dispatch"
+    OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS = "observed_online_ws2_moe_layer_harness"
     OBSERVED_ONLINE_NATIVE_EP = "observed_online_native_ep"
     OBSERVED_ONLINE_SCHEDULED_EP = "observed_online_scheduled_ep"
     LEGACY_TRACE_REPLAY = "legacy_trace_replay"

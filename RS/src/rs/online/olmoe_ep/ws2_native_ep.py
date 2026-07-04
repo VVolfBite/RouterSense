@@ -27,6 +27,7 @@ from ..distributed_runtime import (
     assert_distinct_cuda_device_mapping,
     capture_distributed_device_info,
     collective_device_for_backend,
+    run_distributed_stage,
 )
 from ...runtime import load_model_and_tokenizer
 from ...runtime.distributed_ep.adapter.expert_store import (
@@ -34,7 +35,7 @@ from ...runtime.distributed_ep.adapter.expert_store import (
     extract_local_expert_weights,
 )
 from ...runtime.distributed_ep.adapter.olmoe_adapter import probe_olmoe_adapter_config
-from .observer import export_native_ep_trace_artifacts
+from .observer import export_ws2_native_ep_moe_layer_harness_trace_artifacts
 from .ws2_stage1 import (
     WS2CountAgreementResult,
     build_online_expert_placement,
@@ -156,24 +157,33 @@ def _capture_local_layer_reference(
     ]
     if layer_index < 0 or layer_index >= len(moe_layer_ids):
         raise RuntimeError(f"layer_index {layer_index} out of range for {len(moe_layer_ids)} OLMoE MoE layers")
+    logical_moe_index = int(layer_index)
     layer_id = int(moe_layer_ids[layer_index])
     layer = model.model.layers[layer_id]
     captured: dict[str, torch.Tensor] = {}
 
     def _hook(_module, inputs, output):
         captured["mlp_input"] = inputs[0].detach()
-        captured["mlp_output"] = output[0].detach()
-        captured["router_logits"] = output[1].detach()
+        captured["mlp_output"] = output.detach()
 
     handle = layer.mlp.register_forward_hook(_hook)
     try:
         with torch.inference_mode():
-            model(**encoded, output_router_logits=True, output_hidden_states=True, return_dict=True, use_cache=False)
+            outputs = model(
+                **encoded,
+                output_router_logits=True,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
     finally:
         handle.remove()
-    if {"mlp_input", "mlp_output", "router_logits"} - set(captured):
+    router_logits_by_layer = getattr(outputs, "router_logits", None)
+    if not router_logits_by_layer:
+        raise RuntimeError("model forward did not return router_logits")
+    router_logits = router_logits_by_layer[logical_moe_index].detach()
+    if {"mlp_input", "mlp_output"} - set(captured):
         raise RuntimeError("failed to capture local MoE layer input/output/router for ws2 native ep")
-    router_logits = captured["router_logits"]
     if router_logits.ndim == 3:
         router_logits = router_logits.squeeze(0)
     return WS2LocalLayerObservation(
@@ -505,10 +515,15 @@ def execute_ws2_native_ep_layer_from_observation(
     if str(backend).lower() == "nccl":
         torch.cuda.set_device(rank_device)
     assert_single_node_only(backend=backend, rank_device=rank_device)
-    distinct_cuda_device_indices = assert_distinct_cuda_device_mapping(
+    distinct_cuda_device_indices = run_distributed_stage(
+        "device_mapping",
         backend=backend,
         rank_device=rank_device,
-        world_size=world_size,
+        fn=lambda: assert_distinct_cuda_device_mapping(
+            backend=backend,
+            rank_device=rank_device,
+            world_size=world_size,
+        ),
     )
     device_info = capture_distributed_device_info(
         rank=rank,
@@ -533,19 +548,24 @@ def execute_ws2_native_ep_layer_from_observation(
         microbatch_id=microbatch_id,
         layer_id=observation.layer_id,
     )
-    partition = build_online_route_partition(
-        run_id=run_id,
-        request_id=request_id,
-        microbatch_id=microbatch_id,
-        request_numeric_id=request_numeric_id,
-        microbatch_numeric_id=microbatch_numeric_id,
-        layer_id=observation.layer_id,
-        source_rank=rank,
-        source_node_id=0,
-        hidden_states=observation.hidden_states,
-        router_logits=observation.router_logits,
-        placement=placement,
-        top_k=int(observation.top_k),
+    partition = run_distributed_stage(
+        "route_partition",
+        backend=backend,
+        rank_device=rank_device,
+        fn=lambda: build_online_route_partition(
+            run_id=run_id,
+            request_id=request_id,
+            microbatch_id=microbatch_id,
+            request_numeric_id=request_numeric_id,
+            microbatch_numeric_id=microbatch_numeric_id,
+            layer_id=observation.layer_id,
+            source_rank=rank,
+            source_node_id=0,
+            hidden_states=observation.hidden_states,
+            router_logits=observation.router_logits,
+            placement=placement,
+            top_k=int(observation.top_k),
+        ),
     )
     manifest = build_rank_manifest(
         partition=partition,
@@ -554,12 +574,17 @@ def execute_ws2_native_ep_layer_from_observation(
         request_protocol_hash=request_protocol_hash,
         request_table_hash=request_table_hash,
     )
-    agreement = run_distributed_count_agreement(
-        partition=partition,
-        manifest=manifest,
-        placement=placement,
-        validate_metadata=True,
+    agreement = run_distributed_stage(
+        "count_agreement",
+        backend=backend,
         rank_device=rank_device,
+        fn=lambda: run_distributed_count_agreement(
+            partition=partition,
+            manifest=manifest,
+            placement=placement,
+            validate_metadata=True,
+            rank_device=rank_device,
+        ),
     )
     collective_device = collective_device_for_backend(backend, rank_device)
     local_remote_rows = torch.tensor(
@@ -578,17 +603,20 @@ def execute_ws2_native_ep_layer_from_observation(
             details={"total_remote_route_count": 0},
         )
         trace = EpExecutionTrace(
-            trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
+            trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS,
             future_information_mode=FutureInformationMode.NONE,
-            online_route_traces=[build_online_layer_route_trace(partition=partition, trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP)],
+            online_route_traces=[build_online_layer_route_trace(partition=partition, trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS)],
             rank_manifests=[manifest],
             expert_placements=[placement],
             transport_operations=[agreement.transport_record],
             validation_results=[validation],
             metadata={
-                "execution_mode": "online_ws2_native_ep_moe_layer",
+                "execution_mode": "online_ws2_native_ep_moe_layer_harness",
                 "transport_exercised": False,
                 "validation_reference": "hf_single_rank_layer_output",
+                "claim_scope": "ws2_distributed_moe_layer_correctness_only",
+                "is_real_ep_runtime": False,
+                "is_complete_ep_dispatch": False,
             },
         )
         return WS2NativeEPMoELayerResult(
@@ -634,18 +662,23 @@ def execute_ws2_native_ep_layer_from_observation(
     send_hidden = _build_remote_hidden_tensor(observation.hidden_states, remote_send_routes)
     dispatch_recv_splits = [int(value) for value in agreement.transport_record.recv_counts]
     dispatch_send_splits = [int(partition.per_peer_send_rows.get(peer, 0)) for peer in range(world_size)]
-    dispatch_recv_hidden, raw_received_remote_routes, dispatch_record = _run_a2a_with_metadata(
-        run_id=partition.run_id,
+    dispatch_recv_hidden, raw_received_remote_routes, dispatch_record = run_distributed_stage(
+        "dispatch",
         backend=backend,
-        hidden_payload=send_hidden,
-        routes=remote_send_routes,
-        request_id_table=request_id_table,
-        microbatch_id_table=microbatch_id_table,
-        send_splits=dispatch_send_splits,
-        recv_splits=dispatch_recv_splits,
-        operation_id="dispatch-hidden-0",
-        phase="dispatch",
-        local_rank=device_info.local_rank,
+        rank_device=rank_device,
+        fn=lambda: _run_a2a_with_metadata(
+            run_id=partition.run_id,
+            backend=backend,
+            hidden_payload=send_hidden,
+            routes=remote_send_routes,
+            request_id_table=request_id_table,
+            microbatch_id_table=microbatch_id_table,
+            send_splits=dispatch_send_splits,
+            recv_splits=dispatch_recv_splits,
+            operation_id="dispatch-hidden-0",
+            phase="dispatch",
+            local_rank=device_info.local_rank,
+        ),
     )
     received_remote_routes = raw_received_remote_routes
     for route in received_remote_routes:
@@ -659,11 +692,16 @@ def execute_ws2_native_ep_layer_from_observation(
         received_hidden_states=dispatch_recv_hidden,
         placement=placement,
     )
-    owner_routes, owner_outputs, bucket_records, expert_compute_ms = _execute_owner_buckets(
-        rank=rank,
-        buckets=buckets,
-        local_weights=local_weights,
-        layer_id=observation.layer_id,
+    owner_routes, owner_outputs, bucket_records, expert_compute_ms = run_distributed_stage(
+        "expert_compute",
+        backend=backend,
+        rank_device=rank_device,
+        fn=lambda: _execute_owner_buckets(
+            rank=rank,
+            buckets=buckets,
+            local_weights=local_weights,
+            layer_id=observation.layer_id,
+        ),
     )
     local_owner_routes = [route for route in owner_routes if int(route.identity.source_rank) == rank]
     local_owner_outputs = (
@@ -687,28 +725,38 @@ def execute_ws2_native_ep_layer_from_observation(
     for route in return_routes:
         combine_send_splits[int(route.identity.source_rank)] += int(route.payload_rows)
     combine_recv_splits = [int(partition.per_peer_send_rows.get(peer, 0)) for peer in range(world_size)]
-    combine_recv_outputs, raw_returned_routes, combine_record = _run_a2a_with_metadata(
-        run_id=partition.run_id,
+    combine_recv_outputs, raw_returned_routes, combine_record = run_distributed_stage(
+        "combine",
         backend=backend,
-        hidden_payload=return_outputs,
-        routes=return_routes,
-        request_id_table=request_id_table,
-        microbatch_id_table=microbatch_id_table,
-        send_splits=combine_send_splits,
-        recv_splits=combine_recv_splits,
-        operation_id="combine-return-0",
-        phase="combine",
-        local_rank=device_info.local_rank,
+        rank_device=rank_device,
+        fn=lambda: _run_a2a_with_metadata(
+            run_id=partition.run_id,
+            backend=backend,
+            hidden_payload=return_outputs,
+            routes=return_routes,
+            request_id_table=request_id_table,
+            microbatch_id_table=microbatch_id_table,
+            send_splits=combine_send_splits,
+            recv_splits=combine_recv_splits,
+            operation_id="combine-return-0",
+            phase="combine",
+            local_rank=device_info.local_rank,
+        ),
     )
     returned_remote_routes = raw_returned_routes
-    output, validation = _scatter_local_output(
-        rank=rank,
-        partition=partition,
-        local_owner_routes=local_owner_routes,
-        local_owner_outputs=local_owner_outputs,
-        returned_remote_routes=returned_remote_routes,
-        returned_remote_outputs=combine_recv_outputs,
-        reference_output=observation.reference_output,
+    output, validation = run_distributed_stage(
+        "validation",
+        backend=backend,
+        rank_device=rank_device,
+        fn=lambda: _scatter_local_output(
+            rank=rank,
+            partition=partition,
+            local_owner_routes=local_owner_routes,
+            local_owner_outputs=local_owner_outputs,
+            returned_remote_routes=returned_remote_routes,
+            returned_remote_outputs=combine_recv_outputs,
+            reference_output=observation.reference_output,
+        ),
     )
     correctness_status = validation.correctness_status if validate else "metadata_passed"
     final_validation = ValidationResult(
@@ -726,7 +774,7 @@ def execute_ws2_native_ep_layer_from_observation(
         },
     )
     trace = EpExecutionTrace(
-        trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
+        trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS,
         future_information_mode=FutureInformationMode.NONE,
         stage_timings=[
             RankStageTiming(rank=rank, stage="count_exchange", wall_ms=float(agreement.transport_record.wall_elapsed_ms)),
@@ -735,17 +783,20 @@ def execute_ws2_native_ep_layer_from_observation(
             RankStageTiming(rank=rank, stage="combine", wall_ms=float(combine_record.wall_elapsed_ms), cuda_event_ms=combine_record.cuda_elapsed_ms),
         ],
         expert_buckets=bucket_records,
-        online_route_traces=[build_online_layer_route_trace(partition=partition, trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP)],
+        online_route_traces=[build_online_layer_route_trace(partition=partition, trace_origin=TraceOrigin.OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS)],
         rank_manifests=[manifest],
         expert_placements=[placement],
         transport_operations=[agreement.transport_record, dispatch_record, combine_record],
         validation_results=[final_validation],
         metadata={
-            "execution_mode": "online_ws2_native_ep_moe_layer",
+            "execution_mode": "online_ws2_native_ep_moe_layer_harness",
             "validation_reference": "hf_single_rank_layer_output",
             "transport_exercised": True,
             "backend": backend,
             "request_table_hash": request_table_hash,
+            "claim_scope": "ws2_distributed_moe_layer_correctness_only",
+            "is_real_ep_runtime": False,
+            "is_complete_ep_dispatch": True,
         },
     )
     return WS2NativeEPMoELayerResult(
@@ -787,13 +838,18 @@ def run_world_size_two_native_ep_moe_layer(
         raise RuntimeError("torch.distributed must be initialized before ws2 native ep layer run")
     rank = dist.get_rank()
     prompt_text = str(prompts_by_rank[rank])
-    observation = _capture_local_layer_reference(
-        model_id=model_id,
-        model_path=model_path,
-        prompt_text=prompt_text,
-        layer_index=layer_index,
-        precision=precision,
-        device_index=(rank_device.index if rank_device.type == "cuda" else 0),
+    observation = run_distributed_stage(
+        "layer_capture",
+        backend=backend,
+        rank_device=rank_device,
+        fn=lambda: _capture_local_layer_reference(
+            model_id=model_id,
+            model_path=model_path,
+            prompt_text=prompt_text,
+            layer_index=layer_index,
+            precision=precision,
+            device_index=(rank_device.index if rank_device.type == "cuda" else 0),
+        ),
     )
     result = execute_ws2_native_ep_layer_from_observation(
         run_id=run_id,
@@ -806,18 +862,19 @@ def run_world_size_two_native_ep_moe_layer(
         require_remote_route=require_remote_route,
     )
     if output_dir is not None:
-        export_native_ep_trace_artifacts(
+        export_ws2_native_ep_moe_layer_harness_trace_artifacts(
             output_dir=output_dir,
             run_id=f"{run_id}-rank{rank}",
             trace=result.trace,
             extra_metadata={
-                "execution_mode": "online_ws2_native_ep_moe_layer",
-                "claim_scope": "ws2_distributed_moe_layer_correctness_and_calibration_only",
+                "execution_mode": "online_ws2_native_ep_moe_layer_harness",
+                "claim_scope": "ws2_distributed_moe_layer_correctness_only",
                 "backend": backend,
                 "verified_backend": "nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
                 "is_real_ep_transport": bool(result.transport_exercised),
                 "is_complete_ep_dispatch": bool(result.transport_exercised),
                 "is_real_ep_runtime": False,
+                "trace_origin": TraceOrigin.OBSERVED_ONLINE_WS2_MOE_LAYER_HARNESS,
                 "expert_residency_mode": "full_checkpoint_then_local_extract",
                 "checkpoint_loading_is_memory_efficient": False,
                 "correctness_status": result.validation.correctness_status,

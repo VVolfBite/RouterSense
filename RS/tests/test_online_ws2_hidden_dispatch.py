@@ -10,6 +10,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from rs.contracts import TraceOrigin
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
@@ -41,7 +42,13 @@ def _router_logits(rank: int) -> torch.Tensor:
 
 
 def _dispatch_worker(rank: int, world_size: int, port: int, out_dir: str) -> None:
-    dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=world_size)
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=world_size,
+        timeout=distributed_timeout(),
+    )
     try:
         placement = build_online_expert_placement(world_size=world_size, expert_count=4, rank_to_node_id=[0, 0])
         request_id_table, microbatch_id_table, request_table_hash = build_request_identity_tables(

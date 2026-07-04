@@ -637,24 +637,33 @@ def _capture_local_layer_observation(
     ]
     if layer_index < 0 or layer_index >= len(moe_layer_ids):
         raise RuntimeError(f"layer_index {layer_index} out of range for {len(moe_layer_ids)} OLMoE MoE layers")
+    logical_moe_index = int(layer_index)
     layer_id = int(moe_layer_ids[layer_index])
     layer = model.model.layers[layer_id]
     captured: dict[str, torch.Tensor] = {}
 
     def _hook(_module, inputs, output):
         captured["mlp_input"] = inputs[0].detach()
-        captured["router_logits"] = output[1].detach()
 
     handle = layer.mlp.register_forward_hook(_hook)
     try:
         with torch.inference_mode():
-            model(**encoded, output_router_logits=True, output_hidden_states=True, return_dict=True, use_cache=False)
+            outputs = model(
+                **encoded,
+                output_router_logits=True,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
     finally:
         handle.remove()
-    if {"mlp_input", "router_logits"} - set(captured):
+    router_logits_by_layer = getattr(outputs, "router_logits", None)
+    if not router_logits_by_layer:
+        raise RuntimeError("model forward did not return router_logits")
+    router_logits = router_logits_by_layer[logical_moe_index].detach()
+    if {"mlp_input"} - set(captured):
         raise RuntimeError("failed to capture MoE layer input/router during ws2 route partition collection")
     hidden_states = captured["mlp_input"].squeeze(0)
-    router_logits = captured["router_logits"]
     if router_logits.ndim == 3:
         router_logits = router_logits.squeeze(0)
     return hidden_states, router_logits, layer_id, {

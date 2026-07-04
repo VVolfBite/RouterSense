@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -16,7 +17,11 @@ ensure_src_on_path()
 
 from rs.online import build_online_unimplemented_result
 from rs.online.distributed_runtime import (
+    DistributedStageError,
     assert_distinct_cuda_device_mapping,
+    destroy_process_group_checked,
+    init_process_group_checked,
+    require_ws2_native_ep_backend,
     resolve_backend,
     resolve_distributed_device,
 )
@@ -44,7 +49,10 @@ def _result_exit_code(payload: dict[str, object]) -> int:
         return 0 if payload.get("numerical_correctness_pass") is True else 2
     if execution_mode in {"online_ws2_route_partition_only", "online_ws2_hidden_dispatch_only"}:
         return 0 if correctness_status == "metadata_passed" else 2
-    if execution_mode == "online_ws2_native_ep_moe_layer":
+    if execution_mode in {
+        "online_ws2_native_ep_moe_layer",
+        "online_ws2_native_ep_moe_layer_harness",
+    }:
         return 0 if correctness_status in {"passed", "skipped_no_remote_route"} else 2
     return 2
 
@@ -62,9 +70,55 @@ def _write_merged_summary(output_dir: Path, run_id: str, world_size: int) -> Non
         "execution_mode": payloads[0].get("execution_mode"),
         "claim_scope": payloads[0].get("claim_scope"),
         "backend": payloads[0].get("backend"),
+        "device_mapping": [item.get("device_info", {}) for item in payloads],
+        "rank_gpu_mapping": [
+            {
+                "rank": item.get("rank"),
+                "device": item.get("device_info", {}).get("device"),
+                "cuda_device_index": item.get("device_info", {}).get("cuda_device_index"),
+                "cuda_device_name": item.get("device_info", {}).get("cuda_device_name"),
+            }
+            for item in payloads
+        ],
+        "remote_route_count": sum(int(item.get("remote_route_count", 0) or 0) for item in payloads),
+        "dispatch_rows": sum(int(item.get("dispatch_rows", 0) or 0) for item in payloads),
+        "combine_rows": sum(int(item.get("combine_rows", 0) or 0) for item in payloads),
         "rank_summaries": payloads,
     }
     (output_dir / f"{run_id}-merged.json").write_text(json.dumps(merged, indent=2), encoding="utf-8")
+
+
+def _failure_payload(
+    *,
+    run_id: str,
+    world_size: int,
+    backend: str,
+    execution_mode: str,
+    rank: int | None,
+    rank_device: torch.device,
+    stage: str | None,
+    error_text: str,
+    failures: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "pipeline": "online",
+        "execution_mode": execution_mode,
+        "trace_origin": "not_collected",
+        "future_information_mode": "none",
+        "claim_scope": "ws2_distributed_moe_layer_correctness_only",
+        "backend": backend,
+        "verified_backend": "nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
+        "rank": rank,
+        "world_size": int(world_size),
+        "device": str(rank_device),
+        "correctness_status": "failed",
+        "numerical_correctness_pass": False,
+        "failure_stage": stage,
+        "failure_error": error_text,
+        "failure_details": failures or [],
+        "failed_at_utc": datetime.utcnow().isoformat() + "Z",
+        "run_id": run_id,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run_id = _resolve_run_id("online-native-bench", args.run_id, args.world_size)
     backend = resolve_backend(world_size=args.world_size, requested_backend=args.backend)
+    require_ws2_native_ep_backend(
+        world_size=args.world_size,
+        backend=backend,
+        route_partition_only=bool(args.route_partition_only),
+        hidden_dispatch_only=bool(args.hidden_dispatch_only),
+    )
     rank_device = resolve_distributed_device(
         requested_device_index=args.device_index,
         world_size=args.world_size,
@@ -134,8 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     elif int(args.world_size) == 2 and bool(args.route_partition_only):
         if backend == "nccl":
             torch.cuda.set_device(rank_device)
-        if not dist.is_initialized():
-            dist.init_process_group(backend=backend)
+        init_process_group_checked(backend=backend)
         try:
             distinct_device_indices = assert_distinct_cuda_device_mapping(
                 backend=backend,
@@ -216,8 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     elif int(args.world_size) == 2:
         if backend == "nccl":
             torch.cuda.set_device(rank_device)
-        if not dist.is_initialized():
-            dist.init_process_group(backend=backend)
+        init_process_group_checked(backend=backend)
         try:
             payload_result = run_world_size_two_native_ep_moe_layer(
                 run_id=run_id,
@@ -237,10 +295,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             payload = {
                 "pipeline": "online",
-                "execution_mode": "online_ws2_native_ep_moe_layer",
-                "trace_origin": "observed_online_native_ep",
+                "execution_mode": "online_ws2_native_ep_moe_layer_harness",
+                "trace_origin": "observed_online_ws2_moe_layer_harness",
                 "future_information_mode": "none",
-                "claim_scope": "ws2_distributed_moe_layer_correctness_and_calibration_only",
+                "claim_scope": "ws2_distributed_moe_layer_correctness_only",
                 "backend": backend,
                 "verified_backend": "nccl_gpu" if backend == "nccl" else "gloo_cpu_test_only",
                 "gloo_test_mode": backend == "gloo",
@@ -248,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
                 "is_real_ep_transport": bool(payload_result.transport_exercised),
                 "is_complete_ep_dispatch": bool(payload_result.transport_exercised),
                 "is_real_ep_runtime": False,
+                "claim_scope_detail": "ws2_distributed_moe_layer_correctness_only",
+                "execution_harness": "observed_online_ws2_moe_layer_harness",
+                "prediction_used": False,
                 "expert_residency_mode": "full_checkpoint_then_local_extract",
                 "checkpoint_loading_is_memory_efficient": False,
                 "correctness_status": payload_result.validation.correctness_status,
@@ -274,6 +335,29 @@ def main(argv: list[str] | None = None) -> int:
                 "validation_details": payload_result.validation.details,
                 "trace_metadata": payload_result.trace.metadata,
             }
+        except DistributedStageError as exc:
+            payload = _failure_payload(
+                run_id=run_id,
+                world_size=args.world_size,
+                backend=backend,
+                execution_mode="online_ws2_native_ep_moe_layer_harness",
+                rank=(dist.get_rank() if dist.is_initialized() else None),
+                rank_device=rank_device,
+                stage=exc.stage,
+                error_text=str(exc),
+                failures=exc.failures,
+            )
+        except Exception as exc:
+            payload = _failure_payload(
+                run_id=run_id,
+                world_size=args.world_size,
+                backend=backend,
+                execution_mode="online_ws2_native_ep_moe_layer_harness",
+                rank=(dist.get_rank() if dist.is_initialized() else None),
+                rank_device=rank_device,
+                stage=None,
+                error_text=f"{type(exc).__name__}: {exc}",
+            )
         finally:
             pass
     else:
@@ -299,11 +383,12 @@ def main(argv: list[str] | None = None) -> int:
     output_path = output_dir / output_name
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if int(args.world_size) == 2 and dist.is_initialized():
-        dist.barrier()
-        if dist.get_rank() == 0:
-            _write_merged_summary(output_dir, run_id, args.world_size)
-        dist.barrier()
-        dist.destroy_process_group()
+        if payload.get("correctness_status") != "failed":
+            dist.barrier()
+            if dist.get_rank() == 0:
+                _write_merged_summary(output_dir, run_id, args.world_size)
+            dist.barrier()
+        destroy_process_group_checked()
     print(json.dumps(payload, indent=2))
     return _result_exit_code(payload)
 

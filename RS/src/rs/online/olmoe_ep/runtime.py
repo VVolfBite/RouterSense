@@ -305,6 +305,7 @@ def run_world_size_one_native_parity(
     ]
     if layer_index < 0 or layer_index >= len(moe_layer_ids):
         raise RuntimeError(f"layer_index {layer_index} out of range for {len(moe_layer_ids)} OLMoE MoE layers")
+    logical_moe_index = int(layer_index)
     layer_id = int(moe_layer_ids[layer_index])
     layer = model.model.layers[layer_id]
     mlp = layer.mlp
@@ -313,22 +314,30 @@ def run_world_size_one_native_parity(
     def _hook(_module, inputs, output):
         hidden = inputs[0]
         captured["mlp_input"] = hidden.detach()
-        captured["mlp_output"] = output[0].detach()
-        captured["router_logits"] = output[1].detach()
+        captured["mlp_output"] = output.detach()
 
     handle = mlp.register_forward_hook(_hook)
     try:
         with torch.inference_mode():
-            model(**encoded, output_router_logits=True, output_hidden_states=True, return_dict=True, use_cache=False)
+            outputs = model(
+                **encoded,
+                output_router_logits=True,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
     finally:
         handle.remove()
 
-    if {"mlp_input", "mlp_output", "router_logits"} - set(captured):
+    router_logits_by_layer = getattr(outputs, "router_logits", None)
+    if not router_logits_by_layer:
+        raise RuntimeError("model forward did not return router_logits")
+    router_logits = router_logits_by_layer[logical_moe_index].detach()
+    if {"mlp_input", "mlp_output"} - set(captured):
         raise RuntimeError("failed to capture MoE layer input/output during parity run")
 
     mlp_input = captured["mlp_input"].squeeze(0)
     mlp_output = captured["mlp_output"].squeeze(0)
-    router_logits = captured["router_logits"]
     if router_logits.ndim == 3:
         router_logits = router_logits.squeeze(0)
 
@@ -424,28 +433,37 @@ def collect_world_size_one_local_moe_observed_trace(
     ]
     if layer_index < 0 or layer_index >= len(moe_layer_ids):
         raise RuntimeError(f"layer_index {layer_index} out of range for {len(moe_layer_ids)} OLMoE MoE layers")
+    logical_moe_index = int(layer_index)
     layer_id = int(moe_layer_ids[layer_index])
     layer = model.model.layers[layer_id]
     captured: dict[str, torch.Tensor] = {}
 
     def _hook(_module, inputs, output):
         captured["mlp_input"] = inputs[0].detach()
-        captured["mlp_output"] = output[0].detach()
-        captured["router_logits"] = output[1].detach()
+        captured["mlp_output"] = output.detach()
 
     handle = layer.mlp.register_forward_hook(_hook)
     try:
         with torch.inference_mode():
-            model(**encoded, output_router_logits=True, output_hidden_states=True, return_dict=True, use_cache=False)
+            outputs = model(
+                **encoded,
+                output_router_logits=True,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
     finally:
         handle.remove()
 
-    if {"mlp_input", "mlp_output", "router_logits"} - set(captured):
+    router_logits_by_layer = getattr(outputs, "router_logits", None)
+    if not router_logits_by_layer:
+        raise RuntimeError("model forward did not return router_logits")
+    router_logits = router_logits_by_layer[logical_moe_index].detach()
+    if {"mlp_input", "mlp_output"} - set(captured):
         raise RuntimeError("failed to capture MoE layer input/output during observed trace collection")
 
     mlp_input = captured["mlp_input"].squeeze(0)
     mlp_output = captured["mlp_output"].squeeze(0)
-    router_logits = captured["router_logits"]
     if router_logits.ndim == 3:
         router_logits = router_logits.squeeze(0)
 

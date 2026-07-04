@@ -10,6 +10,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from rs.contracts import TraceOrigin
+from rs.online.distributed_runtime import distributed_timeout
 from rs.online.observer_io import write_online_trace_artifacts
 from rs.online.olmoe_ep import (
     build_online_expert_placement,
@@ -39,7 +40,13 @@ def _rank_router_logits(rank: int) -> torch.Tensor:
 
 
 def _ws2_worker(rank: int, world_size: int, port: int, out_dir: str, mismatch: str) -> None:
-    dist.init_process_group(backend="gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=world_size)
+    dist.init_process_group(
+        backend="gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=world_size,
+        timeout=distributed_timeout(),
+    )
     try:
         prompts_by_rank = ["prompt-rank0", "prompt-rank1"]
         rank_to_node_id = [0, 0]

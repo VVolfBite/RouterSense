@@ -45,9 +45,14 @@ Current status is split in two:
 - Phase 2c partially completed:
   - `world_size=2` hidden-state dispatch only
   - truthful `observed_online_ws2_hidden_dispatch` observation export
-- Phase 2d not completed:
-  - real multi-rank native A2A EP runtime
-  - real `observed_online_native_ep` traces
+- Phase 2d partially completed:
+  - WS=2 MoE-layer harness with dispatch -> owner compute -> inverse combine
+  - distributed numerical parity at the single-layer harness level
+- Still not completed:
+  - real full-model EP runtime
+  - true expert shard checkpoint residency
+  - multi-layer distributed forward replacement
+  - multi-node validation
 
 ### `legacy`
 
@@ -97,7 +102,8 @@ Key rules already enforced:
 
 - legacy replay cannot present itself as online
 - offline calibrated analysis must reject anything other than real multi-rank
-  `observed_online_native_ep` input
+  `observed_online_native_ep` input; the current harness uses
+  `observed_online_ws2_moe_layer_harness`
 - offline calibrated analysis must explicitly reject
   `observed_online_ws2_route_partition`
 - offline calibrated analysis must explicitly reject
@@ -139,11 +145,9 @@ Next real milestone is Phase 2:
 1. real online native EP ownership and routing
 2. ws2 count agreement for route metadata
 3. native variable-size hidden dispatch
-4. owner-rank expert compute
-5. inverse combine
-6. world-size-2 distributed numerical correctness
-7. real online observer trace export
-8. world-size-4 calibrated offline inputs
+4. true two-GPU NCCL artifact for the current WS=2 harness
+5. then real full-model EP replacement beyond the harness
+6. then multi-node
 
 Do not skip to scheduled P2P benchmark claims before native online EP is
 implemented and validated.
