@@ -103,6 +103,8 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
     communication_ratio: list[float] = []
     token_counts: list[float] = []
     trace_ms: list[float] = []
+    validation_ms: list[float] = []
+    plan_build_ms: list[float] = []
 
     for sample in samples:
         rank_payloads = list(sample.get("ranks", []))
@@ -111,6 +113,8 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
         effective_sample_ms.append(max(float(rank_payload.get("sample_wall_ms", 0.0)) for rank_payload in rank_payloads))
         token_counts.append(float(sample.get("trace_summary", {}).get("token_count", 0)))
         trace_ms.append(float(sample.get("trace_ms", 0.0)))
+        plan_build_ms.append(float(sample.get("plan_build_ms", 0.0)))
+        validation_ms.append(max(float(rank_payload.get("validation_ms", 0.0)) for rank_payload in rank_payloads))
         for rank_payload in rank_payloads:
             execution = rank_payload["execution"]
             control = execution.get("control_plane_ms", {})
@@ -141,7 +145,9 @@ def _summarize_batch(result: dict[str, Any]) -> dict[str, Any]:
         "tokens_per_second": (total_tokens * 1000.0 / batch_wall_ms) if batch_wall_ms > 0 else 0.0,
         "total_trace_tokens": total_tokens,
         "trace_ms": _summarize_numeric(trace_ms),
+        "plan_build_ms": _summarize_numeric(plan_build_ms),
         "effective_sample_ms": _summarize_numeric(effective_sample_ms),
+        "validation_ms": _summarize_numeric(validation_ms),
         "scheduler_planner_ms": _summarize_numeric(planner_ms),
         "control_plane_ms": _summarize_numeric(control_plane_ms),
         "scheduled_comm_ms": _summarize_numeric(scheduled_comm_ms),
@@ -194,6 +200,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--layer-index", type=int, default=0, help="Index into MoE layer ids, not raw transformer layer id.")
     parser.add_argument("--max-waves", type=int, default=0, help="Cap the number of execution waves; 0 means uncapped.")
+    parser.add_argument(
+        "--validation",
+        choices=["off", "sampled", "always"],
+        default="off",
+        help="Whether to run native reference replay and correctness comparison inside the benchmark harness.",
+    )
+    parser.add_argument("--validation-every", type=int, default=64, help="When --validation=sampled, validate every Nth sample.")
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "deployment" / "wave_execution"))
     args = parser.parse_args(argv)
 
@@ -227,11 +240,10 @@ def main(argv: list[str] | None = None) -> int:
         sample_limit=max(1, args.sample_limit),
         text_key=args.text_key,
     )
-    batch_started = time.perf_counter()
+    batch_execution_ms = 0.0
     gathered_samples: list[dict[str, Any]] = []
     layer_id: int | None = None
     for sample_index, sample in enumerate(samples):
-        sample_started = time.perf_counter()
         trace_started = time.perf_counter()
         trace = collect_full_sequence_trace(
             model,
@@ -248,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(f"layer_index {args.layer_index} out of range for {len(moe_layer_ids)} MoE layers")
         layer_id = int(moe_layer_ids[args.layer_index])
 
+        plan_started = time.perf_counter()
         runner_plan = build_distributed_runner_plan(
             model=model,
             trace=trace,
@@ -261,12 +274,16 @@ def main(argv: list[str] | None = None) -> int:
             host=socket.gethostname(),
             gpu_name=f"cuda:{local_rank}",
         )
+        plan_build_ms = (time.perf_counter() - plan_started) * 1000.0
         hidden_state_rows = trace["hidden_states"][layer_id][0].to(
             dtype=torch.float16,
             device=f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu",
         )
         plan_index = runner_plan.dispatch_plans.index(next(plan for plan in runner_plan.dispatch_plans if int(plan.layer_id) == layer_id))
 
+        should_validate = args.validation == "always" or (
+            args.validation == "sampled" and args.validation_every > 0 and sample_index % args.validation_every == 0
+        )
         execution_started = time.perf_counter()
         execution = execute_scheduled_inference(
             dispatch_plans=runner_plan.dispatch_plans,
@@ -282,8 +299,11 @@ def main(argv: list[str] | None = None) -> int:
             plan_index=plan_index,
             max_waves=(args.max_waves if args.max_waves > 0 else None),
             transport_granularity=args.transport_granularity,
+            verify_correctness=should_validate,
         )
         execution_wall_ms = (time.perf_counter() - execution_started) * 1000.0
+        validation_ms = float(execution.get("control_plane_ms", {}).get("conservation_check_ms", 0.0))
+        sample_wall_ms = plan_build_ms + execution_wall_ms - validation_ms
         payload = {
             "rank": rank,
             "sample_index": sample_index,
@@ -298,14 +318,17 @@ def main(argv: list[str] | None = None) -> int:
             "layer_id": layer_id,
             "prompt": sample["text"],
             "trace_ms": trace_ms,
+            "plan_build_ms": plan_build_ms,
             "execution_wall_ms": execution_wall_ms,
-            "sample_wall_ms": (time.perf_counter() - sample_started) * 1000.0,
+            "validation_ms": validation_ms,
+            "sample_wall_ms": sample_wall_ms,
             "trace_summary": trace["summary"],
             "execution": execution,
         }
         gathered: list[dict] | None = [None for _ in range(world_size)] if rank == 0 else None
         dist.gather_object(payload, gathered, dst=0)
         if rank == 0:
+            batch_execution_ms += max(float(item.get("sample_wall_ms", 0.0)) for item in gathered if item is not None)
             gathered_samples.append(
                 {
                     "sample_index": sample_index,
@@ -314,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
                     "prompt": sample["text"],
                     "prompt_metadata": sample.get("metadata"),
                     "trace_ms": trace_ms,
+                    "plan_build_ms": plan_build_ms,
                     "trace_summary": trace["summary"],
                     "ranks": gathered,
                 }
@@ -329,12 +353,14 @@ def main(argv: list[str] | None = None) -> int:
                 "compute_mode": args.compute_mode,
                 "distributed_control_plane": args.distributed_control_plane,
                 "transport_granularity": args.transport_granularity,
+                "validation": args.validation,
+                "validation_every": args.validation_every,
                 "layer_id": layer_id,
                 "world_size": world_size,
                 "max_waves": args.max_waves,
                 "sample_limit": len(samples),
                 "prompt_file": args.prompt_file,
-                "batch_wall_ms": (time.perf_counter() - batch_started) * 1000.0,
+                "batch_wall_ms": batch_execution_ms,
             },
             "samples": gathered_samples,
         }

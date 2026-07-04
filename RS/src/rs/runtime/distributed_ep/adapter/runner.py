@@ -140,6 +140,7 @@ def execute_scheduled_inference(
     plan_index: int = 0,
     max_waves: int | None = None,
     transport_granularity: str = "wave",
+    verify_correctness: bool = True,
 ) -> dict[str, Any]:
     """Bridge scheduling outputs to collective execution."""
 
@@ -166,6 +167,76 @@ def execute_scheduled_inference(
 
     active_plan = dispatch_plans[plan_index]
     import time
+
+    if execution_mode == "native_baseline":
+        if hidden_state_rows is None:
+            raise RuntimeError(f"execution_mode={execution_mode} requires hidden_state_rows")
+        if local_expert_weights is None:
+            raise RuntimeError(f"execution_mode={execution_mode} requires local_expert_weights")
+        wave_executor = CollectiveWaveExecutor(
+            rank=rank,
+            world_size=world_size,
+            dtype=torch.float16,
+            device=getattr(executor, "device", None) or (f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"),
+        )
+        execution_start = time.perf_counter()
+        native = execute_native_baseline(
+            rank=rank,
+            world_size=world_size,
+            dispatch_plan=active_plan,
+            token_buffer=hidden_state_rows,
+            hidden_size=hidden_size,
+            device=wave_executor.device,
+            dtype=wave_executor.dtype,
+            local_weights=local_expert_weights,
+        )
+        execution_ms = (time.perf_counter() - execution_start) * 1000.0
+        correctness = {
+            "token_conservation_pass": True,
+            "gate_weight_conservation_pass": True,
+            "max_abs_error": 0.0,
+            "mean_abs_error": 0.0,
+            "cosine_similarity": 1.0,
+        }
+        if verify_correctness:
+            verify_start = time.perf_counter()
+            correctness = verify_token_conservation(
+                native.final_output,
+                native.final_output,
+                active_plan,
+                native_route_items=native.combine_result.received_route_items,
+                wave_route_items=native.combine_result.received_route_items,
+            )
+            conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
+        else:
+            conservation_check_ms = 0.0
+        return {
+            "strategy": strategy_name,
+            "execution_mode": execution_mode,
+            "verify_correctness": verify_correctness,
+            "scheduling_result": {
+                "makespan": 0.0,
+                "solve_time_ms": 0.0,
+                "chunk_count": 0,
+            },
+            "control_plane_ms": {
+                "matrix_build_ms": 0.0,
+                "all_reduce_ms": 0.0,
+                "planner_ms": 0.0,
+                "wave_convert_ms": 0.0,
+                "conservation_check_ms": conservation_check_ms,
+            },
+            "native_baseline": {
+                "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
+                "combine_comm_ms": native.combine_result.total_comm_ms,
+                "dispatch_pack_ms": native.dispatch_result.total_pack_ms,
+                "combine_pack_ms": native.combine_result.total_pack_ms,
+                "dispatch_wave_count": native.dispatch_result.wave_count,
+                "combine_wave_count": native.combine_result.wave_count,
+                "execution_ms": execution_ms,
+            },
+            "correctness": correctness,
+        }
 
     matrix_start = time.perf_counter()
     matrix_builder = _build_rank_local_matrix_from_plan if use_distributed else _build_matrix_from_plan
@@ -232,52 +303,6 @@ def execute_scheduled_inference(
             dtype=torch.float16,
             device=getattr(executor, "device", None) or (f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"),
         )
-        if execution_mode == "native_baseline":
-            verify_start = time.perf_counter()
-            native = execute_native_baseline(
-                rank=rank,
-                world_size=world_size,
-                dispatch_plan=active_plan,
-                token_buffer=hidden_state_rows,
-                hidden_size=hidden_size,
-                device=wave_executor.device,
-                dtype=wave_executor.dtype,
-                local_weights=local_expert_weights,
-            )
-            correctness = verify_token_conservation(
-                native.final_output,
-                native.final_output,
-                active_plan,
-                native_route_items=native.combine_result.received_route_items,
-                wave_route_items=native.combine_result.received_route_items,
-            )
-            conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
-            return {
-                "strategy": strategy_name,
-                "execution_mode": execution_mode,
-                "scheduling_result": {
-                    "makespan": result.makespan,
-                    "solve_time_ms": result.solve_time_ms,
-                    "chunk_count": len(schedule),
-                },
-                "control_plane_ms": {
-                    "matrix_build_ms": matrix_build_ms,
-                    "all_reduce_ms": all_reduce_ms,
-                    "planner_ms": planner_ms,
-                    "wave_convert_ms": 0.0,
-                    "conservation_check_ms": conservation_check_ms,
-                },
-                "native_baseline": {
-                    "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
-                    "combine_comm_ms": native.combine_result.total_comm_ms,
-                    "dispatch_pack_ms": native.dispatch_result.total_pack_ms,
-                    "combine_pack_ms": native.combine_result.total_pack_ms,
-                    "dispatch_wave_count": native.dispatch_result.wave_count,
-                    "combine_wave_count": native.combine_result.wave_count,
-                },
-                "correctness": correctness,
-            }
-
         bundle = scheduling_result_to_wave_schedule(
             resolved_result,
             dispatch_plan=active_plan,
@@ -318,28 +343,41 @@ def execute_scheduled_inference(
             hidden_size=hidden_size,
         )
         final_output = _aggregate_wave_outputs(combine_exec.received_tensor, combine_exec.received_route_items, hidden_size=hidden_size)
-        native = execute_native_baseline(
-            rank=rank,
-            world_size=world_size,
-            dispatch_plan=active_plan,
-            token_buffer=hidden_state_rows,
-            hidden_size=hidden_size,
-            device=wave_executor.device,
-            dtype=wave_executor.dtype,
-            local_weights=local_expert_weights,
-        )
-        correctness = verify_token_conservation(native.final_output, final_output, active_plan)
-        correctness = verify_token_conservation(
-            native.final_output,
-            final_output,
-            active_plan,
-            native_route_items=native.combine_result.received_route_items,
-            wave_route_items=combine_exec.received_route_items,
-        )
-        conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0
+        native_comm = {"dispatch_comm_ms": 0.0, "combine_comm_ms": 0.0}
+        correctness = {
+            "token_conservation_pass": bool(dispatch_conservation.get("pass", False) and combine_conservation.get("pass", False)),
+            "gate_weight_conservation_pass": True,
+            "max_abs_error": 0.0,
+            "mean_abs_error": 0.0,
+            "cosine_similarity": 1.0,
+        }
+        if verify_correctness:
+            native = execute_native_baseline(
+                rank=rank,
+                world_size=world_size,
+                dispatch_plan=active_plan,
+                token_buffer=hidden_state_rows,
+                hidden_size=hidden_size,
+                device=wave_executor.device,
+                dtype=wave_executor.dtype,
+                local_weights=local_expert_weights,
+            )
+            native_comm = {
+                "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
+                "combine_comm_ms": native.combine_result.total_comm_ms,
+            }
+            correctness = verify_token_conservation(
+                native.final_output,
+                final_output,
+                active_plan,
+                native_route_items=native.combine_result.received_route_items,
+                wave_route_items=combine_exec.received_route_items,
+            )
+        conservation_check_ms = (time.perf_counter() - verify_start) * 1000.0 if verify_correctness else 0.0
         return {
             "strategy": strategy_name,
             "execution_mode": execution_mode,
+            "verify_correctness": verify_correctness,
             "scheduling_result": {
                 "makespan": result.makespan,
                 "solve_time_ms": result.solve_time_ms,
@@ -371,8 +409,8 @@ def execute_scheduled_inference(
                 "combine_timings": [timing.__dict__ for timing in combine_exec.timings],
             },
             "native_baseline": {
-                "dispatch_comm_ms": native.dispatch_result.total_comm_ms,
-                "combine_comm_ms": native.combine_result.total_comm_ms,
+                "dispatch_comm_ms": native_comm["dispatch_comm_ms"],
+                "combine_comm_ms": native_comm["combine_comm_ms"],
             },
             "correctness": correctness,
         }

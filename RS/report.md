@@ -1,155 +1,175 @@
 # RouteSense Report
 
-## Current Status
+## Current Conclusion
 
-- Real 2-node distributed OLMoE execution is working on the current PPIO setup.
-- Scheduler injection into the real cross-node EP transport is working.
-- `transport_granularity` is now a real runtime axis:
-  - `wave`: one `all_to_all_single` per wave
-  - `atomic`: one `all_to_all_single` per transfer op
-- `distributed_control_plane=true` is working after the matrix aggregation fix.
-- `greedy` now also works in real distributed runs even when the strategy returns only a scalar makespan and no explicit schedule.
+- The old N17 `2 nodes x 1 GPU` throughput table is **not** a valid end-to-end `native` vs `scheduled` performance comparison.
+- It **does** prove one important thing:
+  - RouteSense can inject scheduled transport into the real OLMoE EP path and pass correctness checks.
+- It does **not** prove:
+  - `scheduled` communication is already faster than `native`
+  - control-plane overhead is the dominant cause of the throughput gap
+  - joint scheduling has been fairly tested at a scale where it should beat `native`
 
-## Critical Fixes In This Round
+## Why The Old N17 Benchmark Was Invalid
 
-### 1. Distributed control-plane aggregation fix
+The old harness mixed several different costs into the scheduled timed path:
 
-Previous bug:
+1. trace collection
+2. scheduled dispatch / expert / combine execution
+3. a full native reference replay inside the same scheduled sample
+4. correctness comparison
 
-- each rank built a full global matrix from the same full trace
-- `all_reduce` then summed already-global matrices again
-- real failure:
-  - `wave schedule over-consumed pair (0, 1) ... requested 156, available 78`
+That means the old scheduled `batch_wall_ms` was not measuring a production scheduled path.
 
-Fix:
+There was a second fairness issue:
 
-- non-distributed path still uses the full global matrix
-- distributed path now builds only the local rank contribution matrix before `all_reduce`
+- `native_baseline` still ran matrix construction, matrix aggregation, and scheduler preamble before entering the native transport branch.
 
-Relevant commits:
+So the old comparison was polluted on both sides:
 
-- `b8dba1c` `Fix distributed control-plane matrix aggregation`
-- `d46669d` `Document distributed control-plane fix`
+- scheduled was too expensive because it included validation replay
+- native was too expensive because it still paid scheduler-side setup
 
-### 2. Fallback schedule bridge fix
+## Code Fixes Applied In This Round
 
-Previous bug:
+### 1. Native baseline now short-circuits scheduler preamble
 
-- `execute_scheduled_inference()` computed a fallback schedule for strategies like `greedy`
-- but wave conversion still consumed the original empty `result.schedule`
+File:
 
-Fix:
+- [runner.py](D:/Project/Test/RouterSense/RS/src/rs/runtime/distributed_ep/adapter/runner.py:126)
 
-- wave conversion now receives the resolved effective schedule
+What changed:
 
-Related commit:
+- `execution_mode=native_baseline` now returns before matrix build, all-reduce, planner solve, and wave conversion.
+- Native control-plane fields are now zeroed except optional self-check timing.
 
-- `a469e20` `Fix fallback schedule wave conversion`
+Why:
 
-### 3. Wave-planner empty-phase fallback
+- This makes the benchmarked native branch much closer to an actual one-shot transport baseline.
 
-Previous bug:
+### 2. Validation replay is now optional
 
-- some scalar-only strategies could still reach wave conversion with empty per-phase entries
-- real failure:
-  - `RuntimeError: incomplete wave allocation for phase 0: {(0, 1): 78, (1, 0): 81}`
+Files:
 
-Fix:
+- [runner.py](D:/Project/Test/RouterSense/RS/src/rs/runtime/distributed_ep/adapter/runner.py:143)
+- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:171)
 
-- if a phase has no schedule entries, `wave_planner` now synthesizes a one-wave default schedule directly from `DispatchPlan`
+What changed:
 
-Status:
+- Added `verify_correctness` plumbing in the runner.
+- Added CLI flag:
+  - `--validation off|sampled|always`
+- Added:
+  - `--validation-every N`
 
-- targeted local regression checks passed
-- real `greedy + wave` run now passes on 2 nodes
+Default:
 
-## N17 Real 2-Node 64-Sample Matrix
+- `--validation off`
 
-### Control Variables
+Why:
 
-- Model: `allenai/OLMoE-1B-7B-0924-Instruct`
-- Prompt file: `artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
-- Sample limit: `64`
-- Layer index: `0`
-- World size: `2`
-- `distributed_control_plane = true`
+- Scheduled transport no longer pays for a full native replay inside the timed benchmark path unless explicitly requested.
 
-### Result Table
+### 3. Trace time is now outside benchmark throughput time
 
-| Strategy | Mode | Granularity | samples/s | mean scheduled comm (ms) | mean native comm (ms) | planner (ms) | control plane (ms) | correctness |
-|---|---|---|---:|---:|---:|---:|---:|---|
-| `U_gated_maxweight_matching_atomic` | `scheduled_transport` | `wave` | `5.3618` | `3.3961` | `2.0510` | `0.2686` | `8.2602` | `pass` |
-| `U_gated_maxweight_matching_atomic` | `scheduled_transport` | `atomic` | `5.2359` | `4.0536` | `1.9581` | `0.2716` | `9.8080` | `pass` |
-| `birkhoff` | `scheduled_transport` | `wave` | `5.3877` | `2.7490` | `2.0342` | `0.2456` | `7.9196` | `pass` |
-| `birkhoff` | `scheduled_transport` | `atomic` | `5.3432` | `3.8574` | `1.9559` | `0.2512` | `8.4458` | `pass` |
-| `greedy` | `scheduled_transport` | `wave` | `5.0007` | `3.2339` | `2.1309` | `0.0771` | `13.5766` | `pass` |
-| `greedy` | `scheduled_transport` | `atomic` | `5.3247` | `3.3229` | `2.0681` | `0.0802` | `7.2513` | `pass` |
-| `greedy` | `native_baseline` | `wave` | `5.7405` | `0.0000` | `3.4101` | `0.0770` | `6.3912` | `pass` |
+File:
 
-## Interpretation
+- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:224)
 
-### Main conclusion
+What changed:
 
-- Real distributed deployment is now working end-to-end.
-- Scheduler injection is correct.
-- On this current setup, scheduled transport does **not** beat native baseline on throughput.
+- `trace_ms` is still recorded per sample.
+- `batch_wall_ms` now accumulates only the cross-rank critical-path sample execution time used for benchmark throughput.
+- Validation time is subtracted from `sample_wall_ms`.
 
-### What changed after the control-plane fix
+Why:
 
-Before the fix, scheduled comm looked like roughly `8-11 ms`.
+- The benchmark now measures control-plane + transport + local expert execution, not trace extraction.
 
-After the fix, scheduled comm dropped to roughly:
+### 4. Batch timing now uses cross-rank critical path
 
-- `2.75-3.40 ms` for `wave`
-- `3.32-4.05 ms` for `atomic`
+File:
 
-This means the earlier matrix was not trustworthy for runtime performance comparison.
+- [exp_wave_execution.py](D:/Project/Test/RouterSense/RS/experiments/distributed/exp_wave_execution.py:312)
 
-### What the current data says
+What changed:
 
-- Best scheduled throughput in this matrix:
-  - `birkhoff + wave` at `5.3877 samples/s`
-- Best overall throughput:
-  - `native_baseline` at `5.7405 samples/s`
-- Best scheduled mean communication:
-  - `birkhoff + wave` at `2.7490 ms`
-- `greedy` is now fully operational, but it is not outperforming the stronger schedulers.
+- Per-sample batch accounting now uses the max `sample_wall_ms` across gathered rank payloads.
 
-### Practical interpretation
+Why:
 
-- We have succeeded at the first real objective:
-  - verify that this environment can actually do distributed EP inference with custom scheduling logic
-- We have **not** yet shown a performance win over native transport at 2 nodes / OLMoE-1B / 64 samples.
-- Current evidence still supports the earlier hypothesis:
-  - this scale is probably too small for POC1-style schedule quality gains to dominate NCCL launch cost, packing overhead, and runtime noise
+- Collective runtime is determined by the slowest participating rank, not by rank 0 local wall time.
 
-## Result Files
+## Current Theoretical Position
 
-- `/tmp/rs_fair_benchmark_cp/U_gated_maxweight_matching_atomic_wave/result.json`
-- `/tmp/rs_fair_benchmark_cp/U_gated_maxweight_matching_atomic_atomic/result.json`
-- `/tmp/rs_fair_benchmark_cp/birkhoff_wave/result.json`
-- `/tmp/rs_fair_benchmark_cp/birkhoff_atomic/result.json`
-- `/tmp/rs_fair_benchmark_cp/greedy_wave/result.json`
-- `/tmp/rs_fair_benchmark_cp/greedy_atomic/result.json`
-- `/tmp/rs_fair_benchmark_cp/native_baseline/result.json`
+For the current `2 x 1 GPU` setup, the user-supplied reasoning is correct in substance:
 
-## Qwen Download Status
+- the cross-rank nontrivial traffic is effectively a `2 x 2` exchange
+- native already executes one `all_to_all_single` per phase
+- without real communication-compute overlap, wave splitting does not create new matching freedom
+- extra waves mainly introduce launch, pack/unpack, allocation, and synchronization overhead
 
-- Target model: `Qwen/Qwen1.5-MoE-A2.7B`
-- Local path: `/root/model-cache/Qwen1.5-MoE-A2.7B`
-- Remote path: `/vllm-workspace/models/Qwen1.5-MoE-A2.7B`
-- Local model is complete.
-- Remote model is still incomplete.
-- Missing remote shards:
-  - `model-00007-of-00008.safetensors`
-  - `model-00008-of-00008.safetensors`
+So the right expectation is:
 
-## Recommended Next Steps
+- this environment is suitable for correctness and calibration
+- it is not the right environment to expect joint scheduling to beat native on throughput
 
-- Run the same matrix at larger scale:
-  - `sample_limit = 128`
-  - `sample_limit = 256`
-- Keep `native_baseline` in every batch-size matrix.
-- After that, decide whether to:
-  - stay on OLMoE for scaling experiments
-  - or switch to a larger MoE model where the communication surface is bigger.
+## What The Old N17 Result Should Now Be Called
+
+The most accurate statement is:
+
+- N17 verified real scheduled-transport injection and correctness under a real 2-node OLMoE execution chain.
+- N17 did **not** produce a fair native-vs-scheduled throughput comparison.
+- N17 did **not** test joint scheduling at a scale where the PoC mechanism should be expected to win.
+
+## New Benchmark Controls
+
+Current recommended benchmark modes:
+
+1. performance mode
+   - `--validation off`
+2. periodic regression mode
+   - `--validation sampled --validation-every 64`
+3. correctness mode
+   - `--validation always`
+
+## Validation Status
+
+Local regression run completed after this change:
+
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest RS\tests\test_scheduled_execution_bridge.py -q`
+- result: `8 passed`
+
+Coverage added in this round:
+
+- native baseline skips scheduler preamble
+- scheduled execution skips native replay when validation is off
+
+## What Still Needs To Be Done
+
+These changes fix benchmark boundaries, but they do **not** yet solve the main runtime bottlenecks.
+
+Still pending:
+
+1. export per-wave diagnostics:
+   - wave count
+   - bytes
+   - pack/unpack timings
+   - rank-critical timing
+2. remove avoidable executor materialization overhead:
+   - `.clone()`
+   - repeated `torch.cat`
+   - Python row packing
+3. rerun a clean calibration benchmark on `2 x 1 GPU`
+4. move to at least `4 GPUs`, and preferably `8 GPUs`, for a meaningful joint-scheduling performance test
+
+## Immediate Next Step
+
+Do **not** use the old N17 table as evidence that scheduled communication is already faster than native.
+
+The next valid step is:
+
+1. rerun the benchmark with the new timing boundaries
+2. persist per-wave execution details
+3. treat `2 x 1 GPU` only as a calibration environment
+4. promote the real performance experiment to `N >= 4`, ideally `N = 8`
