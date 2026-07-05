@@ -13,7 +13,13 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 cd "$repo_root"
-git rev-parse HEAD > "$tmp_dir/SOURCE_COMMIT.txt"
+if git rev-parse HEAD >/dev/null 2>&1; then
+  git rev-parse HEAD > "$tmp_dir/SOURCE_COMMIT.txt"
+elif [[ -f "$repo_root/SOURCE_COMMIT.txt" ]]; then
+  cp "$repo_root/SOURCE_COMMIT.txt" "$tmp_dir/SOURCE_COMMIT.txt"
+else
+  echo "unknown" > "$tmp_dir/SOURCE_COMMIT.txt"
+fi
 
 if [[ "$scope" == "mainline" ]]; then
   tar -czf "$archive_path" \
@@ -22,9 +28,27 @@ if [[ "$scope" == "mainline" ]]; then
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='RS/deploy/inventory/hosts.local.yaml' \
-    --exclude='RS/artifacts/*' --exclude='!RS/artifacts/.gitkeep' \
-    --exclude='RS/outputs/*' --exclude='!RS/outputs/.gitkeep' \
-    --exclude='RS/deploy/logs/*' --exclude='!RS/deploy/logs/.gitkeep' \
+    --exclude='RS/artifacts/*' \
+    --exclude='RS/artifacts' \
+    --exclude='RS/archives' \
+    --exclude='RS/archives/*' \
+    --exclude='RS/outputs' \
+    --exclude='RS/outputs/*' \
+    --exclude='RS/deploy/logs' \
+    --exclude='RS/deploy/logs/*' \
+    --exclude='RS/prompts/logs' \
+    --exclude='RS/prompts/logs/*' \
+    --exclude='*.tar.gz' \
+    --exclude='*.zip' \
+    --exclude='*.pt' \
+    --exclude='*.pth' \
+    --exclude='*.bin' \
+    --exclude='*.safetensors' \
+    --exclude='*.ckpt' \
+    --exclude='*.log' \
+    --exclude='*.jsonl' \
+    --exclude='*.npy' \
+    --exclude='*.npz' \
     README.md .gitignore RS legacy/README.md \
     -C "$tmp_dir" SOURCE_COMMIT.txt
 else
@@ -41,9 +65,27 @@ else
     --exclude='legacy/**/logs/*' \
     --exclude='legacy/**/*.log' \
     --exclude='RS/deploy/inventory/hosts.local.yaml' \
-    --exclude='RS/artifacts/*' --exclude='!RS/artifacts/.gitkeep' \
-    --exclude='RS/outputs/*' --exclude='!RS/outputs/.gitkeep' \
-    --exclude='RS/deploy/logs/*' --exclude='!RS/deploy/logs/.gitkeep' \
+    --exclude='RS/artifacts/*' \
+    --exclude='RS/artifacts' \
+    --exclude='RS/archives' \
+    --exclude='RS/archives/*' \
+    --exclude='RS/outputs' \
+    --exclude='RS/outputs/*' \
+    --exclude='RS/deploy/logs' \
+    --exclude='RS/deploy/logs/*' \
+    --exclude='RS/prompts/logs' \
+    --exclude='RS/prompts/logs/*' \
+    --exclude='*.tar.gz' \
+    --exclude='*.zip' \
+    --exclude='*.pt' \
+    --exclude='*.pth' \
+    --exclude='*.bin' \
+    --exclude='*.safetensors' \
+    --exclude='*.ckpt' \
+    --exclude='*.log' \
+    --exclude='*.jsonl' \
+    --exclude='*.npy' \
+    --exclude='*.npz' \
     README.md .gitignore RS legacy \
     -C "$tmp_dir" SOURCE_COMMIT.txt
 fi

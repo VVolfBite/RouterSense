@@ -1,0 +1,26 @@
+"""Stable core contract re-exports for the formal RouteSense package layout."""
+
+from .flow import ExpertBucketRecord, LayerRouteTrace, RouteIdentity, RouteRecord
+from .provenance import SourceProvenance
+from .result import OFFLINE_PIPELINE, ONLINE_PIPELINE, LEGACY_TRACE_REPLAY_PIPELINE, RunIdentity, build_result_envelope
+from .topology import PlacementSnapshot, TopologySnapshot
+from .trace import EpExecutionTrace, FutureInformationMode, RankStageTiming, TraceOrigin
+
+__all__ = [
+    "ExpertBucketRecord",
+    "EpExecutionTrace",
+    "FutureInformationMode",
+    "LayerRouteTrace",
+    "LEGACY_TRACE_REPLAY_PIPELINE",
+    "OFFLINE_PIPELINE",
+    "ONLINE_PIPELINE",
+    "PlacementSnapshot",
+    "RankStageTiming",
+    "RouteIdentity",
+    "RouteRecord",
+    "RunIdentity",
+    "SourceProvenance",
+    "TopologySnapshot",
+    "TraceOrigin",
+    "build_result_envelope",
+]

@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
+
+from rs.scheduling.observation_contracts import (
+    PeerFlow,
+    PhaseDemand,
+    PolicyContext,
+    RankTopologyRecord,
+    RouterSensePlan,
+    RuntimeObservation,
+    PlanWave,
+)
+
+
+DemandKnowledgeState = Literal["router_ready", "predictor_output"]
+ReleaseState = Literal["ready", "blocked", "advisory_only"]
+ReleaseDependency = Literal["none", "remote_expert_compute_complete"]
+AssertionStatus = Literal["passed", "failed", "not_applicable"]
+
+
+@dataclass(frozen=True)
+class RouterSenseInjectionConfig:
+    policy: str = ""
+    scheduler_mode: str = "disabled"
+    execution_mode: str = "native_passthrough"
+    future_hint_mode: str = "none"
+    p2_hint_mode: str = "none"
+    control_mode: str = "default_continue"
+    policy_version: str = "v1"
+    shadow_command_arrival: str = "none"
+    bucket_rows: int = 0
+    p0_weight: float = 1.0
+    p1_reservation_weight: float = 1.0
+    p2_hint_weight: float = 1.0
+    p2_hint_artifact: str = ""
+    schedule_layer_selector: str = "all"
+    schedule_phase_selector: str = "both"
+    capture_phase_tensors: bool = False
+    stop_after_selected_layer: bool = False
+    executor_heartbeat_path: str = ""
+    executor_phase_timeout_sec: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+
+
+@dataclass(frozen=True)
+class PlanAgreement:
+    root_rank: int
+    rank_count: int
+    root_wire_hash: str
+    root_semantic_hash: str
+    decoded_semantic_hash: str
+    observation_digest: str
+    agreement_status: str
+    policy_name: str
+    policy_version: str
+    control_mode: str
+    observation_encode_ms: float
+    observation_all_gather_ms: float
+    planner_ms: float
+    plan_broadcast_ms: float
+    agreement_ms: float
+    rank_hashes: tuple[str, ...]
+    accepted: bool
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class InjectionDecision:
+    accepted: bool
+    fallback: str
+    plan_hash: str
+    reason: str
+    policy_name: str
+    control_mode: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class NativeEPSummary:
+    pipeline: str = "host_runtime_native_ep"
+    host_runtime: str = "megatron_core"
+    model_family: str = "olmoe"
+    ep_size: int = 0
+    dispatcher: str = "alltoall"
+    backend: str = "nccl"
+    forward_completed: bool = False
+    remote_dispatch_exercised: bool = False
+    remote_combine_exercised: bool = False
+    is_legacy_harness: bool = False
+    performance_claim_eligible: bool = False
+    status: str = "blocked_environment"
+    reason: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

@@ -3,14 +3,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import random
-import subprocess
 import sys
-import traceback
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -32,189 +28,27 @@ from integrations.megatron_ep.native_runtime import (
 )
 from integrations.megatron_ep.routersense.contracts import NativeEPSummary, RouterSenseInjectionConfig
 from integrations.megatron_ep.routersense.dispatcher_facade import SelectedLayerStop
-from integrations.megatron_ep.routersense.policy.registry import resolve_phase_policy, supported_phase_policies
-from integrations.megatron_ep.routersense.trace_writer import write_json, write_jsonl
+from integrations.megatron_ep.routersense.policy.registry import resolve_phase_policy
+from integrations.megatron_ep.routersense.trace_writer import write_json
 from integrations.megatron_ep.verify_env import main as verify_env_main
+from integrations.megatron_ep._phase_executor_support import (
+    effective_policy_name as resolve_effective_policy_name,
+    failure_report,
+    local_expert_ids as collect_local_expert_ids,
+    phase_context_stats,
+    source_provenance,
+    write_not_triggered,
+    write_rank_artifacts,
+)
 
-
-def _local_expert_ids(model: torch.nn.Module) -> list[int]:
-    found: set[int] = set()
-    for module in model.modules():
-        dispatcher = getattr(module, "token_dispatcher", None)
-        if dispatcher is None:
-            continue
-        for idx in getattr(dispatcher, "local_expert_indices", []) or []:
-            found.add(int(idx))
-    return sorted(found)
-
-
-def _source_provenance() -> dict[str, Any]:
-    return {
-        "python_version": sys.version,
-        "torch_version": torch.__version__,
-        "cuda_version": torch.version.cuda,
-        "nccl_available": bool(torch.distributed.is_nccl_available()),
-        "entrypoint": str(Path(__file__).resolve()),
-    }
-
-
-def _selector_matches(selector: str, value: str) -> bool:
-    if selector in {"", "all", "both"}:
-        return True
-    selected = {item.strip() for item in selector.split(",") if item.strip()}
-    return value in selected
-
-
-def _capture_enabled(*, layer_selector: str, phase_selector: str, layer_id: str, phase: str) -> bool:
-    return _selector_matches(layer_selector, layer_id) and _selector_matches(phase_selector, phase)
-
-
-def _phase_context_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    stats = {
-        "p0_remote_rows": 0,
-        "p1_remote_rows": 0,
-        "p0_remote_bytes_hidden": 0,
-        "p0_remote_bytes_probs": 0,
-        "p1_remote_bytes_hidden": 0,
-        "p0_remote_flow_count": 0,
-        "p1_remote_flow_count": 0,
-    }
-    for row in rows:
-        phase = str(row.get("phase"))
-        for bundle in row.get("transport_bundles", []) or []:
-            segment = bundle.get("outgoing_segment", {})
-            if bool(segment.get("is_local", False)):
-                continue
-            row_count = int(segment.get("row_count", 0))
-            stats["p0_remote_rows" if phase == "P0" else "p1_remote_rows"] += row_count
-            stats["p0_remote_flow_count" if phase == "P0" else "p1_remote_flow_count"] += 1
-            for payload in bundle.get("payload_slices", []) or []:
-                role = str(payload.get("tensor_role"))
-                byte_count = int(payload.get("payload_byte_count", 0))
-                if phase == "P0" and role == "hidden_states":
-                    stats["p0_remote_bytes_hidden"] += byte_count
-                elif phase == "P0" and role == "routing_probs":
-                    stats["p0_remote_bytes_probs"] += byte_count
-                elif phase == "P1" and role == "hidden_states":
-                    stats["p1_remote_bytes_hidden"] += byte_count
-    return stats
-
-
-def _compare_tensors(a: torch.Tensor, b: torch.Tensor) -> dict[str, float]:
-    af = a.float()
-    bf = b.float()
-    diff = (af - bf).abs()
-    cosine = torch.nn.functional.cosine_similarity(af.reshape(1, -1), bf.reshape(1, -1)).item()
-    return {
-        "max_abs_error": float(diff.max().item()) if diff.numel() else 0.0,
-        "mean_abs_error": float(diff.mean().item()) if diff.numel() else 0.0,
-        "cosine_similarity": float(cosine),
-    }
-
-
-def _write_not_triggered(path: Path) -> None:
-    write_json(path, {"status": "not_triggered"})
-
-
-def _effective_policy_name(policy: str, scheduler_mode: str) -> str:
-    if policy:
-        return str(policy)
-    if scheduler_mode in set(supported_phase_policies()):
-        return str(scheduler_mode)
-    return ""
-
-
-def _failure_report(
-    *,
-    stage: str,
-    exc: BaseException,
-    rank: int,
-    local_rank: int,
-    plan_hash: str | None = None,
-    layer_id: str | None = None,
-    phase: str | None = None,
-    wave_id: int | None = None,
-    bucket_id: str | None = None,
-    tensor_role: str | None = None,
-    expected_shape: list[int] | None = None,
-    actual_shape: list[int] | None = None,
-    expected_dtype: str | None = None,
-    actual_dtype: str | None = None,
-    expected_splits: list[int] | None = None,
-    actual_splits: list[int] | None = None,
-) -> dict[str, Any]:
-    return {
-        "first_failure_stage": stage,
-        "forward_epoch": 0,
-        "layer_id": layer_id,
-        "phase": phase,
-        "rank": rank,
-        "local_rank": local_rank,
-        "wave_id": wave_id,
-        "bucket_id": bucket_id,
-        "tensor_role": tensor_role,
-        "expected_shape": expected_shape,
-        "actual_shape": actual_shape,
-        "expected_dtype": expected_dtype,
-        "actual_dtype": actual_dtype,
-        "expected_splits": expected_splits,
-        "actual_splits": actual_splits,
-        "plan_hash": plan_hash,
-        "exception_summary": f"{type(exc).__name__}: {exc}",
-        "traceback": traceback.format_exc(),
-    }
-
-
-def _write_rank_artifacts(
-    *,
-    run_dir: Path,
-    run_id: str,
-    rank: int,
-    logits: torch.Tensor | None,
-    runtime: Any | None,
-    native_dispatch_summary: dict[str, Any],
-    rank_summary: dict[str, Any],
-    save_logits: bool,
-    capture_layer_selector: str,
-    capture_phase_selector: str,
-) -> dict[str, Any]:
-    logits_path = None
-    if save_logits and logits is not None:
-        logits_path = run_dir / f"{run_id}-rank{rank}-logits.pt"
-        torch.save(logits.detach().float().cpu(), logits_path)
-        rank_summary["logits_path"] = str(logits_path)
-    write_json(run_dir / f"rank{rank}_summary.json", rank_summary)
-    write_json(run_dir / f"rank{rank}_native_dispatch.json", native_dispatch_summary)
-    if runtime is not None:
-        write_jsonl(run_dir / f"rank{rank}_control_timeline.jsonl", runtime.export_control_timeline())
-        write_jsonl(run_dir / f"rank{rank}_control_commands.jsonl", runtime.export_control_commands())
-        write_json(run_dir / f"rank{rank}_assertions.json", runtime.export_assertions())
-        write_jsonl(run_dir / f"rank{rank}_phase_contexts.jsonl", runtime.export_phase_contexts())
-        write_jsonl(run_dir / f"rank{rank}_transport_bundles.jsonl", runtime.export_transport_bundles())
-        write_jsonl(run_dir / f"rank{rank}_scheduled_phase_plans.jsonl", runtime.export_scheduled_phase_plans())
-        transport_results = []
-        adapter = getattr(runtime, "transport_adapter", None)
-        if adapter is not None:
-            transport_results = adapter.export_results()
-        else:
-            transport_results = runtime.export_transport_execution_results()
-        write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)
-        write_jsonl(run_dir / f"rank{rank}_captured_phase_tensors.jsonl", runtime.export_captured_phase_tensors())
-        capture_dir = run_dir / "captured_phase_tensors"
-        capture_dir.mkdir(parents=True, exist_ok=True)
-        for item in runtime.captured_phase_tensors:
-            layer_id = str(item["layer_id"])
-            phase = str(item["phase"])
-            if not _capture_enabled(
-                layer_selector=capture_layer_selector,
-                phase_selector=capture_phase_selector,
-                layer_id=layer_id,
-                phase=phase,
-            ):
-                continue
-            tensor_path = capture_dir / f"rank{rank}_layer{layer_id}_{phase}_{item['tensor_role']}.pt"
-            torch.save(item["tensor"], tensor_path)
-    return rank_summary
+# Compatibility aliases retained during the test-root migration.
+_failure_report = failure_report
+_effective_policy_name = resolve_effective_policy_name
+_local_expert_ids = collect_local_expert_ids
+_phase_context_stats = phase_context_stats
+_source_provenance = source_provenance
+_write_not_triggered = write_not_triggered
+_write_rank_artifacts = write_rank_artifacts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -252,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_dir = Path(args.output_dir) / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    write_json(run_dir / "source_provenance.json", _source_provenance())
+    write_json(run_dir / "source_provenance.json", source_provenance(str(Path(__file__).resolve())))
     (run_dir / "command.txt").write_text(" ".join(sys.argv), encoding="utf-8")
 
     if args.backend != "nccl":
@@ -346,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
         models = provider.provide_distributed_model(wrap_with_ddp=False, use_cpu_initialization=True)
         model = models[0].cuda(local_rank).eval()
-        effective_policy_name = _effective_policy_name(args.policy, args.scheduler_mode)
+        effective_policy_name = resolve_effective_policy_name(args.policy, args.scheduler_mode)
         policy_capabilities = (
             resolve_phase_policy(
                 policy_name=effective_policy_name,
@@ -404,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         stage_barrier("native_forward", ok=bool(partial_stop or isinstance(logits, torch.Tensor)), detail="partial-stop" if partial_stop else str(tuple(logits.shape)))
 
         native_dispatch_summary = summarize_native_dispatchers(model, rank=rank)
-        local_expert_ids = _local_expert_ids(model)
+        local_expert_ids = collect_local_expert_ids(model)
         transport_results = []
         phase_context_rows: list[dict[str, Any]] = []
         if runtime is not None:
@@ -414,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 transport_results = runtime.export_transport_execution_results()
             phase_context_rows = runtime.export_phase_contexts()
-        phase_stats = _phase_context_stats(phase_context_rows)
+        phase_stats = phase_context_stats(phase_context_rows)
         rank_summary = {
             **summarize_rank_environment(rank, local_rank),
             "ep_group_ranks": list(range(world_size)),
@@ -452,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             "dispatcher_rows": native_dispatch_summary["dispatcher_rows"],
             "transport_execution_count": len(transport_results),
         }
-        rank_summary = _write_rank_artifacts(
+        rank_summary = write_rank_artifacts(
             run_dir=run_dir,
             run_id=args.run_id,
             rank=rank,
@@ -509,12 +343,12 @@ def main(argv: list[str] | None = None) -> int:
                 details=details,
             ).to_dict()
             write_json(run_dir / "summary.json", payload)
-            _write_not_triggered(run_dir / "failure_report.json")
-            _write_not_triggered(run_dir / "watchdog_report.json")
+            write_not_triggered(run_dir / "failure_report.json")
+            write_not_triggered(run_dir / "watchdog_report.json")
         stage_barrier("artifact_flush", ok=True, detail=str(run_dir))
         return 0
     except Exception as exc:
-        failure = _failure_report(
+        failure = failure_report(
             stage="phase_executor_runtime",
             exc=exc,
             rank=rank,

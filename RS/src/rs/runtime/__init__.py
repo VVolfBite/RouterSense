@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import distributed_ep
+from . import offline, online
 from .single_gpu import (
     SingleGPUInferenceResult,
     gpu_environment_snapshot,
@@ -13,5 +14,7 @@ __all__ = [
     "distributed_ep",
     "gpu_environment_snapshot",
     "load_model_and_tokenizer",
+    "offline",
+    "online",
     "run_single_gpu_text_inference",
 ]

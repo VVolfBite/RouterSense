@@ -39,8 +39,10 @@ def test_package_source_only_mainline_excludes_legacy_and_runtime(tmp_path):
     assert "RS/src/rs/__init__.py" in listing
     assert not any(line.startswith("legacy/poc1/") for line in listing)
     assert not any(line.startswith("legacy/poc2/") for line in listing)
-    assert not any(line.startswith("outputs/") for line in listing if line != "RS/outputs/.gitkeep")
-    assert not any(line.startswith("artifacts/") for line in listing if line != "RS/artifacts/.gitkeep")
+    assert not any(line.startswith("RS/outputs/") or line == "RS/outputs" for line in listing)
+    assert not any(line.startswith("RS/artifacts/") or line == "RS/artifacts" for line in listing)
+    assert not any(line.startswith("RS/deploy/logs/") or line == "RS/deploy/logs" for line in listing)
+    assert not any(line.startswith("RS/archives/") or line == "RS/archives" for line in listing)
     assert "RS/README.md" in listing
 
 
