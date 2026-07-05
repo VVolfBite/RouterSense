@@ -12,6 +12,7 @@ from .phase_local.p0p1_reservation_order import RouterSenseP0P1ReservationPolicy
 from .phase_local.p0p1p2_hint_order import RouterSenseP0P1P2HintPolicy
 from .phase_local.trivial_reverse_bucket import TrivialReverseBucketPolicy
 from .multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy, UnsupportedOnlineMultiPhaseExecution
+from .multiphase.tier1 import TIER1_ALGORITHM_IDS, is_tier1_algorithm, resolve_tier1_policy
 from .reference.birkhoff_von_neumann_fluid import BirkhoffVonNeumannFluidReference
 from .reference.exact_small_instance import exact_result_to_logical_plan, solve_problem_exact
 
@@ -54,6 +55,8 @@ def resolve_policy(
     base_name, mode = _parse_policy_name(policy_name)
     if base_name == "native_passthrough":
         return NativePassthroughPolicy()
+    if is_tier1_algorithm(base_name):
+        return resolve_tier1_policy(base_name)
     if base_name == "phase_barrier_fifo":
         return PhaseBarrierFIFOPolicy(bucket_rows=bucket_rows, reported_policy_name=base_name)
     if base_name == "bucketed_fifo":
@@ -154,6 +157,7 @@ def supported_policies() -> tuple[str, ...]:
         "routersense_multiphase_lookahead:p0_only",
         "routersense_multiphase_lookahead:p0_p1",
         "routersense_multiphase_lookahead:p0_p1_p2",
+        *TIER1_ALGORITHM_IDS,
     )
 
 

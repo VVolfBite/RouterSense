@@ -251,12 +251,14 @@ def validate_logical_plan(
     plan,
     *,
     expected_flows: tuple | None = None,
+    mode: str | None = None,
 ) -> dict[str, object]:
     expected = {}
     for flow in expected_flows or ():
         key = (flow.phase, int(flow.src_rank), int(flow.dst_rank))
         expected[key] = expected.get(key, 0) + int(flow.byte_count)
     served: dict[tuple[str, int, int], int] = defaultdict(int)
+    served_by_origin: dict[str, int] = defaultdict(int)
     seen_ids: set[str] = set()
     errors: list[str] = []
     for wave in plan.waves:
@@ -268,13 +270,17 @@ def validate_logical_plan(
             if flow.flow_id in seen_ids:
                 errors.append(f"duplicate flow id {flow.flow_id}")
             seen_ids.add(flow.flow_id)
+            origin_flow_id = str(getattr(flow, "dependency_metadata", {}).get("origin_flow_id", flow.flow_id))
             if int(flow.src_rank) in used_src:
                 errors.append(f"wave {wave.wave_id} repeats source {flow.src_rank}")
             if int(flow.dst_rank) in used_dst:
                 errors.append(f"wave {wave.wave_id} repeats destination {flow.dst_rank}")
+            if mode == "runtime_lookahead" and str(flow.phase) in {"p2_next_dispatch", "p2_next_dispatch_forecast", "phase2"}:
+                errors.append(f"runtime_lookahead contains real phase-2 flow {flow.flow_id}")
             used_src.add(int(flow.src_rank))
             used_dst.add(int(flow.dst_rank))
             served[(flow.phase, int(flow.src_rank), int(flow.dst_rank))] += int(flow.byte_count)
+            served_by_origin[origin_flow_id] += int(flow.byte_count)
     if expected and served != expected:
         errors.append(f"coverage mismatch expected={expected} served={dict(served)}")
     return {
@@ -283,6 +289,7 @@ def validate_logical_plan(
         "coverage_verified": not errors,
         "matching_constraints_verified": not any("repeats" in error for error in errors),
         "served_amounts": {str(key): value for key, value in served.items()},
+        "served_by_origin": dict(sorted(served_by_origin.items())),
     }
 
 

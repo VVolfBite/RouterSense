@@ -102,6 +102,25 @@ These are offline logical schedulers plus prepared-plan emitters.
 
 They are not online joint executors in the frozen runtime. Online correctness must fail closed until a future `multiphase_pending_window` capability exists.
 
+### Recovered Tier 1 POC-line candidates
+
+The Tier 1 candidates are recovered offline logical schedulers for CPU-only trace and synthetic analysis. They implement `build_logical_plan(problem)` and emit `LogicalSchedulePlan`, but they are never online phase-local policies.
+
+- `B_birkhoff`: atomic phase-serial Birkhoff chunk-order control.
+- `B_birkhoff_wave`: fluid phase-serial Birkhoff wave control.
+- `U_gated_maxweight_matching`: fluid global ready-set exact maximum-weight matching.
+- `U_barrier_criticality_global_matching`: fluid global ready-set exact matching with stronger barrier-criticality scoring.
+- `U_gated_maxweight_matching_atomic`: atomic version of gated global ready-set exact matching.
+- `U_barrier_criticality_global_matching_atomic`: atomic version of barrier-criticality global ready-set exact matching.
+- `U_lagrangian`: recovered historical Lagrangian phase-order candidate using Birkhoff round ranks and dual-price updates.
+
+Tier 1 uses two explicit future-information modes:
+
+- `execution_window`: P0, P1, and P2 are real scheduled stages. This is oracle execution-window information.
+- `runtime_lookahead`: P0 and P1 are real scheduled stages. P2 is forecast pressure only and must not create executable phase-2 flow.
+
+Tier 1 comparisons must be grouped by service model. Atomic chunk schedules, fluid wave schedules, and the Lagrangian service model are not collapsed into a single performance ranking.
+
 ## Diagnostics
 
 Every logical plan emits `PolicyDiagnostics` and per-wave `WaveDiagnostics` with:

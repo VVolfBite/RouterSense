@@ -17,6 +17,28 @@
 | `routersense_multiphase_lookahead:p0_p1` | yes | no | yes | no | depends on P2 source |
 | `routersense_multiphase_lookahead:p0_p1_p2` | yes | yes | yes | no | depends on P2 source |
 
+## Tier 1 POC-line candidates
+
+These policies are recovered offline logical schedulers. They are not online phase-local policies and must not be resolved through `resolve_phase_policy`.
+
+| Algorithm ID | Service model | Future information modes | Online executor compatible | Evaluation eligible |
+|---|---|---|---:|---:|
+| `B_birkhoff` | atomic chunk | `none`, `oracle_execution_window` | no | depends on mode/source |
+| `B_birkhoff_wave` | fluid wave | `none`, `oracle_execution_window` | no | depends on mode/source |
+| `U_gated_maxweight_matching` | fluid wave | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_barrier_criticality_global_matching` | fluid wave | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_gated_maxweight_matching_atomic` | atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_barrier_criticality_global_matching_atomic` | atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_lagrangian` | Lagrangian atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+
+Tier 1 comparisons must be separated by service model:
+
+- `atomic_comparison`: `B_birkhoff`, `U_gated_maxweight_matching_atomic`, `U_barrier_criticality_global_matching_atomic`.
+- `fluid_comparison`: `B_birkhoff_wave`, `U_gated_maxweight_matching`, `U_barrier_criticality_global_matching`.
+- `other_service_model_comparison`: `U_lagrangian` unless a later study explicitly maps it into an atomic/fluid table.
+
+`runtime_lookahead` suppresses real P2 transport. P2 can only influence forecast pressure and diagnostics. `execution_window` treats P2 as a real third-stage communication phase and is marked as oracle execution-window information.
+
 ## P2 sources
 
 | Source | Oracle | Evaluation eligible | Notes |

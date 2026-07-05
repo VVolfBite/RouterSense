@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -23,12 +25,23 @@ def _emit(payload: dict[str, Any]) -> int:
 
 def _module_status(name: str) -> dict[str, Any]:
     try:
-        mod = importlib.import_module(name)
+        spec = importlib.util.find_spec(name)
+        if spec is None:
+            return {
+                "available": False,
+                "module": name,
+                "error": "ModuleNotFoundError",
+            }
+        package_name = name.split(".", 1)[0]
+        try:
+            version = importlib.metadata.version(package_name)
+        except Exception:
+            version = None
         return {
             "available": True,
             "module": name,
-            "file": getattr(mod, "__file__", None),
-            "version": getattr(mod, "__version__", None),
+            "file": spec.origin,
+            "version": version,
         }
     except Exception as exc:
         return {
