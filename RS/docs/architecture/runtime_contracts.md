@@ -84,5 +84,5 @@ Scheduling must not own:
 
 ### Remaining contract debt
 
-- `rs.scheduling.policy.agreement` still contains distributed runtime control logic
-- `experiments/offline` still uses historical POC entrypoints rather than direct formal runtime/scheduling composition
+- `experiments/offline` still exposes narrow study-specific entrypoints rather than a single config-driven runner
+- several oversized online runtime modules still need responsibility-based splitting before long-term freeze

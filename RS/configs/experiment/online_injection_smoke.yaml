@@ -1,0 +1,12 @@
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  config: configs/topology/torchrun_2node_2gpu.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  control_mode: sync_before_phase
+validation:
+  observer_mode: lightweight
+artifact:
+  output_dir: artifacts/megatron_ep/injection_smoke

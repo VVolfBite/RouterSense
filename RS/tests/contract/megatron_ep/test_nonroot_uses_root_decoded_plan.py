@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from rs.runtime.online.megatron_ep.control.agreement_wire import decode_plan_tensor, encode_plan_tensor
-from rs.scheduling.policy.joint_shadow import JointShadowP0P1Policy
+from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 
 from .helpers import make_context, make_observation
 

@@ -19,7 +19,7 @@ from rs.scheduling.observation_contracts import (
     RouterSensePlan,
     RuntimeObservation,
 )
-from rs.scheduling.policy.validation import summarize_plan_metrics
+from rs.scheduling.validation import summarize_plan_metrics
 from rs.scheduling.validation import stable_hash
 
 _PHASE_TO_CODE = {"P0": 0, "P1": 1}

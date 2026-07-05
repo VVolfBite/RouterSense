@@ -1,0 +1,18 @@
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  config: configs/topology/torchrun_2node_2gpu.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  schedule:
+    layer_selector: all
+    phase_selector: both
+execution:
+  mode: phase_sync_wave
+policy:
+  name: bucketed_fifo
+validation:
+  save_logits: true
+artifact:
+  output_dir: artifacts/megatron_ep/phase_executor

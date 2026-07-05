@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rs.scheduling.policy.native_passthrough_identity import NativePassthroughIdentityPolicy
+from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from .helpers import make_context, make_observation
 
 

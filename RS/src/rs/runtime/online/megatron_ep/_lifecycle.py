@@ -21,10 +21,10 @@ from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_grou
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
 from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext, build_phase_ready_context
-from rs.scheduling.policy.joint_shadow import JointShadowP0P1Policy
-from rs.scheduling.policy.native_order import NativeOrderPolicy
-from rs.scheduling.policy.native_passthrough_identity import NativePassthroughIdentityPolicy
-from rs.scheduling.policy.registry import resolve_phase_policy, supported_phase_policies
+from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
+from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
+from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
+from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
 from rs.runtime.online.megatron_ep._facade import SelectedLayerStop, UnsupportedSchedulerMode
 from rs.runtime.online.megatron_ep._observation import (
     PolicyRuntimeRecord,

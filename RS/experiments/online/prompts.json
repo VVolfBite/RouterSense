@@ -1,6 +1,0 @@
-{
-  "prompts": [
-    "Explain sparse expert routing in one paragraph.",
-    "Explain why distributed MoE needs ownership-aware dispatch."
-  ]
-}

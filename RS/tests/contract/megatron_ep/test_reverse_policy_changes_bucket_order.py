@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rs.scheduling.policy.registry import resolve_phase_policy
+from rs.scheduling.registry import resolve_phase_policy
 from .helpers import make_phase_context
 
 

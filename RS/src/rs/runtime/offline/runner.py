@@ -2,7 +2,7 @@
 
 This module intentionally re-exports the formal offline trace, traffic, and
 prediction helpers from ``rs.runtime.offline`` without routing back through the
-historical ``rs.evaluation`` or ``rs.trace`` namespaces.
+historical offline compatibility namespaces.
 """
 
 from __future__ import annotations

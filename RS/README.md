@@ -8,14 +8,11 @@
 - `src/rs/scheduling/`: formal scheduling ABI and policy surface.
 - `src/rs/runtime/offline/`: formal offline trace, traffic, prediction, and runner surface.
 - `src/rs/runtime/online/megatron_ep/`: formal online Megatron EP runtime surface.
-- `src/rs/legacy/`: deprecated compatibility shims and legacy metadata.
 - `experiments/offline/`: formal offline experiment entrypoints.
 - `experiments/online/`: formal online experiment entrypoints.
-- `experiments/poc_line1/`: retained historical offline study entrypoints.
-- `experiments/distributed/`: retained historical bring-up scripts for legacy paths.
 - `deploy/`: remote minimal runtime environment and cluster templates.
 - `scripts/`: deployment, verification, plotting, and maintenance helpers.
-- `configs/`: project-level model, topology, placement, workload, and scheduler configuration.
+- `configs/`: model, topology, workload, and experiment configuration.
 - `docs/`: architecture, handoff, experiment, and operations documentation.
 - `archive/`: small milestone manifests and fingerprints only.
 - `artifacts/`: raw run outputs, not tracked by Git.
@@ -62,20 +59,6 @@ The formal scheduling path is now:
 src/rs/scheduling/
 ```
 
-Round-1 cleanup keeps the already-validated implementations in place and exposes
-them under these new package paths through compatibility wrappers. This avoids
-algorithm or executor behavior changes while letting future work depend on a
-single formal import surface.
-
-## Legacy Boundary
-
-The following code remains in-tree only as historical reference and must not be
-used as the formal runtime path:
-
-- `src/rs/online/olmoe_ep/`
-- `src/rs/runtime/distributed_ep/`
-- `experiments/distributed/`
-- `experiments/online/bench_native_ep.py`
-- `experiments/online/bench_scheduled_ep.py`
-
-See `legacy/hf_olmoe_ep_harness/README.md` for the policy boundary.
+The formal mainline now routes all supported runtime, offline, and policy work
+through these packages. Historical material is parked under `legacy/` and is
+excluded from the default validation path.

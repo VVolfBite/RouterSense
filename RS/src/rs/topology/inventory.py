@@ -132,7 +132,7 @@ def _render_torchrun_command(
         f"'{ ' '.join(env) } torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} "
         f"--node_rank={node_rank} --rdzv-backend=c10d --rdzv-id={rendezvous_id} "
         f"--rdzv-endpoint={master_addr}:{master_port} "
-        "experiments/distributed/future_multinode_smoke.py --dry-run'"
+        "experiments.online formal dry-run entrypoint'"
     )
 
 

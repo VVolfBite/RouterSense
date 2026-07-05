@@ -1,0 +1,8 @@
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  precision: bf16
+artifact:
+  output_dir: artifacts/poc_line1/full_sequence_trace

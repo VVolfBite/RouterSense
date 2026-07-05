@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from rs.scheduling.policy.bucketed_fifo import BucketedFIFOPolicy
-from rs.scheduling.policy.registry import resolve_phase_policy
-from rs.scheduling.policy.trivial_reverse_bucket import TrivialReverseBucketPolicy
+from rs.scheduling.phase_local.fifo import BucketedFIFOPolicy
+from rs.scheduling.phase_local.trivial_reverse_bucket import TrivialReverseBucketPolicy
+from rs.scheduling.registry import resolve_phase_policy
 
 
 def test_policy_registry_resolves_named_policy() -> None:

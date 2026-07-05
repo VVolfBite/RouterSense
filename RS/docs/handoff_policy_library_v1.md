@@ -41,8 +41,8 @@ PhaseReadyContext
 
 后续禁止改动以下语义，除非明确重开 runtime 底座：
 
-- `native_runtime.py` 中的 hook 语义
-- `integrations/megatron_ep/routersense/phase/contracts.py` 中的 `TransferLayout` 语义
+- `src/rs/runtime/online/megatron_ep` 中的 hook 语义
+- `src/rs/runtime/online/megatron_ep/phase/contracts.py` 中的 `TransferLayout` 语义
 - `MegatronPhaseTransportAdapter`
 - `sync_wave_executor`
 - `P0` `hidden_states + routing_probs` bundle atomicity
@@ -50,7 +50,7 @@ PhaseReadyContext
 
 ## D. 允许后续改动的位置
 
-- `integrations/megatron_ep/routersense/policy/`
+- `src/rs/scheduling/phase_local/`
 - policy registry
 - policy diagnostics
 - synthetic policy cases
@@ -70,17 +70,17 @@ PhaseReadyContext
 完整 unit test：
 
 ```bash
-PYTHONPATH=. python -m pytest -q integrations/megatron_ep/tests
+PYTHONPATH=src pytest -q
 ```
 
 source archive self-check：
 
 ```bash
-bash tools/archive/package_source_only.sh --scope mainline <source-archive>
+bash scripts/maintenance/archive/package_source_only.sh --scope mainline <source-archive>
 mkdir -p /tmp/routersense-policy-library-archive-check
 tar -xzf <source-archive> -C /tmp/routersense-policy-library-archive-check
 cd /tmp/routersense-policy-library-archive-check/RS
-PYTHONPATH=. python -m pytest -q integrations/megatron_ep/tests
+PYTHONPATH=src pytest -q
 ```
 
 已有 real-GPU policy validation artifact：
@@ -97,7 +97,7 @@ artifacts/megatron_ep/phase_executor/
 后续 `EP=4/8` 评估入口：
 
 ```text
-integrations/megatron_ep/exp_phase_executor.py
+experiments/online/run_policy_correctness.py
 ```
 
 建议只在现有 ABI 上增加 policy，不要再改 executor / adapter。
@@ -117,7 +117,7 @@ Results archive：
 Archive self-check：
 
 - unpack root: `/tmp/routersense-policy-library-archive-check/RS`
-- command: `PYTHONPATH=. python -m pytest -q integrations/megatron_ep/tests`
+- command: `PYTHONPATH=src pytest -q`
 - result: `72 passed in 27.15s`
 
 ## Commit-Snapshot Notes

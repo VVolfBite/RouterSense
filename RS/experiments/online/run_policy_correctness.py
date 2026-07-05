@@ -5,14 +5,13 @@ import argparse
 import hashlib
 import os
 import random
-import sys
 from pathlib import Path
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from experiments._bootstrap import ensure_src_on_path
+
+ROOT = ensure_src_on_path()
 
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
@@ -29,9 +28,9 @@ from rs.runtime.online.megatron_ep.host import (
 from rs.runtime.online.megatron_ep._facade import SelectedLayerStop
 from rs.runtime.online.megatron_ep.contracts import NativeEPSummary, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.trace_writer import write_json
-from rs.scheduling.policy.registry import resolve_phase_policy
-from experiments.online._verify_env import main as verify_env_main
-from experiments.online._phase_executor_support import (
+from rs.scheduling.registry import resolve_phase_policy
+from experiments.online.support.environment_validation import main as verify_env_main
+from experiments.online.support.phase_executor_artifacts import (
     effective_policy_name as resolve_effective_policy_name,
     failure_report,
     local_expert_ids as collect_local_expert_ids,

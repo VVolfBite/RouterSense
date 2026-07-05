@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from rs.scheduling.policy.bucketed_fifo import BucketedFIFOPolicy
+from rs.scheduling.phase_local.fifo import BucketedFIFOPolicy
 from rs.runtime.online.megatron_ep.phase import build_phase_ready_context
 
 

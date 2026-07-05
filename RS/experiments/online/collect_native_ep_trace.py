@@ -12,9 +12,9 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from experiments._bootstrap import ensure_src_on_path
+
+ROOT = ensure_src_on_path()
 
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
@@ -33,7 +33,7 @@ from rs.runtime.online.megatron_ep.host import (
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.trace_writer import write_json, write_jsonl
-from experiments.online._verify_env import main as verify_env_main
+from experiments.online.support.environment_validation import main as verify_env_main
 
 
 def _result_exit_code(payload: dict[str, object]) -> int:
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ep-size", type=int, required=True)
     parser.add_argument("--dispatcher", type=str, default="alltoall")
     parser.add_argument("--precision", type=str, default="bf16")
-    parser.add_argument("--prompt-file", type=str, default=str(Path(__file__).resolve().parent / "prompts.json"))
+    parser.add_argument("--prompt-file", type=str, default=str(ROOT / "configs" / "workload" / "smoke_prompts.json"))
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--run-id", type=str, default="native-ep-trace")
     parser.add_argument("--backend", type=str, default="nccl")

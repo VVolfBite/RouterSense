@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rs.scheduling.policy.validation import build_remote_flows
+from rs.scheduling.validation import build_remote_flows
 
 from .helpers import make_observation
 

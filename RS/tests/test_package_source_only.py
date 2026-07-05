@@ -64,12 +64,17 @@ def test_package_source_only_full_includes_legacy(tmp_path):
         check=True,
     )
     listing = subprocess.check_output(["tar", "-tzf", str(archive)], text=True).splitlines()
+    if not (root / "RS" / "legacy").exists():
+        assert not any(line.startswith("RS/legacy/") for line in listing)
+        return
     assert "RS/legacy/historical_poc/README.md" in listing
     assert any(line.startswith("RS/legacy/historical_poc/") for line in listing)
 
 
 def test_verify_source_archive_matches_head_mainline(tmp_path):
     root = Path(__file__).resolve().parents[2]
+    if not (root / "RS" / ".git").exists():
+        pytest.skip("repository provenance check requires a Git checkout")
     archive = tmp_path / "mainline.tar.gz"
     subprocess.run(
         _script_command(

@@ -12,10 +12,14 @@ FORBIDDEN = [
 
 
 def test_no_legacy_runtime_imports() -> None:
-    root = Path("integrations/megatron_ep")
-    for path in root.rglob("*.py"):
-        if path.name == "test_no_legacy_runtime_imports.py":
-            continue
-        text = path.read_text(encoding="utf-8")
-        for needle in FORBIDDEN:
-            assert needle not in text, f"{needle} found in {path}"
+    roots = [
+        Path("src/rs/runtime/online/megatron_ep"),
+        Path("experiments/online"),
+    ]
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if path.name == "test_no_legacy_runtime_imports.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            for needle in FORBIDDEN:
+                assert needle not in text, f"{needle} found in {path}"

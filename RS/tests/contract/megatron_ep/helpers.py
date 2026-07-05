@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from rs.runtime.online.megatron_ep.contracts import PolicyContext, RankTopologyRecord, RuntimeObservation
 from rs.runtime.online.megatron_ep.phase import FutureDemandHint, PhaseReadyContext, build_phase_ready_context
-from rs.scheduling.policy.validation import stable_hash
+from rs.scheduling.validation import stable_hash
 
 
 def make_observation(

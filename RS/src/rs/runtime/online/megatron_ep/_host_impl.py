@@ -16,7 +16,7 @@ import torch.distributed as dist
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
-from rs.scheduling.policy.registry import supported_phase_policies
+from rs.scheduling.registry import supported_phase_policies
 from rs.runtime.online.megatron_ep._facade import RouterSenseDispatcherFacade
 from rs.runtime.online.megatron_ep._lifecycle import RouterSenseInjectionRuntime
 

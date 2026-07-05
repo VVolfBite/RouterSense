@@ -116,7 +116,7 @@ Key rules already enforced:
 Runnable now:
 
 1. `experiments/offline/collect_router_trace.py`
-2. `experiments/offline/analyze_cross_layer_prediction.py`
+2. `experiments/offline/analyze_next_layer_traffic_predictability.py`
 3. `legacy/historical_poc/experiments_legacy/exp_trace_replay.py`
 4. `experiments/online/collect_native_ep_trace.py`
 

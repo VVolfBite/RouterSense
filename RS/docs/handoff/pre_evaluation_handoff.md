@@ -12,7 +12,7 @@ Both online runtime and formal offline entrypoints are cut over to the canonical
 - default `PYTHONPATH=src pytest -q` now runs only formal non-legacy CPU coverage
 - source archive packaging self-check passes for the mainline scope
 - online experiment wrappers under `experiments/online` are callable with `PYTHONPATH=src:.`
-- `integrations/`, `experiments/poc_line1/`, `experiments/distributed/`, `analysis/`, and `tools/archive/` have been removed from the formal tree
+- historical duplicate trees have been removed from the formal tree and parked outside the default validation path
 - historical offline experiments now live under `legacy/historical_poc/experiments_offline`
 - historical `src/rs/{evaluation,scheduler,trace,legacy}` trees have been moved under `legacy/historical_poc/src_rs_legacy`
 - tracked local/current deploy inventories have been removed from Git and replaced by example files plus ignore rules

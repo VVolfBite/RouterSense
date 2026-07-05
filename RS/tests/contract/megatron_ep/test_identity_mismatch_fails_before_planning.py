@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rs.scheduling.policy.validation import validate_global_observations
+from rs.scheduling.validation import validate_global_observations
 
 from .helpers import make_context, make_observation
 

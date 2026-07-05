@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
-from rs.scheduling.policy.joint_shadow import JointShadowP0P1Policy
-from rs.scheduling.policy.native_order import NativeOrderPolicy
-from rs.scheduling.policy.native_passthrough_identity import NativePassthroughIdentityPolicy
-from rs.scheduling.policy.registry import resolve_phase_policy, supported_phase_policies
+from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
+from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
+from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
+from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
 
 
 class UnsupportedSchedulerMode(ValueError):
