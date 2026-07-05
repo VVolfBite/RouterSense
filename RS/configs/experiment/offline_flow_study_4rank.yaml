@@ -1,0 +1,33 @@
+run:
+  kind: offline_flow_study
+  name: offline-flow-study-4rank
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: python
+  ep:
+    size: 4
+workload:
+  trace_artifact_dir: artifacts/offline/trace/offline-trace-olmoe
+runtime:
+  precision: bf16
+  scheduling_mode: runtime_lookahead
+  expert_compute_delay: 0.0
+policy:
+  name: disabled
+  prediction_source: perfect_trace
+  policies:
+    - global_ready_set
+    - greedy
+    - birkhoff
+    - oracle_guided_reference
+execution:
+  mode: native_passthrough
+observation:
+  profile: minimal
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+artifact:
+  output_root: artifacts/offline/flow_study

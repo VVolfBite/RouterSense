@@ -1,6 +1,0 @@
-workload:
-  trace_jsonl: artifacts/poc_line1/full_sequence_trace/trace.jsonl
-runtime:
-  placement: round_robin
-artifact:
-  output_dir: artifacts/poc_line1/cross_layer_report

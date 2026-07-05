@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from rs.runtime.online.megatron_ep.execution.audit import build_execution_audit
+
+
+def _plan() -> dict[str, object]:
+    return {
+        "policy_name": "trivial_reverse_bucket",
+        "plan_hash": "plan-1",
+        "transport_mutation": True,
+        "waves": [
+            {
+                "wave_id": 0,
+                "bucket_tasks": [
+                    {"task_id": "a", "row_count": 4, "byte_count": 16},
+                    {"task_id": "b", "row_count": 4, "byte_count": 16},
+                ],
+            }
+        ],
+    }
+
+
+def test_execution_audit_detects_missing_task() -> None:
+    audit = build_execution_audit(
+        plan=_plan(),
+        transport_events=[
+            {"wave_id": 0, "task_id": "a", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+        ],
+        phase="P1",
+        layer_id="0",
+        policy_enabled=True,
+    )
+    assert audit.status == "failed"
+    assert audit.missing_tasks == ("b",)
+
+
+def test_execution_audit_detects_order_mismatch() -> None:
+    audit = build_execution_audit(
+        plan=_plan(),
+        transport_events=[
+            {"wave_id": 0, "task_id": "b", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            {"wave_id": 0, "task_id": "a", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+        ],
+        phase="P1",
+        layer_id="0",
+        policy_enabled=True,
+    )
+    assert audit.status == "failed"
+    assert audit.order_mismatches
+
+
+def test_execution_audit_accepts_valid_reverse_plan() -> None:
+    plan = {
+        "policy_name": "trivial_reverse_bucket",
+        "plan_hash": "plan-1",
+        "transport_mutation": True,
+        "waves": [
+            {"wave_id": 0, "bucket_tasks": [{"task_id": "b", "row_count": 4, "byte_count": 16}]},
+            {"wave_id": 1, "bucket_tasks": [{"task_id": "a", "row_count": 4, "byte_count": 16}]},
+        ],
+    }
+    audit = build_execution_audit(
+        plan=plan,
+        transport_events=[
+            {"wave_id": 0, "task_id": "b", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            {"wave_id": 1, "task_id": "a", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+        ],
+        phase="P1",
+        layer_id="0",
+        policy_enabled=True,
+    )
+    assert audit.status == "passed"
+
+
+def test_execution_audit_preserves_p0_bundle_atomicity() -> None:
+    plan = {
+        "policy_name": "bucketed_fifo",
+        "plan_hash": "plan-1",
+        "transport_mutation": True,
+        "waves": [{"wave_id": 0, "bucket_tasks": [{"task_id": "a", "row_count": 4, "byte_count": 32}]}],
+    }
+    audit = build_execution_audit(
+        plan=plan,
+        transport_events=[
+            {"wave_id": 0, "task_id": "a", "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            {"wave_id": 0, "task_id": "a", "row_count": 4, "byte_count": 16, "tensor_role": "routing_probs"},
+        ],
+        phase="P0",
+        layer_id="0",
+        policy_enabled=True,
+    )
+    assert audit.status == "passed"
+    assert audit.p0_bundle_atomicity_preserved is True

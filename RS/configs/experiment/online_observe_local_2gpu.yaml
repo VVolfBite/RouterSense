@@ -1,0 +1,28 @@
+run:
+  kind: online_observe
+  name: online-observe-local-2gpu
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  config: configs/topology/local_2gpu.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+  control_mode: none
+policy:
+  name: disabled
+execution:
+  mode: native_passthrough
+observation:
+  profile: execution
+  capture:
+    enabled: false
+    layer_selector: ""
+    phase_selector: ""
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+artifact:
+  output_root: artifacts/megatron_ep/native_observe

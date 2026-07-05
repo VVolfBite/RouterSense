@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
+"""Formal native Megatron EP observation entrypoint."""
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import os
 import random
-import sys
 import traceback
 from pathlib import Path
 
 import torch
-from transformers import AutoTokenizer
 
 from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
+from rs.core.artifact import write_json, write_jsonl
+from rs.core.experiment_config import RunConfig, load_run_config
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
     attach_dispatch_observer,
@@ -28,62 +31,60 @@ from rs.runtime.online.megatron_ep.host import (
     stage_barrier,
     summarize_observer_rows,
     summarize_rank_environment,
-    validate_observer_mode,
 )
-from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
-from rs.runtime.online.megatron_ep.trace_writer import write_json, write_jsonl
+
 from experiments.online.support.environment_validation import main as verify_env_main
 
 
-def _result_exit_code(payload: dict[str, object]) -> int:
-    execution_mode = str(payload.get("execution_mode", ""))
-    correctness_status = str(payload.get("correctness_status", ""))
-    if execution_mode in {"online_ws2_route_partition_only", "online_ws2_hidden_dispatch_only"}:
-        return 0 if correctness_status == "metadata_passed" else 2
-    if execution_mode == "online_ws2_native_ep_moe_layer_harness":
-        return 0 if correctness_status in {"passed", "skipped_no_remote_route"} else 2
-    return 0 if payload.get("numerical_correctness_pass") is True else 2
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--override", action="append", default=[])
+    parser.add_argument("--dry-run", action="store_true", default=False)
+    return parser.parse_args(argv)
+
+
+def _resolve_model_path(config: RunConfig) -> str:
+    return config.model.local_path or config.model.model_id
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--ep-size", type=int, required=True)
-    parser.add_argument("--dispatcher", type=str, default="alltoall")
-    parser.add_argument("--precision", type=str, default="bf16")
-    parser.add_argument("--prompt-file", type=str, default=str(ROOT / "configs" / "workload" / "smoke_prompts.json"))
-    parser.add_argument("--output-dir", type=str, required=True)
-    parser.add_argument("--run-id", type=str, default="native-ep-trace")
-    parser.add_argument("--backend", type=str, default="nccl")
-    parser.add_argument("--trust-remote-code", action="store_true", default=False)
-    parser.add_argument("--observer-mode", type=str, default="lightweight")
-    parser.add_argument("--scheduler-mode", type=str, default="disabled")
-    parser.add_argument("--future-hint-mode", type=str, default="none")
-    parser.add_argument("--control-mode", type=str, default="default_continue")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args(argv)
+    args = _parse_args(argv)
+    config = load_run_config(
+        config_path=args.config,
+        overrides=list(args.override),
+        run_id=args.run_id,
+        output_dir=args.output_dir,
+    )
+    if args.dry_run:
+        print(config.to_dict())
+        return 0
 
-    observer_mode = validate_observer_mode(args.observer_mode)
-    if args.backend != "nccl":
-        run_dir = Path(args.output_dir) / args.run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        write_json(
-            run_dir / "summary.json",
-            {
-                "pipeline": "host_runtime_native_ep",
-                "host_runtime": "megatron_core",
-                "status": "blocked_environment",
-                "reason": "ws2_native_ep_requires_nccl",
-                "future_hint_mode": "none",
-                "facade_mode": "not_started",
-            },
-        )
-        return 2
-
-    run_dir = Path(args.output_dir) / args.run_id
+    model_path = _resolve_model_path(config)
+    run_id = config.run.name
+    run_dir = Path(config.artifact.output_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    status = verify_env_main(["--model", args.model])
+    write_json(
+        run_dir / "run_manifest.json",
+        {
+            "run_id": run_id,
+            "run_kind": config.run.kind,
+            "policy_name": "disabled",
+            "transport_mutation": False,
+            "model_id": config.model.model_id,
+            "model_path": model_path,
+            "ep_size": config.topology.ep_size,
+            "precision": config.runtime.precision,
+            "prompt_file": config.workload.prompts,
+            "observation_profile": config.observation.profile,
+            "source_config_path": config.source_config_path,
+        },
+    )
+
+    status = verify_env_main(["--model", model_path])
     if status != 0:
         write_json(
             run_dir / "summary.json",
@@ -92,8 +93,8 @@ def main(argv: list[str] | None = None) -> int:
                 "host_runtime": "megatron_core",
                 "status": "blocked_environment",
                 "reason": "verify_env_failed",
-                "future_hint_mode": "none",
-                "facade_mode": "not_started",
+                "transport_mutation": False,
+                "policy_name": "disabled",
             },
         )
         write_jsonl(run_dir / "trace.jsonl", [])
@@ -105,21 +106,24 @@ def main(argv: list[str] | None = None) -> int:
     observer = RouterSenseObserver()
     policy_runtime = None
     try:
-        ids = init_distributed(backend=args.backend, timeout_seconds=300)
+        ids = init_distributed(backend="nccl", timeout_seconds=300)
         rank = ids["rank"]
         world_size = ids["world_size"]
         local_rank = ids["local_rank"]
         torch.cuda.set_device(local_rank)
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+        random.seed(42)
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
 
-        prompts = load_prompts(args.prompt_file)
-        dtype = dtype_from_name(args.precision)
+        prompts = load_prompts(config.workload.prompts)
+        dtype = dtype_from_name(config.runtime.precision)
+        from transformers import AutoTokenizer
+        from megatron.bridge import AutoBridge
+
         tokenizer = AutoTokenizer.from_pretrained(
-            args.model,
-            trust_remote_code=args.trust_remote_code,
-            local_files_only=Path(args.model).exists(),
+            model_path,
+            trust_remote_code=config.model.trust_remote_code,
+            local_files_only=Path(model_path).exists(),
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -127,19 +131,13 @@ def main(argv: list[str] | None = None) -> int:
         tokens = encoded["input_ids"].to(device=f"cuda:{local_rank}")
         request_table_hash = hashlib.sha256(tokens.detach().cpu().numpy().tobytes()).hexdigest()
         position_ids = build_position_ids(tokens)
-        stage_barrier("tokenizer", ok=True, detail=f"batch={tokens.size(0)} seqlen={tokens.size(1)}")
 
-        from megatron.bridge import AutoBridge
-
-        bridge = AutoBridge.from_hf_pretrained(
-            args.model,
-            trust_remote_code=args.trust_remote_code,
-        )
+        bridge = AutoBridge.from_hf_pretrained(model_path, trust_remote_code=config.model.trust_remote_code)
         provider = bridge.to_megatron_provider(load_weights=True)
         provider.tensor_model_parallel_size = 1
         provider.pipeline_model_parallel_size = 1
-        provider.expert_model_parallel_size = args.ep_size
-        provider.moe_token_dispatcher_type = args.dispatcher
+        provider.expert_model_parallel_size = config.topology.ep_size
+        provider.moe_token_dispatcher_type = config.runtime.dispatcher
         provider.parallel_output = False
         provider.pipeline_dtype = dtype
         provider.params_dtype = dtype
@@ -150,35 +148,29 @@ def main(argv: list[str] | None = None) -> int:
         provider.bias_activation_fusion = False
         provider.tp_comm_overlap = False
         provider.finalize()
-        stage_barrier("checkpoint_conversion", ok=True, detail=f"dispatcher={provider.moe_token_dispatcher_type}")
-        models = provider.provide_distributed_model(
-            wrap_with_ddp=False,
-            use_cpu_initialization=True,
-        )
+        models = provider.provide_distributed_model(wrap_with_ddp=False, use_cpu_initialization=True)
         model = models[0].cuda(local_rank).eval()
-        if observer_mode == "lightweight":
-            attach_dispatch_observer(observer, rank=rank, local_rank=local_rank)(model)
-        stage_barrier("observer_install", ok=True, detail=observer_mode)
-        injection_config = RouterSenseInjectionConfig(
-            scheduler_mode=args.scheduler_mode,
-            future_hint_mode=args.future_hint_mode,
-            control_mode=args.control_mode,
-        )
-        if injection_config.scheduler_mode != "disabled":
+
+        attach_dispatch_observer(observer, rank=rank, local_rank=local_rank)(model)
+        if config.observation.profile in {"execution", "debug"}:
             policy_runtime = attach_dispatch_facade(
                 model=model,
-                config=injection_config,
+                config=RouterSenseInjectionConfig(
+                    scheduler_mode="disabled",
+                    execution_mode="native_passthrough",
+                    future_hint_mode="none",
+                    control_mode="default_continue",
+                ),
                 rank=rank,
                 local_rank=local_rank,
-                run_id=args.run_id,
-                model_revision=args.model,
+                run_id=run_id,
+                model_revision=model_path,
                 request_table_hash=request_table_hash,
                 hostname=summarize_rank_environment(rank, local_rank)["host"],
-                step_id="unknown",
-                microbatch_id="unknown",
-                observer=observer if observer_mode == "lightweight" else None,
+                step_id="forward-0",
+                microbatch_id="mb-0",
+                observer=observer,
             )
-        stage_barrier("facade_forward", ok=True, detail=injection_config.scheduler_mode)
         stage_barrier("model_load", ok=True, detail=type(model).__name__)
 
         with torch.inference_mode():
@@ -186,23 +178,20 @@ def main(argv: list[str] | None = None) -> int:
         stage_barrier("observer_forward", ok=isinstance(logits, torch.Tensor), detail=str(tuple(logits.shape)))
 
         rows = observer.export_rows()
-        policy_records = policy_runtime.export_records() if policy_runtime is not None else []
         observer_summary = summarize_observer_rows(rows, rank=rank)
         rank_summary = {
             **summarize_rank_environment(rank, local_rank),
-            "run_id": args.run_id,
+            "run_id": run_id,
             "pipeline": "host_runtime_native_ep",
             "host_runtime": "megatron_core",
-            "future_hint_mode": injection_config.future_hint_mode,
-            "control_mode": injection_config.control_mode,
-            "facade_mode": "no_op_native_passthrough" if injection_config.scheduler_mode != "disabled" else "not_installed",
-            "observer_mode": observer_mode,
-            "scheduler_mode": injection_config.scheduler_mode,
-            "model": args.model,
-            "dispatcher": args.dispatcher,
-            "precision": args.precision,
-            "seed": args.seed,
+            "control_mode": "none",
+            "policy_name": "disabled",
+            "execution_mode": "native_passthrough",
             "transport_mutation": False,
+            "observer_mode": config.observation.profile,
+            "model": model_path,
+            "dispatcher": config.runtime.dispatcher,
+            "precision": config.runtime.precision,
             "trace_row_count": len(rows),
             "output_checksum": float(logits.float().sum().item()),
             "remote_dispatch_rows": observer_summary["remote_dispatch_rows"],
@@ -211,51 +200,34 @@ def main(argv: list[str] | None = None) -> int:
             "local_combine_rows": observer_summary["local_combine_rows"],
             "observer_warning_count": observer_summary["observer_warning_count"],
             "observer_phase_counts": observer_summary["observer_phase_counts"],
-            "policy_records": policy_records,
         }
-        trace_path = run_dir / f"{args.run_id}-rank{rank}.jsonl"
-        metadata_path = run_dir / f"{args.run_id}-rank{rank}_metadata.json"
-        summary_path = run_dir / f"{args.run_id}-rank{rank}_summary.json"
-        write_jsonl(trace_path, rows)
-        write_json(metadata_path, rank_summary)
-        write_json(summary_path, rank_summary)
-
-        gathered = gather_rank_payloads(
-            {
-                "rank_summary": rank_summary,
-                "trace_path": str(trace_path),
-                "metadata_path": str(metadata_path),
-                "summary_path": str(summary_path),
-            }
-        )
+        write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
+        write_json(run_dir / f"rank{rank}_native_dispatch.json", rank_summary)
+        if policy_runtime is not None:
+            write_jsonl(run_dir / f"rank{rank}_phase_contexts.jsonl", policy_runtime.export_phase_contexts())
+            write_jsonl(run_dir / f"rank{rank}_transport_bundles.jsonl", policy_runtime.export_transport_bundles())
+        gathered = gather_rank_payloads(rank_summary)
         if rank == 0:
-            write_json(
-                run_dir / f"{args.run_id}-merged.json",
-                {
-                    "world_size": world_size,
-                    "backend": args.backend,
-                    "dispatcher": args.dispatcher,
-                    "pipeline": "host_runtime_native_ep",
-                    "host_runtime": "megatron_core",
-                    "future_hint_mode": injection_config.future_hint_mode,
-                    "control_mode": injection_config.control_mode,
-                    "facade_mode": "no_op_native_passthrough" if injection_config.scheduler_mode == "native_order" else "not_installed",
-                    "observer_mode": observer_mode,
-                    "scheduler_mode": injection_config.scheduler_mode,
-                    "rank_artifacts": gathered,
-                },
-            )
-        stage_barrier("artifact_flush", ok=True, detail=str(run_dir))
+            payload = {
+                "pipeline": "host_runtime_native_ep",
+                "host_runtime": "megatron_core",
+                "status": "ready",
+                "policy_name": "disabled",
+                "transport_mutation": False,
+                "remote_dispatch_exercised": any(int(item.get("remote_dispatch_rows", 0)) > 0 for item in gathered),
+                "remote_combine_exercised": any(int(item.get("remote_combine_rows", 0)) > 0 for item in gathered),
+                "rank_summaries": gathered,
+            }
+            write_json(run_dir / "summary.json", payload)
         return 0
     except Exception as exc:
         write_json(
-            run_dir / f"{args.run_id}-rank{rank}-error.json",
+            run_dir / "summary.json",
             {
-                "rank": rank,
-                "local_rank": local_rank,
-                "world_size": world_size,
-                "backend": args.backend,
-                "error": f"{type(exc).__name__}: {exc}",
+                "pipeline": "host_runtime_native_ep",
+                "host_runtime": "megatron_core",
+                "status": "runtime_failure",
+                "reason": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(),
             },
         )
@@ -266,6 +238,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     os.environ.setdefault("NCCL_DEBUG", "WARN")
-    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
-    os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
     raise SystemExit(main())

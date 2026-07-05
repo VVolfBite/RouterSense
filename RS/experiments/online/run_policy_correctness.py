@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
+"""Formal online policy-correctness entrypoint."""
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import os
 import random
+import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -13,6 +17,11 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
+from rs.core.artifact import write_json
+from rs.core.experiment_config import RunConfig, load_run_config
+from rs.runtime.online.megatron_ep._facade import SelectedLayerStop
+from rs.runtime.online.megatron_ep.contracts import NativeEPSummary, RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.execution.audit import build_execution_audit
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
     build_position_ids,
@@ -25,10 +34,8 @@ from rs.runtime.online.megatron_ep.host import (
     summarize_native_dispatchers,
     summarize_rank_environment,
 )
-from rs.runtime.online.megatron_ep._facade import SelectedLayerStop
-from rs.runtime.online.megatron_ep.contracts import NativeEPSummary, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.trace_writer import write_json
 from rs.scheduling.registry import resolve_phase_policy
+
 from experiments.online.support.environment_validation import main as verify_env_main
 from experiments.online.support.phase_executor_artifacts import (
     effective_policy_name as resolve_effective_policy_name,
@@ -40,75 +47,163 @@ from experiments.online.support.phase_executor_artifacts import (
     write_rank_artifacts,
 )
 
-# Compatibility aliases retained during the test-root migration.
 _failure_report = failure_report
-_effective_policy_name = resolve_effective_policy_name
-_local_expert_ids = collect_local_expert_ids
-_phase_context_stats = phase_context_stats
-_source_provenance = source_provenance
-_write_not_triggered = write_not_triggered
-_write_rank_artifacts = write_rank_artifacts
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--override", action="append", default=[])
+    parser.add_argument("--dry-run", action="store_true", default=False)
+    return parser.parse_args(argv)
+
+
+def _resolve_model_path(config: RunConfig) -> str:
+    return config.model.local_path or config.model.model_id
+
+
+def _build_injection_config(config: RunConfig) -> RouterSenseInjectionConfig:
+    capture = config.observation.capture
+    return RouterSenseInjectionConfig(
+        policy=config.policy.name,
+        scheduler_mode="disabled",
+        execution_mode=config.execution.mode,
+        future_hint_mode="none",
+        p2_hint_mode=config.policy.p2_hint_mode,
+        control_mode=config.runtime.control_mode,
+        bucket_rows=config.execution.bucket_rows,
+        p0_weight=config.policy.p0_weight,
+        p1_reservation_weight=config.policy.p1_reservation_weight,
+        p2_hint_weight=config.policy.p2_hint_weight,
+        p2_hint_artifact=config.policy.p2_hint_artifact,
+        schedule_layer_selector=config.execution.schedule.layer_selector,
+        schedule_phase_selector=config.execution.schedule.phase_selector,
+        capture_phase_tensors=bool(capture.enabled),
+        stop_after_selected_layer=bool(config.validation.stop_after_selected_layer),
+        executor_heartbeat_path=config.artifact.output_root,
+        executor_phase_timeout_sec=120,
+    )
+
+
+def _policy_capabilities(config: RunConfig) -> dict[str, Any] | None:
+    policy_name = resolve_effective_policy_name(config.policy.name, "disabled")
+    if not policy_name:
+        return None
+    return resolve_phase_policy(
+        policy_name=policy_name,
+        bucket_rows=config.execution.bucket_rows,
+        p0_weight=config.policy.p0_weight,
+        p1_reservation_weight=config.policy.p1_reservation_weight,
+        p2_hint_weight=config.policy.p2_hint_weight,
+        p2_hint_artifact=config.policy.p2_hint_artifact,
+    ).capabilities.to_dict()
+
+
+def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "run_kind": config.run.kind,
+        "policy_name": config.policy.name,
+        "execution_mode": config.execution.mode,
+        "control_mode": config.runtime.control_mode,
+        "observation_profile": config.observation.profile,
+        "model_id": config.model.model_id,
+        "model_path": model_path,
+        "precision": config.runtime.precision,
+        "ep_size": config.topology.ep_size,
+        "prompt_file": config.workload.prompts,
+        "bucket_rows": config.execution.bucket_rows,
+        "schedule_layer_selector": config.execution.schedule.layer_selector,
+        "schedule_phase_selector": config.execution.schedule.phase_selector,
+        "capture_layer_selector": config.observation.capture.layer_selector,
+        "capture_phase_selector": config.observation.capture.phase_selector,
+        "stop_after_selected_layer": config.validation.stop_after_selected_layer,
+        "save_logits": config.validation.save_logits,
+        "source_config_path": config.source_config_path,
+    }
+
+
+def _build_rank_audits(
+    *,
+    runtime: Any | None,
+    transport_results: list[dict[str, Any]],
+    policy_enabled: bool,
+) -> dict[str, Any]:
+    if runtime is None:
+        return {"status": "not_applicable", "audits": []}
+    plans = runtime.export_scheduled_phase_plans()
+    audits: list[dict[str, Any]] = []
+    for plan in plans:
+        layer_id = str(plan.get("plan_key", {}).get("layer_id", "unknown"))
+        phase = str(plan.get("phase", "unknown"))
+        plan_hash = str(plan.get("plan_hash", ""))
+        relevant_events = [
+            row
+            for row in transport_results
+            if str(row.get("layer_id", "")) == layer_id
+            and str(row.get("phase", "")) == phase
+            and str(row.get("plan_hash", "")) == plan_hash
+        ]
+        audits.append(
+            build_execution_audit(
+                plan=plan,
+                transport_events=relevant_events,
+                phase=phase,
+                layer_id=layer_id,
+                policy_enabled=policy_enabled,
+            ).to_dict()
+        )
+    status = "passed"
+    if any(item.get("status") == "failed" for item in audits):
+        status = "failed"
+    elif not audits:
+        status = "not_applicable"
+    return {"status": status, "audits": audits}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--ep-size", type=int, required=True)
-    parser.add_argument("--precision", type=str, default="fp16")
-    parser.add_argument("--dispatcher", type=str, default="alltoall")
-    parser.add_argument("--prompt-file", type=str, required=True)
-    parser.add_argument("--output-dir", type=str, required=True)
-    parser.add_argument("--run-id", type=str, default="phase-executor")
-    parser.add_argument("--backend", type=str, default="nccl")
-    parser.add_argument("--trust-remote-code", action="store_true", default=False)
-    parser.add_argument("--policy", type=str, default="")
-    parser.add_argument("--scheduler-mode", type=str, default="disabled")
-    parser.add_argument("--execution-mode", type=str, default="native_passthrough")
-    parser.add_argument("--control-mode", type=str, default="sync_before_phase")
-    parser.add_argument("--bucket-rows", type=int, default=0)
-    parser.add_argument("--p0-weight", type=float, default=1.0)
-    parser.add_argument("--p1-reservation-weight", type=float, default=1.0)
-    parser.add_argument("--p2-hint-weight", type=float, default=1.0)
-    parser.add_argument("--p2-hint-artifact", type=str, default="")
-    parser.add_argument("--schedule-layer-selector", type=str, default="all")
-    parser.add_argument("--schedule-phase-selector", type=str, default="both")
-    parser.add_argument("--capture-layer-selector", type=str, default="all")
-    parser.add_argument("--capture-phase-selector", type=str, default="both")
-    parser.add_argument("--capture-phase-tensors", action="store_true", default=False)
-    parser.add_argument("--stop-after-selected-layer", action="store_true", default=False)
-    parser.add_argument("--p2-hint-mode", type=str, default="none")
-    parser.add_argument("--executor-heartbeat-path", type=str, default="")
-    parser.add_argument("--executor-phase-timeout-sec", type=int, default=120)
-    parser.add_argument("--save-logits", action="store_true", default=False)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args(argv)
+    args = _parse_args(argv)
+    config = load_run_config(
+        config_path=args.config,
+        overrides=list(args.override),
+        run_id=args.run_id,
+        output_dir=args.output_dir,
+    )
+    if args.dry_run:
+        print(config.to_dict())
+        return 0
 
-    run_dir = Path(args.output_dir) / args.run_id
+    model_path = _resolve_model_path(config)
+    run_id = config.run.name
+    run_dir = Path(config.artifact.output_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    write_json(run_dir / "run_manifest.json", _build_run_manifest(config, run_id=run_id, model_path=model_path))
     write_json(run_dir / "source_provenance.json", source_provenance(str(Path(__file__).resolve())))
     (run_dir / "command.txt").write_text(" ".join(sys.argv), encoding="utf-8")
 
-    if args.backend != "nccl":
+    if config.topology.launcher.kind != "torchrun":
         payload = NativeEPSummary(
-            ep_size=int(args.ep_size),
-            dispatcher=str(args.dispatcher),
-            backend=str(args.backend),
+            ep_size=int(config.topology.ep_size),
+            dispatcher=str(config.runtime.dispatcher),
+            backend="nccl",
             status="blocked_environment",
-            reason="phase_executor_requires_nccl",
-            details={"execution_mode": args.execution_mode},
+            reason="online_policy_correctness_requires_torchrun",
+            details={"launcher": config.topology.launcher.kind},
         ).to_dict()
         write_json(run_dir / "summary.json", payload)
         return 2
 
-    status = verify_env_main(["--model", args.model])
+    status = verify_env_main(["--model", model_path])
     if status != 0:
         payload = NativeEPSummary(
-            ep_size=int(args.ep_size),
-            dispatcher=str(args.dispatcher),
-            backend=str(args.backend),
+            ep_size=int(config.topology.ep_size),
+            dispatcher=str(config.runtime.dispatcher),
+            backend="nccl",
             status="blocked_environment",
             reason="verify_env_failed",
-            details={"model": args.model},
+            details={"model": model_path},
         ).to_dict()
         write_json(run_dir / "summary.json", payload)
         return status
@@ -119,33 +214,28 @@ def main(argv: list[str] | None = None) -> int:
     runtime = None
     logits = None
     try:
-        ids = init_distributed(backend=args.backend, timeout_seconds=300)
+        ids = init_distributed(backend="nccl", timeout_seconds=300)
         rank = ids["rank"]
         world_size = ids["world_size"]
         local_rank = ids["local_rank"]
         torch.cuda.set_device(local_rank)
-        stdout_log = (run_dir / f"stdout-rank{rank}.log").open("w", encoding="utf-8")
-        stderr_log = (run_dir / f"stderr-rank{rank}.log").open("w", encoding="utf-8")
-        sys.stdout = stdout_log
-        sys.stderr = stderr_log
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+        random.seed(42)
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
 
-        stage_barrier("device_mapping", ok=torch.cuda.current_device() == local_rank, detail=f"device={torch.cuda.current_device()} local_rank={local_rank}")
-        stage_barrier("count_agreement", ok=world_size == args.ep_size, detail=f"world_size={world_size} ep_size={args.ep_size}")
+        stage_barrier("count_agreement", ok=world_size == config.topology.ep_size, detail=f"world_size={world_size} ep_size={config.topology.ep_size}")
+        dtype = dtype_from_name(config.runtime.precision)
+        if config.policy.p2_hint_artifact:
+            os.environ["ROUTERSENSE_P2_HINT_ARTIFACT"] = config.policy.p2_hint_artifact
+        prompts = load_prompts(config.workload.prompts)
 
-        dtype = dtype_from_name(args.precision)
-        if args.p2_hint_artifact:
-            os.environ["ROUTERSENSE_P2_HINT_ARTIFACT"] = args.p2_hint_artifact
-        prompts = load_prompts(args.prompt_file)
         from transformers import AutoTokenizer
         from megatron.bridge import AutoBridge
 
         tokenizer = AutoTokenizer.from_pretrained(
-            args.model,
-            trust_remote_code=args.trust_remote_code,
-            local_files_only=Path(args.model).exists(),
+            model_path,
+            trust_remote_code=config.model.trust_remote_code,
+            local_files_only=Path(model_path).exists(),
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -154,17 +244,13 @@ def main(argv: list[str] | None = None) -> int:
         position_ids = build_position_ids(tokens)
         attention_mask = None
         request_table_hash = hashlib.sha256(tokens.detach().cpu().numpy().tobytes()).hexdigest()
-        stage_barrier("tokenizer", ok=True, detail=f"batch={tokens.size(0)} seqlen={tokens.size(1)}")
 
-        bridge = AutoBridge.from_hf_pretrained(
-            args.model,
-            trust_remote_code=args.trust_remote_code,
-        )
+        bridge = AutoBridge.from_hf_pretrained(model_path, trust_remote_code=config.model.trust_remote_code)
         provider = bridge.to_megatron_provider(load_weights=True)
         provider.tensor_model_parallel_size = 1
         provider.pipeline_model_parallel_size = 1
-        provider.expert_model_parallel_size = args.ep_size
-        provider.moe_token_dispatcher_type = args.dispatcher
+        provider.expert_model_parallel_size = config.topology.ep_size
+        provider.moe_token_dispatcher_type = config.runtime.dispatcher
         provider.parallel_output = False
         provider.pipeline_dtype = dtype
         provider.params_dtype = dtype
@@ -175,57 +261,25 @@ def main(argv: list[str] | None = None) -> int:
         provider.bias_activation_fusion = False
         provider.tp_comm_overlap = False
         provider.finalize()
-        stage_barrier("checkpoint_conversion", ok=True, detail=f"dispatcher={provider.moe_token_dispatcher_type}")
-
         models = provider.provide_distributed_model(wrap_with_ddp=False, use_cpu_initialization=True)
         model = models[0].cuda(local_rank).eval()
-        effective_policy_name = resolve_effective_policy_name(args.policy, args.scheduler_mode)
-        policy_capabilities = (
-            resolve_phase_policy(
-                policy_name=effective_policy_name,
-                bucket_rows=args.bucket_rows,
-                p0_weight=args.p0_weight,
-                p1_reservation_weight=args.p1_reservation_weight,
-                p2_hint_weight=args.p2_hint_weight,
-                p2_hint_artifact=args.p2_hint_artifact,
-            ).capabilities.to_dict()
-            if effective_policy_name
-            else None
+
+        policy_name = resolve_effective_policy_name(config.policy.name, "disabled")
+        policy_capabilities = _policy_capabilities(config)
+        injection_config = _build_injection_config(config)
+        runtime = attach_dispatch_facade(
+            model=model,
+            config=injection_config,
+            rank=rank,
+            local_rank=local_rank,
+            run_id=run_id,
+            model_revision=model_path,
+            request_table_hash=request_table_hash,
+            hostname=summarize_rank_environment(rank, local_rank)["host"],
+            step_id="forward-0",
+            microbatch_id="mb-0",
+            observer=None,
         )
-        injection_config = RouterSenseInjectionConfig(
-            policy=effective_policy_name,
-            scheduler_mode=args.scheduler_mode,
-            execution_mode=args.execution_mode,
-            future_hint_mode="none",
-            p2_hint_mode=args.p2_hint_mode,
-            control_mode=args.control_mode,
-            bucket_rows=args.bucket_rows,
-            p0_weight=args.p0_weight,
-            p1_reservation_weight=args.p1_reservation_weight,
-            p2_hint_weight=args.p2_hint_weight,
-            p2_hint_artifact=args.p2_hint_artifact,
-            schedule_layer_selector=args.schedule_layer_selector,
-            schedule_phase_selector=args.schedule_phase_selector,
-            capture_phase_tensors=args.capture_phase_tensors,
-            stop_after_selected_layer=args.stop_after_selected_layer,
-            executor_heartbeat_path=args.executor_heartbeat_path or str(run_dir),
-            executor_phase_timeout_sec=args.executor_phase_timeout_sec,
-        )
-        if injection_config.scheduler_mode != "disabled" or injection_config.policy or injection_config.capture_phase_tensors:
-            runtime = attach_dispatch_facade(
-                model=model,
-                config=injection_config,
-                rank=rank,
-                local_rank=local_rank,
-                run_id=args.run_id,
-                model_revision=args.model,
-                request_table_hash=request_table_hash,
-                hostname=summarize_rank_environment(rank, local_rank)["host"],
-                step_id="forward-0",
-                microbatch_id="mb-0",
-                observer=None,
-            )
-        stage_barrier("model_load", ok=True, detail=type(model).__name__)
 
         partial_stop = False
         try:
@@ -234,28 +288,28 @@ def main(argv: list[str] | None = None) -> int:
         except SelectedLayerStop:
             partial_stop = True
             logits = None
-        stage_barrier("native_forward", ok=bool(partial_stop or isinstance(logits, torch.Tensor)), detail="partial-stop" if partial_stop else str(tuple(logits.shape)))
 
         native_dispatch_summary = summarize_native_dispatchers(model, rank=rank)
         local_expert_ids = collect_local_expert_ids(model)
-        transport_results = []
-        phase_context_rows: list[dict[str, Any]] = []
-        if runtime is not None:
-            adapter = getattr(runtime, "transport_adapter", None)
-            if adapter is not None:
-                transport_results = adapter.export_results()
-            else:
-                transport_results = runtime.export_transport_execution_results()
-            phase_context_rows = runtime.export_phase_contexts()
+        adapter = getattr(runtime, "transport_adapter", None)
+        transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
+        phase_context_rows = runtime.export_phase_contexts()
         phase_stats = phase_context_stats(phase_context_rows)
+        audit_payload = _build_rank_audits(
+            runtime=runtime,
+            transport_results=transport_results,
+            policy_enabled=bool(policy_name and injection_config.execution_mode == "phase_sync_wave"),
+        )
+
         rank_summary = {
             **summarize_rank_environment(rank, local_rank),
             "ep_group_ranks": list(range(world_size)),
-            "dispatcher_type": args.dispatcher,
+            "dispatcher_type": config.runtime.dispatcher,
             "local_expert_ids": local_expert_ids,
             "number_of_local_experts": len(local_expert_ids),
             "forward_completed": bool(logits is not None),
             "forward_partial_stop": partial_stop,
+            "logits_status": "not_applicable" if partial_stop else ("produced" if isinstance(logits, torch.Tensor) else "missing"),
             "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
             "output_shape": list(logits.shape) if isinstance(logits, torch.Tensor) else None,
             "remote_dispatch_rows": phase_stats["p0_remote_rows"],
@@ -263,10 +317,10 @@ def main(argv: list[str] | None = None) -> int:
             "local_dispatch_rows": native_dispatch_summary["local_dispatch_rows"],
             "local_combine_rows": native_dispatch_summary["local_combine_rows"],
             **phase_stats,
-            "policy_name": effective_policy_name or "disabled",
-            "policy_version": injection_config.policy_version if effective_policy_name else "",
+            "policy_name": policy_name or "disabled",
+            "policy_version": injection_config.policy_version if policy_name else "",
             "policy_capabilities": policy_capabilities,
-            "legacy_scheduler_mode": injection_config.scheduler_mode,
+            "legacy_scheduler_mode": "",
             "execution_mode": injection_config.execution_mode,
             "control_mode": injection_config.control_mode,
             "bucket_rows": injection_config.bucket_rows,
@@ -276,46 +330,40 @@ def main(argv: list[str] | None = None) -> int:
             "p2_hint_mode": injection_config.p2_hint_mode,
             "schedule_layer_selector": injection_config.schedule_layer_selector,
             "schedule_phase_selector": injection_config.schedule_phase_selector,
-            "seed": args.seed,
-            "precision": args.precision,
-            "transport_mutation": bool(
-                effective_policy_name
-                and injection_config.execution_mode == "phase_sync_wave"
-            ),
+            "precision": config.runtime.precision,
+            "transport_mutation": bool(policy_name and injection_config.execution_mode == "phase_sync_wave"),
             "dispatcher_rows": native_dispatch_summary["dispatcher_rows"],
             "transport_execution_count": len(transport_results),
+            "execution_audit_status": audit_payload["status"],
         }
         rank_summary = write_rank_artifacts(
             run_dir=run_dir,
-            run_id=args.run_id,
+            run_id=run_id,
             rank=rank,
             logits=logits,
             runtime=runtime,
             native_dispatch_summary=native_dispatch_summary,
             rank_summary=rank_summary,
-            save_logits=args.save_logits,
-            capture_layer_selector=args.capture_layer_selector,
-            capture_phase_selector=args.capture_phase_selector,
+            save_logits=config.validation.save_logits,
+            capture_layer_selector=config.observation.capture.layer_selector,
+            capture_phase_selector=config.observation.capture.phase_selector,
         )
+        write_json(run_dir / f"rank{rank}_execution_audit.json", audit_payload)
         gathered = gather_rank_payloads(rank_summary)
 
         if rank == 0:
             remote_dispatch_exercised = any(int(item.get("remote_dispatch_rows", 0)) > 0 for item in gathered)
             remote_combine_exercised = any(int(item.get("remote_combine_rows", 0)) > 0 for item in gathered)
-            transport_mutation = bool(
-                effective_policy_name
-                and injection_config.execution_mode == "phase_sync_wave"
-            )
+            transport_mutation = bool(policy_name and injection_config.execution_mode == "phase_sync_wave")
             details = {
-                "run_id": args.run_id,
-                "model": args.model,
-                "precision": args.precision,
-                "seed": args.seed,
+                "run_id": run_id,
+                "model": model_path,
+                "precision": config.runtime.precision,
                 "world_size": world_size,
-                "policy_name": effective_policy_name or "disabled",
-                "policy_version": injection_config.policy_version if effective_policy_name else "",
+                "policy_name": policy_name or "disabled",
+                "policy_version": injection_config.policy_version if policy_name else "",
                 "policy_capabilities": policy_capabilities,
-                "legacy_scheduler_mode": injection_config.scheduler_mode,
+                "legacy_scheduler_mode": "",
                 "execution_mode": injection_config.execution_mode,
                 "control_mode": injection_config.control_mode,
                 "bucket_rows": injection_config.bucket_rows,
@@ -327,38 +375,35 @@ def main(argv: list[str] | None = None) -> int:
                 "schedule_phase_selector": injection_config.schedule_phase_selector,
                 "transport_mutation": transport_mutation,
                 "rank_summaries": gathered,
+                "execution_audit_status": audit_payload["status"],
             }
-            if runtime is not None:
-                details["scheduled_phase_plans_path_hint"] = str(run_dir / "rank0_scheduled_phase_plans.jsonl")
             payload = NativeEPSummary(
-                ep_size=args.ep_size,
-                dispatcher=args.dispatcher,
-                backend=args.backend,
+                ep_size=config.topology.ep_size,
+                dispatcher=config.runtime.dispatcher,
+                backend="nccl",
                 forward_completed=all(bool(item.get("forward_completed") or item.get("forward_partial_stop")) for item in gathered),
                 remote_dispatch_exercised=remote_dispatch_exercised,
                 remote_combine_exercised=remote_combine_exercised,
-                status="ready",
-                reason=None,
+                status="ready" if audit_payload["status"] != "failed" else "execution_audit_failed",
+                reason=None if audit_payload["status"] != "failed" else "execution_audit_failed",
                 details=details,
             ).to_dict()
             write_json(run_dir / "summary.json", payload)
-            write_not_triggered(run_dir / "failure_report.json")
+            if audit_payload["status"] == "failed":
+                write_json(run_dir / "failure_report.json", {"status": "execution_audit_failed", "details": audit_payload})
+            else:
+                write_not_triggered(run_dir / "failure_report.json")
             write_not_triggered(run_dir / "watchdog_report.json")
         stage_barrier("artifact_flush", ok=True, detail=str(run_dir))
-        return 0
+        return 1 if audit_payload["status"] == "failed" else 0
     except Exception as exc:
-        failure = failure_report(
-            stage="phase_executor_runtime",
-            exc=exc,
-            rank=rank,
-            local_rank=local_rank,
-        )
+        failure = failure_report(stage="phase_executor_runtime", exc=exc, rank=rank, local_rank=local_rank)
         write_json(run_dir / "failure_report.json", failure)
         if rank == 0:
             payload = NativeEPSummary(
-                ep_size=args.ep_size,
-                dispatcher=args.dispatcher,
-                backend=args.backend,
+                ep_size=config.topology.ep_size,
+                dispatcher=config.runtime.dispatcher,
+                backend="nccl",
                 status="runtime_failure",
                 reason=f"{type(exc).__name__}: {exc}",
                 details=failure,
@@ -369,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if runtime is not None and hasattr(runtime, "original_all_to_all"):
                 import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
+
                 token_dispatcher_mod.all_to_all = runtime.original_all_to_all
         except Exception:
             pass

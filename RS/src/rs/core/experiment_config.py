@@ -1,0 +1,400 @@
+"""Typed experiment configuration for formal offline and online entrypoints."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+SUPPORTED_RUN_KINDS = {
+    "offline_trace",
+    "offline_flow_study",
+    "online_observe",
+    "online_policy_correctness",
+}
+
+SUPPORTED_OBSERVATION_PROFILES = {"minimal", "execution", "debug"}
+SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
+SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave"}
+
+
+@dataclass(frozen=True)
+class RunConfigSection:
+    kind: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    model_id: str
+    local_path: str = ""
+    precision: str = "bf16"
+    device_index: int = 0
+    max_new_tokens: int = 32
+    default_prompt: str = ""
+    trace_layer_path: str = "auto"
+    trust_remote_code: bool = False
+
+
+@dataclass(frozen=True)
+class TopologyLauncherConfig:
+    kind: str = "python"
+    nnodes: int = 1
+    nproc_per_node: int = 1
+    standalone: bool = False
+    master_port: int = 29500
+
+
+@dataclass(frozen=True)
+class TopologyConfig:
+    launcher: TopologyLauncherConfig
+    ep_size: int = 1
+    network_scope: str = "single_node"
+    interface_hint: str = ""
+
+
+@dataclass(frozen=True)
+class WorkloadConfig:
+    prompts: str = ""
+    trace_artifact_dir: str = ""
+    num_prompts: int | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeScheduleConfig:
+    layer_selector: str = "all"
+    phase_selector: str = "both"
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    precision: str = "bf16"
+    dispatcher: str = "alltoall"
+    control_mode: str = "none"
+    expert_compute_delay: float = 0.0
+    scheduling_mode: str = "runtime_lookahead"
+    schedule: RuntimeScheduleConfig = field(default_factory=RuntimeScheduleConfig)
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    name: str = "disabled"
+    p0_weight: float = 1.0
+    p1_reservation_weight: float = 1.0
+    p2_hint_weight: float = 0.0
+    p2_hint_mode: str = "none"
+    p2_hint_artifact: str = ""
+    prediction_source: str = "zero_hint"
+    policies: tuple[str, ...] = ()
+    reference_policies: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExecutionScheduleConfig:
+    layer_selector: str = "all"
+    phase_selector: str = "both"
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    mode: str = "native_passthrough"
+    bucket_rows: int = 0
+    schedule: ExecutionScheduleConfig = field(default_factory=ExecutionScheduleConfig)
+
+
+@dataclass(frozen=True)
+class CaptureConfig:
+    enabled: bool = False
+    layer_selector: str = ""
+    phase_selector: str = ""
+
+
+@dataclass(frozen=True)
+class ObservationConfig:
+    profile: str = "minimal"
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
+
+
+@dataclass(frozen=True)
+class ValidationConfig:
+    save_logits: bool = False
+    stop_after_selected_layer: bool = False
+    allow_debug_capture: bool = False
+
+
+@dataclass(frozen=True)
+class ArtifactConfig:
+    output_root: str
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    run: RunConfigSection
+    model: ModelConfig
+    topology: TopologyConfig
+    workload: WorkloadConfig
+    runtime: RuntimeConfig
+    policy: PolicyConfig
+    execution: ExecutionConfig
+    observation: ObservationConfig
+    validation: ValidationConfig
+    artifact: ArtifactConfig
+    source_config_path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def load_run_config(
+    *,
+    config_path: str | Path,
+    overrides: list[str] | None = None,
+    run_id: str | None = None,
+    output_dir: str | None = None,
+) -> RunConfig:
+    root = _resolve_repo_root()
+    config_path = (root / Path(config_path)).resolve() if not Path(config_path).is_absolute() else Path(config_path)
+    payload = _load_yaml(config_path)
+    payload = _resolve_nested_configs(payload, root)
+    for override in overrides or []:
+        _apply_override(payload, override)
+    if run_id:
+        payload.setdefault("run", {})["name"] = str(run_id)
+    if output_dir:
+        payload.setdefault("artifact", {})["output_root"] = str(output_dir)
+    config = _build_run_config(payload, source_config_path=str(config_path))
+    validate_run_config(config)
+    return config
+
+
+def validate_run_config(config: RunConfig) -> None:
+    if config.run.kind not in SUPPORTED_RUN_KINDS:
+        raise ValueError(f"unsupported run.kind {config.run.kind!r}")
+    if config.observation.profile not in SUPPORTED_OBSERVATION_PROFILES:
+        raise ValueError(f"unsupported observation.profile {config.observation.profile!r}")
+    if config.runtime.control_mode not in SUPPORTED_CONTROL_MODES:
+        raise ValueError(f"unsupported runtime.control_mode {config.runtime.control_mode!r}")
+    if config.execution.mode not in SUPPORTED_EXECUTION_MODES:
+        raise ValueError(f"unsupported execution.mode {config.execution.mode!r}")
+    if config.policy.p2_hint_mode == "none" and abs(float(config.policy.p2_hint_weight)) > 1e-9:
+        raise ValueError("p2_hint_weight must be 0 when p2_hint_mode=none")
+    if config.policy.p2_hint_mode == "deterministic_stub" and config.run.kind == "online_policy_correctness":
+        pass
+    if config.validation.stop_after_selected_layer and config.validation.save_logits:
+        raise ValueError("save_logits must be false when stop_after_selected_layer=true")
+    if config.observation.capture.enabled and config.observation.profile not in {"debug"} and not config.validation.allow_debug_capture:
+        raise ValueError("selected tensor capture requires observation.profile=debug or explicit allow_debug_capture")
+    if config.run.kind == "offline_trace":
+        if config.policy.name != "disabled":
+            raise ValueError("offline_trace does not accept online policy execution")
+        if config.topology.launcher.kind != "python":
+            raise ValueError("offline_trace must not use torchrun topology")
+    if config.run.kind == "offline_flow_study":
+        if config.topology.launcher.kind != "python":
+            raise ValueError("offline_flow_study must not use torchrun topology")
+        if config.execution.mode != "native_passthrough":
+            raise ValueError("offline_flow_study cannot use online execution mode")
+    if config.run.kind == "online_observe":
+        if config.policy.name != "disabled":
+            raise ValueError("online_observe requires policy.name=disabled")
+        if config.execution.mode != "native_passthrough":
+            raise ValueError("online_observe requires native_passthrough execution")
+    if config.run.kind == "online_policy_correctness":
+        if config.policy.name in {"", "disabled"}:
+            raise ValueError("online_policy_correctness requires a supported policy")
+        if config.execution.mode != "phase_sync_wave":
+            raise ValueError("online_policy_correctness requires phase_sync_wave execution")
+        if config.runtime.control_mode != "sync_before_phase":
+            raise ValueError("online_policy_correctness requires sync_before_phase control mode")
+    if config.policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
+        raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
+    _assert_no_credential_fields(config.to_dict())
+
+
+def resolve_entrypoint_module(run_kind: str) -> str:
+    mapping = {
+        "offline_trace": "experiments.offline.collect_router_trace",
+        "offline_flow_study": "experiments.offline.run_flow_schedule_study",
+        "online_observe": "experiments.online.collect_native_ep_trace",
+        "online_policy_correctness": "experiments.online.run_policy_correctness",
+    }
+    return mapping[run_kind]
+
+
+def build_launch_command(
+    *,
+    config: RunConfig,
+    config_path: str,
+    overrides: list[str] | None = None,
+    run_id: str | None = None,
+    output_dir: str | None = None,
+) -> list[str]:
+    module = resolve_entrypoint_module(config.run.kind)
+    extra = []
+    if run_id:
+        extra.extend(["--run-id", str(run_id)])
+    if output_dir:
+        extra.extend(["--output-dir", str(output_dir)])
+    for override in overrides or []:
+        extra.extend(["--override", override])
+    if config.run.kind.startswith("online_"):
+        launcher = config.topology.launcher
+        command = [
+            "torchrun",
+            f"--nnodes={launcher.nnodes}",
+            f"--nproc_per_node={launcher.nproc_per_node}",
+            f"--master_port={launcher.master_port}",
+        ]
+        if launcher.standalone:
+            command.append("--standalone")
+        command.extend(["-m", module, "--config", str(config_path), *extra])
+        return command
+    return ["python", "-m", module, "--config", str(config_path), *extra]
+
+
+def parse_override_value(raw: str) -> Any:
+    return yaml.safe_load(raw)
+
+
+def _resolve_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"config at {path} must decode to a mapping")
+    return payload
+
+
+def _resolve_nested_configs(payload: dict[str, Any], root: Path) -> dict[str, Any]:
+    resolved = dict(payload)
+    for section in ("model", "topology"):
+        section_payload = resolved.get(section, {})
+        if isinstance(section_payload, dict) and "config" in section_payload:
+            nested_path = root / str(section_payload["config"])
+            nested = _load_yaml(nested_path)
+            merged = dict(nested)
+            for key, value in section_payload.items():
+                if key != "config":
+                    merged[key] = value
+            resolved[section] = merged
+    return resolved
+
+
+def _apply_override(payload: dict[str, Any], override: str) -> None:
+    if "=" not in override:
+        raise ValueError(f"override must be key=value, got {override!r}")
+    dotted_key, raw_value = override.split("=", 1)
+    value = parse_override_value(raw_value)
+    target = payload
+    keys = dotted_key.split(".")
+    for key in keys[:-1]:
+        target = target.setdefault(key, {})
+        if not isinstance(target, dict):
+            raise ValueError(f"override path {dotted_key!r} collides with non-mapping field")
+    target[keys[-1]] = value
+
+
+def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> RunConfig:
+    run = payload.get("run", {})
+    model = payload.get("model", {})
+    topology = payload.get("topology", {})
+    workload = payload.get("workload", {})
+    runtime = payload.get("runtime", {})
+    policy = payload.get("policy", {})
+    execution = payload.get("execution", {})
+    observation = payload.get("observation", {})
+    validation = payload.get("validation", {})
+    artifact = payload.get("artifact", {})
+    topology_launcher = topology.get("launcher", {})
+    return RunConfig(
+        run=RunConfigSection(kind=str(run.get("kind", "")), name=str(run.get("name", ""))),
+        model=ModelConfig(
+            model_id=str(model.get("model_id", "")),
+            local_path=str(model.get("local_path", "")),
+            precision=str(model.get("precision", runtime.get("precision", "bf16"))),
+            device_index=int(model.get("device_index", 0)),
+            max_new_tokens=int(model.get("max_new_tokens", 32)),
+            default_prompt=str(model.get("default_prompt", "")),
+            trace_layer_path=str(model.get("trace_layer_path", "auto")),
+            trust_remote_code=bool(model.get("trust_remote_code", False)),
+        ),
+        topology=TopologyConfig(
+            launcher=TopologyLauncherConfig(
+                kind=str(topology_launcher.get("kind", "python")),
+                nnodes=int(topology_launcher.get("nnodes", 1)),
+                nproc_per_node=int(topology_launcher.get("nproc_per_node", 1)),
+                standalone=bool(topology_launcher.get("standalone", False)),
+                master_port=int(topology_launcher.get("master_port", 29500)),
+            ),
+            ep_size=int(topology.get("ep_size", topology.get("ep", {}).get("size", 1))),
+            network_scope=str(topology.get("network_scope", topology.get("network", {}).get("scope", "single_node"))),
+            interface_hint=str(topology.get("interface_hint", topology.get("network", {}).get("interface_hint", ""))),
+        ),
+        workload=WorkloadConfig(
+            prompts=str(workload.get("prompts", "")),
+            trace_artifact_dir=str(workload.get("trace_artifact_dir", "")),
+            num_prompts=None if workload.get("num_prompts") is None else int(workload.get("num_prompts")),
+        ),
+        runtime=RuntimeConfig(
+            precision=str(runtime.get("precision", model.get("precision", "bf16"))),
+            dispatcher=str(runtime.get("dispatcher", "alltoall")),
+            control_mode=str(runtime.get("control_mode", "none")),
+            expert_compute_delay=float(runtime.get("expert_compute_delay", 0.0)),
+            scheduling_mode=str(runtime.get("scheduling_mode", "runtime_lookahead")),
+            schedule=RuntimeScheduleConfig(
+                layer_selector=str(runtime.get("schedule", {}).get("layer_selector", "all")),
+                phase_selector=str(runtime.get("schedule", {}).get("phase_selector", "both")),
+            ),
+        ),
+        policy=PolicyConfig(
+            name=str(policy.get("name", "disabled")),
+            p0_weight=float(policy.get("p0_weight", 1.0)),
+            p1_reservation_weight=float(policy.get("p1_reservation_weight", 1.0)),
+            p2_hint_weight=float(policy.get("p2_hint_weight", 0.0)),
+            p2_hint_mode=str(policy.get("p2_hint_mode", "none")),
+            p2_hint_artifact=str(policy.get("p2_hint_artifact", "")),
+            prediction_source=str(policy.get("prediction_source", "zero_hint")),
+            policies=tuple(str(item) for item in policy.get("policies", []) or ()),
+            reference_policies=tuple(str(item) for item in policy.get("reference_policies", []) or ()),
+        ),
+        execution=ExecutionConfig(
+            mode=str(execution.get("mode", "native_passthrough")),
+            bucket_rows=int(execution.get("bucket_rows", 0)),
+            schedule=ExecutionScheduleConfig(
+                layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
+                phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),
+            ),
+        ),
+        observation=ObservationConfig(
+            profile=str(observation.get("profile", "minimal")),
+            capture=CaptureConfig(
+                enabled=bool(observation.get("capture", {}).get("enabled", False)),
+                layer_selector=str(observation.get("capture", {}).get("layer_selector", "")),
+                phase_selector=str(observation.get("capture", {}).get("phase_selector", "")),
+            ),
+        ),
+        validation=ValidationConfig(
+            save_logits=bool(validation.get("save_logits", False)),
+            stop_after_selected_layer=bool(validation.get("stop_after_selected_layer", False)),
+            allow_debug_capture=bool(validation.get("allow_debug_capture", False)),
+        ),
+        artifact=ArtifactConfig(output_root=str(artifact.get("output_root", artifact.get("output_dir", "")))),
+        source_config_path=source_config_path,
+    )
+
+
+def _assert_no_credential_fields(payload: Any, *, path: str = "") -> None:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            full = f"{path}.{key}" if path else str(key)
+            if str(key).lower() in {"password", "passwd", "token", "secret", "credential"}:
+                raise ValueError(f"credential-like field is not allowed in formal config: {full}")
+            _assert_no_credential_fields(value, path=full)
+    elif isinstance(payload, (list, tuple)):
+        for index, value in enumerate(payload):
+            _assert_no_credential_fields(value, path=f"{path}[{index}]")

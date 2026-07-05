@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Formal single-GPU router-trace collection entrypoint."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,105 +8,102 @@ import json
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
 from rs.core.artifact import collect_environment_snapshot, write_json
+from rs.core.experiment_config import RunConfig, load_run_config
 from rs.runtime import load_model_and_tokenizer
-import torch  # type: ignore
-
 from rs.runtime.offline.trace.olmoe import collect_full_sequence_trace, collect_moe_architecture_probe
 
 
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--override", action="append", default=[])
+    parser.add_argument("--dry-run", action="store_true", default=False)
+    return parser.parse_args(argv)
+
+
 def _load_prompt_entries(path: Path, limit: int | None) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            payload = json.loads(line)
-            entries.append(payload)
-            if limit is not None and len(entries) >= limit:
-                break
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict) and "prompts" in payload:
+        entries = [{"text": item} if isinstance(item, str) else dict(item) for item in payload["prompts"]]
+    else:
+        raise ValueError(f"unsupported prompt schema in {path}")
+    if limit is not None:
+        entries = entries[:limit]
     return entries
 
 
+def _resolve_model_path(config: RunConfig) -> str | None:
+    return config.model.local_path or None
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Collect a full-sequence OLMoE router trace for POC-line1.")
-    parser.add_argument("--model-id", type=str, default="allenai/OLMoE-1B-7B-0924-Instruct")
-    parser.add_argument("--model-path", type=str, default=None)
-    parser.add_argument("--text", type=str, default=None)
-    parser.add_argument("--prompts-path", type=str, default=None)
-    parser.add_argument("--num-prompts", type=int, default=None)
-    parser.add_argument("--request-id", type=str, default="req-0")
-    parser.add_argument("--sample-id", type=str, default="sample-0")
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=str(ROOT / "artifacts" / "poc_line1" / "full_sequence_trace"),
+    args = _parse_args(argv)
+    config = load_run_config(
+        config_path=args.config,
+        overrides=list(args.override),
+        run_id=args.run_id,
+        output_dir=args.output_dir,
     )
-    parser.add_argument("--precision", type=str, default="bf16")
-    parser.add_argument("--device-index", type=int, default=0)
-    args = parser.parse_args(argv)
+    if args.dry_run:
+        print(config.to_dict())
+        return 0
 
+    out = Path(config.artifact.output_root) / config.run.name
+    out.mkdir(parents=True, exist_ok=True)
     model, tokenizer, _, _, source = load_model_and_tokenizer(
-        model_id=args.model_id,
-        model_path=args.model_path,
-        precision=args.precision,
-        device_index=args.device_index,
+        model_id=config.model.model_id,
+        model_path=_resolve_model_path(config),
+        precision=config.runtime.precision,
+        device_index=config.model.device_index,
     )
-    if bool(args.text) == bool(args.prompts_path):
-        raise SystemExit("exactly one of --text or --prompts-path must be provided")
-
     architecture_probe = collect_moe_architecture_probe(model)
+    prompt_entries = _load_prompt_entries(Path(config.workload.prompts), config.workload.num_prompts)
 
     traces: list[dict[str, Any]] = []
-    if args.text is not None:
+    for index, entry in enumerate(prompt_entries):
+        text = str(entry["text"])
+        document_id = entry.get("document_id", index)
         traces.append(
             collect_full_sequence_trace(
                 model,
                 tokenizer,
-                args.text,
-                request_id=args.request_id,
-                sample_id=args.sample_id,
-                save_auxiliary_dir=Path(args.output_dir) / "auxiliary",
+                text,
+                request_id=f"{config.run.name}-req-{index}",
+                sample_id=f"sample-{document_id}",
+                save_auxiliary_dir=out / "auxiliary",
             )
         )
-    else:
-        prompt_entries = _load_prompt_entries(Path(args.prompts_path), args.num_prompts)
-        for index, entry in enumerate(prompt_entries):
-            text = str(entry["text"])
-            document_id = entry.get("document_id", index)
-            traces.append(
-                collect_full_sequence_trace(
-                    model,
-                    tokenizer,
-                    text,
-                    request_id=f"{args.request_id}-{index}",
-                    sample_id=f"prompt-{document_id}",
-                    save_auxiliary_dir=Path(args.output_dir) / "auxiliary",
-                )
-            )
 
-    out = Path(args.output_dir)
-    out.mkdir(parents=True, exist_ok=True)
     write_json(
-        out / "config.json",
+        out / "run_manifest.json",
         {
-            "model_id": args.model_id,
-            "model_path": args.model_path,
+            "run_id": config.run.name,
+            "run_kind": config.run.kind,
+            "model_family": "olmoe",
+            "model_revision": config.model.model_id,
             "model_source": source,
-            "precision": args.precision,
-            "request_id": args.request_id,
-            "sample_id": args.sample_id,
-            "prompts_path": args.prompts_path,
-            "num_prompts": args.num_prompts,
+            "precision": config.runtime.precision,
+            "device": f"cuda:{config.model.device_index}" if torch.cuda.is_available() else "cpu",
+            "workload_hash": config.workload.prompts,
+            "trace_schema_version": "v1",
+            "source_config_path": config.source_config_path,
         },
     )
+    write_json(out / "trace_schema.json", {"version": "v1", "record_type": "router_trace"})
     write_json(out / "environment.json", collect_environment_snapshot())
     write_json(out / "architecture_probe.json", architecture_probe)
+
     merged_hidden_states: dict[str, dict[int, torch.Tensor]] = {}
     merged_gate_weights: dict[str, dict[int, torch.Tensor]] = {}
     with (out / "trace.jsonl").open("w", encoding="utf-8") as handle:
@@ -128,7 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         "gate_weights_path": str(out / "gate_weights.pt"),
     }
     write_json(out / "summary.json", combined_summary)
-    print(json.dumps(combined_summary, indent=2))
     return 0
 
 
