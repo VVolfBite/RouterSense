@@ -17,10 +17,10 @@ from rs.runtime.online.megatron_ep.contracts import (
     RouterSensePlan,
     RuntimeObservation,
 )
+from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
 from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext, build_phase_ready_context
-from rs.scheduling.policy.agreement import compute_ep_group_hash, run_policy_agreement
 from rs.scheduling.policy.joint_shadow import JointShadowP0P1Policy
 from rs.scheduling.policy.native_order import NativeOrderPolicy
 from rs.scheduling.policy.native_passthrough_identity import NativePassthroughIdentityPolicy

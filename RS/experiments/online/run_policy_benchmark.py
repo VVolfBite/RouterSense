@@ -1,13 +1,13 @@
 """Formal online policy-benchmark entrypoint.
 
-Round-1 keeps benchmark execution mapped to the frozen phase executor. Benchmark
-config and semantics can be specialized in later rounds without changing the
-formal entrypoint name.
+The pre-evaluation tree keeps benchmark execution mapped to the same frozen
+phase-executor implementation as policy-correctness runs, but the canonical
+entrypoint now lives under ``experiments/online`` instead of ``integrations``.
 """
 
 from __future__ import annotations
 
-from integrations.megatron_ep.exp_phase_executor import main
+from experiments.online.run_policy_correctness import main
 
 
 if __name__ == "__main__":

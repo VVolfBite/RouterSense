@@ -1,3 +1,3 @@
-from .adapter import build_phase_ready_context
+from .context_builder import build_phase_ready_context
 
 __all__ = ["build_phase_ready_context"]

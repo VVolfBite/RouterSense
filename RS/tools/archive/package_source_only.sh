@@ -8,7 +8,13 @@ if [[ "${1:-}" == "--scope" ]]; then
 fi
 archive_path="${1:?missing archive path}"
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+candidate_workspace_root="$(cd "$script_dir/../../.." && pwd)"
+if [[ -d "$candidate_workspace_root/RS" ]]; then
+  repo_root="$candidate_workspace_root"
+else
+  repo_root="$(cd "$script_dir/../.." && pwd)"
+fi
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 

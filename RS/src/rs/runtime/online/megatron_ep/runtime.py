@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from integrations.megatron_ep.native_runtime import attach_dispatch_facade
+from ._host_impl import attach_dispatch_facade
 
 from ._facade import (
     RouterSenseDispatcherFacade,
