@@ -1,6 +1,12 @@
 """Megatron EP phase interfaces."""
 
-from .context_builder import build_phase_ready_context
+from .context_builder import (
+    DispatcherSnapshot,
+    PhaseContextBuildRequest,
+    PhasePayloadContract,
+    RuntimeIdentity,
+    build_phase_ready_context,
+)
 from .contracts import (
     BucketTask,
     FutureDemandHint,
@@ -21,15 +27,19 @@ from .validation import validate_layout_offsets_cover_exactly_once, validate_p0_
 
 __all__ = [
     "BucketTask",
+    "DispatcherSnapshot",
     "FutureDemandHint",
     "IncomingSlot",
     "OutgoingSegment",
     "PackedTensorDescriptor",
     "PayloadSlice",
     "PhaseExecutionPlan",
+    "PhaseContextBuildRequest",
     "PhaseHookResult",
     "PhaseName",
+    "PhasePayloadContract",
     "PhaseReadyContext",
+    "RuntimeIdentity",
     "PlanWave",
     "TransferLayout",
     "TransportBundle",

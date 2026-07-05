@@ -11,18 +11,21 @@ runtime:
   precision: fp16
   dispatcher: alltoall
   control_mode: none
-policy:
+online_policy:
   name: disabled
+offline_study:
+  policies: []
 execution:
   mode: native_passthrough
 observation:
   profile: execution
-  capture:
-    enabled: false
-    layer_selector: ""
-    phase_selector: ""
+  capture_enabled: false
+  capture_layer_selector: ""
+  capture_phase_selector: ""
+  heartbeat_enabled: false
+  per_wave_timing_enabled: false
 validation:
   save_logits: false
   stop_after_selected_layer: false
 artifact:
-  output_root: artifacts/megatron_ep/native_observe
+  artifact_root: artifacts/megatron_ep/native_observe

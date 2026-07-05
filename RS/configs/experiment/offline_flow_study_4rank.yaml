@@ -14,12 +14,16 @@ runtime:
   precision: bf16
   scheduling_mode: runtime_lookahead
   expert_compute_delay: 0.0
-policy:
+online_policy:
   name: disabled
-  prediction_source: perfect_trace
+offline_study:
+  p2_source: perfect_trace
   policies:
     - global_ready_set
     - greedy
+  window:
+    sample_selector: first
+    start_layer_selector: first
 execution:
   mode: native_passthrough
 observation:
@@ -28,4 +32,4 @@ validation:
   save_logits: false
   stop_after_selected_layer: false
 artifact:
-  output_root: artifacts/offline/flow_study
+  artifact_root: artifacts/offline/flow_study

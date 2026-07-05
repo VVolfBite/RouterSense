@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -14,6 +15,49 @@ from .contracts import (
     PhaseReadyContext,
     TransportBundle,
 )
+
+
+@dataclass(frozen=True)
+class RuntimeIdentity:
+    run_id: str
+    forward_epoch: int
+    layer_id: str
+    layer_name: str
+    global_rank: int
+    local_rank: int
+    ep_group_ranks: tuple[int, ...]
+    ep_group_root_rank: int
+
+
+@dataclass(frozen=True)
+class DispatcherSnapshot:
+    dispatcher_class: str
+    dispatcher_fingerprint: dict[str, Any]
+    expert_placement_hash: str
+    input_splits: tuple[int, ...]
+    output_splits: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PhasePayloadContract:
+    phase: str
+    payload_roles: tuple[str, ...]
+    atomic_submit: bool
+
+
+@dataclass(frozen=True)
+class PhaseContextBuildRequest:
+    plan_key: dict[str, Any]
+    runtime_identity: RuntimeIdentity
+    topology: dict[str, Any]
+    dispatcher_snapshot: DispatcherSnapshot
+    payload_contract: PhasePayloadContract
+    packed_tensors: tuple[torch.Tensor, ...]
+    control_mode: str
+    release_state: str
+    demand_known_at: str
+    payload_exists: bool
+    p2_hint: FutureDemandHint | None = None
 
 
 def _shape_suffix(tensor: torch.Tensor) -> tuple[int, ...]:
@@ -33,30 +77,24 @@ def _phase_send_recv_splits(phase: str, input_splits: tuple[int, ...], output_sp
     return tuple(int(v) for v in output_splits), tuple(int(v) for v in input_splits)
 
 
-def build_phase_ready_context(
-    *,
-    plan_key: dict[str, Any],
-    phase: str,
-    control_mode: str,
-    forward_epoch: int,
-    layer_id: str,
-    layer_name: str,
-    global_rank: int,
-    local_rank: int,
-    ep_group_ranks: tuple[int, ...],
-    ep_group_root_rank: int,
-    topology: dict[str, Any],
-    dispatcher_class: str,
-    dispatcher_fingerprint: dict[str, Any],
-    expert_placement_hash: str,
-    input_splits: tuple[int, ...],
-    output_splits: tuple[int, ...],
-    packed_tensors: tuple[torch.Tensor, ...],
-    release_state: str,
-    demand_known_at: str,
-    payload_exists: bool,
-    p2_hint: FutureDemandHint | None = None,
-) -> PhaseReadyContext:
+def build_phase_ready_context(request: PhaseContextBuildRequest) -> PhaseReadyContext:
+    phase = request.payload_contract.phase
+    if len(request.packed_tensors) != len(request.payload_contract.payload_roles):
+        raise ValueError(
+            "packed_tensors count must match payload_roles count: "
+            f"{len(request.packed_tensors)} != {len(request.payload_contract.payload_roles)}"
+        )
+    runtime_identity = request.runtime_identity
+    dispatcher_snapshot = request.dispatcher_snapshot
+    packed_tensors = request.packed_tensors
+    input_splits = dispatcher_snapshot.input_splits
+    output_splits = dispatcher_snapshot.output_splits
+    layer_id = runtime_identity.layer_id
+    global_rank = int(runtime_identity.global_rank)
+    ep_group_ranks = runtime_identity.ep_group_ranks
+    release_state = request.release_state
+    demand_known_at = request.demand_known_at
+    payload_exists = request.payload_exists
     send_splits, recv_splits = _phase_send_recv_splits(phase, input_splits, output_splits)
     per_peer_rows = send_splits
     base_tensor = packed_tensors[0] if packed_tensors else None
@@ -93,7 +131,7 @@ def build_phase_ready_context(
 
     payload_descriptors = tuple(
         PackedTensorDescriptor(
-            tensor_role="hidden_states" if index == 0 else "routing_probs",
+            tensor_role=request.payload_contract.payload_roles[index],
             shape=tuple(int(dim) for dim in tensor.shape),
             shape_suffix=_shape_suffix(tensor),
             dtype=str(tensor.dtype),
@@ -135,7 +173,7 @@ def build_phase_ready_context(
         if peer_index >= len(ep_group_ranks):
             break
         dst_rank = int(ep_group_ranks[peer_index])
-        src_rank = int(global_rank)
+        src_rank = int(runtime_identity.global_rank)
         segment = OutgoingSegment(
             segment_id=f"{phase}:{src_rank}->{dst_rank}:{peer_index}",
             phase=phase,
@@ -178,7 +216,7 @@ def build_phase_ready_context(
             TransportBundle(
                 bundle_id=f"{segment.segment_id}:bundle",
                 phase=phase,
-                atomic_submit=phase == "P0",
+                atomic_submit=bool(request.payload_contract.atomic_submit),
                 outgoing_segment=segment,
                 payloads=payload_descriptors,
                 payload_slices=payload_slices,
@@ -186,20 +224,20 @@ def build_phase_ready_context(
         )
 
     return PhaseReadyContext(
-        plan_key=plan_key,
+        plan_key=request.plan_key,
         phase=phase,
-        control_mode=control_mode,
-        forward_epoch=forward_epoch,
-        layer_id=layer_id,
-        layer_name=layer_name,
-        global_rank=global_rank,
-        local_rank=local_rank,
-        ep_group_ranks=ep_group_ranks,
-        ep_group_root_rank=ep_group_root_rank,
-        topology=topology,
-        dispatcher_class=dispatcher_class,
-        dispatcher_fingerprint=dispatcher_fingerprint,
-        expert_placement_hash=expert_placement_hash,
+        control_mode=request.control_mode,
+        forward_epoch=runtime_identity.forward_epoch,
+        layer_id=runtime_identity.layer_id,
+        layer_name=runtime_identity.layer_name,
+        global_rank=runtime_identity.global_rank,
+        local_rank=runtime_identity.local_rank,
+        ep_group_ranks=runtime_identity.ep_group_ranks,
+        ep_group_root_rank=runtime_identity.ep_group_root_rank,
+        topology=request.topology,
+        dispatcher_class=dispatcher_snapshot.dispatcher_class,
+        dispatcher_fingerprint=dispatcher_snapshot.dispatcher_fingerprint,
+        expert_placement_hash=dispatcher_snapshot.expert_placement_hash,
         input_splits=tuple(int(v) for v in input_splits),
         output_splits=tuple(int(v) for v in output_splits),
         send_splits=tuple(int(v) for v in send_splits),
@@ -214,5 +252,5 @@ def build_phase_ready_context(
         release_state=release_state,
         demand_known_at=demand_known_at,
         payload_exists=payload_exists,
-        p2_hint=p2_hint or FutureDemandHint(),
+        p2_hint=request.p2_hint or FutureDemandHint(),
     )

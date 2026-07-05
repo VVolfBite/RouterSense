@@ -11,6 +11,7 @@ from typing import Any
 
 import torch
 
+from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
     InjectionDecision,
     PlanAgreement,
@@ -23,6 +24,7 @@ from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_grou
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
+    RuntimeObservationRecorder,
     build_runtime_observation,
     digest_text,
     extract_int_tuple,
@@ -30,7 +32,15 @@ from rs.runtime.online.megatron_ep.observation import (
 )
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
-from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext, build_phase_ready_context
+from rs.runtime.online.megatron_ep.phase import (
+    DispatcherSnapshot,
+    PhaseContextBuildRequest,
+    PhaseExecutionPlan,
+    PhasePayloadContract,
+    PhaseReadyContext,
+    RuntimeIdentity,
+    build_phase_ready_context,
+)
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, UnsupportedSchedulerMode
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
@@ -60,12 +70,21 @@ class RouterSenseInjectionRuntime:
     assertion_state: dict[str, Any] = field(default_factory=dict)
     _active_plan_versions: dict[str, int] = field(default_factory=dict)
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
-    phase_contexts: list[dict[str, Any]] = field(default_factory=list)
-    transport_bundles: list[dict[str, Any]] = field(default_factory=list)
-    scheduled_phase_plans: list[dict[str, Any]] = field(default_factory=list)
-    transport_execution_results: list[dict[str, Any]] = field(default_factory=list)
-    captured_phase_tensors: list[dict[str, Any]] = field(default_factory=list)
+    observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.observation_recorder is None:
+            self.observation_recorder = RuntimeObservationRecorder(
+                config=RuntimeObservationConfig(
+                    profile=str(getattr(self.config, "observation_profile", "minimal")),
+                    capture_enabled=bool(getattr(self.config, "capture_phase_tensors", False)),
+                    capture_layer_selector=str(getattr(self.config, "capture_layer_selector", "")),
+                    capture_phase_selector=str(getattr(self.config, "capture_phase_selector", "")),
+                    heartbeat_enabled=bool(getattr(self.config, "heartbeat_enabled", False)),
+                    per_wave_timing_enabled=bool(getattr(self.config, "per_wave_timing_enabled", False)),
+                )
+            )
 
     def _effective_phase_policy_name(self) -> str:
         if self.config.policy:
@@ -151,7 +170,8 @@ class RouterSenseInjectionRuntime:
             self._active_transport = None
 
     def record_transport_execution(self, payload: dict[str, Any]) -> None:
-        self.transport_execution_results.append(dict(payload))
+        if self.observation_recorder is not None:
+            self.observation_recorder.record_transport_execution(dict(payload))
 
     def _append_heartbeat(self, payload: dict[str, Any]) -> None:
         if not self.config.executor_heartbeat_path:
@@ -196,6 +216,8 @@ class RouterSenseInjectionRuntime:
             "p0_native_dispatch_committed",
         }:
             self._append_heartbeat(row)
+            if self.observation_recorder is not None:
+                self.observation_recorder.record_heartbeat(row)
 
     def _build_p2_hint(self, *, layer_name: str, phase: str):
         provider = build_p2_hint_provider(self.config.p2_hint_mode)
@@ -218,9 +240,11 @@ class RouterSenseInjectionRuntime:
         result: Any,
         dispatcher: Any,
     ) -> None:
-        if not self.config.capture_phase_tensors:
+        recorder = self.observation_recorder
+        if recorder is None:
             return
-        if not self._layer_selected(layer_name) or not self._phase_selected(phase):
+        layer_id = parse_layer_id(layer_name)
+        if not recorder.should_capture_tensor(layer_id=layer_id, phase=phase):
             return
         tensors: list[tuple[str, torch.Tensor]] = []
         if isinstance(result, torch.Tensor):
@@ -238,10 +262,10 @@ class RouterSenseInjectionRuntime:
             row_digest = hashlib.sha256(
                 tensor.detach().float().cpu().reshape(tensor.shape[0], -1).numpy().tobytes()
             ).hexdigest() if tensor.ndim >= 1 else checksum
-            self.captured_phase_tensors.append(
+            recorder.record_captured_tensor(
                 {
                     "layer_name": layer_name,
-                    "layer_id": parse_layer_id(layer_name),
+                    "layer_id": layer_id,
                     "phase": phase,
                     "rank": self.rank,
                     "tensor_role": role,
@@ -327,34 +351,45 @@ class RouterSenseInjectionRuntime:
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
         phase_ctx = build_phase_ready_context(
-            plan_key=self._plan_key(layer_name, "P0"),
-            phase="P0",
-            control_mode=self.config.control_mode,
-            forward_epoch=0,
-            layer_id=parse_layer_id(layer_name),
-            layer_name=layer_name,
-            global_rank=self.rank,
-            local_rank=self.local_rank,
-            ep_group_ranks=self.ep_group_ranks,
-            ep_group_root_rank=self.ep_group_root_global_rank,
-            topology=observation.topology.to_dict(),
-            dispatcher_class=type(dispatcher).__name__,
-            dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
-            expert_placement_hash=observation.expert_placement_hash,
-            input_splits=observation.input_splits,
-            output_splits=observation.output_splits,
-            packed_tensors=tuple(
-                tensor
-                for tensor in (packed_hidden_states, packed_probs)
-                if isinstance(tensor, torch.Tensor)
-            ),
-            release_state="ready",
-            demand_known_at="router_ready",
-            payload_exists=True,
-            p2_hint=p2_hint,
+            PhaseContextBuildRequest(
+                plan_key=self._plan_key(layer_name, "P0"),
+                runtime_identity=RuntimeIdentity(
+                    run_id=self.run_id,
+                    forward_epoch=0,
+                    layer_id=parse_layer_id(layer_name),
+                    layer_name=layer_name,
+                    global_rank=self.rank,
+                    local_rank=self.local_rank,
+                    ep_group_ranks=self.ep_group_ranks,
+                    ep_group_root_rank=self.ep_group_root_global_rank,
+                ),
+                topology=observation.topology.to_dict(),
+                dispatcher_snapshot=DispatcherSnapshot(
+                    dispatcher_class=type(dispatcher).__name__,
+                    dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
+                    expert_placement_hash=observation.expert_placement_hash,
+                    input_splits=observation.input_splits,
+                    output_splits=observation.output_splits,
+                ),
+                payload_contract=PhasePayloadContract(
+                    phase="P0",
+                    payload_roles=("hidden_states", "routing_probs"),
+                    atomic_submit=True,
+                ),
+                packed_tensors=tuple(
+                    tensor for tensor in (packed_hidden_states, packed_probs) if isinstance(tensor, torch.Tensor)
+                ),
+                control_mode=self.config.control_mode,
+                release_state="ready",
+                demand_known_at="router_ready",
+                payload_exists=True,
+                p2_hint=p2_hint,
+            )
         )
-        self.phase_contexts.append(phase_ctx.to_dict())
-        self.transport_bundles.extend(bundle.to_dict() for bundle in phase_ctx.transport_bundles)
+        if self.observation_recorder is not None:
+            self.observation_recorder.record_phase_context(phase_ctx.to_dict())
+            for bundle in phase_ctx.transport_bundles:
+                self.observation_recorder.record_transport_bundle(bundle.to_dict())
         pre_input_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "input_splits", None)))
         pre_output_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "output_splits", None)))
         hidden_ptr = int(packed_hidden_states.data_ptr()) if isinstance(packed_hidden_states, torch.Tensor) else -1
@@ -372,7 +407,8 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P0")
         if self._should_schedule_phase(layer_name=layer_name, phase="P0"):
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
-            self.scheduled_phase_plans.append(plan.to_dict())
+            if self.observation_recorder is not None:
+                self.observation_recorder.record_scheduled_plan(plan.to_dict())
             self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
             self._timeline(
                 "phase_execution_plan_agreed",
@@ -552,30 +588,43 @@ class RouterSenseInjectionRuntime:
         )
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P1")
         phase_ctx = build_phase_ready_context(
-            plan_key=self._plan_key(layer_name, "P1"),
-            phase="P1",
-            control_mode=self.config.control_mode,
-            forward_epoch=0,
-            layer_id=parse_layer_id(layer_name),
-            layer_name=layer_name,
-            global_rank=self.rank,
-            local_rank=self.local_rank,
-            ep_group_ranks=self.ep_group_ranks,
-            ep_group_root_rank=self.ep_group_root_global_rank,
-            topology=observation.topology.to_dict(),
-            dispatcher_class=type(dispatcher).__name__,
-            dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
-            expert_placement_hash=observation.expert_placement_hash,
-            input_splits=observation.input_splits,
-            output_splits=observation.output_splits,
-            packed_tensors=(packed_hidden_states,) if isinstance(packed_hidden_states, torch.Tensor) else (),
-            release_state="ready",
-            demand_known_at="router_ready",
-            payload_exists=True,
-            p2_hint=p2_hint,
+            PhaseContextBuildRequest(
+                plan_key=self._plan_key(layer_name, "P1"),
+                runtime_identity=RuntimeIdentity(
+                    run_id=self.run_id,
+                    forward_epoch=0,
+                    layer_id=parse_layer_id(layer_name),
+                    layer_name=layer_name,
+                    global_rank=self.rank,
+                    local_rank=self.local_rank,
+                    ep_group_ranks=self.ep_group_ranks,
+                    ep_group_root_rank=self.ep_group_root_global_rank,
+                ),
+                topology=observation.topology.to_dict(),
+                dispatcher_snapshot=DispatcherSnapshot(
+                    dispatcher_class=type(dispatcher).__name__,
+                    dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
+                    expert_placement_hash=observation.expert_placement_hash,
+                    input_splits=observation.input_splits,
+                    output_splits=observation.output_splits,
+                ),
+                payload_contract=PhasePayloadContract(
+                    phase="P1",
+                    payload_roles=("hidden_states",),
+                    atomic_submit=False,
+                ),
+                packed_tensors=(packed_hidden_states,) if isinstance(packed_hidden_states, torch.Tensor) else (),
+                control_mode=self.config.control_mode,
+                release_state="ready",
+                demand_known_at="router_ready",
+                payload_exists=True,
+                p2_hint=p2_hint,
+            )
         )
-        self.phase_contexts.append(phase_ctx.to_dict())
-        self.transport_bundles.extend(bundle.to_dict() for bundle in phase_ctx.transport_bundles)
+        if self.observation_recorder is not None:
+            self.observation_recorder.record_phase_context(phase_ctx.to_dict())
+            for bundle in phase_ctx.transport_bundles:
+                self.observation_recorder.record_transport_bundle(bundle.to_dict())
         self._timeline(
             "p1_pre_transport_observation_ready",
             layer_name=layer_name,
@@ -585,7 +634,8 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P1")
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
-            self.scheduled_phase_plans.append(plan.to_dict())
+            if self.observation_recorder is not None:
+                self.observation_recorder.record_scheduled_plan(plan.to_dict())
             self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
             self._timeline(
                 "phase_execution_plan_agreed",
@@ -702,19 +752,20 @@ class RouterSenseInjectionRuntime:
         return dict(self.assertion_state)
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:
-        return list(self.phase_contexts)
+        return [] if self.observation_recorder is None else self.observation_recorder.export_phase_contexts()
 
     def export_transport_bundles(self) -> list[dict[str, Any]]:
-        return list(self.transport_bundles)
+        return [] if self.observation_recorder is None else self.observation_recorder.export_transport_bundles()
 
     def export_scheduled_phase_plans(self) -> list[dict[str, Any]]:
-        return list(self.scheduled_phase_plans)
+        return [] if self.observation_recorder is None else self.observation_recorder.export_scheduled_phase_plans()
 
     def export_transport_execution_results(self) -> list[dict[str, Any]]:
-        return list(self.transport_execution_results)
+        return [] if self.observation_recorder is None else self.observation_recorder.export_transport_execution()
 
     def export_captured_phase_tensors(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for item in self.captured_phase_tensors:
-            rows.append({key: value for key, value in item.items() if key != "tensor"})
-        return rows
+        rows = [] if self.observation_recorder is None else self.observation_recorder.export_captured_phase_tensors()
+        return [{key: value for key, value in item.items() if key != "tensor"} for item in rows]
+
+    def export_captured_phase_tensors_with_payload(self) -> list[dict[str, Any]]:
+        return [] if self.observation_recorder is None else self.observation_recorder.export_captured_phase_tensors()

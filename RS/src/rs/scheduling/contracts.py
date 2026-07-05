@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -16,6 +16,9 @@ class FlowDemand:
     release_state: str
     is_executable: bool
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class FlowWindow:
@@ -23,11 +26,17 @@ class FlowWindow:
     blocked_flows: tuple[FlowDemand, ...] = ()
     forecast_pressure: tuple[FlowDemand, ...] = ()
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class LogicalWave:
     wave_id: int
     flows: tuple[FlowDemand, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -35,3 +44,6 @@ class LogicalSchedulePlan:
     policy_name: str
     waves: tuple[LogicalWave, ...]
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

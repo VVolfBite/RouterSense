@@ -22,6 +22,7 @@ def test_load_online_policy_correctness_config() -> None:
     assert config.run.kind == "online_policy_correctness"
     assert config.execution.mode == "phase_sync_wave"
     assert config.runtime.control_mode == "sync_before_phase"
+    assert config.online_policy.name == "bucketed_fifo"
 
 
 def test_build_launch_command_uses_torchrun_for_online() -> None:
@@ -48,7 +49,7 @@ def test_online_observe_rejects_enabled_policy() -> None:
     with pytest.raises(ValueError):
         load_run_config(
             config_path=ROOT / "configs/experiment/online_observe_local_2gpu.yaml",
-            overrides=["policy.name=bucketed_fifo"],
+            overrides=["online_policy.name=bucketed_fifo"],
         )
 
 
@@ -75,8 +76,10 @@ topology:
 runtime:
   precision: bf16
   bad_field: 1
-policy:
+online_policy:
   name: disabled
+offline_study:
+  policies: []
 execution:
   mode: native_passthrough
 observation:
@@ -84,7 +87,7 @@ observation:
 validation:
   save_logits: false
 artifact:
-  output_root: artifacts/test
+  artifact_root: artifacts/test
 """.strip(),
         encoding="utf-8",
     )

@@ -21,6 +21,62 @@ AssertionStatus = Literal["passed", "failed", "not_applicable"]
 
 
 @dataclass(frozen=True)
+class ExecutionSelection:
+    layer_selector: str = "all"
+    phase_selector: str = "both"
+    bucket_rows: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OnlinePolicyParameters:
+    p0_weight: float = 1.0
+    p1_reservation_weight: float = 1.0
+    p2_hint_weight: float = 0.0
+    p2_hint_mode: str = "none"
+    p2_hint_artifact: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OnlineValidationConfig:
+    stop_after_selected_layer: bool = False
+    executor_heartbeat_path: str = ""
+    executor_phase_timeout_sec: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OnlineRuntimeConfig:
+    policy_name: str
+    execution_mode: str
+    control_mode: str
+    execution_selection: ExecutionSelection
+    policy_parameters: OnlinePolicyParameters
+    observation: dict[str, Any] = field(default_factory=dict)
+    validation: OnlineValidationConfig = field(default_factory=OnlineValidationConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ShadowInjectionConfig:
+    scheduler_mode: str = "disabled"
+    future_hint_mode: str = "none"
+    shadow_command_arrival: str = "none"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class RouterSenseInjectionConfig:
     policy: str = ""
     scheduler_mode: str = "disabled"
@@ -38,6 +94,11 @@ class RouterSenseInjectionConfig:
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
     capture_phase_tensors: bool = False
+    observation_profile: str = "minimal"
+    capture_layer_selector: str = ""
+    capture_phase_selector: str = ""
+    heartbeat_enabled: bool = False
+    per_wave_timing_enabled: bool = False
     stop_after_selected_layer: bool = False
     executor_heartbeat_path: str = ""
     executor_phase_timeout_sec: int = 0

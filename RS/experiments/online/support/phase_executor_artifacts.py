@@ -174,7 +174,7 @@ def write_rank_artifacts(
         write_jsonl(run_dir / f"rank{rank}_captured_phase_tensors.jsonl", runtime.export_captured_phase_tensors())
         capture_dir = run_dir / "captured_phase_tensors"
         capture_dir.mkdir(parents=True, exist_ok=True)
-        for item in runtime.captured_phase_tensors:
+        for item in runtime.export_captured_phase_tensors_with_payload():
             layer_id = str(item["layer_id"])
             phase = str(item["phase"])
             if not capture_enabled(

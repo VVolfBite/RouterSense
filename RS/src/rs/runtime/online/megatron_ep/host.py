@@ -15,7 +15,7 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 
-from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
@@ -573,6 +573,59 @@ def attach_dispatch_facade(
         dispatcher.token_combine = wrapped_combine
         dispatcher._routersense_facade_wrapped = True
     return runtime
+
+
+def attach_formal_online_runtime(
+    *,
+    model: torch.nn.Module,
+    runtime_config: OnlineRuntimeConfig,
+    rank: int,
+    local_rank: int,
+    run_id: str,
+    model_revision: str,
+    request_table_hash: str,
+    hostname: str,
+    step_id: str = "unknown",
+    microbatch_id: str = "unknown",
+    observer: RouterSenseObserver | None = None,
+) -> RouterSenseInjectionRuntime:
+    injection_config = RouterSenseInjectionConfig(
+        policy=runtime_config.policy_name,
+        scheduler_mode="disabled",
+        execution_mode=runtime_config.execution_mode,
+        future_hint_mode="none",
+        p2_hint_mode=runtime_config.policy_parameters.p2_hint_mode,
+        control_mode=runtime_config.control_mode,
+        bucket_rows=runtime_config.execution_selection.bucket_rows,
+        p0_weight=runtime_config.policy_parameters.p0_weight,
+        p1_reservation_weight=runtime_config.policy_parameters.p1_reservation_weight,
+        p2_hint_weight=runtime_config.policy_parameters.p2_hint_weight,
+        p2_hint_artifact=runtime_config.policy_parameters.p2_hint_artifact,
+        schedule_layer_selector=runtime_config.execution_selection.layer_selector,
+        schedule_phase_selector=runtime_config.execution_selection.phase_selector,
+        capture_phase_tensors=bool(runtime_config.observation.get("capture_enabled", False)),
+        stop_after_selected_layer=bool(runtime_config.validation.stop_after_selected_layer),
+        executor_heartbeat_path=str(runtime_config.validation.executor_heartbeat_path),
+        executor_phase_timeout_sec=int(runtime_config.validation.executor_phase_timeout_sec),
+        observation_profile=str(runtime_config.observation.get("profile", "minimal")),
+        capture_layer_selector=str(runtime_config.observation.get("capture_layer_selector", "")),
+        capture_phase_selector=str(runtime_config.observation.get("capture_phase_selector", "")),
+        heartbeat_enabled=bool(runtime_config.observation.get("heartbeat_enabled", False)),
+        per_wave_timing_enabled=bool(runtime_config.observation.get("per_wave_timing_enabled", False)),
+    )
+    return attach_dispatch_facade(
+        model=model,
+        config=injection_config,
+        rank=rank,
+        local_rank=local_rank,
+        run_id=run_id,
+        model_revision=model_revision,
+        request_table_hash=request_table_hash,
+        hostname=hostname,
+        step_id=step_id,
+        microbatch_id=microbatch_id,
+        observer=observer,
+    )
 
 
 def gather_rank_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:

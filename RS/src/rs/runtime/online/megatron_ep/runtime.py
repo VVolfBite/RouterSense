@@ -55,9 +55,12 @@ class RouterSenseDispatcherFacade:
             raise UnsupportedSchedulerMode(
                 f"Unsupported future_hint_mode={config.future_hint_mode!r}; only 'none' is implemented"
             )
-        if config.control_mode not in {"default_continue", "sync_before_phase"}:
+        allowed_control_modes = {"default_continue", "sync_before_phase"}
+        if config.scheduler_mode == "disabled" and str(config.policy or "disabled") in {"", "disabled"}:
+            allowed_control_modes.add("none")
+        if config.control_mode not in allowed_control_modes:
             raise UnsupportedSchedulerMode(
-                f"Unsupported control_mode={config.control_mode!r}; only 'default_continue' and 'sync_before_phase' are implemented"
+                f"Unsupported control_mode={config.control_mode!r}; only {sorted(allowed_control_modes)!r} are implemented"
             )
         return cls(
             native_dispatcher=native_dispatcher,

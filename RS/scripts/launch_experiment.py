@@ -22,7 +22,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", default=False)
     parser.add_argument("--override", action="append", default=[])
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--artifact-root", default=None)
     return parser.parse_args(argv)
 
 
@@ -32,14 +32,14 @@ def main(argv: list[str] | None = None) -> int:
         config_path=args.config,
         overrides=list(args.override),
         run_id=args.run_id,
-        output_dir=args.output_dir,
+        output_dir=args.artifact_root,
     )
     command = build_launch_command(
         config=config,
         config_path=args.config,
         overrides=list(args.override),
         run_id=args.run_id,
-        output_dir=args.output_dir,
+        output_dir=args.artifact_root,
     )
     resolved = {
         "config_path": str(Path(args.config).resolve()),
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         "entrypoint_module": resolve_entrypoint_module(config.run.kind),
         "artifact_directory": config.artifact.output_root,
         "observation_profile": config.observation.profile,
-        "policy_name": config.policy.name,
+        "policy_name": config.online_policy.name,
         "execution_mode": config.execution.mode,
         "control_mode": config.runtime.control_mode,
         "topology": config.topology.launcher.__dict__,

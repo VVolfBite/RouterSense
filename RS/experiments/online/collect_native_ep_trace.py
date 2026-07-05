@@ -18,9 +18,15 @@ ROOT = ensure_src_on_path()
 
 from rs.core.artifact import write_json, write_jsonl
 from rs.core.experiment_config import RunConfig, load_run_config
-from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.contracts import (
+    ExecutionSelection,
+    OnlinePolicyParameters,
+    OnlineRuntimeConfig,
+    OnlineValidationConfig,
+)
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
+    attach_formal_online_runtime,
     attach_dispatch_observer,
     build_position_ids,
     destroy_distributed,
@@ -148,13 +154,16 @@ def main(argv: list[str] | None = None) -> int:
 
         attach_dispatch_observer(observer, rank=rank, local_rank=local_rank)(model)
         if config.observation.profile in {"execution", "debug"}:
-            policy_runtime = attach_dispatch_facade(
+            policy_runtime = attach_formal_online_runtime(
                 model=model,
-                config=RouterSenseInjectionConfig(
-                    scheduler_mode="disabled",
+                runtime_config=OnlineRuntimeConfig(
+                    policy_name="disabled",
                     execution_mode="native_passthrough",
-                    future_hint_mode="none",
-                    control_mode="default_continue",
+                    control_mode="none",
+                    execution_selection=ExecutionSelection(layer_selector="all", phase_selector="both", bucket_rows=0),
+                    policy_parameters=OnlinePolicyParameters(),
+                    observation=config.observation.to_dict(),
+                    validation=OnlineValidationConfig(),
                 ),
                 rank=rank,
                 local_rank=local_rank,

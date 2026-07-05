@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from rs.core.contracts.observation import RuntimeObservationConfig
+
 
 SUPPORTED_RUN_KINDS = {
     "offline_trace",
@@ -73,16 +75,37 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
-class PolicyConfig:
-    name: str = "disabled"
+class OnlinePolicyParameters:
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 0.0
-    p2_hint_mode: str = "none"
-    p2_hint_artifact: str = ""
-    prediction_source: str = "zero_hint"
+
+
+@dataclass(frozen=True)
+class OnlinePolicyP2Config:
+    mode: str = "none"
+    artifact: str = ""
+
+
+@dataclass(frozen=True)
+class OnlinePolicyConfig:
+    name: str = "disabled"
+    parameters: OnlinePolicyParameters = field(default_factory=OnlinePolicyParameters)
+    p2: OnlinePolicyP2Config = field(default_factory=OnlinePolicyP2Config)
+
+
+@dataclass(frozen=True)
+class OfflineStudyWindowConfig:
+    sample_selector: str = "first"
+    start_layer_selector: str = "first"
+
+
+@dataclass(frozen=True)
+class OfflineStudyConfig:
     policies: tuple[str, ...] = ()
     reference_policies: tuple[str, ...] = ()
+    p2_source: str = "zero_hint"
+    window: OfflineStudyWindowConfig = field(default_factory=OfflineStudyWindowConfig)
 
 
 @dataclass(frozen=True)
@@ -96,19 +119,6 @@ class ExecutionConfig:
     mode: str = "native_passthrough"
     bucket_rows: int = 0
     schedule: ExecutionScheduleConfig = field(default_factory=ExecutionScheduleConfig)
-
-
-@dataclass(frozen=True)
-class CaptureConfig:
-    enabled: bool = False
-    layer_selector: str = ""
-    phase_selector: str = ""
-
-
-@dataclass(frozen=True)
-class ObservationConfig:
-    profile: str = "minimal"
-    capture: CaptureConfig = field(default_factory=CaptureConfig)
 
 
 @dataclass(frozen=True)
@@ -130,9 +140,10 @@ class RunConfig:
     topology: TopologyConfig
     workload: WorkloadConfig
     runtime: RuntimeConfig
-    policy: PolicyConfig
+    online_policy: OnlinePolicyConfig
+    offline_study: OfflineStudyConfig
     execution: ExecutionConfig
-    observation: ObservationConfig
+    observation: RuntimeObservationConfig
     validation: ValidationConfig
     artifact: ArtifactConfig
     source_config_path: str
@@ -173,17 +184,21 @@ def validate_run_config(config: RunConfig) -> None:
         raise ValueError(f"unsupported runtime.control_mode {config.runtime.control_mode!r}")
     if config.execution.mode not in SUPPORTED_EXECUTION_MODES:
         raise ValueError(f"unsupported execution.mode {config.execution.mode!r}")
-    if config.policy.p2_hint_mode == "none" and abs(float(config.policy.p2_hint_weight)) > 1e-9:
+    if config.online_policy.p2.mode == "none" and abs(float(config.online_policy.parameters.p2_hint_weight)) > 1e-9:
         raise ValueError("p2_hint_weight must be 0 when p2_hint_mode=none")
-    if config.policy.p2_hint_mode == "deterministic_stub" and config.run.kind == "online_policy_correctness":
+    if config.online_policy.p2.mode == "deterministic_stub" and config.run.kind == "online_policy_correctness":
         pass
     if config.validation.stop_after_selected_layer and config.validation.save_logits:
         raise ValueError("save_logits must be false when stop_after_selected_layer=true")
-    if config.observation.capture.enabled and config.observation.profile not in {"debug"} and not config.validation.allow_debug_capture:
+    if config.observation.capture_enabled and config.observation.profile not in {"debug"} and not config.validation.allow_debug_capture:
         raise ValueError("selected tensor capture requires observation.profile=debug or explicit allow_debug_capture")
+    if config.observation.capture_enabled and (not config.observation.capture_layer_selector or not config.observation.capture_phase_selector):
+        raise ValueError("capture_enabled requires explicit capture_layer_selector and capture_phase_selector")
     if config.run.kind == "offline_trace":
-        if config.policy.name != "disabled":
+        if config.online_policy.name != "disabled":
             raise ValueError("offline_trace does not accept online policy execution")
+        if config.offline_study.policies:
+            raise ValueError("offline_trace must not declare offline_study.policies")
         if config.topology.launcher.kind != "python":
             raise ValueError("offline_trace must not use torchrun topology")
     if config.run.kind == "offline_flow_study":
@@ -191,19 +206,27 @@ def validate_run_config(config: RunConfig) -> None:
             raise ValueError("offline_flow_study must not use torchrun topology")
         if config.execution.mode != "native_passthrough":
             raise ValueError("offline_flow_study cannot use online execution mode")
+        if config.online_policy.name != "disabled":
+            raise ValueError("offline_flow_study must not declare online_policy.name")
+        if not config.offline_study.policies:
+            raise ValueError("offline_flow_study requires offline_study.policies")
     if config.run.kind == "online_observe":
-        if config.policy.name != "disabled":
-            raise ValueError("online_observe requires policy.name=disabled")
+        if config.online_policy.name != "disabled":
+            raise ValueError("online_observe requires online_policy.name=disabled")
         if config.execution.mode != "native_passthrough":
             raise ValueError("online_observe requires native_passthrough execution")
+        if config.offline_study.policies:
+            raise ValueError("online_observe must not declare offline_study.policies")
     if config.run.kind == "online_policy_correctness":
-        if config.policy.name in {"", "disabled"}:
-            raise ValueError("online_policy_correctness requires a supported policy")
+        if config.online_policy.name in {"", "disabled"}:
+            raise ValueError("online_policy_correctness requires a supported online_policy.name")
         if config.execution.mode != "phase_sync_wave":
             raise ValueError("online_policy_correctness requires phase_sync_wave execution")
         if config.runtime.control_mode != "sync_before_phase":
             raise ValueError("online_policy_correctness requires sync_before_phase control mode")
-    if config.policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
+        if config.offline_study.policies:
+            raise ValueError("online_policy_correctness must not declare offline_study.policies")
+    if config.online_policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
         raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
     _assert_no_credential_fields(config.to_dict())
 
@@ -294,28 +317,28 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         },
         "workload": {"prompts", "trace_artifact_dir", "num_prompts"},
         "runtime": {"precision", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
-        "policy": {
-            "name",
-            "p0_weight",
-            "p1_reservation_weight",
-            "p2_hint_weight",
-            "p2_hint_mode",
-            "p2_hint_artifact",
-            "prediction_source",
-            "policies",
-            "reference_policies",
-        },
+        "online_policy": {"name", "parameters", "p2"},
+        "offline_study": {"policies", "reference_policies", "p2_source", "window"},
         "execution": {"mode", "bucket_rows", "schedule"},
-        "observation": {"profile", "capture"},
+        "observation": {
+            "profile",
+            "capture_enabled",
+            "capture_layer_selector",
+            "capture_phase_selector",
+            "heartbeat_enabled",
+            "per_wave_timing_enabled",
+        },
         "validation": {"save_logits", "stop_after_selected_layer", "allow_debug_capture"},
-        "artifact": {"output_root", "output_dir"},
+        "artifact": {"output_root", "artifact_root"},
     }
     nested: dict[tuple[str, ...], set[str]] = {
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
         ("topology", "ep"): {"size"},
         ("topology", "network"): {"scope", "interface_hint"},
+        ("online_policy", "parameters"): {"p0_weight", "p1_reservation_weight", "p2_hint_weight"},
+        ("online_policy", "p2"): {"mode", "artifact"},
+        ("offline_study", "window"): {"sample_selector", "start_layer_selector"},
         ("execution", "schedule"): {"layer_selector", "phase_selector"},
-        ("observation", "capture"): {"enabled", "layer_selector", "phase_selector"},
     }
 
     def _walk(mapping: dict[str, Any], path: tuple[str, ...] = ()) -> None:
@@ -360,7 +383,8 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
     topology = payload.get("topology", {})
     workload = payload.get("workload", {})
     runtime = payload.get("runtime", {})
-    policy = payload.get("policy", {})
+    online_policy = payload.get("online_policy", {})
+    offline_study = payload.get("offline_study", {})
     execution = payload.get("execution", {})
     observation = payload.get("observation", {})
     validation = payload.get("validation", {})
@@ -402,16 +426,26 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             expert_compute_delay=float(runtime.get("expert_compute_delay", 0.0)),
             scheduling_mode=str(runtime.get("scheduling_mode", "runtime_lookahead")),
         ),
-        policy=PolicyConfig(
-            name=str(policy.get("name", "disabled")),
-            p0_weight=float(policy.get("p0_weight", 1.0)),
-            p1_reservation_weight=float(policy.get("p1_reservation_weight", 1.0)),
-            p2_hint_weight=float(policy.get("p2_hint_weight", 0.0)),
-            p2_hint_mode=str(policy.get("p2_hint_mode", "none")),
-            p2_hint_artifact=str(policy.get("p2_hint_artifact", "")),
-            prediction_source=str(policy.get("prediction_source", "zero_hint")),
-            policies=tuple(str(item) for item in policy.get("policies", []) or ()),
-            reference_policies=tuple(str(item) for item in policy.get("reference_policies", []) or ()),
+        online_policy=OnlinePolicyConfig(
+            name=str(online_policy.get("name", "disabled")),
+            parameters=OnlinePolicyParameters(
+                p0_weight=float(online_policy.get("parameters", {}).get("p0_weight", 1.0)),
+                p1_reservation_weight=float(online_policy.get("parameters", {}).get("p1_reservation_weight", 1.0)),
+                p2_hint_weight=float(online_policy.get("parameters", {}).get("p2_hint_weight", 0.0)),
+            ),
+            p2=OnlinePolicyP2Config(
+                mode=str(online_policy.get("p2", {}).get("mode", "none")),
+                artifact=str(online_policy.get("p2", {}).get("artifact", "")),
+            ),
+        ),
+        offline_study=OfflineStudyConfig(
+            policies=tuple(str(item) for item in offline_study.get("policies", []) or ()),
+            reference_policies=tuple(str(item) for item in offline_study.get("reference_policies", []) or ()),
+            p2_source=str(offline_study.get("p2_source", "zero_hint")),
+            window=OfflineStudyWindowConfig(
+                sample_selector=str(offline_study.get("window", {}).get("sample_selector", "first")),
+                start_layer_selector=str(offline_study.get("window", {}).get("start_layer_selector", "first")),
+            ),
         ),
         execution=ExecutionConfig(
             mode=str(execution.get("mode", "native_passthrough")),
@@ -421,20 +455,20 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
                 phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),
             ),
         ),
-        observation=ObservationConfig(
+        observation=RuntimeObservationConfig(
             profile=str(observation.get("profile", "minimal")),
-            capture=CaptureConfig(
-                enabled=bool(observation.get("capture", {}).get("enabled", False)),
-                layer_selector=str(observation.get("capture", {}).get("layer_selector", "")),
-                phase_selector=str(observation.get("capture", {}).get("phase_selector", "")),
-            ),
+            capture_enabled=bool(observation.get("capture_enabled", False)),
+            capture_layer_selector=str(observation.get("capture_layer_selector", "")),
+            capture_phase_selector=str(observation.get("capture_phase_selector", "")),
+            heartbeat_enabled=bool(observation.get("heartbeat_enabled", False)),
+            per_wave_timing_enabled=bool(observation.get("per_wave_timing_enabled", False)),
         ),
         validation=ValidationConfig(
             save_logits=bool(validation.get("save_logits", False)),
             stop_after_selected_layer=bool(validation.get("stop_after_selected_layer", False)),
             allow_debug_capture=bool(validation.get("allow_debug_capture", False)),
         ),
-        artifact=ArtifactConfig(output_root=str(artifact.get("output_root", artifact.get("output_dir", "")))),
+        artifact=ArtifactConfig(output_root=str(artifact.get("output_root", artifact.get("artifact_root", "")))),
         source_config_path=source_config_path,
     )
 

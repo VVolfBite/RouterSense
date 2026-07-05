@@ -11,12 +11,17 @@ runtime:
   precision: fp16
   dispatcher: alltoall
   control_mode: sync_before_phase
-policy:
+online_policy:
   name: bucketed_fifo
-  p0_weight: 1.0
-  p1_reservation_weight: 1.0
-  p2_hint_weight: 0.0
-  p2_hint_mode: none
+  parameters:
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 0.0
+  p2:
+    mode: none
+    artifact: ""
+offline_study:
+  policies: []
 execution:
   mode: phase_sync_wave
   bucket_rows: 0
@@ -25,12 +30,13 @@ execution:
     phase_selector: both
 observation:
   profile: execution
-  capture:
-    enabled: false
-    layer_selector: ""
-    phase_selector: ""
+  capture_enabled: false
+  capture_layer_selector: ""
+  capture_phase_selector: ""
+  heartbeat_enabled: false
+  per_wave_timing_enabled: false
 validation:
   save_logits: true
   stop_after_selected_layer: false
 artifact:
-  output_root: artifacts/megatron_ep/phase_executor
+  artifact_root: artifacts/megatron_ep/phase_executor

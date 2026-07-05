@@ -4,7 +4,15 @@ import torch
 from dataclasses import replace
 
 from rs.runtime.online.megatron_ep.contracts import PolicyContext, RankTopologyRecord, RuntimeObservation
-from rs.runtime.online.megatron_ep.phase import FutureDemandHint, PhaseReadyContext, build_phase_ready_context
+from rs.runtime.online.megatron_ep.phase import (
+    DispatcherSnapshot,
+    FutureDemandHint,
+    PhaseContextBuildRequest,
+    PhasePayloadContract,
+    PhaseReadyContext,
+    RuntimeIdentity,
+    build_phase_ready_context,
+)
 from rs.scheduling.validation import stable_hash
 
 
@@ -130,27 +138,38 @@ def make_phase_context(
     hidden = torch.arange(rows * hidden_dim, dtype=torch.float16).reshape(rows, hidden_dim)
     packed_tensors = (hidden, hidden[:, :1].clone()) if phase == "P0" else (hidden,)
     return build_phase_ready_context(
-        plan_key={"layer_id": "0", "phase": phase, "rank": rank},
-        phase=phase,
-        control_mode="sync_before_phase",
-        forward_epoch=0,
-        layer_id="0",
-        layer_name="module.decoder.layers.0.mlp",
-        global_rank=rank,
-        local_rank=rank,
-        ep_group_ranks=(0, 1),
-        ep_group_root_rank=0,
-        topology={"global_rank": rank, "local_rank": rank, "node_index": 0, "hostname_digest": "host-a", "device_index": rank, "ep_group_rank": rank},
-        dispatcher_class="MoEAlltoAllTokenDispatcher",
-        dispatcher_fingerprint={"dispatcher_class": "MoEAlltoAllTokenDispatcher"},
-        expert_placement_hash="placement",
-        input_splits=input_splits,
-        output_splits=output_splits,
-        packed_tensors=packed_tensors,
-        release_state="ready",
-        demand_known_at="router_ready",
-        payload_exists=True,
-        p2_hint=FutureDemandHint(hint_mode=p2_hint_mode, hint_digest=f"digest:{p2_hint_mode}", hint_source=p2_hint_mode),
+        PhaseContextBuildRequest(
+            plan_key={"layer_id": "0", "phase": phase, "rank": rank},
+            runtime_identity=RuntimeIdentity(
+                run_id="run",
+                forward_epoch=0,
+                layer_id="0",
+                layer_name="module.decoder.layers.0.mlp",
+                global_rank=rank,
+                local_rank=rank,
+                ep_group_ranks=(0, 1),
+                ep_group_root_rank=0,
+            ),
+            topology={"global_rank": rank, "local_rank": rank, "node_index": 0, "hostname_digest": "host-a", "device_index": rank, "ep_group_rank": rank},
+            dispatcher_snapshot=DispatcherSnapshot(
+                dispatcher_class="MoEAlltoAllTokenDispatcher",
+                dispatcher_fingerprint={"dispatcher_class": "MoEAlltoAllTokenDispatcher"},
+                expert_placement_hash="placement",
+                input_splits=input_splits,
+                output_splits=output_splits,
+            ),
+            payload_contract=PhasePayloadContract(
+                phase=phase,
+                payload_roles=("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",),
+                atomic_submit=phase == "P0",
+            ),
+            packed_tensors=packed_tensors,
+            control_mode="sync_before_phase",
+            release_state="ready",
+            demand_known_at="router_ready",
+            payload_exists=True,
+            p2_hint=FutureDemandHint(hint_mode=p2_hint_mode, hint_digest=f"digest:{p2_hint_mode}", hint_source=p2_hint_mode),
+        )
     )
 
 
@@ -175,27 +194,38 @@ def make_phase_context_generic(
         hint_source=p2_hint_source or p2_hint_mode,
     )
     return build_phase_ready_context(
-        plan_key={"layer_id": "0", "phase": phase, "rank": rank},
-        phase=phase,
-        control_mode="sync_before_phase",
-        forward_epoch=0,
-        layer_id="0",
-        layer_name="module.decoder.layers.0.mlp",
-        global_rank=rank,
-        local_rank=rank,
-        ep_group_ranks=ep_group_ranks,
-        ep_group_root_rank=ep_group_ranks[0],
-        topology={"global_rank": rank, "local_rank": rank, "node_index": 0, "hostname_digest": "host-a", "device_index": rank, "ep_group_rank": ep_group_ranks.index(rank)},
-        dispatcher_class="MoEAlltoAllTokenDispatcher",
-        dispatcher_fingerprint={"dispatcher_class": "MoEAlltoAllTokenDispatcher"},
-        expert_placement_hash="placement",
-        input_splits=input_splits,
-        output_splits=output_splits,
-        packed_tensors=packed_tensors,
-        release_state="ready",
-        demand_known_at="router_ready",
-        payload_exists=True,
-        p2_hint=hint,
+        PhaseContextBuildRequest(
+            plan_key={"layer_id": "0", "phase": phase, "rank": rank},
+            runtime_identity=RuntimeIdentity(
+                run_id="run",
+                forward_epoch=0,
+                layer_id="0",
+                layer_name="module.decoder.layers.0.mlp",
+                global_rank=rank,
+                local_rank=rank,
+                ep_group_ranks=ep_group_ranks,
+                ep_group_root_rank=ep_group_ranks[0],
+            ),
+            topology={"global_rank": rank, "local_rank": rank, "node_index": 0, "hostname_digest": "host-a", "device_index": rank, "ep_group_rank": ep_group_ranks.index(rank)},
+            dispatcher_snapshot=DispatcherSnapshot(
+                dispatcher_class="MoEAlltoAllTokenDispatcher",
+                dispatcher_fingerprint={"dispatcher_class": "MoEAlltoAllTokenDispatcher"},
+                expert_placement_hash="placement",
+                input_splits=input_splits,
+                output_splits=output_splits,
+            ),
+            payload_contract=PhasePayloadContract(
+                phase=phase,
+                payload_roles=("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",),
+                atomic_submit=phase == "P0",
+            ),
+            packed_tensors=packed_tensors,
+            control_mode="sync_before_phase",
+            release_state="ready",
+            demand_known_at="router_ready",
+            payload_exists=True,
+            p2_hint=hint,
+        )
     )
 
 

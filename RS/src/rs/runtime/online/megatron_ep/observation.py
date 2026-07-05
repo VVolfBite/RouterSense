@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 import torch
 
+from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
     InjectionDecision,
     PlanAgreement,
@@ -22,17 +23,6 @@ from rs.scheduling.validation import stable_hash
 
 ObservationProfile = Literal["minimal", "execution", "debug"]
 ExecutionAuditStatus = Literal["passed", "failed", "not_applicable"]
-
-
-@dataclass(frozen=True)
-class ObservationConfig:
-    profile: ObservationProfile
-    capture_enabled: bool = False
-    capture_layer_selector: str = ""
-    capture_phase_selector: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -68,7 +58,7 @@ class ExecutionAudit:
 class ObservationEmitter:
     """Small helper for profile-gated event collection."""
 
-    def __init__(self, config: ObservationConfig) -> None:
+    def __init__(self, config: RuntimeObservationConfig) -> None:
         self.config = config
 
     def includes_execution(self) -> bool:
@@ -76,6 +66,143 @@ class ObservationEmitter:
 
     def includes_debug(self) -> bool:
         return self.config.profile == "debug"
+
+
+@dataclass(frozen=True)
+class RuntimeObservationSnapshot:
+    counters: dict[str, Any]
+    phase_contexts: tuple[dict[str, Any], ...] = ()
+    transport_bundles: tuple[dict[str, Any], ...] = ()
+    scheduled_phase_plans: tuple[dict[str, Any], ...] = ()
+    transport_execution: tuple[dict[str, Any], ...] = ()
+    execution_audits: tuple[dict[str, Any], ...] = ()
+    heartbeats: tuple[dict[str, Any], ...] = ()
+    failures: tuple[dict[str, Any], ...] = ()
+    captured_phase_tensors: tuple[dict[str, Any], ...] = ()
+
+
+class RuntimeObservationRecorder:
+    """Profile-aware runtime observation retention."""
+
+    def __init__(self, config: RuntimeObservationConfig) -> None:
+        self.config = config
+        self._emitter = ObservationEmitter(config)
+        self._phase_contexts: list[dict[str, Any]] = []
+        self._transport_bundles: list[dict[str, Any]] = []
+        self._scheduled_phase_plans: list[dict[str, Any]] = []
+        self._transport_execution: list[dict[str, Any]] = []
+        self._execution_audits: list[dict[str, Any]] = []
+        self._heartbeats: list[dict[str, Any]] = []
+        self._failures: list[dict[str, Any]] = []
+        self._captured_phase_tensors: list[dict[str, Any]] = []
+        self._counters: dict[str, Any] = {
+            "phase_context_count": 0,
+            "transport_bundle_count": 0,
+            "scheduled_plan_count": 0,
+            "transport_execution_count": 0,
+            "execution_audit_count": 0,
+            "heartbeat_count": 0,
+            "failure_count": 0,
+            "fallback_count": 0,
+            "contract_violation_count": 0,
+            "per_layer_phase_counts": {},
+        }
+
+    def record_phase_context(self, payload: dict[str, Any]) -> None:
+        layer_id = str(payload.get("layer_id", "unknown"))
+        phase = str(payload.get("phase", "unknown"))
+        counters = self._counters["per_layer_phase_counts"]
+        layer_key = f"{layer_id}:{phase}"
+        counters[layer_key] = int(counters.get(layer_key, 0)) + 1
+        self._counters["phase_context_count"] = int(self._counters["phase_context_count"]) + 1
+        if self._emitter.includes_execution():
+            self._phase_contexts.append(dict(payload))
+
+    def record_transport_bundle(self, payload: dict[str, Any]) -> None:
+        self._counters["transport_bundle_count"] = int(self._counters["transport_bundle_count"]) + 1
+        if self._emitter.includes_execution():
+            self._transport_bundles.append(dict(payload))
+
+    def record_scheduled_plan(self, payload: dict[str, Any]) -> None:
+        self._counters["scheduled_plan_count"] = int(self._counters["scheduled_plan_count"]) + 1
+        if self._emitter.includes_execution():
+            self._scheduled_phase_plans.append(dict(payload))
+
+    def record_transport_execution(self, payload: dict[str, Any]) -> None:
+        self._counters["transport_execution_count"] = int(self._counters["transport_execution_count"]) + 1
+        event_type = str(payload.get("event_type", ""))
+        if event_type == "native_fallback":
+            self._counters["fallback_count"] = int(self._counters["fallback_count"]) + 1
+        if event_type == "contract_violation":
+            self._counters["contract_violation_count"] = int(self._counters["contract_violation_count"]) + 1
+        if self._emitter.includes_execution():
+            self._transport_execution.append(dict(payload))
+
+    def record_execution_audit(self, payload: dict[str, Any]) -> None:
+        self._counters["execution_audit_count"] = int(self._counters["execution_audit_count"]) + 1
+        if self._emitter.includes_execution():
+            self._execution_audits.append(dict(payload))
+
+    def record_heartbeat(self, payload: dict[str, Any]) -> None:
+        self._counters["heartbeat_count"] = int(self._counters["heartbeat_count"]) + 1
+        if self._emitter.includes_debug() and self.config.heartbeat_enabled:
+            self._heartbeats.append(dict(payload))
+
+    def record_failure(self, payload: dict[str, Any]) -> None:
+        self._counters["failure_count"] = int(self._counters["failure_count"]) + 1
+        if self._emitter.includes_debug():
+            self._failures.append(dict(payload))
+
+    def should_capture_tensor(self, *, layer_id: str, phase: str) -> bool:
+        if not (self._emitter.includes_debug() and self.config.capture_enabled):
+            return False
+        layers = {value.strip() for value in self.config.capture_layer_selector.split(",") if value.strip()}
+        phases = {value.strip().lower() for value in self.config.capture_phase_selector.split(",") if value.strip()}
+        return (not layers or layer_id in layers) and (not phases or phase.lower() in phases)
+
+    def record_captured_tensor(self, payload: dict[str, Any]) -> None:
+        if self._emitter.includes_debug() and self.config.capture_enabled:
+            self._captured_phase_tensors.append(dict(payload))
+
+    def export_phase_contexts(self) -> list[dict[str, Any]]:
+        return list(self._phase_contexts)
+
+    def export_transport_bundles(self) -> list[dict[str, Any]]:
+        return list(self._transport_bundles)
+
+    def export_scheduled_phase_plans(self) -> list[dict[str, Any]]:
+        return list(self._scheduled_phase_plans)
+
+    def export_transport_execution(self) -> list[dict[str, Any]]:
+        return list(self._transport_execution)
+
+    def export_execution_audits(self) -> list[dict[str, Any]]:
+        return list(self._execution_audits)
+
+    def export_heartbeats(self) -> list[dict[str, Any]]:
+        return list(self._heartbeats)
+
+    def export_failures(self) -> list[dict[str, Any]]:
+        return list(self._failures)
+
+    def export_captured_phase_tensors(self) -> list[dict[str, Any]]:
+        return list(self._captured_phase_tensors)
+
+    def summary_counters(self) -> dict[str, Any]:
+        return dict(self._counters)
+
+    def snapshot(self) -> RuntimeObservationSnapshot:
+        return RuntimeObservationSnapshot(
+            counters=self.summary_counters(),
+            phase_contexts=tuple(self._phase_contexts),
+            transport_bundles=tuple(self._transport_bundles),
+            scheduled_phase_plans=tuple(self._scheduled_phase_plans),
+            transport_execution=tuple(self._transport_execution),
+            execution_audits=tuple(self._execution_audits),
+            heartbeats=tuple(self._heartbeats),
+            failures=tuple(self._failures),
+            captured_phase_tensors=tuple(self._captured_phase_tensors),
+        )
 
 
 def parse_layer_id(layer_name: str) -> str:

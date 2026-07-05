@@ -19,10 +19,16 @@ ROOT = ensure_src_on_path()
 
 from rs.core.artifact import write_json
 from rs.core.experiment_config import RunConfig, load_run_config
-from rs.runtime.online.megatron_ep.contracts import NativeEPSummary, RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.contracts import (
+    ExecutionSelection,
+    NativeEPSummary,
+    OnlinePolicyParameters,
+    OnlineRuntimeConfig,
+    OnlineValidationConfig,
+)
 from rs.runtime.online.megatron_ep.execution.audit import ExecutionAuditInput, build_execution_audit
 from rs.runtime.online.megatron_ep.host import (
-    attach_dispatch_facade,
+    attach_formal_online_runtime,
     build_position_ids,
     destroy_distributed,
     dtype_from_name,
@@ -63,40 +69,43 @@ def _resolve_model_path(config: RunConfig) -> str:
     return config.model.local_path or config.model.model_id
 
 
-def _build_injection_config(config: RunConfig) -> RouterSenseInjectionConfig:
-    capture = config.observation.capture
-    return RouterSenseInjectionConfig(
-        policy=config.policy.name,
-        scheduler_mode="disabled",
+def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
+    return OnlineRuntimeConfig(
+        policy_name=config.online_policy.name,
         execution_mode=config.execution.mode,
-        future_hint_mode="none",
-        p2_hint_mode=config.policy.p2_hint_mode,
         control_mode=config.runtime.control_mode,
-        bucket_rows=config.execution.bucket_rows,
-        p0_weight=config.policy.p0_weight,
-        p1_reservation_weight=config.policy.p1_reservation_weight,
-        p2_hint_weight=config.policy.p2_hint_weight,
-        p2_hint_artifact=config.policy.p2_hint_artifact,
-        schedule_layer_selector=config.execution.schedule.layer_selector,
-        schedule_phase_selector=config.execution.schedule.phase_selector,
-        capture_phase_tensors=bool(capture.enabled),
-        stop_after_selected_layer=bool(config.validation.stop_after_selected_layer),
-        executor_heartbeat_path=config.artifact.output_root,
-        executor_phase_timeout_sec=120,
+        execution_selection=ExecutionSelection(
+            layer_selector=config.execution.schedule.layer_selector,
+            phase_selector=config.execution.schedule.phase_selector,
+            bucket_rows=config.execution.bucket_rows,
+        ),
+        policy_parameters=OnlinePolicyParameters(
+            p0_weight=config.online_policy.parameters.p0_weight,
+            p1_reservation_weight=config.online_policy.parameters.p1_reservation_weight,
+            p2_hint_weight=config.online_policy.parameters.p2_hint_weight,
+            p2_hint_mode=config.online_policy.p2.mode,
+            p2_hint_artifact=config.online_policy.p2.artifact,
+        ),
+        observation=config.observation.to_dict(),
+        validation=OnlineValidationConfig(
+            stop_after_selected_layer=bool(config.validation.stop_after_selected_layer),
+            executor_heartbeat_path=str(config.artifact.output_root),
+            executor_phase_timeout_sec=120,
+        ),
     )
 
 
 def _policy_capabilities(config: RunConfig) -> dict[str, Any] | None:
-    policy_name = resolve_effective_policy_name(config.policy.name, "disabled")
+    policy_name = resolve_effective_policy_name(config.online_policy.name, "disabled")
     if not policy_name:
         return None
     return resolve_phase_policy(
         policy_name=policy_name,
         bucket_rows=config.execution.bucket_rows,
-        p0_weight=config.policy.p0_weight,
-        p1_reservation_weight=config.policy.p1_reservation_weight,
-        p2_hint_weight=config.policy.p2_hint_weight,
-        p2_hint_artifact=config.policy.p2_hint_artifact,
+        p0_weight=config.online_policy.parameters.p0_weight,
+        p1_reservation_weight=config.online_policy.parameters.p1_reservation_weight,
+        p2_hint_weight=config.online_policy.parameters.p2_hint_weight,
+        p2_hint_artifact=config.online_policy.p2.artifact,
     ).capabilities.to_dict()
 
 
@@ -104,7 +113,7 @@ def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> d
     return {
         "run_id": run_id,
         "run_kind": config.run.kind,
-        "policy_name": config.policy.name,
+        "policy_name": config.online_policy.name,
         "execution_mode": config.execution.mode,
         "control_mode": config.runtime.control_mode,
         "observation_profile": config.observation.profile,
@@ -116,8 +125,8 @@ def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> d
         "bucket_rows": config.execution.bucket_rows,
         "schedule_layer_selector": config.execution.schedule.layer_selector,
         "schedule_phase_selector": config.execution.schedule.phase_selector,
-        "capture_layer_selector": config.observation.capture.layer_selector,
-        "capture_phase_selector": config.observation.capture.phase_selector,
+        "capture_layer_selector": config.observation.capture_layer_selector,
+        "capture_phase_selector": config.observation.capture_phase_selector,
         "stop_after_selected_layer": config.validation.stop_after_selected_layer,
         "save_logits": config.validation.save_logits,
         "source_config_path": config.source_config_path,
@@ -224,8 +233,8 @@ def main(argv: list[str] | None = None) -> int:
 
         stage_barrier("count_agreement", ok=world_size == config.topology.ep_size, detail=f"world_size={world_size} ep_size={config.topology.ep_size}")
         dtype = dtype_from_name(config.runtime.precision)
-        if config.policy.p2_hint_artifact:
-            os.environ["ROUTERSENSE_P2_HINT_ARTIFACT"] = config.policy.p2_hint_artifact
+        if config.online_policy.p2.artifact:
+            os.environ["ROUTERSENSE_P2_HINT_ARTIFACT"] = config.online_policy.p2.artifact
         prompts = load_prompts(config.workload.prompts)
 
         from transformers import AutoTokenizer
@@ -263,12 +272,12 @@ def main(argv: list[str] | None = None) -> int:
         models = provider.provide_distributed_model(wrap_with_ddp=False, use_cpu_initialization=True)
         model = models[0].cuda(local_rank).eval()
 
-        policy_name = resolve_effective_policy_name(config.policy.name, "disabled")
+        policy_name = resolve_effective_policy_name(config.online_policy.name, "disabled")
         policy_capabilities = _policy_capabilities(config)
-        injection_config = _build_injection_config(config)
-        runtime = attach_dispatch_facade(
+        online_runtime_config = _build_online_runtime_config(config)
+        runtime = attach_formal_online_runtime(
             model=model,
-            config=injection_config,
+            runtime_config=online_runtime_config,
             rank=rank,
             local_rank=local_rank,
             run_id=run_id,
@@ -297,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         audit_payload = _build_rank_audits(
             runtime=runtime,
             transport_results=transport_results,
-            policy_enabled=bool(policy_name and injection_config.execution_mode == "phase_sync_wave"),
+            policy_enabled=bool(policy_name and online_runtime_config.execution_mode == "phase_sync_wave"),
         )
 
         rank_summary = {
@@ -317,20 +326,20 @@ def main(argv: list[str] | None = None) -> int:
             "local_combine_rows": native_dispatch_summary["local_combine_rows"],
             **phase_stats,
             "policy_name": policy_name or "disabled",
-            "policy_version": injection_config.policy_version if policy_name else "",
+            "policy_version": "v1" if policy_name else "",
             "policy_capabilities": policy_capabilities,
             "legacy_scheduler_mode": "",
-            "execution_mode": injection_config.execution_mode,
-            "control_mode": injection_config.control_mode,
-            "bucket_rows": injection_config.bucket_rows,
-            "p0_weight": injection_config.p0_weight,
-            "p1_reservation_weight": injection_config.p1_reservation_weight,
-            "p2_hint_weight": injection_config.p2_hint_weight,
-            "p2_hint_mode": injection_config.p2_hint_mode,
-            "schedule_layer_selector": injection_config.schedule_layer_selector,
-            "schedule_phase_selector": injection_config.schedule_phase_selector,
+            "execution_mode": online_runtime_config.execution_mode,
+            "control_mode": online_runtime_config.control_mode,
+            "bucket_rows": online_runtime_config.execution_selection.bucket_rows,
+            "p0_weight": online_runtime_config.policy_parameters.p0_weight,
+            "p1_reservation_weight": online_runtime_config.policy_parameters.p1_reservation_weight,
+            "p2_hint_weight": online_runtime_config.policy_parameters.p2_hint_weight,
+            "p2_hint_mode": online_runtime_config.policy_parameters.p2_hint_mode,
+            "schedule_layer_selector": online_runtime_config.execution_selection.layer_selector,
+            "schedule_phase_selector": online_runtime_config.execution_selection.phase_selector,
             "precision": config.runtime.precision,
-            "transport_mutation": bool(policy_name and injection_config.execution_mode == "phase_sync_wave"),
+            "transport_mutation": bool(policy_name and online_runtime_config.execution_mode == "phase_sync_wave"),
             "dispatcher_rows": native_dispatch_summary["dispatcher_rows"],
             "transport_execution_count": len(transport_results),
             "execution_audit_status": audit_payload["status"],
@@ -344,8 +353,8 @@ def main(argv: list[str] | None = None) -> int:
             native_dispatch_summary=native_dispatch_summary,
             rank_summary=rank_summary,
             save_logits=config.validation.save_logits,
-            capture_layer_selector=config.observation.capture.layer_selector,
-            capture_phase_selector=config.observation.capture.phase_selector,
+            capture_layer_selector=config.observation.capture_layer_selector,
+            capture_phase_selector=config.observation.capture_phase_selector,
         )
         write_json(run_dir / f"rank{rank}_execution_audit.json", audit_payload)
         gathered = gather_rank_payloads(rank_summary)
@@ -353,25 +362,25 @@ def main(argv: list[str] | None = None) -> int:
         if rank == 0:
             remote_dispatch_exercised = any(int(item.get("remote_dispatch_rows", 0)) > 0 for item in gathered)
             remote_combine_exercised = any(int(item.get("remote_combine_rows", 0)) > 0 for item in gathered)
-            transport_mutation = bool(policy_name and injection_config.execution_mode == "phase_sync_wave")
+            transport_mutation = bool(policy_name and online_runtime_config.execution_mode == "phase_sync_wave")
             details = {
                 "run_id": run_id,
                 "model": model_path,
                 "precision": config.runtime.precision,
                 "world_size": world_size,
                 "policy_name": policy_name or "disabled",
-                "policy_version": injection_config.policy_version if policy_name else "",
+                "policy_version": "v1" if policy_name else "",
                 "policy_capabilities": policy_capabilities,
                 "legacy_scheduler_mode": "",
-                "execution_mode": injection_config.execution_mode,
-                "control_mode": injection_config.control_mode,
-                "bucket_rows": injection_config.bucket_rows,
-                "p0_weight": injection_config.p0_weight,
-                "p1_reservation_weight": injection_config.p1_reservation_weight,
-                "p2_hint_weight": injection_config.p2_hint_weight,
-                "p2_hint_mode": injection_config.p2_hint_mode,
-                "schedule_layer_selector": injection_config.schedule_layer_selector,
-                "schedule_phase_selector": injection_config.schedule_phase_selector,
+                "execution_mode": online_runtime_config.execution_mode,
+                "control_mode": online_runtime_config.control_mode,
+                "bucket_rows": online_runtime_config.execution_selection.bucket_rows,
+                "p0_weight": online_runtime_config.policy_parameters.p0_weight,
+                "p1_reservation_weight": online_runtime_config.policy_parameters.p1_reservation_weight,
+                "p2_hint_weight": online_runtime_config.policy_parameters.p2_hint_weight,
+                "p2_hint_mode": online_runtime_config.policy_parameters.p2_hint_mode,
+                "schedule_layer_selector": online_runtime_config.execution_selection.layer_selector,
+                "schedule_phase_selector": online_runtime_config.execution_selection.phase_selector,
                 "transport_mutation": transport_mutation,
                 "rank_summaries": gathered,
                 "execution_audit_status": audit_payload["status"],
