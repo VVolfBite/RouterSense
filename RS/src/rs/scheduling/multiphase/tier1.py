@@ -13,7 +13,6 @@ from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE, RUNTIME_L
 from rs.scheduling.multiphase.matching import linear_sum_assignment
 from rs.scheduling.multiphase.replay import replay_and_audit_schedule
 from rs.scheduling.multiphase.scheduler_state import run_global_matching_scheduler
-from rs.scheduling.reference.birkhoff_von_neumann_fluid import decompose_fluid_matrix
 
 
 TIER1_ALGORITHM_IDS = (
@@ -163,7 +162,7 @@ def _build_u_policy(problem: MultiPhaseSchedulingProblem, spec: Tier1PolicySpec)
         expert_compute_delay=float(problem.release_model.expert_compute_delay),
         exact_matching=spec.exact_matching,
         wave_quantum=None,
-        max_waves=256,
+        max_waves=int(problem.options.max_waves),
         residual_weight=spec.residual_weight,
         barrier_weight=spec.barrier_weight,
         age_weight=spec.age_weight,
@@ -184,7 +183,7 @@ def _build_u_policy(problem: MultiPhaseSchedulingProblem, spec: Tier1PolicySpec)
         audit=dict(result.get("audit", {})),
         makespan=float(result.get("makespan", 0.0)),
         planning_time_ms=planning_time_ms,
-        solver_status="valid" if result.get("audit", {}).get("valid", False) else "invalid",
+        solver_status=str(result.get("solver_status", "completed")),
         selection_model="global_ready_set_exact_maxweight_matching",
         extra_diagnostics={
             "historical_parameters": {
@@ -226,40 +225,40 @@ def _build_b_birkhoff_atomic(problem: MultiPhaseSchedulingProblem) -> LogicalSch
 
 def _build_b_birkhoff_wave(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
     started = time.perf_counter()
-    raw_schedule: list[dict[str, Any]] = []
-    current_time = 0.0
-    wave_id = 0
-    phase_certificates: dict[str, Any] = {}
-    for phase, matrix in enumerate(_real_matrices(problem)):
-        if phase == 1 and raw_schedule:
-            current_time += float(problem.release_model.expert_compute_delay)
-        waves, certificate = decompose_fluid_matrix(_tuple_matrix(matrix), phase=_PHASE_NAMES[phase], start_wave_id=wave_id)
-        phase_certificates[_PHASE_NAMES[phase]] = certificate.to_dict()
-        for wave in waves:
-            duration = float(wave.duration)
-            for flow in wave.flows:
-                raw_schedule.append(
-                    {
-                        "chunk_id": flow.flow_id,
-                        "flow_id": f"phase{phase}_src{flow.src_rank}_dst{flow.dst_rank}",
-                        "phase": phase,
-                        "size": float(flow.byte_count),
-                        "served_volume": float(flow.byte_count),
-                        "src": int(flow.src_rank),
-                        "dst": int(flow.dst_rank),
-                        "src_gpu": int(flow.src_rank),
-                        "dst_gpu": int(flow.dst_rank),
-                        "start": current_time,
-                        "end": current_time + duration,
-                        "wave_id": wave_id,
-                        "priority": [float(flow.byte_count), 0.0, 0.0, 0.0, 0.0],
-                    }
-                )
-            current_time += duration
-            wave_id += 1
-    makespan = max((float(entry["end"]) for entry in raw_schedule), default=0.0)
+    phase_orders = _birkhoff_phase_orders(_real_matrices(problem))
+    base_priority = _base_score_lookup_from_phase_orders(phase_orders)
+    p2_matrix = [list(row) for row in problem.p2_next_dispatch_forecast_matrix]
+    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE:
+        p2_matrix = [[0 for _ in row] for row in p2_matrix]
+    result = run_global_matching_scheduler(
+        [list(row) for row in problem.p0_dispatch_matrix],
+        [list(row) for row in problem.p1_return_matrix],
+        p2_matrix,
+        int(problem.topology.num_gpus),
+        strategy="B_birkhoff_wave",
+        mode=problem.options.scheduling_mode,
+        prediction_confidence=0.0,
+        expert_compute_delay=float(problem.release_model.expert_compute_delay),
+        exact_matching=True,
+        wave_quantum=None,
+        max_waves=int(problem.options.max_waves),
+        residual_weight=0.25,
+        barrier_weight=0.0,
+        age_weight=0.05,
+        prediction_weight=0.0,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=1,
+        atomic=False,
+        base_score_lookup=base_priority,
+        base_priority_weight=1.0,
+    )
+    raw_schedule = list(result.get("schedule", []))
+    makespan = float(result.get("makespan", 0.0))
     planning_time_ms = (time.perf_counter() - started) * 1000.0
-    audit = _audit_raw_schedule(problem, raw_schedule, "B_birkhoff_wave", makespan, planning_time_ms)
+    audit = dict(result.get("audit", {}))
     return _raw_schedule_to_plan(
         problem=problem,
         algorithm_id="B_birkhoff_wave",
@@ -268,9 +267,22 @@ def _build_b_birkhoff_wave(problem: MultiPhaseSchedulingProblem) -> LogicalSched
         audit=audit,
         makespan=makespan,
         planning_time_ms=planning_time_ms,
-        solver_status="valid" if audit.get("valid", False) else "invalid",
+        solver_status=str(result.get("solver_status", "completed")),
         selection_model="phase_serial_birkhoff_fluid_decomposition",
-        extra_diagnostics={"phase_certificates": phase_certificates, "phase_serial": True, "fluid_split": True},
+        extra_diagnostics={
+            "historical_parameters": {
+                "exact_matching": True,
+                "atomic": False,
+                "residual_weight": 0.25,
+                "barrier_weight": 0.0,
+                "age_weight": 0.05,
+                "prediction_weight": 0.0,
+                "base_priority_weight": 1.0,
+            },
+            "base_score_lookup": base_priority,
+            "phase_serial": True,
+            "fluid_split": True,
+        },
     )
 
 
@@ -281,7 +293,7 @@ def _build_lagrangian(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePl
     best_order: list[list[dict[str, Any]]] | None = None
     best_makespan = float("inf")
     iterations: list[dict[str, Any]] = []
-    for iteration in range(6):
+    for iteration in range(8):
         phase_orders: list[list[dict[str, Any]]] = []
         for phase, matrix in enumerate(matrices):
             chunks = _phase_chunks(matrix, phase)
@@ -290,13 +302,16 @@ def _build_lagrangian(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePl
             ranks = _birkhoff_round_ranks(matrix)
             chunks.sort(
                 key=lambda chunk: (
-                    ranks.get((chunk["src_gpu"], chunk["dst_gpu"]), 10**9),
-                    -(lambda_by_gpu[chunk["src_gpu"]] * row_sums[chunk["src_gpu"]] * 0.01),
-                    -(lambda_by_gpu[chunk["dst_gpu"]] * col_sums[chunk["dst_gpu"]] * 0.01),
-                    -float(chunk["served_volume"]),
-                    int(chunk["src_gpu"]),
-                    int(chunk["dst_gpu"]),
-                )
+                    -(
+                        ranks.get((chunk["src_gpu"], chunk["dst_gpu"]), 0)
+                        - lambda_by_gpu[chunk["src_gpu"]] * row_sums[chunk["src_gpu"]] * 0.01
+                        - lambda_by_gpu[chunk["dst_gpu"]] * col_sums[chunk["dst_gpu"]] * 0.01
+                    ),
+                    float(chunk["served_volume"]),
+                    -int(chunk["src_gpu"]),
+                    -int(chunk["dst_gpu"]),
+                ),
+                reverse=True,
             )
             phase_orders.append(chunks)
         raw_schedule = _schedule_ordered_chunks(phase_orders, float(problem.release_model.expert_compute_delay))
@@ -305,12 +320,12 @@ def _build_lagrangian(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePl
             best_makespan = makespan
             best_order = phase_orders
         phase0_completion = _phase_completion_by_dst(raw_schedule, 0, problem.topology.num_gpus)
-        phase1_completion = _phase_completion_by_src(raw_schedule, 1, problem.topology.num_gpus)
+        phase1_completion = _phase_completion_by_dst(raw_schedule, 1, problem.topology.num_gpus)
         max_violation = 0.0
         for gpu in range(problem.topology.num_gpus):
             violation = phase1_completion[gpu] - phase0_completion[gpu] - float(problem.release_model.expert_compute_delay)
             max_violation = max(max_violation, violation)
-            lambda_by_gpu[gpu] = max(0.0, lambda_by_gpu[gpu] + 0.2 * violation)
+            lambda_by_gpu[gpu] = max(0.0, lambda_by_gpu[gpu] + (0.1 / float(iteration + 1)) * violation)
         iterations.append({"iteration": iteration, "makespan": makespan, "max_barrier_violation": max_violation, "lambda": list(lambda_by_gpu)})
         if max_violation <= 1e-9:
             break
@@ -368,59 +383,76 @@ def _schedule_phase_serial_atomic(
     expert_compute_delay: float,
     order_kind: str,
 ) -> list[dict[str, Any]]:
-    phase_orders = []
-    for phase, matrix in enumerate(matrices):
-        chunks = _phase_chunks(matrix, phase)
-        if order_kind == "birkhoff":
-            ranks = _birkhoff_round_ranks(matrix)
-            chunks.sort(key=lambda chunk: (ranks.get((chunk["src_gpu"], chunk["dst_gpu"]), 10**9), chunk["src_gpu"], chunk["dst_gpu"]))
-        phase_orders.append(chunks)
+    phase_orders = _birkhoff_phase_orders(matrices) if order_kind == "birkhoff" else [_phase_chunks(matrix, phase) for phase, matrix in enumerate(matrices)]
     return _schedule_ordered_chunks(phase_orders, expert_compute_delay)
 
 
 def _schedule_ordered_chunks(phase_orders: list[list[dict[str, Any]]], expert_compute_delay: float) -> list[dict[str, Any]]:
     schedule: list[dict[str, Any]] = []
-    current_time = 0.0
     wave_id = 0
+    num_gpus = 0
+    for chunks in phase_orders:
+        for chunk in chunks:
+            num_gpus = max(num_gpus, int(chunk["src_gpu"]) + 1, int(chunk["dst_gpu"]) + 1)
+    sender_available = [0.0] * num_gpus
+    receiver_available = [0.0] * num_gpus
+    phase_receiver_done = {0: [0.0] * num_gpus, 1: [0.0] * num_gpus}
     for phase, chunks in enumerate(phase_orders):
-        if phase == 1 and schedule:
-            current_time += expert_compute_delay
-        pending = list(chunks)
-        while pending:
-            used_src: set[int] = set()
-            used_dst: set[int] = set()
-            selected: list[dict[str, Any]] = []
-            remaining: list[dict[str, Any]] = []
-            for chunk in pending:
-                src = int(chunk["src_gpu"])
-                dst = int(chunk["dst_gpu"])
-                if src not in used_src and dst not in used_dst:
-                    selected.append(chunk)
-                    used_src.add(src)
-                    used_dst.add(dst)
-                else:
-                    remaining.append(chunk)
-            if not selected:
-                raise ValueError("phase-serial atomic scheduler made no progress")
-            wave_end = current_time
-            for chunk in selected:
-                served = float(chunk["served_volume"])
-                entry = dict(chunk)
-                entry.update(
-                    {
-                        "chunk_id": f"{chunk['flow_id']}_wave{wave_id}",
-                        "start": current_time,
-                        "end": current_time + served,
-                        "wave_id": wave_id,
-                        "priority": [served, 0.0, 0.0, 0.0, 0.0],
-                    }
-                )
-                schedule.append(entry)
-                wave_end = max(wave_end, current_time + served)
-            current_time = wave_end
+        for chunk in chunks:
+            src = int(chunk["src_gpu"])
+            dst = int(chunk["dst_gpu"])
+            served = float(chunk["served_volume"])
+            start = max(sender_available[src], receiver_available[dst])
+            if phase > 0:
+                delay = expert_compute_delay if phase == 1 else 0.0
+                start = max(start, phase_receiver_done[phase - 1][src] + delay)
+            end = start + served
+            entry = dict(chunk)
+            entry.update(
+                {
+                    "chunk_id": f"{chunk['flow_id']}_wave{wave_id}",
+                    "start": start,
+                    "end": end,
+                    "wave_id": wave_id,
+                    "priority": [served, 0.0, 0.0, 0.0, 0.0],
+                }
+            )
+            schedule.append(entry)
+            sender_available[src] = end
+            receiver_available[dst] = end
+            if phase in (0, 1):
+                phase_receiver_done[phase][dst] = max(phase_receiver_done[phase][dst], end)
             wave_id += 1
-            pending = remaining
     return schedule
+
+
+def _birkhoff_phase_orders(matrices: list[list[list[int]]]) -> list[list[dict[str, Any]]]:
+    phase_orders: list[list[dict[str, Any]]] = []
+    for phase, matrix in enumerate(matrices):
+        chunks = _phase_chunks(matrix, phase)
+        ranks = _birkhoff_round_ranks(matrix)
+        chunks.sort(
+            key=lambda chunk: (
+                -ranks.get((chunk["src_gpu"], chunk["dst_gpu"]), 0),
+                float(chunk["served_volume"]),
+                -int(chunk["src_gpu"]),
+                -int(chunk["dst_gpu"]),
+            ),
+            reverse=True,
+        )
+        phase_orders.append(chunks)
+    return phase_orders
+
+
+def _base_score_lookup_from_phase_orders(phase_orders: list[list[dict[str, Any]]]) -> dict[str, float]:
+    lookup: dict[str, float] = {}
+    total = sum(len(chunks) for chunks in phase_orders)
+    rank = 0
+    for chunks in phase_orders:
+        for chunk in chunks:
+            lookup[str(chunk["flow_id"])] = float(total - rank)
+            rank += 1
+    return lookup
 
 
 def _phase_chunks(matrix: list[list[int]], phase: int) -> list[dict[str, Any]]:
@@ -590,8 +622,10 @@ def _base_diagnostics(
     extra: dict[str, Any],
     per_wave: tuple[WaveDiagnostics, ...],
 ) -> dict[str, Any]:
-    future_information_mode = _future_information_mode(problem)
-    evaluation_eligible = _evaluation_eligible(problem)
+    forecast_available = problem.forecast is not None
+    forecast_consumed = _forecast_consumed(problem, algorithm_id)
+    future_information_mode = _future_information_mode(problem, algorithm_id)
+    evaluation_eligible = _evaluation_eligible(problem, algorithm_id)
     stable_audit = dict(audit)
     stable_audit["planning_time_ms"] = 0.0
     diag = PolicyDiagnostics(
@@ -605,7 +639,7 @@ def _base_diagnostics(
         blocked_flow_count=len(problem.flow_window.blocked_flows),
         forecast_flow_count=len(problem.flow_window.forecast_pressure),
         p1_dependency_used=algorithm_id.startswith("U_"),
-        p2_forecast_used=problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.options.prediction_confidence > 0.0,
+        p2_forecast_used=forecast_consumed,
         p2_source=problem.forecast.source if problem.forecast is not None else "none",
         evaluation_eligible=evaluation_eligible,
         per_wave=per_wave,
@@ -624,14 +658,17 @@ def _base_diagnostics(
         "future_information_mode": future_information_mode,
         "p2_role": _p2_role(problem),
         "p2_source": problem.forecast.source if problem.forecast is not None else "none",
-        "prediction_used": bool(problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.options.prediction_confidence > 0.0),
+        "forecast_available": forecast_available,
+        "forecast_source": problem.forecast.source if problem.forecast is not None else "none",
+        "forecast_consumed": forecast_consumed,
+        "prediction_used": forecast_consumed,
         "evaluation_eligible": evaluation_eligible,
         "makespan": float(makespan),
         "logical_service_horizon": float(makespan),
         "planning_time_ms": 0.0,
         "solver_status": solver_status,
         "valid": bool(audit.get("valid", False)),
-        "release_barrier_verified": not any("barrier violation" in error for error in audit.get("validation_errors", [])),
+        "release_barrier_verified": not any("release violation" in error or "barrier violation" in error for error in audit.get("validation_errors", [])),
         "flow_conservation_verified": not any("volume mismatch" in error or "unexpected flow" in error for error in audit.get("validation_errors", [])),
         "matching_legality_verified": not any("overlap" in error for error in audit.get("validation_errors", [])),
         "audit": stable_audit,
@@ -659,24 +696,36 @@ def _audit_raw_schedule(
         scheduler_name=scheduler_name,
         planning_time_ms=planning_time_ms,
         reported_makespan=makespan,
-        prediction_used=problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.options.prediction_confidence > 0.0,
+        prediction_used=_forecast_consumed(problem, scheduler_name),
     )
 
 
-def _future_information_mode(problem: MultiPhaseSchedulingProblem) -> str:
+def _forecast_consumed(problem: MultiPhaseSchedulingProblem, algorithm_id: str) -> bool:
+    if problem.options.scheduling_mode != RUNTIME_LOOKAHEAD_MODE:
+        return False
+    if algorithm_id in {"B_birkhoff", "B_birkhoff_wave", "U_lagrangian"}:
+        return False
+    if problem.forecast is None:
+        return False
+    return bool(problem.options.prediction_confidence > 0.0 and problem.forecast.matrix_total_bytes > 0)
+
+
+def _future_information_mode(problem: MultiPhaseSchedulingProblem, algorithm_id: str) -> str:
     if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
         return "oracle_execution_window"
-    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.forecast is not None and problem.forecast.source == "copy_current_dispatch":
+    if not _forecast_consumed(problem, algorithm_id):
+        return "none"
+    if problem.forecast is not None and problem.forecast.source == "copy_current_dispatch":
         return "heuristic_runtime_lookahead"
-    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.forecast is not None and bool(problem.forecast.oracle):
+    if problem.forecast is not None and bool(problem.forecast.oracle):
         return "oracle_predicted_runtime_lookahead"
     return "none"
 
 
-def _evaluation_eligible(problem: MultiPhaseSchedulingProblem) -> bool:
-    if problem.forecast is not None and bool(problem.forecast.oracle):
+def _evaluation_eligible(problem: MultiPhaseSchedulingProblem, algorithm_id: str) -> bool:
+    if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
         return False
-    if _future_information_mode(problem) == "oracle_execution_window":
+    if _forecast_consumed(problem, algorithm_id) and problem.forecast is not None and bool(problem.forecast.oracle):
         return False
     return True
 

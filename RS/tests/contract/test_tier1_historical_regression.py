@@ -66,11 +66,10 @@ def test_tier1_recovered_semantics_match_historical_golden(case: dict) -> None:
     assert case["algorithm_id"] in TIER1_ALGORITHM_IDS
     fixture = _fixture("unlock_hotspot_4rank")
     assert case["fixture_digest"] == stable_hash(fixture)
-    p2_source = "perfect_trace" if case["mode"] == RUNTIME_LOOKAHEAD_MODE else "actual_trace"
     problem = _build_problem(
         fixture,
         mode=case["mode"],
-        p2_source=p2_source,
+        p2_source=case["p2_source"],
         expert_compute_delay=2.0,
     )
     plan = resolve_policy(policy_name=case["algorithm_id"], bucket_rows=0).build_logical_plan(problem)

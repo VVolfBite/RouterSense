@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from rs.scheduling import FlowDemand, resolve_phase_policy, resolve_policy
+from rs.scheduling import FlowDemand, LogicalSchedulePlan, LogicalWave, resolve_phase_policy, resolve_policy
 from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE
+from rs.scheduling.multiphase.replay import replay_and_audit_schedule
 from rs.scheduling.multiphase.tier1 import FLUID_SERVICE_MODEL, TIER1_ALGORITHM_IDS
 from rs.scheduling.validation import stable_hash, validate_logical_plan
 
@@ -55,8 +56,17 @@ def test_tier1_runtime_lookahead_suppresses_real_p2_and_is_deterministic(algorit
     assert stable_hash(plans[0].to_dict()) == stable_hash(plans[1].to_dict()) == stable_hash(plans[2].to_dict())
     assert plans[0].diagnostics["algorithm_id"] == algorithm_id
     assert plans[0].diagnostics["mode"] == RUNTIME_LOOKAHEAD_MODE
-    assert plans[0].diagnostics["future_information_mode"] == "oracle_predicted_runtime_lookahead"
-    assert plans[0].diagnostics["evaluation_eligible"] is False
+    assert plans[0].diagnostics["forecast_available"] is True
+    if algorithm_id in {"B_birkhoff", "B_birkhoff_wave", "U_lagrangian"}:
+        assert plans[0].diagnostics["future_information_mode"] == "none"
+        assert plans[0].diagnostics["forecast_consumed"] is False
+        assert plans[0].diagnostics["prediction_used"] is False
+        assert plans[0].diagnostics["evaluation_eligible"] is True
+    else:
+        assert plans[0].diagnostics["future_information_mode"] == "oracle_predicted_runtime_lookahead"
+        assert plans[0].diagnostics["forecast_consumed"] is True
+        assert plans[0].diagnostics["prediction_used"] is True
+        assert plans[0].diagnostics["evaluation_eligible"] is False
     assert plans[0].diagnostics["valid"] is True, plans[0].diagnostics["audit"].get("validation_errors")
     assert all(flow.phase != "p2_next_dispatch" for wave in plans[0].waves for flow in wave.flows)
     validation = validate_logical_plan(plans[0], expected_flows=_expected_flows(problem), mode=RUNTIME_LOOKAHEAD_MODE)
@@ -175,12 +185,33 @@ def test_execution_window_p2_role_and_runtime_lookahead_source_modes() -> None:
     zero_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(zero_problem)
     assert zero_plan.diagnostics["p2_role"] == "advisory_forecast_pressure"
     assert zero_plan.diagnostics["future_information_mode"] == "none"
+    assert zero_plan.diagnostics["forecast_consumed"] is False
     assert zero_plan.diagnostics["prediction_used"] is False
 
     copy_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="copy_current_dispatch", expert_compute_delay=1.0)
     copy_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(copy_problem)
     assert copy_plan.diagnostics["future_information_mode"] == "heuristic_runtime_lookahead"
+    assert copy_plan.diagnostics["forecast_consumed"] is True
     assert copy_plan.diagnostics["evaluation_eligible"] is True
+
+    perfect_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(
+        _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="perfect_trace", expert_compute_delay=1.0)
+    )
+    assert perfect_plan.diagnostics["future_information_mode"] == "oracle_predicted_runtime_lookahead"
+    assert perfect_plan.diagnostics["forecast_consumed"] is True
+    assert perfect_plan.diagnostics["evaluation_eligible"] is False
+
+
+@pytest.mark.parametrize("algorithm_id", ("B_birkhoff", "B_birkhoff_wave"))
+def test_birkhoff_baselines_do_not_consume_unused_oracle_forecast(algorithm_id: str) -> None:
+    problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="perfect_trace", expert_compute_delay=1.0)
+    plan = resolve_policy(policy_name=algorithm_id, bucket_rows=0).build_logical_plan(problem)
+    assert plan.diagnostics["forecast_available"] is True
+    assert plan.diagnostics["forecast_source"] == "perfect_trace"
+    assert plan.diagnostics["forecast_consumed"] is False
+    assert plan.diagnostics["prediction_used"] is False
+    assert plan.diagnostics["future_information_mode"] == "none"
+    assert plan.diagnostics["evaluation_eligible"] is True
 
 
 def test_p1_and_p2_local_release_witnesses() -> None:
@@ -213,3 +244,67 @@ def test_barrier_criticality_witness_changes_selection_for_fluid_and_atomic() ->
     gated_atomic = resolve_policy(policy_name="U_gated_maxweight_matching_atomic", bucket_rows=0).build_logical_plan(problem)
     barrier_atomic = resolve_policy(policy_name="U_barrier_criticality_global_matching_atomic", bucket_rows=0).build_logical_plan(problem)
     assert gated_atomic.diagnostics["makespan"] != barrier_atomic.diagnostics["makespan"]
+
+
+def test_invalid_late_p0_release_counterexample_is_rejected_by_both_validators() -> None:
+    fixture = _fixture("invalid_late_p0_release_counterexample")
+    schedule = fixture["invalid_schedule"]
+    replay = replay_and_audit_schedule(
+        schedule=schedule,
+        dispatch_matrix=fixture["p0_dispatch_matrix"],
+        combine_matrix=fixture["p1_return_matrix"],
+        next_dispatch_matrix=fixture["p2_next_dispatch_matrix"],
+        num_gpus=int(fixture["num_gpus"]),
+        expert_compute_delay=0.0,
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        scheduler_name="invalid_counterexample",
+    )
+    assert replay["valid"] is False
+    assert any("p1 local release violation" in error for error in replay["validation_errors"])
+
+    flows = []
+    for entry in schedule:
+        phase = ("p0_dispatch", "p1_return", "p2_next_dispatch")[int(entry["phase"])]
+        flows.append(
+            FlowDemand(
+                flow_id=str(entry["chunk_id"]),
+                phase=phase,
+                src_rank=int(entry["src_gpu"]),
+                dst_rank=int(entry["dst_gpu"]),
+                byte_count=int(entry["served_volume"]),
+                release_state="ready",
+                is_executable=True,
+                dependency_metadata={
+                    "origin_flow_id": str(entry["flow_id"]),
+                    "service_model": "atomic_chunk",
+                    "start": float(entry["start"]),
+                    "end": float(entry["end"]),
+                },
+            )
+        )
+    plan = LogicalSchedulePlan(
+        policy_name="invalid_counterexample",
+        waves=tuple(LogicalWave(wave_id=int(flow.dependency_metadata["start"]), flows=(flow,), duration=1.0) for flow in flows),
+        diagnostics={},
+    )
+    expected = (
+        FlowDemand("p0_dispatch:0->1", "p0_dispatch", 0, 1, 1, "ready", True),
+        FlowDemand("p1_return:1->0", "p1_return", 1, 0, 1, "blocked", False),
+    )
+    logical = validate_logical_plan(plan, expected_flows=expected, mode=RUNTIME_LOOKAHEAD_MODE, expert_compute_delay=0.0)
+    assert logical["valid"] is False
+    assert any("p1 local release violation" in error for error in logical["errors"])
+
+
+def test_max_wave_limit_fails_closed_with_residual_nonzero() -> None:
+    problem = _build_problem(
+        _fixture("unlock_hotspot_4rank"),
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        p2_source="zero_hint",
+        expert_compute_delay=2.0,
+        max_waves=1,
+    )
+    plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(problem)
+    assert plan.diagnostics["solver_status"] == "max_wave_limit_exceeded"
+    assert plan.diagnostics["valid"] is False
+    assert plan.diagnostics["audit"]["residual_nonzero"] is True

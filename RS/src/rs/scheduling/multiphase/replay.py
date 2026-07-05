@@ -36,6 +36,7 @@ def replay_and_audit_schedule(
         schedule,
         key=lambda item: (float(item["start"]), float(item["end"]), int(item["phase"]), int(item["src_gpu"]), int(item["dst_gpu"])),
     )
+    parsed_entries: list[dict[str, Any]] = []
     for entry in ordered_schedule:
         phase = int(entry["phase"])
         src = int(entry["src_gpu"])
@@ -51,15 +52,34 @@ def replay_and_audit_schedule(
             continue
         if served <= 0.0 or end < start:
             errors.append(f"invalid interval for {key}: start={start} end={end} served={served}")
-        if phase > 0:
-            required = barrier_times[phase - 1][src] + (expert_compute_delay if phase == 1 else 0.0)
-            if start + 1e-9 < required:
-                errors.append(f"barrier violation for phase={phase}, src={src}: start={start:.6f} < required={required:.6f}")
         send_intervals[src].append((start, end, entry))
         recv_intervals[dst].append((start, end, entry))
         served_by_key[key] += served
         recv_remaining[(phase, dst)] = max(0.0, recv_remaining[(phase, dst)] - served)
         barrier_times[phase][dst] = max(barrier_times[phase][dst], end)
+        parsed_entries.append({"phase": phase, "src": src, "dst": dst, "start": start, "end": end, "entry": entry})
+    p0_inbound_completion = [0.0] * num_gpus
+    p1_inbound_completion = [0.0] * num_gpus
+    for item in parsed_entries:
+        if item["phase"] == 0:
+            p0_inbound_completion[item["dst"]] = max(p0_inbound_completion[item["dst"]], item["end"])
+        elif item["phase"] == 1:
+            p1_inbound_completion[item["dst"]] = max(p1_inbound_completion[item["dst"]], item["end"])
+    for item in parsed_entries:
+        if item["phase"] == 1:
+            required = p0_inbound_completion[item["src"]] + expert_compute_delay
+            if item["start"] + 1e-9 < required:
+                errors.append(
+                    f"p1 local release violation for src={item['src']}: "
+                    f"start={item['start']:.6f} < required={required:.6f}"
+                )
+        elif item["phase"] == 2:
+            required = p1_inbound_completion[item["src"]]
+            if item["start"] + 1e-9 < required:
+                errors.append(
+                    f"p2 local release violation for src={item['src']}: "
+                    f"start={item['start']:.6f} < required={required:.6f}"
+                )
     for gpu, intervals in send_intervals.items():
         intervals.sort(key=lambda item: (item[0], item[1]))
         for (_, prev_end, prev_entry), (start, _end, entry) in zip(intervals, intervals[1:], strict=False):

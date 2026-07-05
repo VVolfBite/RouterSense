@@ -147,6 +147,8 @@ def run_global_matching_scheduler(
                         value = 0.0 if pressure <= 0.0 else pressure / max(remaining, 1.0)
                         updated = (1.0 - price_decay) * prices[(phase, gpu)] + price_step * value
                         prices[(phase, gpu)] = max(-price_clip, min(price_clip, updated))
+    residual_nonzero = any(value > 1e-9 for value in residual.values())
+    solver_status = "max_wave_limit_exceeded" if residual_nonzero and wave_count >= max_rounds else "completed"
     makespan = max((float(entry["end"]) for entry in schedule), default=0.0)
     planning_time_ms = (time.perf_counter() - start_time) * 1000.0
     audit = replay_and_audit_schedule(
@@ -162,6 +164,16 @@ def run_global_matching_scheduler(
         reported_makespan=makespan,
         prediction_used=prediction_confidence > 0.0 and mode == RUNTIME_LOOKAHEAD_MODE,
     )
+    if residual_nonzero and solver_status == "max_wave_limit_exceeded":
+        audit = {
+            **audit,
+            "valid": False,
+            "residual_nonzero": True,
+            "validation_errors": [
+                *list(audit.get("validation_errors", [])),
+                "max_wave_limit_exceeded with residual nonzero",
+            ],
+        }
     return {
         "makespan": makespan,
         "schedule": schedule,
@@ -172,4 +184,7 @@ def run_global_matching_scheduler(
         "wave_count": wave_count,
         "atomic": atomic,
         "audit": audit,
+        "solver_status": solver_status,
+        "residual_nonzero": residual_nonzero,
+        "residual_remaining": {flow_id: value for flow_id, value in residual.items() if value > 1e-9},
     }

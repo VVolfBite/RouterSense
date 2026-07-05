@@ -94,6 +94,7 @@ class GlobalReadySetOptions:
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 1.0
+    max_waves: int = 256
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

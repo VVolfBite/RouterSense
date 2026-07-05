@@ -265,6 +265,7 @@ def validate_logical_plan(
     intervals_by_phase_src: dict[tuple[str, int], list[float]] = defaultdict(list)
     seen_ids: set[str] = set()
     errors: list[str] = []
+    records: list[dict[str, object]] = []
     for wave in plan.waves:
         used_src: set[int] = set()
         used_dst: set[int] = set()
@@ -297,14 +298,44 @@ def validate_logical_plan(
                 end_f = float(end)
                 intervals_by_phase_dst[(str(flow.phase), int(flow.dst_rank))].append(end_f)
                 intervals_by_phase_src[(str(flow.phase), int(flow.src_rank))].append(start_f)
-                if str(flow.phase) == "p1_return":
-                    required = max(intervals_by_phase_dst.get(("p0_dispatch", int(flow.src_rank)), [0.0])) + float(expert_compute_delay)
-                    if start_f + 1e-9 < required:
-                        errors.append(f"p1 local release violation flow={flow.flow_id} start={start_f:.6f} required={required:.6f}")
-                if str(flow.phase) == "p2_next_dispatch":
-                    required = max(intervals_by_phase_dst.get(("p1_return", int(flow.src_rank)), [0.0]))
-                    if start_f + 1e-9 < required:
-                        errors.append(f"p2 local release violation flow={flow.flow_id} start={start_f:.6f} required={required:.6f}")
+                records.append(
+                    {
+                        "flow_id": flow.flow_id,
+                        "phase": str(flow.phase),
+                        "src_rank": int(flow.src_rank),
+                        "dst_rank": int(flow.dst_rank),
+                        "start": start_f,
+                        "end": end_f,
+                    }
+                )
+    p0_inbound_completion: dict[int, float] = defaultdict(float)
+    p1_inbound_completion: dict[int, float] = defaultdict(float)
+    for record in records:
+        if record["phase"] == "p0_dispatch":
+            p0_inbound_completion[int(record["dst_rank"])] = max(
+                p0_inbound_completion[int(record["dst_rank"])],
+                float(record["end"]),
+            )
+        elif record["phase"] == "p1_return":
+            p1_inbound_completion[int(record["dst_rank"])] = max(
+                p1_inbound_completion[int(record["dst_rank"])],
+                float(record["end"]),
+            )
+    for record in records:
+        if record["phase"] == "p1_return":
+            required = p0_inbound_completion[int(record["src_rank"])] + float(expert_compute_delay)
+            if float(record["start"]) + 1e-9 < required:
+                errors.append(
+                    f"p1 local release violation flow={record['flow_id']} "
+                    f"start={float(record['start']):.6f} required={required:.6f}"
+                )
+        elif record["phase"] == "p2_next_dispatch":
+            required = p1_inbound_completion[int(record["src_rank"])]
+            if float(record["start"]) + 1e-9 < required:
+                errors.append(
+                    f"p2 local release violation flow={record['flow_id']} "
+                    f"start={float(record['start']):.6f} required={required:.6f}"
+                )
     if expected and served != expected:
         errors.append(f"coverage mismatch expected={expected} served={dict(served)}")
     return {

@@ -25,6 +25,7 @@ def main() -> None:
         mode=args.mode,
         p2_source=args.p2_source,
         expert_compute_delay=float(args.expert_compute_delay),
+        max_waves=int(args.max_waves),
     )
     started = time.perf_counter()
     _write_json(output_dir / "run_manifest.json", {
@@ -98,6 +99,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=(EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE), default=RUNTIME_LOOKAHEAD_MODE)
     parser.add_argument("--p2-source", choices=("zero_hint", "copy_current_dispatch", "perfect_trace", "actual_trace"), default="zero_hint")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
+    parser.add_argument("--max-waves", type=int, default=256)
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
 
@@ -112,6 +114,7 @@ def _build_problem(
     mode: str,
     p2_source: str,
     expert_compute_delay: float,
+    max_waves: int = 256,
 ) -> MultiPhaseSchedulingProblem:
     p0 = _matrix(fixture["p0_dispatch_matrix"])
     p1 = _matrix(fixture["p1_return_matrix"])
@@ -165,6 +168,7 @@ def _build_problem(
             scheduling_mode=mode,
             information_mode="p0_p1_p2" if source != "zero_hint" else "p0_p1",
             prediction_confidence=prediction_confidence,
+            max_waves=max_waves,
         ),
         p0_dispatch_matrix=p0,
         p1_return_matrix=p1,
