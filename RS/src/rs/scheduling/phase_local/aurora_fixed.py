@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from rs.scheduling.contracts import LogicalSchedulePlan, MultiPhaseSchedulingProblem
 from rs.scheduling.phase_execution import BucketTask, PhaseExecutionPlan, PhaseReadyContext, PlanWave
 
-from .fifo import build_transfer_layouts_and_tasks, finalize_execution_plan
+from .common import build_logical_plan_from_order, build_transfer_layouts_and_tasks, finalize_execution_plan, flows_from_matrix
 from ..capabilities import PolicyCapabilities
 
 
@@ -12,17 +13,55 @@ class AuroraOrderFixedPolicy:
     policy_name = "aurora_order_fixed"
     policy_version = "v1"
     capabilities = PolicyCapabilities(
-        uses_p0=True,
-        uses_p1=True,
-        uses_p2=False,
-        cross_phase=False,
-        requires_topology=False,
-        supports_sync_before_phase=True,
-        supports_default_continue=False,
+        supports_offline=True,
+        supports_online_phase_local_execution=True,
+        supports_online_multiphase_execution=False,
+        uses_current_ready_flows=True,
+        uses_blocked_p1_dependency=False,
+        uses_p2_forecast=False,
+        requires_fixed_placement=True,
+        evaluation_eligible=True,
     )
 
     def __init__(self, *, bucket_rows: int) -> None:
         self.bucket_rows = int(bucket_rows)
+
+    def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
+        def order_phase(flows):
+            remaining = list(flows)
+            ordered = []
+            while remaining:
+                source_pressure = defaultdict(int)
+                destination_pressure = defaultdict(int)
+                for flow in remaining:
+                    source_pressure[int(flow.src_rank)] += int(flow.byte_count)
+                    destination_pressure[int(flow.dst_rank)] += int(flow.byte_count)
+                remaining.sort(
+                    key=lambda flow: (
+                        -max(source_pressure[int(flow.src_rank)], destination_pressure[int(flow.dst_rank)]),
+                        -int(flow.byte_count),
+                        int(flow.src_rank),
+                        int(flow.dst_rank),
+                        str(flow.flow_id),
+                    )
+                )
+                ordered.append(remaining.pop(0))
+            return ordered
+
+        ordered_p0 = order_phase(flows_from_matrix(problem.p0_dispatch_matrix, phase="p0_dispatch", release_state="ready", executable=True))
+        ordered_p1 = order_phase(flows_from_matrix(problem.p1_return_matrix, phase="p1_return", release_state="ready", executable=True))
+        return build_logical_plan_from_order(
+            policy_name=self.policy_name,
+            policy_version=self.policy_version,
+            capabilities=self.capabilities,
+            ordered_p0=ordered_p0,
+            ordered_p1=ordered_p1,
+            information_mode="phase_local_pressure",
+            p2_source=problem.forecast.source if problem.forecast is not None else "none",
+            evaluation_eligible=True,
+            priority_components={"priority": "max(source_pressure,destination_pressure)->flow bytes->src->dst->flow_id"},
+            tie_break_rule="src_rank,dst_rank,flow_id",
+        )
 
     def build_plan(
         self,

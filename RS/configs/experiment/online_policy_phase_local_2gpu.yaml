@@ -1,6 +1,6 @@
 run:
   kind: online_policy_correctness
-  name: online-policy-correctness-local-2gpu
+  name: online-policy-phase-local-2gpu
 model:
   config: configs/model/olmoe_1b_7b_instruct.yaml
 topology:
@@ -12,7 +12,7 @@ runtime:
   dispatcher: alltoall
   control_mode: sync_before_phase
 online_policy:
-  name: phase_barrier_fifo
+  name: islip_round_robin
   parameters:
     p0_weight: 1.0
     p1_reservation_weight: 1.0
@@ -24,7 +24,7 @@ offline_study:
   policies: []
 execution:
   mode: phase_sync_wave
-  bucket_rows: 0
+  bucket_rows: 16
   schedule:
     layer_selector: all
     phase_selector: both
@@ -39,4 +39,4 @@ validation:
   save_logits: true
   stop_after_selected_layer: false
 artifact:
-  artifact_root: artifacts/megatron_ep/phase_executor
+  artifact_root: artifacts/megatron_ep/phase_local

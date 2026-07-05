@@ -247,6 +247,109 @@ def summarize_plan_metrics(plan: RouterSensePlan) -> dict[str, object]:
     }
 
 
+def validate_logical_plan(
+    plan,
+    *,
+    expected_flows: tuple | None = None,
+) -> dict[str, object]:
+    expected = {}
+    for flow in expected_flows or ():
+        key = (flow.phase, int(flow.src_rank), int(flow.dst_rank))
+        expected[key] = expected.get(key, 0) + int(flow.byte_count)
+    served: dict[tuple[str, int, int], int] = defaultdict(int)
+    seen_ids: set[str] = set()
+    errors: list[str] = []
+    for wave in plan.waves:
+        used_src: set[int] = set()
+        used_dst: set[int] = set()
+        if not wave.flows:
+            errors.append(f"wave {wave.wave_id} has no flows")
+        for flow in wave.flows:
+            if flow.flow_id in seen_ids:
+                errors.append(f"duplicate flow id {flow.flow_id}")
+            seen_ids.add(flow.flow_id)
+            if int(flow.src_rank) in used_src:
+                errors.append(f"wave {wave.wave_id} repeats source {flow.src_rank}")
+            if int(flow.dst_rank) in used_dst:
+                errors.append(f"wave {wave.wave_id} repeats destination {flow.dst_rank}")
+            used_src.add(int(flow.src_rank))
+            used_dst.add(int(flow.dst_rank))
+            served[(flow.phase, int(flow.src_rank), int(flow.dst_rank))] += int(flow.byte_count)
+    if expected and served != expected:
+        errors.append(f"coverage mismatch expected={expected} served={dict(served)}")
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "coverage_verified": not errors,
+        "matching_constraints_verified": not any("repeats" in error for error in errors),
+        "served_amounts": {str(key): value for key, value in served.items()},
+    }
+
+
+def validate_phase_execution_plan(plan) -> dict[str, object]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for wave in plan.waves:
+        used_src: set[int] = set()
+        used_dst: set[int] = set()
+        if not wave.bucket_tasks:
+            errors.append(f"wave {wave.wave_id} has no bucket tasks")
+        for task in wave.bucket_tasks:
+            if task.task_id in seen:
+                errors.append(f"duplicate task {task.task_id}")
+            seen.add(task.task_id)
+            if int(task.src_rank) in used_src:
+                errors.append(f"wave {wave.wave_id} repeats source {task.src_rank}")
+            if int(task.dst_rank) in used_dst:
+                errors.append(f"wave {wave.wave_id} repeats destination {task.dst_rank}")
+            used_src.add(int(task.src_rank))
+            used_dst.add(int(task.dst_rank))
+    return {"valid": not errors, "errors": errors}
+
+
+def validate_bvn_fluid_certificate(certificate: dict[str, object]) -> dict[str, object]:
+    phase_certificates = certificate.get("phase_certificates", certificate)
+    errors: list[str] = []
+    certs = phase_certificates.values() if isinstance(phase_certificates, dict) and "reference_model" not in phase_certificates else (phase_certificates,)
+    for cert in certs:
+        if not isinstance(cert, dict):
+            errors.append("certificate entry is not a mapping")
+            continue
+        if cert.get("reference_model") != "birkhoff_von_neumann_fluid":
+            errors.append("wrong reference_model")
+        horizon = int(cert.get("fluid_optimal_horizon", 0))
+        lower = max(int(cert.get("max_source_load", 0)), int(cert.get("max_destination_load", 0)))
+        if horizon != lower:
+            errors.append(f"fluid horizon {horizon} does not match port-load lower bound {lower}")
+        if not cert.get("coverage_verified", False):
+            errors.append("coverage not verified")
+        if not cert.get("matching_constraints_verified", False):
+            errors.append("matching constraints not verified")
+        if not cert.get("certificate_verified", False):
+            errors.append("certificate_verified is false")
+        for wave in cert.get("waves", []):
+            for edge in wave.get("dummy_edges", []) if isinstance(wave.get("dummy_edges", []), list) else ():
+                if isinstance(edge, dict) and edge.get("flow_id"):
+                    errors.append("dummy edge leaked flow_id")
+    return {"valid": not errors, "errors": errors}
+
+
+def compare_plan_to_exact_reference(plan, exact_result: dict[str, object]) -> dict[str, object]:
+    if not exact_result.get("supported", False):
+        return {"available": False, "certified_optimal": False, "optimality_gap": None}
+    plan_objective = sum(float(wave.duration) for wave in plan.waves)
+    optimal = float(exact_result.get("objective_logical_makespan", 0) or 0)
+    gap = None if optimal == 0 and plan_objective != 0 else float(plan_objective - optimal)
+    return {
+        "available": True,
+        "certified_optimal": bool(exact_result.get("certified_optimal", False)),
+        "plan_objective_logical_makespan": plan_objective,
+        "exact_objective_logical_makespan": optimal,
+        "optimality_gap": gap,
+        "policy_reaches_optimum": bool(exact_result.get("certified_optimal", False)) and abs(plan_objective - optimal) < 1e-9,
+    }
+
+
 __all__ = [
     "build_phase_demands",
     "build_remote_flows",
@@ -254,6 +357,10 @@ __all__ = [
     "phase_coverage_from_demands",
     "stable_hash",
     "summarize_plan_metrics",
+    "compare_plan_to_exact_reference",
     "validate_global_observations",
+    "validate_bvn_fluid_certificate",
+    "validate_logical_plan",
+    "validate_phase_execution_plan",
     "validate_shadow_plan",
 ]

@@ -31,13 +31,30 @@ _POLICY_TO_CODE = {
     "joint_shadow_p0p1": 1,
     "native_passthrough_identity": 2,
     "bucketed_fifo": 3,
+    "phase_barrier_fifo": 3,
     "trivial_reverse_bucket": 4,
     "aurora_order_fixed": 5,
     "fast_bvn_single_tier": 6,
     "routersense_p0p1_reservation": 7,
     "routersense_p0p1p2_hint": 8,
+    "greedy_ready_set": 9,
+    "birkhoff_phase_local": 10,
+    "islip_round_robin": 11,
 }
-_CODE_TO_POLICY = {value: key for key, value in _POLICY_TO_CODE.items()}
+_CODE_TO_POLICY = {
+    0: "native_order",
+    1: "joint_shadow_p0p1",
+    2: "native_passthrough_identity",
+    3: "phase_barrier_fifo",
+    4: "trivial_reverse_bucket",
+    5: "aurora_order_fixed",
+    6: "fast_bvn_single_tier",
+    7: "routersense_p0p1_reservation",
+    8: "routersense_p0p1p2_hint",
+    9: "greedy_ready_set",
+    10: "birkhoff_phase_local",
+    11: "islip_round_robin",
+}
 _EXEC_TO_CODE = {"native_passthrough": 0, "shadow_only": 1}
 _CODE_TO_EXEC = {value: key for key, value in _EXEC_TO_CODE.items()}
 

@@ -21,6 +21,16 @@ SUPPORTED_RUN_KINDS = {
 SUPPORTED_OBSERVATION_PROFILES = {"minimal", "execution", "debug"}
 SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
 SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave"}
+SUPPORTED_ONLINE_PHASE_POLICIES = {
+    "phase_barrier_fifo",
+    "bucketed_fifo",
+    "greedy_ready_set",
+    "islip_round_robin",
+    "birkhoff_phase_local",
+    "trivial_reverse_bucket",
+    "aurora_order_fixed",
+    "fast_bvn_single_tier",
+}
 
 
 @dataclass(frozen=True)
@@ -184,7 +194,11 @@ def validate_run_config(config: RunConfig) -> None:
         raise ValueError(f"unsupported runtime.control_mode {config.runtime.control_mode!r}")
     if config.execution.mode not in SUPPORTED_EXECUTION_MODES:
         raise ValueError(f"unsupported execution.mode {config.execution.mode!r}")
-    if config.online_policy.p2.mode == "none" and abs(float(config.online_policy.parameters.p2_hint_weight)) > 1e-9:
+    if (
+        config.run.kind.startswith("online_")
+        and config.online_policy.p2.mode == "none"
+        and abs(float(config.online_policy.parameters.p2_hint_weight)) > 1e-9
+    ):
         raise ValueError("p2_hint_weight must be 0 when p2_hint_mode=none")
     if config.online_policy.p2.mode == "deterministic_stub" and config.run.kind == "online_policy_correctness":
         pass
@@ -220,6 +234,11 @@ def validate_run_config(config: RunConfig) -> None:
     if config.run.kind == "online_policy_correctness":
         if config.online_policy.name in {"", "disabled"}:
             raise ValueError("online_policy_correctness requires a supported online_policy.name")
+        if config.online_policy.name not in SUPPORTED_ONLINE_PHASE_POLICIES:
+            raise ValueError(
+                "online_policy_correctness only supports phase-local executable policies; "
+                f"got {config.online_policy.name!r}"
+            )
         if config.execution.mode != "phase_sync_wave":
             raise ValueError("online_policy_correctness requires phase_sync_wave execution")
         if config.runtime.control_mode != "sync_before_phase":

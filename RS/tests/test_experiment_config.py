@@ -22,7 +22,7 @@ def test_load_online_policy_correctness_config() -> None:
     assert config.run.kind == "online_policy_correctness"
     assert config.execution.mode == "phase_sync_wave"
     assert config.runtime.control_mode == "sync_before_phase"
-    assert config.online_policy.name == "bucketed_fifo"
+    assert config.online_policy.name == "phase_barrier_fifo"
 
 
 def test_build_launch_command_uses_torchrun_for_online() -> None:

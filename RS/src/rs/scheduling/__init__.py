@@ -1,14 +1,32 @@
-"""Formal scheduling package for RouteSense.
+"""Formal scheduling package for RouterSense."""
 
-Round-1 structure cleanup keeps this package as a compatibility facade over the
-already-validated scheduler implementations and the frozen online policy ABI.
-"""
-
-from .contracts import FlowDemand, FlowWindow, LogicalSchedulePlan, LogicalWave
+from .contracts import (
+    FlowDemand,
+    FlowWindow,
+    ForecastPressure,
+    GlobalReadySetOptions,
+    LogicalSchedulePlan,
+    LogicalTopology,
+    LogicalWave,
+    MultiPhaseSchedulingProblem,
+    PreparedWindowPlan,
+    ReleaseConstraint,
+)
+from .registry import resolve_phase_policy, resolve_policy, supported_phase_policies, supported_policies
 
 __all__ = [
     "FlowDemand",
+    "ForecastPressure",
     "FlowWindow",
+    "GlobalReadySetOptions",
     "LogicalSchedulePlan",
+    "LogicalTopology",
     "LogicalWave",
+    "MultiPhaseSchedulingProblem",
+    "PreparedWindowPlan",
+    "ReleaseConstraint",
+    "resolve_phase_policy",
+    "resolve_policy",
+    "supported_phase_policies",
+    "supported_policies",
 ]

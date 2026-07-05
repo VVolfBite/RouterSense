@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
+from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
 from rs.scheduling.phase_execution import BucketTask, PhaseExecutionPlan, PhaseReadyContext, PlanWave
 
-from .fifo import build_transfer_layouts_and_tasks, finalize_execution_plan
+from .common import build_transfer_layouts_and_tasks, finalize_execution_plan, flows_from_matrix
 from ..capabilities import PolicyCapabilities
 from ..matching import maximum_weight_bipartite_matching
 
@@ -13,17 +15,111 @@ class FastBVNSingleTierPolicy:
     policy_name = "fast_bvn_single_tier"
     policy_version = "v1"
     capabilities = PolicyCapabilities(
-        uses_p0=True,
-        uses_p1=True,
-        uses_p2=False,
-        cross_phase=False,
-        requires_topology=False,
-        supports_sync_before_phase=True,
-        supports_default_continue=False,
+        supports_offline=True,
+        supports_online_phase_local_execution=True,
+        supports_online_multiphase_execution=False,
+        uses_current_ready_flows=True,
+        uses_blocked_p1_dependency=False,
+        uses_p2_forecast=False,
+        requires_fixed_placement=True,
+        evaluation_eligible=True,
     )
 
     def __init__(self, *, bucket_rows: int) -> None:
         self.bucket_rows = int(bucket_rows)
+
+    def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
+        if int(problem.topology.num_gpus) > 8:
+            raise ValueError("unsupported_policy_scale")
+
+        def decompose_phase(matrix: tuple[tuple[int, ...], ...], *, phase: str, start_wave_id: int) -> tuple[list[LogicalWave], list[WaveDiagnostics]]:
+            residual = {
+                (src_rank, dst_rank): int(byte_count)
+                for src_rank, row in enumerate(matrix)
+                for dst_rank, byte_count in enumerate(row)
+                if src_rank != dst_rank and int(byte_count) > 0
+            }
+            waves: list[LogicalWave] = []
+            wave_diags: list[WaveDiagnostics] = []
+            wave_id = start_wave_id
+            ranks = tuple(range(len(matrix)))
+            while residual:
+                remaining_before = float(sum(residual.values()))
+
+                def weight(src: int, dst: int) -> float:
+                    return float(residual.get((src, dst), 0))
+
+                edges = maximum_weight_bipartite_matching(sources=ranks, destinations=ranks, edge_weight=weight)
+                chosen = [edge for edge in edges if edge in residual]
+                if not chosen:
+                    raise ValueError("fast_bvn_single_tier could not select any logical edge")
+                quantum = min(int(residual[edge]) for edge in chosen)
+                flows = []
+                selected_edges = []
+                matching_weight = 0.0
+                for src_rank, dst_rank in chosen:
+                    flow_id = f"{phase}:{src_rank}->{dst_rank}:wave{wave_id}"
+                    flows.append(
+                        FlowDemand(
+                            flow_id=flow_id,
+                            phase=phase,
+                            src_rank=int(src_rank),
+                            dst_rank=int(dst_rank),
+                            byte_count=int(quantum),
+                            release_state="ready",
+                            is_executable=True,
+                        )
+                    )
+                    matching_weight += float(residual[(src_rank, dst_rank)])
+                    selected_edges.append({"src_rank": int(src_rank), "dst_rank": int(dst_rank), "byte_count": int(quantum)})
+                    residual[(src_rank, dst_rank)] -= int(quantum)
+                    if residual[(src_rank, dst_rank)] <= 0:
+                        residual.pop((src_rank, dst_rank), None)
+                remaining_after = float(sum(residual.values()))
+                waves.append(LogicalWave(wave_id=wave_id, flows=tuple(flows), duration=float(quantum)))
+                wave_diags.append(
+                    WaveDiagnostics(
+                        wave_id=wave_id,
+                        selected_flow_ids=tuple(flow.flow_id for flow in flows),
+                        selected_edges=tuple(selected_edges),
+                        matching_weight=matching_weight,
+                        priority_components={"matching_rule": "maximum_weight_bipartite_matching", "service_quantum": int(quantum)},
+                        remaining_bytes_before=remaining_before,
+                        remaining_bytes_after=remaining_after,
+                        ready_flow_count_before=len(residual) + len(chosen),
+                        blocked_flow_count_before=0,
+                        forecast_pressure_summary={},
+                        selection_reason="max-weight matching then min residual quantum",
+                    )
+                )
+                wave_id += 1
+            return waves, wave_diags
+
+        p0_waves, p0_diags = decompose_phase(problem.p0_dispatch_matrix, phase="p0_dispatch", start_wave_id=0)
+        p1_waves, p1_diags = decompose_phase(problem.p1_return_matrix, phase="p1_return", start_wave_id=len(p0_waves))
+        waves = tuple(p0_waves + p1_waves)
+        diag = PolicyDiagnostics(
+            policy_name=self.policy_name,
+            policy_version=self.policy_version,
+            information_mode="phase_local_matching",
+            tie_break_rule="sorted matched edges by src_rank,dst_rank",
+            wave_count=len(waves),
+            logical_flow_count=sum(len(wave.flows) for wave in waves),
+            ready_flow_count=len(flows_from_matrix(problem.p0_dispatch_matrix, phase="p0_dispatch", release_state="ready", executable=True)),
+            blocked_flow_count=len(flows_from_matrix(problem.p1_return_matrix, phase="p1_return", release_state="blocked", executable=False)),
+            forecast_flow_count=len(problem.flow_window.forecast_pressure),
+            p1_dependency_used=False,
+            p2_forecast_used=False,
+            p2_source=problem.forecast.source if problem.forecast is not None else "none",
+            evaluation_eligible=True,
+            per_wave=tuple(p0_diags + p1_diags),
+            priority_components={"selection_rule": "maximum_weight_bipartite_matching"},
+        )
+        return LogicalSchedulePlan(
+            policy_name=self.policy_name,
+            waves=waves,
+            diagnostics=diag.to_dict(),
+        )
 
     def build_plan(
         self,

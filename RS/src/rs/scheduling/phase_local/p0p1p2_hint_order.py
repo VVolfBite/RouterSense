@@ -18,13 +18,14 @@ class RouterSenseP0P1P2HintPolicy:
     policy_name = "routersense_p0p1p2_hint"
     policy_version = "v1"
     capabilities = PolicyCapabilities(
-        uses_p0=True,
-        uses_p1=True,
-        uses_p2=True,
-        cross_phase=True,
-        requires_topology=False,
-        supports_sync_before_phase=True,
-        supports_default_continue=False,
+        supports_offline=True,
+        supports_online_phase_local_execution=True,
+        supports_online_multiphase_execution=False,
+        uses_current_ready_flows=True,
+        uses_blocked_p1_dependency=True,
+        uses_p2_forecast=True,
+        requires_fixed_placement=False,
+        evaluation_eligible=False,
     )
 
     def __init__(self, *, bucket_rows: int, p0_weight: float = 1.0, p1_reservation_weight: float = 1.0, p2_hint_weight: float = 1.0) -> None:

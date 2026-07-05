@@ -1,6 +1,6 @@
 run:
   kind: offline_flow_study
-  name: offline-flow-study-4rank
+  name: offline-policy-core-4rank
 model:
   config: configs/model/olmoe_1b_7b_instruct.yaml
 topology:
@@ -16,12 +16,19 @@ runtime:
   expert_compute_delay: 0.0
 online_policy:
   name: disabled
+  parameters:
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 1.0
 offline_study:
   p2_source: copy_current_dispatch
   policies:
     - phase_barrier_fifo
     - greedy_ready_set
+    - islip_round_robin
     - birkhoff_phase_local
+    - birkhoff_von_neumann_fluid
+    - exact_small_instance_reference
     - aurora_order_fixed
     - fast_bvn_single_tier
     - routersense_multiphase_lookahead:p0_p1_p2
@@ -37,4 +44,4 @@ validation:
   save_logits: false
   stop_after_selected_layer: false
 artifact:
-  artifact_root: artifacts/offline/flow_study
+  artifact_root: artifacts/offline/policy_core
