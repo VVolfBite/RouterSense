@@ -64,19 +64,12 @@ class WorkloadConfig:
 
 
 @dataclass(frozen=True)
-class RuntimeScheduleConfig:
-    layer_selector: str = "all"
-    phase_selector: str = "both"
-
-
-@dataclass(frozen=True)
 class RuntimeConfig:
     precision: str = "bf16"
     dispatcher: str = "alltoall"
     control_mode: str = "none"
     expert_compute_delay: float = 0.0
     scheduling_mode: str = "runtime_lookahead"
-    schedule: RuntimeScheduleConfig = field(default_factory=RuntimeScheduleConfig)
 
 
 @dataclass(frozen=True)
@@ -159,6 +152,7 @@ def load_run_config(
     config_path = (root / Path(config_path)).resolve() if not Path(config_path).is_absolute() else Path(config_path)
     payload = _load_yaml(config_path)
     payload = _resolve_nested_configs(payload, root)
+    _validate_known_keys(payload)
     for override in overrides or []:
         _apply_override(payload, override)
     if run_id:
@@ -285,6 +279,63 @@ def _resolve_nested_configs(payload: dict[str, Any], root: Path) -> dict[str, An
     return resolved
 
 
+def _validate_known_keys(payload: dict[str, Any]) -> None:
+    allowed: dict[str, Any] = {
+        "run": {"kind", "name"},
+        "model": {"config", "model_id", "local_path", "precision", "device_index", "max_new_tokens", "default_prompt", "trace_layer_path", "trust_remote_code"},
+        "topology": {
+            "config",
+            "launcher",
+            "ep_size",
+            "ep",
+            "network_scope",
+            "network",
+            "interface_hint",
+        },
+        "workload": {"prompts", "trace_artifact_dir", "num_prompts"},
+        "runtime": {"precision", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
+        "policy": {
+            "name",
+            "p0_weight",
+            "p1_reservation_weight",
+            "p2_hint_weight",
+            "p2_hint_mode",
+            "p2_hint_artifact",
+            "prediction_source",
+            "policies",
+            "reference_policies",
+        },
+        "execution": {"mode", "bucket_rows", "schedule"},
+        "observation": {"profile", "capture"},
+        "validation": {"save_logits", "stop_after_selected_layer", "allow_debug_capture"},
+        "artifact": {"output_root", "output_dir"},
+    }
+    nested: dict[tuple[str, ...], set[str]] = {
+        ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
+        ("topology", "ep"): {"size"},
+        ("topology", "network"): {"scope", "interface_hint"},
+        ("execution", "schedule"): {"layer_selector", "phase_selector"},
+        ("observation", "capture"): {"enabled", "layer_selector", "phase_selector"},
+    }
+
+    def _walk(mapping: dict[str, Any], path: tuple[str, ...] = ()) -> None:
+        allowed_here = allowed.get(path[0], None) if len(path) == 1 else nested.get(path)
+        if allowed_here is not None:
+            unknown = set(mapping) - set(allowed_here)
+            if unknown:
+                location = ".".join(path) if path else "<root>"
+                raise ValueError(f"unknown config keys under {location}: {sorted(unknown)!r}")
+        elif not path:
+            unknown = set(mapping) - set(allowed)
+            if unknown:
+                raise ValueError(f"unknown top-level config keys: {sorted(unknown)!r}")
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                _walk(value, (*path, key))
+
+    _walk(payload)
+
+
 def _apply_override(payload: dict[str, Any], override: str) -> None:
     if "=" not in override:
         raise ValueError(f"override must be key=value, got {override!r}")
@@ -293,9 +344,13 @@ def _apply_override(payload: dict[str, Any], override: str) -> None:
     target = payload
     keys = dotted_key.split(".")
     for key in keys[:-1]:
-        target = target.setdefault(key, {})
+        if key not in target:
+            raise ValueError(f"override path {dotted_key!r} does not exist")
+        target = target[key]
         if not isinstance(target, dict):
             raise ValueError(f"override path {dotted_key!r} collides with non-mapping field")
+    if keys[-1] not in target:
+        raise ValueError(f"override path {dotted_key!r} does not exist")
     target[keys[-1]] = value
 
 
@@ -346,10 +401,6 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             control_mode=str(runtime.get("control_mode", "none")),
             expert_compute_delay=float(runtime.get("expert_compute_delay", 0.0)),
             scheduling_mode=str(runtime.get("scheduling_mode", "runtime_lookahead")),
-            schedule=RuntimeScheduleConfig(
-                layer_selector=str(runtime.get("schedule", {}).get("layer_selector", "all")),
-                phase_selector=str(runtime.get("schedule", {}).get("phase_selector", "both")),
-            ),
         ),
         policy=PolicyConfig(
             name=str(policy.get("name", "disabled")),

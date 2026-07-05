@@ -50,3 +50,43 @@ def test_online_observe_rejects_enabled_policy() -> None:
             config_path=ROOT / "configs/experiment/online_observe_local_2gpu.yaml",
             overrides=["policy.name=bucketed_fifo"],
         )
+
+
+def test_unknown_override_fails() -> None:
+    with pytest.raises(ValueError):
+        load_run_config(
+            config_path=ROOT / "configs/experiment/offline_trace_olmoe.yaml",
+            overrides=["runtime.not_a_field=1"],
+        )
+
+
+def test_unknown_yaml_key_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        """
+run:
+  kind: offline_trace
+  name: bad
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: python
+runtime:
+  precision: bf16
+  bad_field: 1
+policy:
+  name: disabled
+execution:
+  mode: native_passthrough
+observation:
+  profile: minimal
+validation:
+  save_logits: false
+artifact:
+  output_root: artifacts/test
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_run_config(config_path=path)

@@ -9,8 +9,8 @@ def test_formal_import_smoke_under_pythonpath_src() -> None:
         "rs.scheduling.matching",
         "rs.runtime.offline",
         "rs.runtime.online.megatron_ep",
-        "rs.runtime.online.megatron_ep.phase.p0",
-        "rs.runtime.online.megatron_ep.phase.p1",
+        "rs.runtime.online.megatron_ep.phase",
+        "rs.runtime.online.megatron_ep.runtime",
     ]
     for name in modules:
         importlib.import_module(name)

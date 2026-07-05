@@ -19,9 +19,8 @@ ROOT = ensure_src_on_path()
 
 from rs.core.artifact import write_json
 from rs.core.experiment_config import RunConfig, load_run_config
-from rs.runtime.online.megatron_ep._facade import SelectedLayerStop
 from rs.runtime.online.megatron_ep.contracts import NativeEPSummary, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution.audit import build_execution_audit
+from rs.runtime.online.megatron_ep.execution.audit import ExecutionAuditInput, build_execution_audit
 from rs.runtime.online.megatron_ep.host import (
     attach_dispatch_facade,
     build_position_ids,
@@ -34,6 +33,7 @@ from rs.runtime.online.megatron_ep.host import (
     summarize_native_dispatchers,
     summarize_rank_environment,
 )
+from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop
 from rs.scheduling.registry import resolve_phase_policy
 
 from experiments.online.support.environment_validation import main as verify_env_main
@@ -56,7 +56,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--override", action="append", default=[])
-    parser.add_argument("--dry-run", action="store_true", default=False)
     return parser.parse_args(argv)
 
 
@@ -148,11 +147,15 @@ def _build_rank_audits(
         ]
         audits.append(
             build_execution_audit(
-                plan=plan,
-                transport_events=relevant_events,
-                phase=phase,
-                layer_id=layer_id,
-                policy_enabled=policy_enabled,
+                ExecutionAuditInput(
+                    execution_plan=plan,
+                    transport_events=tuple(relevant_events),
+                    phase_contract={
+                        "phase": phase,
+                        "layer_id": layer_id,
+                        "policy_enabled": policy_enabled,
+                    },
+                )
             ).to_dict()
         )
     status = "passed"
@@ -171,10 +174,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         output_dir=args.output_dir,
     )
-    if args.dry_run:
-        print(config.to_dict())
-        return 0
-
     model_path = _resolve_model_path(config)
     run_id = config.run.name
     run_dir = Path(config.artifact.output_root) / run_id

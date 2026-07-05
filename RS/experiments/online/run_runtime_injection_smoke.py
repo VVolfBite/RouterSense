@@ -91,9 +91,9 @@ def _source_archive_sha256(root: Path) -> str:
     tracked = [
         root / "experiments/online/run_runtime_injection_smoke.py",
         root / "src/rs/runtime/online/megatron_ep/host.py",
-        root / "src/rs/runtime/online/megatron_ep/_host_impl.py",
         root / "src/rs/runtime/online/megatron_ep/lifecycle.py",
-        root / "src/rs/runtime/online/megatron_ep/_lifecycle.py",
+        root / "src/rs/runtime/online/megatron_ep/runtime.py",
+        root / "src/rs/runtime/online/megatron_ep/observation.py",
         root / "src/rs/runtime/online/megatron_ep/control/agreement_wire.py",
         root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
         root / "src/rs/runtime/online/megatron_ep/execution/transport_adapter.py",
@@ -126,9 +126,9 @@ def _collect_source_provenance(base_dir: Path, dispatcher_fingerprint: dict[str,
         "token_dispatcher_sha256": token_dispatcher.get("module_sha256"),
         "smoke_entrypoint_sha256": _sha256_file(repo_root / "experiments/online/run_runtime_injection_smoke.py"),
         "host_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/host.py"),
-        "host_impl_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/_host_impl.py"),
         "lifecycle_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/lifecycle.py"),
-        "lifecycle_impl_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/_lifecycle.py"),
+        "runtime_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/runtime.py"),
+        "observation_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/observation.py"),
         "agreement_py_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py"),
     }
     write_json(base_dir / "source_provenance.json", payload)

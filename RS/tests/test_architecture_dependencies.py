@@ -83,3 +83,22 @@ def test_formal_experiments_do_not_import_integrations_or_poc_line1() -> None:
         if module.startswith(forbidden):
             bad.append(f"{path}:{lineno}:{module}")
     assert not bad, bad
+
+
+def test_formal_experiments_do_not_import_private_runtime_modules() -> None:
+    bad = []
+    forbidden_tokens = (
+        "._facade",
+        "._host_impl",
+        "._lifecycle",
+        "._observation",
+        "._layout_join_impl",
+        "._plan_agreement_impl",
+        "global_ready_set_impl",
+    )
+    for path, lineno, module in _collect_imports(Path("experiments")):
+        if "legacy" in path.parts:
+            continue
+        if any(token in module for token in forbidden_tokens):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad

@@ -20,7 +20,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--apply", action="store_true", default=False)
-    parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("--override", action="append", default=[])
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-dir", default=None)
@@ -61,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{key}: {shlex.join(value)}")
         else:
             print(f"{key}: {value}")
-    if args.dry_run or not args.apply:
+    if not args.apply:
         return 0
     completed = subprocess.run(command, cwd=ROOT)
     return int(completed.returncode)

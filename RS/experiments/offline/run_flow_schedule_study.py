@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Any
+import random
 
 from experiments._bootstrap import ensure_src_on_path
 
@@ -20,10 +21,10 @@ from rs.runtime.offline.traffic.matrix_builder import (
     combine_matrix_from_dispatch,
     load_trace_jsonl,
 )
-from rs.scheduling.multiphase.global_ready_set_impl import (
+from rs.scheduling.multiphase.global_ready_set import (
     RUNTIME_LOOKAHEAD_MODE,
-    fast_schedule_u_gated_greedy_maximal,
-    fast_schedule_u_gated_maxweight_matching,
+    schedule_global_ready_set,
+    schedule_greedy,
 )
 
 
@@ -33,7 +34,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--override", action="append", default=[])
-    parser.add_argument("--dry-run", action="store_true", default=False)
     return parser.parse_args(argv)
 
 
@@ -49,6 +49,14 @@ def _zero_matrix(size: int) -> list[list[int]]:
     return [[0 for _ in range(size)] for _ in range(size)]
 
 
+def _shuffle_matrix(matrix: list[list[int]]) -> list[list[int]]:
+    flat = [value for row in matrix for value in row]
+    rng = random.Random(42)
+    rng.shuffle(flat)
+    width = len(matrix[0]) if matrix else 0
+    return [flat[index:index + width] for index in range(0, len(flat), width)] if width else []
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     config = load_run_config(
@@ -57,10 +65,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         output_dir=args.output_dir,
     )
-    if args.dry_run:
-        print(config.to_dict())
-        return 0
-
     run_dir = Path(config.artifact.output_root) / config.run.name
     run_dir.mkdir(parents=True, exist_ok=True)
     trace_path = _resolve_trace_path(config)
@@ -71,10 +75,17 @@ def main(argv: list[str] | None = None) -> int:
     layer_ids = sorted(sample_layer_matrices[sample_id])
     dispatch_matrix = sample_layer_matrices[sample_id][layer_ids[0]]
     p1_return_matrix = combine_matrix_from_dispatch(dispatch_matrix)
-    if len(layer_ids) >= 2:
-        p2_matrix = sample_layer_matrices[sample_id][layer_ids[1]]
-    else:
+    perfect_p2_matrix = sample_layer_matrices[sample_id][layer_ids[1]] if len(layer_ids) >= 2 else _zero_matrix(config.topology.ep_size)
+    if config.policy.prediction_source == "perfect_trace":
+        p2_matrix = perfect_p2_matrix
+    elif config.policy.prediction_source == "zero_hint":
         p2_matrix = _zero_matrix(config.topology.ep_size)
+    elif config.policy.prediction_source == "shuffled_hint":
+        p2_matrix = _shuffle_matrix(perfect_p2_matrix)
+    elif config.policy.prediction_source == "calibrated_artifact":
+        raise ValueError("calibrated_artifact is unsupported until a real predictor artifact schema is implemented")
+    else:
+        raise ValueError(f"unsupported prediction_source={config.policy.prediction_source!r}")
 
     traffic_window = {
         "sample_id": sample_id,
@@ -83,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         "ready_flows": "p0_dispatch",
         "blocked_flows": "p1_return",
         "forecast_flows": "p2_next_dispatch_forecast",
+        "prediction_source": config.policy.prediction_source,
     }
     write_json(run_dir / "run_manifest.json", {
         "run_id": config.run.name,
@@ -103,12 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     comparison: list[dict[str, Any]] = []
     for policy_name in policies:
         if policy_name == "global_ready_set":
-            result = fast_schedule_u_gated_maxweight_matching(
+            result = schedule_global_ready_set(
                 dispatch_matrix,
                 p1_return_matrix,
                 p2_matrix,
                 config.topology.ep_size,
-                mode=config.runtime.scheduling_mode or RUNTIME_LOOKAHEAD_MODE,
+                scheduling_mode=config.runtime.scheduling_mode or RUNTIME_LOOKAHEAD_MODE,
                 prediction_confidence=1.0 if any(any(v > 0 for v in row) for row in p2_matrix) else 0.0,
                 expert_compute_delay=config.runtime.expert_compute_delay,
             )
@@ -142,12 +154,12 @@ def main(argv: list[str] | None = None) -> int:
                 "optimality_gap": None,
             })
         elif policy_name == "greedy":
-            result = fast_schedule_u_gated_greedy_maximal(
+            result = schedule_greedy(
                 dispatch_matrix,
                 p1_return_matrix,
                 p2_matrix,
                 config.topology.ep_size,
-                mode=config.runtime.scheduling_mode or RUNTIME_LOOKAHEAD_MODE,
+                scheduling_mode=config.runtime.scheduling_mode or RUNTIME_LOOKAHEAD_MODE,
                 prediction_confidence=1.0 if any(any(v > 0 for v in row) for row in p2_matrix) else 0.0,
                 expert_compute_delay=config.runtime.expert_compute_delay,
             )

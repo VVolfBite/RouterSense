@@ -20,8 +20,6 @@ policy:
   policies:
     - global_ready_set
     - greedy
-    - birkhoff
-    - oracle_guided_reference
 execution:
   mode: native_passthrough
 observation:

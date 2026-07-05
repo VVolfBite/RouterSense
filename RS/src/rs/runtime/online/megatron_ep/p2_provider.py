@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-from pathlib import Path
 from typing import Protocol
 
 from rs.runtime.online.megatron_ep.phase.contracts import FutureDemandHint
@@ -19,6 +17,10 @@ def _digest(payload: dict) -> str:
 class P2HintProvider(Protocol):
     def build_hint(self, request: P2HintRequest) -> FutureDemandHint:
         ...
+
+
+class UnsupportedP2Predictor(RuntimeError):
+    pass
 
 
 class NoP2HintProvider:
@@ -46,27 +48,10 @@ class DeterministicStubP2HintProvider:
 
 
 class CalibratedArtifactP2HintProvider:
-    def __init__(self, *, artifact_path: str) -> None:
-        self.artifact_path = str(artifact_path)
-
     def build_hint(self, request: P2HintRequest) -> FutureDemandHint:
-        path = Path(self.artifact_path)
-        if not self.artifact_path or not path.exists():
-            raise ValueError("incompatible_p2_artifact")
-        digest = _digest(
-            {
-                "artifact_path": str(path.resolve()),
-                "size": path.stat().st_size,
-                "plan_key": request.plan_key,
-                "layer_id": request.layer_id,
-                "phase": request.phase,
-            }
-        )
-        return FutureDemandHint(
-            hint_mode="calibrated_artifact",
-            hint_digest=digest,
-            hint_source="calibrated_artifact",
-            metadata={"artifact_path": str(path.resolve()), "artifact_sha256": digest},
+        raise UnsupportedP2Predictor(
+            "p2_hint_mode='calibrated_artifact' is not implemented in the frozen runtime; "
+            "only 'none' and 'deterministic_stub' are currently supported"
         )
 
 
@@ -76,5 +61,5 @@ def build_p2_hint_provider(mode: str) -> P2HintProvider:
     if mode == "deterministic_stub":
         return DeterministicStubP2HintProvider()
     if mode == "calibrated_artifact":
-        return CalibratedArtifactP2HintProvider(artifact_path=os.environ.get("ROUTERSENSE_P2_HINT_ARTIFACT", ""))
+        return CalibratedArtifactP2HintProvider()
     raise ValueError(f"Unsupported p2_hint_mode={mode!r}")

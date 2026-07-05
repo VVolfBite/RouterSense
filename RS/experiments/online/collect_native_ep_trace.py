@@ -43,7 +43,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--override", action="append", default=[])
-    parser.add_argument("--dry-run", action="store_true", default=False)
     return parser.parse_args(argv)
 
 
@@ -59,10 +58,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         output_dir=args.output_dir,
     )
-    if args.dry_run:
-        print(config.to_dict())
-        return 0
-
     model_path = _resolve_model_path(config)
     run_id = config.run.name
     run_dir = Path(config.artifact.output_root) / run_id
