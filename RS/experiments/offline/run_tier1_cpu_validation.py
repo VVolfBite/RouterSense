@@ -44,9 +44,16 @@ def main() -> None:
     }
     for policy_name in policies:
         policy = resolve_policy(policy_name=policy_name, bucket_rows=0)
+        plan_started = time.perf_counter()
         plan = policy.build_logical_plan(problem)
+        measured_planning_time_ms = (time.perf_counter() - plan_started) * 1000.0
         expected = _expected_real_flows(problem)
-        validation = validate_logical_plan(plan, expected_flows=expected, mode=args.mode)
+        validation = validate_logical_plan(
+            plan,
+            expected_flows=expected,
+            mode=args.mode,
+            expert_compute_delay=float(args.expert_compute_delay),
+        )
         diagnostics = dict(plan.diagnostics)
         summary = {
             "algorithm_id": diagnostics.get("algorithm_id", policy_name),
@@ -58,7 +65,8 @@ def main() -> None:
             "evaluation_eligible": diagnostics.get("evaluation_eligible", False),
             "makespan": diagnostics.get("makespan"),
             "wave_count": len(plan.waves),
-            "planning_time_ms": diagnostics.get("planning_time_ms", 0.0),
+            "planning_time_ms_measured": measured_planning_time_ms,
+            "planning_time_ms_in_plan_hash": diagnostics.get("planning_time_ms", 0.0),
             "valid": bool(diagnostics.get("valid", False)) and bool(validation["valid"]),
             "release_barrier_verified": diagnostics.get("release_barrier_verified", False),
             "flow_conservation_verified": diagnostics.get("flow_conservation_verified", False) and bool(validation["coverage_verified"]),
@@ -67,7 +75,16 @@ def main() -> None:
         }
         _write_json(output_dir / f"policy_plan_{policy_name}.json", plan.to_dict())
         _write_json(output_dir / f"audit_{policy_name}.json", diagnostics.get("audit", {}))
-        _write_json(output_dir / f"diagnostics_{policy_name}.json", {**diagnostics, "logical_plan_validation": validation, "summary": summary})
+        _write_json(
+            output_dir / f"diagnostics_{policy_name}.json",
+            {
+                **diagnostics,
+                "planning_time_ms_measured": measured_planning_time_ms,
+                "planning_time_ms_in_plan_hash": diagnostics.get("planning_time_ms", 0.0),
+                "logical_plan_validation": validation,
+                "summary": summary,
+            },
+        )
         bucket = _comparison_bucket(str(summary["service_model"]))
         comparison[bucket].append(summary)
     comparison["elapsed_ms"] = (time.perf_counter() - started) * 1000.0  # type: ignore[index]
@@ -79,7 +96,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--policy", default="all", help="Tier 1 algorithm id, comma list, or all")
     parser.add_argument("--mode", choices=(EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE), default=RUNTIME_LOOKAHEAD_MODE)
-    parser.add_argument("--p2-source", choices=("zero_hint", "copy_current_dispatch", "perfect_trace"), default="zero_hint")
+    parser.add_argument("--p2-source", choices=("zero_hint", "copy_current_dispatch", "perfect_trace", "actual_trace"), default="zero_hint")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
@@ -98,31 +115,43 @@ def _build_problem(
 ) -> MultiPhaseSchedulingProblem:
     p0 = _matrix(fixture["p0_dispatch_matrix"])
     p1 = _matrix(fixture["p1_return_matrix"])
+    if mode == EXECUTION_WINDOW_MODE and p2_source not in {"actual_trace", "perfect_trace"}:
+        raise ValueError("execution_window requires --p2-source actual_trace or perfect_trace")
+    if "p2_next_dispatch_matrix" not in fixture and mode == EXECUTION_WINDOW_MODE:
+        raise ValueError("execution_window requires fixture p2_next_dispatch_matrix")
     actual_p2 = _matrix(fixture.get("p2_next_dispatch_matrix", fixture.get("p2_next_dispatch_forecast_matrix", _zero_like(p0))))
-    if p2_source == "zero_hint":
+    if mode == EXECUTION_WINDOW_MODE:
+        p2 = actual_p2
+        oracle = True
+        eligible = False
+        source = "actual_trace" if p2_source == "actual_trace" else "perfect_trace"
+    elif p2_source == "zero_hint":
         p2 = _zero_like(p0)
         oracle = False
         eligible = True
+        source = p2_source
     elif p2_source == "copy_current_dispatch":
         p2 = p0
         oracle = False
         eligible = True
+        source = p2_source
     elif p2_source == "perfect_trace":
         p2 = actual_p2
         oracle = True
         eligible = False
+        source = p2_source
     else:  # pragma: no cover
         raise ValueError(f"unsupported p2_source {p2_source!r}")
     forecast = ForecastPressure(
-        source=p2_source,
-        digest=stable_hash({"source": p2_source, "matrix": p2}),
+        source=source,
+        digest=stable_hash({"source": source, "matrix": p2}),
         oracle=oracle,
         evaluation_eligible=eligible,
         matrix_shape=(len(p2), len(p2[0]) if p2 else 0),
         matrix_total_bytes=sum(sum(row) for row in p2),
         matrix=p2,
     )
-    prediction_confidence = 1.0 if p2_source != "zero_hint" and sum(sum(row) for row in p2) > 0 else 0.0
+    prediction_confidence = 1.0 if source != "zero_hint" and sum(sum(row) for row in p2) > 0 else 0.0
     return MultiPhaseSchedulingProblem(
         flow_window=FlowWindow(
             ready_flows=_flows(p0, phase="p0_dispatch", release_state="ready", executable=True),
@@ -134,7 +163,7 @@ def _build_problem(
         forecast=forecast,
         options=GlobalReadySetOptions(
             scheduling_mode=mode,
-            information_mode="p0_p1_p2" if p2_source != "zero_hint" else "p0_p1",
+            information_mode="p0_p1_p2" if source != "zero_hint" else "p0_p1",
             prediction_confidence=prediction_confidence,
         ),
         p0_dispatch_matrix=p0,

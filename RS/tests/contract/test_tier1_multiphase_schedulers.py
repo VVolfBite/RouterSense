@@ -131,5 +131,85 @@ def test_tier1_cpu_runner_outputs_service_model_comparison(tmp_path: Path) -> No
     comparison = json.loads((output_dir / "comparison_by_service_model.json").read_text(encoding="utf-8"))
     assert [item["algorithm_id"] for item in comparison["atomic_comparison"]] == ["B_birkhoff"]
     assert [item["algorithm_id"] for item in comparison["fluid_comparison"]] == ["U_gated_maxweight_matching"]
+    assert comparison["atomic_comparison"][0]["planning_time_ms_measured"] >= 0.0
+    assert comparison["atomic_comparison"][0]["planning_time_ms_in_plan_hash"] == 0.0
     assert (output_dir / "policy_plan_B_birkhoff.json").exists()
     assert (output_dir / "diagnostics_U_gated_maxweight_matching.json").exists()
+
+
+def test_execution_window_rejects_forecast_p2_sources(tmp_path: Path) -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "experiments.offline.run_tier1_cpu_validation",
+            "--fixture",
+            str(FIXTURE_ROOT / "unlock_hotspot_4rank.json"),
+            "--policy",
+            "B_birkhoff",
+            "--mode",
+            EXECUTION_WINDOW_MODE,
+            "--p2-source",
+            "copy_current_dispatch",
+            "--output-dir",
+            str(tmp_path / "invalid"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "execution_window requires" in proc.stderr
+
+
+def test_execution_window_p2_role_and_runtime_lookahead_source_modes() -> None:
+    execution_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=EXECUTION_WINDOW_MODE, p2_source="actual_trace", expert_compute_delay=1.0)
+    execution_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(execution_problem)
+    assert execution_plan.diagnostics["p2_role"] == "executable_actual_traffic"
+    assert execution_plan.diagnostics["future_information_mode"] == "oracle_execution_window"
+    assert execution_plan.diagnostics["evaluation_eligible"] is False
+    assert any(flow.phase == "p2_next_dispatch" for wave in execution_plan.waves for flow in wave.flows)
+    assert validate_logical_plan(execution_plan, expected_flows=_expected_flows(execution_problem), mode=EXECUTION_WINDOW_MODE, expert_compute_delay=1.0)["valid"]
+
+    zero_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="zero_hint", expert_compute_delay=1.0)
+    zero_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(zero_problem)
+    assert zero_plan.diagnostics["p2_role"] == "advisory_forecast_pressure"
+    assert zero_plan.diagnostics["future_information_mode"] == "none"
+    assert zero_plan.diagnostics["prediction_used"] is False
+
+    copy_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="copy_current_dispatch", expert_compute_delay=1.0)
+    copy_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(copy_problem)
+    assert copy_plan.diagnostics["future_information_mode"] == "heuristic_runtime_lookahead"
+    assert copy_plan.diagnostics["evaluation_eligible"] is True
+
+
+def test_p1_and_p2_local_release_witnesses() -> None:
+    p1_problem = _build_problem(_fixture("p1_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="zero_hint", expert_compute_delay=3.0)
+    p1_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(p1_problem)
+    p1_validation = validate_logical_plan(p1_plan, expected_flows=_expected_flows(p1_problem), mode=RUNTIME_LOOKAHEAD_MODE, expert_compute_delay=3.0)
+    assert p1_validation["valid"], p1_validation["errors"]
+
+    p2_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=EXECUTION_WINDOW_MODE, p2_source="actual_trace", expert_compute_delay=2.0)
+    p2_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(p2_problem)
+    p2_validation = validate_logical_plan(p2_plan, expected_flows=_expected_flows(p2_problem), mode=EXECUTION_WINDOW_MODE, expert_compute_delay=2.0)
+    assert p2_validation["valid"], p2_validation["errors"]
+
+    lookahead_problem = _build_problem(_fixture("p2_local_release_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="perfect_trace", expert_compute_delay=2.0)
+    lookahead_plan = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(lookahead_problem)
+    assert all(flow.phase != "p2_next_dispatch" for wave in lookahead_plan.waves for flow in wave.flows)
+
+
+def test_barrier_criticality_witness_changes_selection_for_fluid_and_atomic() -> None:
+    problem = _build_problem(_fixture("barrier_criticality_switch_witness_4rank"), mode=RUNTIME_LOOKAHEAD_MODE, p2_source="copy_current_dispatch", expert_compute_delay=2.0)
+    gated = resolve_policy(policy_name="U_gated_maxweight_matching", bucket_rows=0).build_logical_plan(problem)
+    barrier = resolve_policy(policy_name="U_barrier_criticality_global_matching", bucket_rows=0).build_logical_plan(problem)
+    gated_sig = [[(flow.phase, flow.src_rank, flow.dst_rank, flow.byte_count) for flow in wave.flows] for wave in gated.waves]
+    barrier_sig = [[(flow.phase, flow.src_rank, flow.dst_rank, flow.byte_count) for flow in wave.flows] for wave in barrier.waves]
+    divergence = next(idx for idx, (left, right) in enumerate(zip(gated_sig, barrier_sig, strict=False)) if left != right)
+    assert divergence == 2
+    assert ("p0_dispatch", 1, 3, 2) in gated_sig[2]
+    assert ("p1_return", 1, 3, 2) in barrier_sig[2]
+
+    gated_atomic = resolve_policy(policy_name="U_gated_maxweight_matching_atomic", bucket_rows=0).build_logical_plan(problem)
+    barrier_atomic = resolve_policy(policy_name="U_barrier_criticality_global_matching_atomic", bucket_rows=0).build_logical_plan(problem)
+    assert gated_atomic.diagnostics["makespan"] != barrier_atomic.diagnostics["makespan"]

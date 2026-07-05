@@ -252,6 +252,7 @@ def validate_logical_plan(
     *,
     expected_flows: tuple | None = None,
     mode: str | None = None,
+    expert_compute_delay: float = 0.0,
 ) -> dict[str, object]:
     expected = {}
     for flow in expected_flows or ():
@@ -259,6 +260,9 @@ def validate_logical_plan(
         expected[key] = expected.get(key, 0) + int(flow.byte_count)
     served: dict[tuple[str, int, int], int] = defaultdict(int)
     served_by_origin: dict[str, int] = defaultdict(int)
+    origin_counts: dict[str, int] = defaultdict(int)
+    intervals_by_phase_dst: dict[tuple[str, int], list[float]] = defaultdict(list)
+    intervals_by_phase_src: dict[tuple[str, int], list[float]] = defaultdict(list)
     seen_ids: set[str] = set()
     errors: list[str] = []
     for wave in plan.waves:
@@ -270,7 +274,9 @@ def validate_logical_plan(
             if flow.flow_id in seen_ids:
                 errors.append(f"duplicate flow id {flow.flow_id}")
             seen_ids.add(flow.flow_id)
-            origin_flow_id = str(getattr(flow, "dependency_metadata", {}).get("origin_flow_id", flow.flow_id))
+            metadata = getattr(flow, "dependency_metadata", {})
+            origin_flow_id = str(metadata.get("origin_flow_id", flow.flow_id))
+            service_model = str(metadata.get("service_model", ""))
             if int(flow.src_rank) in used_src:
                 errors.append(f"wave {wave.wave_id} repeats source {flow.src_rank}")
             if int(flow.dst_rank) in used_dst:
@@ -281,6 +287,24 @@ def validate_logical_plan(
             used_dst.add(int(flow.dst_rank))
             served[(flow.phase, int(flow.src_rank), int(flow.dst_rank))] += int(flow.byte_count)
             served_by_origin[origin_flow_id] += int(flow.byte_count)
+            origin_counts[origin_flow_id] += 1
+            if "atomic" in service_model and origin_counts[origin_flow_id] > 1:
+                errors.append(f"atomic origin {origin_flow_id} is split across multiple segments")
+            start = metadata.get("start")
+            end = metadata.get("end")
+            if start is not None and end is not None:
+                start_f = float(start)
+                end_f = float(end)
+                intervals_by_phase_dst[(str(flow.phase), int(flow.dst_rank))].append(end_f)
+                intervals_by_phase_src[(str(flow.phase), int(flow.src_rank))].append(start_f)
+                if str(flow.phase) == "p1_return":
+                    required = max(intervals_by_phase_dst.get(("p0_dispatch", int(flow.src_rank)), [0.0])) + float(expert_compute_delay)
+                    if start_f + 1e-9 < required:
+                        errors.append(f"p1 local release violation flow={flow.flow_id} start={start_f:.6f} required={required:.6f}")
+                if str(flow.phase) == "p2_next_dispatch":
+                    required = max(intervals_by_phase_dst.get(("p1_return", int(flow.src_rank)), [0.0]))
+                    if start_f + 1e-9 < required:
+                        errors.append(f"p2 local release violation flow={flow.flow_id} start={start_f:.6f} required={required:.6f}")
     if expected and served != expected:
         errors.append(f"coverage mismatch expected={expected} served={dict(served)}")
     return {

@@ -25,11 +25,11 @@ These policies are recovered offline logical schedulers. They are not online pha
 |---|---|---|---:|---:|
 | `B_birkhoff` | atomic chunk | `none`, `oracle_execution_window` | no | depends on mode/source |
 | `B_birkhoff_wave` | fluid wave | `none`, `oracle_execution_window` | no | depends on mode/source |
-| `U_gated_maxweight_matching` | fluid wave | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
-| `U_barrier_criticality_global_matching` | fluid wave | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
-| `U_gated_maxweight_matching_atomic` | atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
-| `U_barrier_criticality_global_matching_atomic` | atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
-| `U_lagrangian` | Lagrangian atomic chunk | `none`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_gated_maxweight_matching` | fluid wave | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_barrier_criticality_global_matching` | fluid wave | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_gated_maxweight_matching_atomic` | atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_barrier_criticality_global_matching_atomic` | atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `U_lagrangian` | Lagrangian atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
 
 Tier 1 comparisons must be separated by service model:
 
@@ -37,16 +37,19 @@ Tier 1 comparisons must be separated by service model:
 - `fluid_comparison`: `B_birkhoff_wave`, `U_gated_maxweight_matching`, `U_barrier_criticality_global_matching`.
 - `other_service_model_comparison`: `U_lagrangian` unless a later study explicitly maps it into an atomic/fluid table.
 
-`runtime_lookahead` suppresses real P2 transport. P2 can only influence forecast pressure and diagnostics. `execution_window` treats P2 as a real third-stage communication phase and is marked as oracle execution-window information.
+`runtime_lookahead` suppresses real P2 transport. P2 can only influence forecast pressure and diagnostics. `zero_hint` maps to `future_information_mode=none`; `copy_current_dispatch` maps to `heuristic_runtime_lookahead`; `perfect_trace` maps to `oracle_predicted_runtime_lookahead`.
+
+`execution_window` requires actual fixture/trace P2 via `actual_trace` or compatibility name `perfect_trace`. P2 is real executable traffic in that mode, maps to `p2_role=executable_actual_traffic`, and is always `evaluation_eligible=false`.
 
 ## P2 sources
 
 | Source | Oracle | Evaluation eligible | Notes |
 |---|---:|---:|---|
-| `copy_current_dispatch` | no | yes | `D_hat(l+1) = scale * D_l`, default scale `1.0` |
+| `copy_current_dispatch` | no | yes | `D_hat(l+1) = scale * D_l`, default scale `1.0`; runtime-lookahead only |
 | `zero_hint` | no | yes | no future pressure |
 | `shuffled_hint` | no | no | negative control only |
-| `perfect_trace` | yes | no | offline upper-reference only |
+| `perfect_trace` | yes | no | runtime-lookahead oracle predicted pressure, or compatibility name for execution-window actual P2 |
+| `actual_trace` | yes | no | execution-window actual P2 traffic only |
 | `calibrated_artifact` | n/a | no | fail-closed in this round |
 
 ## Online correctness suite

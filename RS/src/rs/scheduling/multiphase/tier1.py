@@ -622,6 +622,7 @@ def _base_diagnostics(
         "service_model": service_model,
         "mode": problem.options.scheduling_mode,
         "future_information_mode": future_information_mode,
+        "p2_role": _p2_role(problem),
         "p2_source": problem.forecast.source if problem.forecast is not None else "none",
         "prediction_used": bool(problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.options.prediction_confidence > 0.0),
         "evaluation_eligible": evaluation_eligible,
@@ -665,7 +666,9 @@ def _audit_raw_schedule(
 def _future_information_mode(problem: MultiPhaseSchedulingProblem) -> str:
     if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
         return "oracle_execution_window"
-    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.options.prediction_confidence > 0.0:
+    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.forecast is not None and problem.forecast.source == "copy_current_dispatch":
+        return "heuristic_runtime_lookahead"
+    if problem.options.scheduling_mode == RUNTIME_LOOKAHEAD_MODE and problem.forecast is not None and bool(problem.forecast.oracle):
         return "oracle_predicted_runtime_lookahead"
     return "none"
 
@@ -676,6 +679,12 @@ def _evaluation_eligible(problem: MultiPhaseSchedulingProblem) -> bool:
     if _future_information_mode(problem) == "oracle_execution_window":
         return False
     return True
+
+
+def _p2_role(problem: MultiPhaseSchedulingProblem) -> str:
+    if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
+        return "executable_actual_traffic"
+    return "advisory_forecast_pressure"
 
 
 def _forecast_summary(problem: MultiPhaseSchedulingProblem) -> dict[str, Any]:

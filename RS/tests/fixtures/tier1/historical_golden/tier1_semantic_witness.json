@@ -1,0 +1,1470 @@
+{
+  "expert_compute_delay": 2.0,
+  "fixture": "unlock_hotspot_4rank",
+  "golden": [
+    {
+      "algorithm_id": "B_birkhoff",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py",
+      "historical_source_blob": "e42eef0ff1afd7214d174e07409d9bac4a44ab6a",
+      "historical_source_sha256": "117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9",
+      "historical_symbol": "fast_schedule_birkhoff",
+      "makespan": 28.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 15.0
+        },
+        {
+          "dst": 0,
+          "end": 25.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 28.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 25.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "B_birkhoff",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py",
+      "historical_source_blob": "e42eef0ff1afd7214d174e07409d9bac4a44ab6a",
+      "historical_source_sha256": "117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9",
+      "historical_symbol": "fast_schedule_birkhoff",
+      "makespan": 37.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 15.0
+        },
+        {
+          "dst": 0,
+          "end": 25.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 28.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 25.0
+        },
+        {
+          "dst": 2,
+          "end": 32.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 0,
+          "start": 28.0
+        },
+        {
+          "dst": 3,
+          "end": 37.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 9.0,
+          "src": 1,
+          "start": 28.0
+        },
+        {
+          "dst": 1,
+          "end": 33.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 5.0,
+          "src": 2,
+          "start": 28.0
+        },
+        {
+          "dst": 0,
+          "end": 34.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 6.0,
+          "src": 3,
+          "start": 28.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "B_birkhoff_wave",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py",
+      "historical_source_blob": "e42eef0ff1afd7214d174e07409d9bac4a44ab6a",
+      "historical_source_sha256": "117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9",
+      "historical_symbol": "fast_schedule_birkhoff_wave",
+      "makespan": 22.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 19.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 19.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 19.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 19.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "B_birkhoff_wave",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py",
+      "historical_source_blob": "e42eef0ff1afd7214d174e07409d9bac4a44ab6a",
+      "historical_source_sha256": "117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9",
+      "historical_symbol": "fast_schedule_birkhoff_wave",
+      "makespan": 31.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 19.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 19.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 19.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 19.0
+        },
+        {
+          "dst": 2,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 0,
+          "start": 22.0
+        },
+        {
+          "dst": 3,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 1,
+          "start": 22.0
+        },
+        {
+          "dst": 1,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 2,
+          "start": 22.0
+        },
+        {
+          "dst": 0,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 3,
+          "start": 22.0
+        },
+        {
+          "dst": 3,
+          "end": 27.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 1,
+          "start": 26.0
+        },
+        {
+          "dst": 1,
+          "end": 27.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 2,
+          "start": 26.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 3,
+          "start": 26.0
+        },
+        {
+          "dst": 3,
+          "end": 28.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 1,
+          "start": 27.0
+        },
+        {
+          "dst": 0,
+          "end": 28.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 3,
+          "start": 27.0
+        },
+        {
+          "dst": 3,
+          "end": 31.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 28.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "U_gated_maxweight_matching",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_gated_maxweight_matching",
+      "makespan": 27.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 20.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "U_gated_maxweight_matching",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_gated_maxweight_matching",
+      "makespan": 26.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 7.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 0,
+          "end": 10.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 12.0,
+          "phase": "p1_return",
+          "served_volume": 2.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 12.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 1,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 12.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 3,
+          "start": 10.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 5.0,
+          "src": 0,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 5.0,
+          "src": 1,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 0,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 2.0,
+          "src": 1,
+          "start": 20.0
+        },
+        {
+          "dst": 1,
+          "end": 22.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 2,
+          "start": 20.0
+        },
+        {
+          "dst": 2,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 0,
+          "start": 22.0
+        },
+        {
+          "dst": 1,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 2,
+          "start": 22.0
+        },
+        {
+          "dst": 0,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 3,
+          "start": 22.0
+        },
+        {
+          "dst": 2,
+          "end": 25.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 0,
+          "start": 23.0
+        },
+        {
+          "dst": 1,
+          "end": 25.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 2,
+          "start": 23.0
+        },
+        {
+          "dst": 2,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 0,
+          "start": 25.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "U_barrier_criticality_global_matching",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_barrier_criticality_global_matching",
+      "makespan": 27.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 20.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "U_barrier_criticality_global_matching",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_barrier_criticality_global_matching",
+      "makespan": 26.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 7.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 7.0,
+          "src": 1,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 0,
+          "start": 7.0
+        },
+        {
+          "dst": 3,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 7.0
+        },
+        {
+          "dst": 0,
+          "end": 10.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 7.0
+        },
+        {
+          "dst": 2,
+          "end": 12.0,
+          "phase": "p1_return",
+          "served_volume": 2.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 12.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 1,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 12.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 3,
+          "start": 10.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 5.0,
+          "src": 0,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 5.0,
+          "src": 1,
+          "start": 12.0
+        },
+        {
+          "dst": 0,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 0,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 2.0,
+          "src": 1,
+          "start": 20.0
+        },
+        {
+          "dst": 1,
+          "end": 22.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 2,
+          "start": 20.0
+        },
+        {
+          "dst": 2,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 0,
+          "start": 22.0
+        },
+        {
+          "dst": 1,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 2,
+          "start": 22.0
+        },
+        {
+          "dst": 0,
+          "end": 23.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 3,
+          "start": 22.0
+        },
+        {
+          "dst": 2,
+          "end": 25.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 0,
+          "start": 23.0
+        },
+        {
+          "dst": 1,
+          "end": 25.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 2.0,
+          "src": 2,
+          "start": 23.0
+        },
+        {
+          "dst": 2,
+          "end": 26.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 1.0,
+          "src": 0,
+          "start": 25.0
+        }
+      ],
+      "service_model": "fluid_wave"
+    },
+    {
+      "algorithm_id": "U_gated_maxweight_matching_atomic",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_gated_maxweight_matching_atomic",
+      "makespan": 27.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "U_gated_maxweight_matching_atomic",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_gated_maxweight_matching_atomic",
+      "makespan": 32.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 9.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 9.0,
+          "src": 1,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 16.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 6.0,
+          "src": 3,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 31.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 0,
+          "start": 27.0
+        },
+        {
+          "dst": 1,
+          "end": 32.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 5.0,
+          "src": 2,
+          "start": 27.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "U_barrier_criticality_global_matching_atomic",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_barrier_criticality_global_matching_atomic",
+      "makespan": 27.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "U_barrier_criticality_global_matching_atomic",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "src/rs/scheduling/multiphase/global_ready_set_impl.py",
+      "historical_source_blob": "5ba63816d5c6425d607a17e80c7859fe7afa7930",
+      "historical_source_sha256": "fa197fa46523f771c52c0f176dac5ba7897d922e201bda4a5cceaefaf4a27246",
+      "historical_symbol": "fast_schedule_u_barrier_criticality_global_matching_atomic",
+      "makespan": 32.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 9.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 9.0,
+          "src": 1,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 2,
+          "end": 17.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 10.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 16.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 6.0,
+          "src": 3,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 27.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 20.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 17.0
+        },
+        {
+          "dst": 2,
+          "end": 31.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 0,
+          "start": 27.0
+        },
+        {
+          "dst": 1,
+          "end": 32.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 5.0,
+          "src": 2,
+          "start": 27.0
+        }
+      ],
+      "service_model": "atomic_chunk"
+    },
+    {
+      "algorithm_id": "U_lagrangian",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/cross_phase.py",
+      "historical_source_blob": "171f73dd557b2059313eb8eb5eb2b45a2caa8077",
+      "historical_source_sha256": "739d475a1dffa9782487638c700aa06b95ecd70d19c21a8f0563c41a2b866187",
+      "historical_symbol": "fast_schedule_lagrangian",
+      "makespan": 28.0,
+      "matching_legality_verified": true,
+      "mode": "runtime_lookahead",
+      "release_signature": {
+        "future_information_mode": "oracle_predicted_runtime_lookahead",
+        "p2_role": "advisory_forecast_pressure"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 25.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 28.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 25.0
+        }
+      ],
+      "service_model": "lagrangian_atomic_chunk"
+    },
+    {
+      "algorithm_id": "U_lagrangian",
+      "fixture_digest": "f93bec124813960c8205ab2f7376aabd34ea77ba08a2c98a6b32a0edb18206e0",
+      "flow_conservation_verified": true,
+      "historical_commit": "cb14d0e9eca8cd3221464f33e6eb82c8e139e223",
+      "historical_file_path": "legacy/historical_poc/src_rs_legacy/scheduler/cross_phase.py",
+      "historical_source_blob": "171f73dd557b2059313eb8eb5eb2b45a2caa8077",
+      "historical_source_sha256": "739d475a1dffa9782487638c700aa06b95ecd70d19c21a8f0563c41a2b866187",
+      "historical_symbol": "fast_schedule_lagrangian",
+      "makespan": 37.0,
+      "matching_legality_verified": true,
+      "mode": "execution_window",
+      "release_signature": {
+        "future_information_mode": "oracle_execution_window",
+        "p2_role": "executable_actual_traffic"
+      },
+      "semantic_schedule_signature": [
+        {
+          "dst": 1,
+          "end": 10.0,
+          "phase": "p0_dispatch",
+          "served_volume": 10.0,
+          "src": 0,
+          "start": 0.0
+        },
+        {
+          "dst": 0,
+          "end": 7.0,
+          "phase": "p0_dispatch",
+          "served_volume": 7.0,
+          "src": 2,
+          "start": 0.0
+        },
+        {
+          "dst": 3,
+          "end": 13.0,
+          "phase": "p0_dispatch",
+          "served_volume": 3.0,
+          "src": 2,
+          "start": 10.0
+        },
+        {
+          "dst": 0,
+          "end": 25.0,
+          "phase": "p1_return",
+          "served_volume": 10.0,
+          "src": 1,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 22.0,
+          "phase": "p1_return",
+          "served_volume": 7.0,
+          "src": 0,
+          "start": 15.0
+        },
+        {
+          "dst": 2,
+          "end": 28.0,
+          "phase": "p1_return",
+          "served_volume": 3.0,
+          "src": 3,
+          "start": 25.0
+        },
+        {
+          "dst": 3,
+          "end": 37.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 9.0,
+          "src": 1,
+          "start": 28.0
+        },
+        {
+          "dst": 0,
+          "end": 34.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 6.0,
+          "src": 3,
+          "start": 28.0
+        },
+        {
+          "dst": 1,
+          "end": 33.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 5.0,
+          "src": 2,
+          "start": 28.0
+        },
+        {
+          "dst": 2,
+          "end": 32.0,
+          "phase": "p2_next_dispatch",
+          "served_volume": 4.0,
+          "src": 0,
+          "start": 28.0
+        }
+      ],
+      "service_model": "lagrangian_atomic_chunk"
+    }
+  ]
+}

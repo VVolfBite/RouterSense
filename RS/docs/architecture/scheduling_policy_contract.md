@@ -114,10 +114,14 @@ The Tier 1 candidates are recovered offline logical schedulers for CPU-only trac
 - `U_barrier_criticality_global_matching_atomic`: atomic version of barrier-criticality global ready-set exact matching.
 - `U_lagrangian`: recovered historical Lagrangian phase-order candidate using Birkhoff round ranks and dual-price updates.
 
-Tier 1 uses two explicit future-information modes:
+Tier 1 uses explicit future-information modes:
 
 - `execution_window`: P0, P1, and P2 are real scheduled stages. This is oracle execution-window information.
-- `runtime_lookahead`: P0 and P1 are real scheduled stages. P2 is forecast pressure only and must not create executable phase-2 flow.
+- `runtime_lookahead` + `zero_hint`: P0 and P1 are real scheduled stages, with no P2 pressure.
+- `runtime_lookahead` + `copy_current_dispatch`: P2 is heuristic advisory pressure and maps to `heuristic_runtime_lookahead`.
+- `runtime_lookahead` + `perfect_trace`: P2 is oracle predicted advisory pressure and maps to `oracle_predicted_runtime_lookahead`.
+
+`execution_window` only accepts actual trace/fixture P2 (`actual_trace`, or compatibility name `perfect_trace`) and always emits `p2_role=executable_actual_traffic` and `evaluation_eligible=false`. `runtime_lookahead` always emits `p2_role=advisory_forecast_pressure` and never creates real phase-2 schedule entries.
 
 Tier 1 comparisons must be grouped by service model. Atomic chunk schedules, fluid wave schedules, and the Lagrangian service model are not collapsed into a single performance ranking.
 
