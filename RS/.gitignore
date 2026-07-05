@@ -8,6 +8,9 @@ runs/
 deliverables/
 deploy/logs/
 prompts/logs/
+deploy/inventory/*.local.yaml
+deploy/inventory/*.current.yaml
+deploy/inventory/*.backup
 
 *.tar.gz
 *.zip

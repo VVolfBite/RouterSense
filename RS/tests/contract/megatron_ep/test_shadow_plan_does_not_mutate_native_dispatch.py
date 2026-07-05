@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.contracts import RouterSenseInjectionConfig
-from integrations.megatron_ep.routersense.dispatcher_facade import RouterSenseDispatcherFacade
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
 
 
 def test_shadow_plan_mode_does_not_mutate_native_dispatch() -> None:

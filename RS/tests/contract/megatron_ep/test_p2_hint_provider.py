@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.p2 import build_p2_hint_provider
-from integrations.megatron_ep.routersense.p2.contracts import P2HintRequest
+from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
+from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
 
 
 def test_deterministic_stub_p2_hint_is_stable_and_nonempty() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.dispatcher_facade import PolicyRuntimeRecord
+from rs.runtime.online.megatron_ep.runtime import PolicyRuntimeRecord
 
 
 def test_plan_hash_assertion_is_not_hardcoded_contract() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.contracts import NativeEPSummary
+from rs.runtime.online.megatron_ep.contracts import NativeEPSummary
 
 
 def test_native_ep_summary_contract_fields() -> None:

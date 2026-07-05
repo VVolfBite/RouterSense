@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 
 import torch
 import torch.distributed as dist
@@ -18,6 +19,7 @@ from rs.scheduling.observation_contracts import (
     RouterSensePlan,
     RuntimeObservation,
 )
+from rs.scheduling.policy.validation import summarize_plan_metrics
 from rs.scheduling.validation import stable_hash
 
 _PHASE_TO_CODE = {"P0": 0, "P1": 1}
@@ -269,7 +271,7 @@ def encode_plan_tensor(plan: RouterSensePlan, ep_group_size: int) -> list[int]:
     return data
 
 
-def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePlan:
+def decode_plan_tensor(payload: list[int], ep_group_size: int | None = None) -> RouterSensePlan:
     version = int(payload[0])
     if version != 2:
         raise ValueError(f"unsupported plan encoding version: {version}")
@@ -304,7 +306,11 @@ def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePla
                     phase=phase_name,
                     rows=rows,
                     bytes=bytes_,
+                    demand_known_at="router_ready",
                     release_state=release,
+                    release_dependency="none"
+                    if release != "blocked"
+                    else "remote_expert_compute_complete",
                     payload_exists=flow_payload_exists,
                     flow_id=flow_id,
                     is_cross_rank=is_cross_rank,
@@ -319,6 +325,8 @@ def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePla
                 release_state=release_state,
                 release_dependency="none" if release_state != "blocked" else "remote_expert_compute_complete",
                 payload_exists=payload_exists,
+                total_remote_rows=sum(int(flow.rows) for flow in flows),
+                total_remote_bytes=sum(int(flow.bytes) for flow in flows),
             )
         )
     ready_waves: list[PlanWave] = []
@@ -349,7 +357,11 @@ def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePla
                         phase=phase_name,
                         rows=rows,
                         bytes=bytes_,
+                        demand_known_at="router_ready",
                         release_state=release,
+                        release_dependency="none"
+                        if release != "blocked"
+                        else "remote_expert_compute_complete",
                         payload_exists=flow_payload_exists,
                         flow_id=flow_id,
                         is_cross_rank=is_cross_rank,
@@ -371,6 +383,7 @@ def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePla
         request_table_hash=_i64_to_hex(int(payload[10])),
         model_revision_hash=_i64_to_hex(int(payload[11])),
         expert_placement_hash=_i64_to_hex(int(payload[12])),
+        plan_hash=stable_hash({"wire_payload": list(payload)}),
         control_mode="default_continue" if int(payload[13]) == 0 else "sync_before_phase",
         future_hint_mode="none",
         phase_demands=tuple(phase_demands),
@@ -378,8 +391,9 @@ def decode_plan_tensor(payload: list[int], ep_group_size: int) -> RouterSensePla
         blocked_future_waves=tuple(blocked_future_waves),
         is_shadow_only=bool(int(payload[14])),
         can_preempt=bool(int(payload[15])),
+        metrics={},
     )
-    return plan
+    return replace(plan, metrics=summarize_plan_metrics(plan))
 
 
 def validate_rank_hashes(hashes: Iterable[str]) -> None:

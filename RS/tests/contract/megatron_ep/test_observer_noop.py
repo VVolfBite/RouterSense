@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.native_runtime import validate_observer_mode
-from integrations.megatron_ep.routersense.dispatcher_facade import RouterSenseDispatcherFacade
-from integrations.megatron_ep.routersense.observer import RouterSenseObserver
+from rs.runtime.online.megatron_ep.host import validate_observer_mode
+from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
+from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 
 
 def test_observer_records() -> None:

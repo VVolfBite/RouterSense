@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.policy.native_order import NativeOrderPolicy
+from rs.scheduling.policy.native_order import NativeOrderPolicy
 
 from .helpers import make_context, make_observation
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 from dataclasses import replace
 
-from integrations.megatron_ep.routersense.contracts import PolicyContext, RankTopologyRecord, RuntimeObservation
-from integrations.megatron_ep.routersense.phase import FutureDemandHint, PhaseReadyContext, build_phase_ready_context
-from integrations.megatron_ep.routersense.policy.validation import stable_hash
+from rs.runtime.online.megatron_ep.contracts import PolicyContext, RankTopologyRecord, RuntimeObservation
+from rs.runtime.online.megatron_ep.phase import FutureDemandHint, PhaseReadyContext, build_phase_ready_context
+from rs.scheduling.policy.validation import stable_hash
 
 
 def make_observation(

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def test_verify_env_contract() -> None:
-    script = Path("integrations/megatron_ep/verify_env.py")
+    script = Path("experiments/online/_verify_env.py")
     proc = subprocess.run(
         [sys.executable, str(script), "--model", "/definitely/missing/model"],
         check=False,

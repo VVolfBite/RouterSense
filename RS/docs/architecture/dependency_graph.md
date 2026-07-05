@@ -1,6 +1,6 @@
 ## Dependency Graph
 
-### Target dependency direction
+### Intended formal direction
 
 ```text
 experiments
@@ -14,8 +14,8 @@ core
 
 Equivalent restrictions:
 
-- `core` must not import `scheduling`, `runtime`, `experiments`, `integrations`, or `legacy`
-- `scheduling` must not import `runtime`, `experiments`, `integrations`, or `legacy`
+- `core` must not import `scheduling`, `runtime`, `experiments`, or `legacy`
+- `scheduling` must not import `runtime`, `experiments`, `torch`, `Megatron`, or `NCCL`
 - `runtime` must not import `experiments`
 - `experiments` may import `runtime`, `scheduling`, and `core`
 - `legacy` must not be imported by formal code
@@ -27,38 +27,30 @@ Equivalent restrictions:
 - `src/rs/runtime/offline`
 - `src/rs/runtime/online/megatron_ep`
 
-### Current known violations
+### Current enforced non-violations
 
-1. `src/rs/scheduling/policy/agreement.py`
-   - imports `torch` and `torch.distributed`
-   - functionally belongs under `runtime/online/megatron_ep/control`
+- formal `src/rs` no longer imports `integrations.*`
+- formal `src/rs` no longer imports `rs.online`, `rs.runtime.distributed_ep`, `rs.evaluation`, `rs.trace`, or `rs.scheduler`
+- online contract tests now import `rs.runtime.online.megatron_ep.*` and `rs.scheduling.*`
+- formal `experiments/*` no longer import `integrations.*`, `rs.evaluation`, `rs.scheduler`, `rs.trace`, `rs.online`, `rs.offline`, or `rs.runtime.distributed_ep`
+- formal baseline/reference shims now fail closed with `unsupported` metadata instead of advertising placeholder optimality
+- default `pytest -q` excludes `legacy`, `gpu`, `nccl`, `multinode`, and `slow`
 
-2. `experiments/offline/*`
-   - several wrappers still call `experiments/poc_line1/*`
-   - this is not a stable formal end state
+### Remaining structural debt
 
-3. `experiments/online/bench_native_ep.py` and `collect_native_ep_trace.py`
-   - still import `rs.online.olmoe_ep`
+- oversized formal modules such as `src/rs/runtime/online/megatron_ep/_host_impl.py`, `_lifecycle.py`, and `src/rs/scheduling/multiphase/global_ready_set_impl.py` still need responsibility-based splitting
+- historical research docs in `docs/` still reference old paths and should be migrated into archive-oriented documentation over time
+- legacy trees remain preserved under `legacy/historical_poc/*` for historical audit only and are intentionally excluded from default validation
 
-4. `experiments/distributed/*`
-   - still import `rs.runtime.distributed_ep`
+### Legacy parking already completed
 
-5. old namespaces still remain in the repository:
-   - `src/rs/scheduler`
-   - `src/rs/evaluation`
-   - `src/rs/trace`
-   - `src/rs/online/olmoe_ep`
-   - `src/rs/runtime/distributed_ep`
-
-### Current non-violations already enforced
-
-- `src/rs/runtime/*` does not import `experiments`
-- `src/rs/scheduling` no longer imports `rs.runtime.online.megatron_ep.phase` or `execution` contracts directly
-- formal `host` import works with `PYTHONPATH=src`
-
-### Required next moves
-
-- move `policy/agreement.py` to `runtime/online/megatron_ep/control`
-- replace remaining `experiments/offline -> experiments/poc_line1` delegation with direct formal runtime/scheduling calls
-- migrate or legacy-park `rs.online.olmoe_ep`
-- migrate or legacy-park `rs.runtime.distributed_ep`
+- `integrations/*` moved to `legacy/historical_poc/integrations`
+- `experiments/poc_line1/*` moved to `legacy/historical_poc/experiments_poc_line1`
+- `experiments/distributed/*` moved to `legacy/historical_poc/experiments_distributed`
+- historical offline experiment entrypoints moved to `legacy/historical_poc/experiments_offline`
+- `experiments/legacy/*` moved to `legacy/historical_poc/experiments_legacy`
+- old benchmark entrypoints moved to `legacy/historical_poc/experiments_online`
+- `src/rs/evaluation`, `src/rs/scheduler`, `src/rs/trace`, and `src/rs/legacy` moved to `legacy/historical_poc/src_rs_legacy`
+- analysis helpers moved into `scripts/metrics` and `scripts/plot`
+- ablation config YAML moved into `configs/experiment/ablation`
+- archive scripts moved into `scripts/maintenance/archive`

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from integrations.megatron_ep.routersense.phase import build_phase_ready_context, validate_layout_offsets_cover_exactly_once
+from rs.runtime.online.megatron_ep.phase import build_phase_ready_context, validate_layout_offsets_cover_exactly_once
 
 
 def test_p0_layout_offsets_cover_exactly_once() -> None:

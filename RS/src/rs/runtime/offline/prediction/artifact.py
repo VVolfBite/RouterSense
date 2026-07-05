@@ -1,5 +1,36 @@
-"""Prediction artifact helpers."""
+"""Prediction artifact helpers for the formal offline runtime."""
 
 from __future__ import annotations
 
-from rs.offline.reporting.metadata import *  # noqa: F401,F403
+from typing import Any
+
+from rs.core.contracts.result import OFFLINE_PIPELINE, build_result_envelope
+from rs.core.contracts.trace import FutureInformationMode, TraceOrigin
+
+
+def build_calibrated_counterfactual_result(
+    *,
+    run_id: str,
+    future_information_mode: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_result_envelope(
+        run_id=run_id,
+        pipeline=OFFLINE_PIPELINE,
+        claim_scope="calibrated_offline_counterfactual",
+        trace_origin=TraceOrigin.OBSERVED_ONLINE_NATIVE_EP,
+        future_information_mode=future_information_mode,
+        is_real_ep_runtime=False,
+        source_ownership_mode="observed_online_native_ep",
+        expert_residency_mode="observed_online_native_ep",
+        transport_backend="calibrated_simulator",
+        correctness_status="unsupported",
+        performance_claim_eligible=False,
+        extra={
+            "deployable_scheduler_candidate": future_information_mode != FutureInformationMode.ORACLE_FULL_TRACE,
+            **(extra or {}),
+        },
+    )
+
+
+__all__ = ["build_calibrated_counterfactual_result"]

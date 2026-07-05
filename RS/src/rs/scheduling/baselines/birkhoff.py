@@ -1,44 +1,62 @@
-"""Birkhoff-style decomposition baselines.
+"""Formal Birkhoff baseline contract.
 
-The formal pre-evaluation tree only needs a small pure-Python placeholder API
-here; policy/executor correctness does not depend on the historical
-implementation details from ``rs.scheduler``.
+The historical Birkhoff decomposition implementation lives in legacy parking.
+Until that implementation is migrated into the formal scheduling tree, the
+formal API must fail closed instead of returning placeholder makespans.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 
-def decompose_matrix_to_permutations(matrix: list[list[int]]) -> list[dict[str, Any]]:
-    size = len(matrix)
-    rows = []
-    for src_rank in range(size):
-        for dst_rank in range(size):
-            value = int(matrix[src_rank][dst_rank])
-            if src_rank == dst_rank or value <= 0:
-                continue
-            rows.append({"src_rank": src_rank, "dst_rank": dst_rank, "weight": value})
-    rows.sort(key=lambda item: (-item["weight"], item["src_rank"], item["dst_rank"]))
-    return rows
+@dataclass(frozen=True)
+class UnsupportedBaselineError(RuntimeError):
+    baseline_name: str
+    reason: str
+
+    def __str__(self) -> str:
+        return f"{self.baseline_name} unsupported in formal mainline: {self.reason}"
 
 
-def birkhoff_schedule_single_layer(matrix: list[list[int]]) -> float:
-    decomposition = decompose_matrix_to_permutations(matrix)
-    return float(sum(int(item["weight"]) for item in decomposition))
-
-
-def birkhoff_baseline_summary(matrix: list[list[int]]) -> dict[str, Any]:
-    decomposition = decompose_matrix_to_permutations(matrix)
+def unsupported_birkhoff_summary() -> dict[str, Any]:
     return {
-        "makespan": birkhoff_schedule_single_layer(matrix),
-        "permutation_count": len(decomposition),
-        "total_volume": sum(int(item["weight"]) for item in decomposition),
+        "baseline_name": "birkhoff",
+        "supported": False,
+        "solver_status": "unsupported",
+        "makespan": None,
+        "permutation_count": None,
+        "total_volume": None,
+        "certified_optimal": False,
+        "optimality_gap": None,
+        "best_bound": None,
+        "reason": "historical implementation remains in legacy/historical_poc and has not been migrated into formal scheduling",
     }
 
 
+def decompose_matrix_to_permutations(matrix: list[list[int]]) -> list[dict[str, Any]]:
+    raise UnsupportedBaselineError(
+        baseline_name="birkhoff.decompose_matrix_to_permutations",
+        reason="formal tree does not ship a placeholder decomposition",
+    )
+
+
+def birkhoff_schedule_single_layer(matrix: list[list[int]]) -> float:
+    raise UnsupportedBaselineError(
+        baseline_name="birkhoff_schedule_single_layer",
+        reason="formal tree does not expose a fake Birkhoff makespan",
+    )
+
+
+def birkhoff_baseline_summary(matrix: list[list[int]]) -> dict[str, Any]:
+    return unsupported_birkhoff_summary()
+
+
 __all__ = [
+    "UnsupportedBaselineError",
     "birkhoff_baseline_summary",
     "birkhoff_schedule_single_layer",
     "decompose_matrix_to_permutations",
+    "unsupported_birkhoff_summary",
 ]

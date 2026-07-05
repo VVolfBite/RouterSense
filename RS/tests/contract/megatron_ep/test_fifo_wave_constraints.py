@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from integrations.megatron_ep.routersense.policy.bucketed_fifo import BucketedFIFOPolicy
-from integrations.megatron_ep.routersense.phase import build_phase_ready_context
+from rs.scheduling.policy.bucketed_fifo import BucketedFIFOPolicy
+from rs.runtime.online.megatron_ep.phase import build_phase_ready_context
 
 
 def _ctx(rank: int, send_remote: int) -> object:

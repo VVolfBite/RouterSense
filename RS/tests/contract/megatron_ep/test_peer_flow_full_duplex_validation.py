@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.contracts import PeerFlow, PhaseDemand, PlanWave, RouterSensePlan
-from integrations.megatron_ep.routersense.policy.validation import summarize_plan_metrics, validate_shadow_plan
+from rs.runtime.online.megatron_ep.contracts import PeerFlow, PhaseDemand, PlanWave, RouterSensePlan
+from rs.scheduling.policy.validation import summarize_plan_metrics, validate_shadow_plan
 
 from .helpers import make_context
 

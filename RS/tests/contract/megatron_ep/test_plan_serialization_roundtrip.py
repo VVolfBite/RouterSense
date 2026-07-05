@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from integrations.megatron_ep.routersense.contracts import PeerFlow, PhaseDemand, PlanWave, RouterSensePlan
-from integrations.megatron_ep.routersense.policy.agreement import decode_plan_tensor, encode_plan_tensor
-from integrations.megatron_ep.routersense.policy.validation import summarize_plan_metrics
+from rs.runtime.online.megatron_ep.contracts import PeerFlow, PhaseDemand, PlanWave, RouterSensePlan
+from rs.runtime.online.megatron_ep.control.agreement_wire import decode_plan_tensor, encode_plan_tensor
+from rs.scheduling.policy.validation import summarize_plan_metrics
 
 from .helpers import make_context
 

@@ -1,8 +1,0 @@
-{
-  "pipeline": "host_runtime_native_ep",
-  "host_runtime": "megatron_core",
-  "status": "blocked_environment",
-  "reason": "verify_env_failed",
-  "future_hint_mode": "none",
-  "facade_mode": "not_started"
-}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.exp_phase_executor import _failure_report
+from experiments.online.run_policy_correctness import _failure_report
 
 
 def test_failure_report_schema() -> None:

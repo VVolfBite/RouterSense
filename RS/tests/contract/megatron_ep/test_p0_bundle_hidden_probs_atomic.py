@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from integrations.megatron_ep.routersense.phase import build_phase_ready_context, validate_p0_atomic_bundle
+from rs.runtime.online.megatron_ep.phase import build_phase_ready_context, validate_p0_atomic_bundle
 
 
 def test_p0_bundle_hidden_probs_atomic() -> None:

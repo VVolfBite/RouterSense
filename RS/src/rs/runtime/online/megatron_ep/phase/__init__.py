@@ -17,6 +17,7 @@ from .contracts import (
     TransportBundle,
 )
 from .layout_join import join_transfer_layouts
+from .validation import validate_layout_offsets_cover_exactly_once, validate_p0_atomic_bundle
 
 __all__ = [
     "BucketTask",
@@ -34,4 +35,6 @@ __all__ = [
     "TransportBundle",
     "build_phase_ready_context",
     "join_transfer_layouts",
+    "validate_layout_offsets_cover_exactly_once",
+    "validate_p0_atomic_bundle",
 ]

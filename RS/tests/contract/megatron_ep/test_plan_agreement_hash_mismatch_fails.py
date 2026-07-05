@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.megatron_ep.routersense.policy.agreement import validate_rank_hashes
+from rs.runtime.online.megatron_ep.control.agreement_wire import validate_rank_hashes
 
 
 def test_plan_agreement_hash_mismatch_fails() -> None:

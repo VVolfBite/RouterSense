@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.control.contracts import PlanKey
+from rs.runtime.online.megatron_ep.control.contracts import PlanKey
 
 
 def test_plan_key_epoch_uniqueness() -> None:

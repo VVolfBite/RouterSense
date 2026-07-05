@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from integrations.megatron_ep.exp_injection_smoke import _assert_expected_fingerprint
+from experiments.online.run_injection_smoke import _assert_expected_fingerprint
 
 
 def test_host_api_drift_detection_raises_on_mismatch(tmp_path: Path) -> None:

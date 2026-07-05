@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.megatron_ep.routersense.contracts import RouterSenseInjectionConfig
-from integrations.megatron_ep.routersense.dispatcher_facade import RouterSenseDispatcherFacade, UnsupportedSchedulerMode
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade, UnsupportedSchedulerMode
 
 
 def test_policy_rejects_non_none_future_hint() -> None:

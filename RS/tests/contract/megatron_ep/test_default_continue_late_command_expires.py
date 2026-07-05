@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.contracts import RouterSenseInjectionConfig
-from integrations.megatron_ep.routersense.dispatcher_facade import RouterSenseInjectionRuntime
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.runtime import RouterSenseInjectionRuntime
 
 
 def test_default_continue_late_shadow_replace_metadata_contract() -> None:

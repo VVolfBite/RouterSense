@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.policy.bucketed_fifo import BucketedFIFOPolicy
-from integrations.megatron_ep.routersense.policy.registry import resolve_phase_policy
-from integrations.megatron_ep.routersense.policy.trivial_reverse_bucket import TrivialReverseBucketPolicy
+from rs.scheduling.policy.bucketed_fifo import BucketedFIFOPolicy
+from rs.scheduling.policy.registry import resolve_phase_policy
+from rs.scheduling.policy.trivial_reverse_bucket import TrivialReverseBucketPolicy
 
 
 def test_policy_registry_resolves_named_policy() -> None:

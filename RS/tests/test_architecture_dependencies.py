@@ -67,9 +67,19 @@ def test_scheduling_does_not_import_torch_or_runtime() -> None:
 
 def test_formal_experiments_do_not_import_integrations_or_poc_line1() -> None:
     bad = []
+    forbidden = (
+        "integrations.megatron_ep",
+        "experiments.poc_line1",
+        "rs.scheduler",
+        "rs.evaluation",
+        "rs.trace",
+        "rs.online",
+        "rs.offline",
+        "rs.runtime.distributed_ep",
+    )
     for path, lineno, module in _collect_imports(Path("experiments")):
         if "legacy" in path.parts or "distributed" in path.parts or "poc_line1" in path.parts:
             continue
-        if module.startswith(("integrations.megatron_ep", "experiments.poc_line1")):
+        if module.startswith(forbidden):
             bad.append(f"{path}:{lineno}:{module}")
     assert not bad, bad

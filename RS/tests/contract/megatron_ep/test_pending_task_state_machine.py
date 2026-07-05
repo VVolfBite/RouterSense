@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.megatron_ep.routersense.control.contracts import BucketDescriptor, PendingCommTask, PlanKey
-from integrations.megatron_ep.routersense.control.state_machine import can_transition, transition_task
+from rs.runtime.online.megatron_ep.control.contracts import BucketDescriptor, PendingCommTask, PlanKey
+from rs.runtime.online.megatron_ep.control.state_machine import can_transition, transition_task
 
 
 def _plan_key() -> PlanKey:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from integrations.megatron_ep.routersense.phase import build_phase_ready_context
+from rs.runtime.online.megatron_ep.phase import build_phase_ready_context
 
 
 def test_p1_ready_context_semantics() -> None:

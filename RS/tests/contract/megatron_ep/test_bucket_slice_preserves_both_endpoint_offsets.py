@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.execution.bucketizer import bucketize_transfer_layouts
-from integrations.megatron_ep.routersense.phase import PackedTensorDescriptor, PayloadSlice, TransferLayout
+from rs.runtime.online.megatron_ep.execution.bucketizer import bucketize_transfer_layouts
+from rs.runtime.online.megatron_ep.phase import PackedTensorDescriptor, PayloadSlice, TransferLayout
 
 
 def test_bucket_slice_preserves_both_endpoint_offsets() -> None:

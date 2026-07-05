@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.policy.registry import resolve_phase_policy
+from rs.scheduling.policy.registry import resolve_phase_policy
 from .helpers import make_phase_context
 
 

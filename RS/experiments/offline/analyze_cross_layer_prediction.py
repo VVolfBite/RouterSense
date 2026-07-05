@@ -11,15 +11,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from rs.evaluation import (
+from rs.core.artifact import write_json
+from rs.runtime.offline.prediction.cross_layer import (
     analyze_cross_layer_correlation,
     analyze_cross_layer_predictability,
-    build_owner_by_expert,
     load_gate_weight_bundle,
     load_hidden_state_bundle,
-    load_trace_jsonl,
-    write_json,
 )
+from rs.runtime.offline.traffic.matrix_builder import build_owner_by_expert, load_trace_jsonl
 
 
 def main(argv: list[str] | None = None) -> int:

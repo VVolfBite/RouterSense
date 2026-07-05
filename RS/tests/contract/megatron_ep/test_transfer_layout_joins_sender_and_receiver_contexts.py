@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from integrations.megatron_ep.routersense.execution.fifo_policy import join_transfer_layouts
-from integrations.megatron_ep.routersense.phase import build_phase_ready_context
+from rs.runtime.online.megatron_ep.phase.layout_join import join_transfer_layouts
+from rs.runtime.online.megatron_ep.phase import build_phase_ready_context
 
 
 def _p0_context(*, rank: int, input_splits: tuple[int, int], output_splits: tuple[int, int]):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.policy.joint_shadow import JointShadowP0P1Policy
+from rs.scheduling.policy.joint_shadow import JointShadowP0P1Policy
 
 from .helpers import make_context, make_observation
 

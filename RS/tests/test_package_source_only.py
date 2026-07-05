@@ -32,17 +32,22 @@ def test_package_source_only_mainline_excludes_legacy_and_runtime(tmp_path):
     root = Path(__file__).resolve().parents[2]
     archive = tmp_path / "mainline.tar.gz"
     subprocess.run(
-        _script_command(root / "RS" / "tools" / "archive" / "package_source_only.sh", "--scope", "mainline", str(archive)),
+        _script_command(
+            root / "RS" / "scripts" / "maintenance" / "archive" / "package_source_only.sh",
+            "--scope",
+            "mainline",
+            str(archive),
+        ),
         check=True,
     )
     listing = subprocess.check_output(["tar", "-tzf", str(archive)], text=True).splitlines()
     assert "RS/src/rs/__init__.py" in listing
-    assert not any(line.startswith("legacy/poc1/") for line in listing)
-    assert not any(line.startswith("legacy/poc2/") for line in listing)
+    assert not any(line.startswith("RS/legacy/") for line in listing)
     assert not any(line.startswith("RS/outputs/") or line == "RS/outputs" for line in listing)
     assert not any(line.startswith("RS/artifacts/") or line == "RS/artifacts" for line in listing)
     assert not any(line.startswith("RS/deploy/logs/") or line == "RS/deploy/logs" for line in listing)
     assert not any(line.startswith("RS/archives/") or line == "RS/archives" for line in listing)
+    assert not any(line.startswith("RS/integrations/") or line == "RS/integrations" for line in listing)
     assert "RS/README.md" in listing
 
 
@@ -50,23 +55,38 @@ def test_package_source_only_full_includes_legacy(tmp_path):
     root = Path(__file__).resolve().parents[2]
     archive = tmp_path / "full.tar.gz"
     subprocess.run(
-        _script_command(root / "RS" / "tools" / "archive" / "package_source_only.sh", "--scope", "full", str(archive)),
+        _script_command(
+            root / "RS" / "scripts" / "maintenance" / "archive" / "package_source_only.sh",
+            "--scope",
+            "full",
+            str(archive),
+        ),
         check=True,
     )
     listing = subprocess.check_output(["tar", "-tzf", str(archive)], text=True).splitlines()
-    assert "legacy/poc1/src/routesense_poc1/__init__.py" in listing
-    assert "legacy/poc2/src/routesense_poc2/__init__.py" in listing
+    assert "RS/legacy/historical_poc/README.md" in listing
+    assert any(line.startswith("RS/legacy/historical_poc/") for line in listing)
 
 
 def test_verify_source_archive_matches_head_mainline(tmp_path):
     root = Path(__file__).resolve().parents[2]
     archive = tmp_path / "mainline.tar.gz"
     subprocess.run(
-        _script_command(root / "RS" / "tools" / "archive" / "package_source_only.sh", "--scope", "mainline", str(archive)),
+        _script_command(
+            root / "RS" / "scripts" / "maintenance" / "archive" / "package_source_only.sh",
+            "--scope",
+            "mainline",
+            str(archive),
+        ),
         check=True,
     )
     subprocess.run(
-        _script_command(root / "RS" / "tools" / "archive" / "verify_source_archive_matches_head.sh", "--scope", "mainline", str(archive)),
+        _script_command(
+            root / "RS" / "scripts" / "maintenance" / "archive" / "verify_source_archive_matches_head.sh",
+            "--scope",
+            "mainline",
+            str(archive),
+        ),
         check=True,
     )
 
@@ -75,7 +95,12 @@ def test_archive_unpack_allows_pytest_from_rs_dir(tmp_path):
     root = Path(__file__).resolve().parents[2]
     archive = tmp_path / "mainline.tar.gz"
     subprocess.run(
-        _script_command(root / "RS" / "tools" / "archive" / "package_source_only.sh", "--scope", "mainline", str(archive)),
+        _script_command(
+            root / "RS" / "scripts" / "maintenance" / "archive" / "package_source_only.sh",
+            "--scope",
+            "mainline",
+            str(archive),
+        ),
         check=True,
     )
     unpack_dir = tmp_path / "unpack"

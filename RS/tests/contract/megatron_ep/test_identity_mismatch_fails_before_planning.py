@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.megatron_ep.routersense.policy.validation import validate_global_observations
+from rs.scheduling.policy.validation import validate_global_observations
 
 from .helpers import make_context, make_observation
 

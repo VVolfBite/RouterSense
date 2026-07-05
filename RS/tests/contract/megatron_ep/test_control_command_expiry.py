@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.megatron_ep.routersense.control.contracts import ControlCommand, PlanExpiry, PlanKey
-from integrations.megatron_ep.routersense.control.validation import validate_command_not_expired
+from rs.runtime.online.megatron_ep.control.contracts import ControlCommand, PlanExpiry, PlanKey
+from rs.runtime.online.megatron_ep.control.validation import validate_command_not_expired
 
 
 def _plan_key() -> PlanKey:

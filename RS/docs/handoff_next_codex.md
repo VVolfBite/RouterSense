@@ -70,18 +70,18 @@ It is not online EP runtime.
 
 ## 3. New Mainline Layout
 
-Important new package roots:
+This note is historical. The current formal mainline now lives under:
 
-- `src/rs/contracts/`
-- `src/rs/offline/`
-- `src/rs/online/`
-- `src/rs/legacy/`
+- `src/rs/core/`
+- `src/rs/scheduling/`
+- `src/rs/runtime/offline/`
+- `src/rs/runtime/online/megatron_ep/`
 
 Important new experiment roots:
 
 - `experiments/offline/`
 - `experiments/online/`
-- `experiments/legacy/`
+- `legacy/historical_poc/experiments_legacy/`
 
 ## 4. Provenance Rules
 
@@ -115,28 +115,18 @@ Key rules already enforced:
 
 Runnable now:
 
-1. `experiments/offline/exp_router_prediction.py`
-2. `experiments/legacy/exp_trace_replay.py`
-3. `experiments/online/bench_native_ep.py --world-size 1`
-4. `experiments/online/collect_native_ep_trace.py --world-size 1`
-5. `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only`
-6. `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only`
-7. `torchrun --nproc_per_node=2 experiments/online/bench_native_ep.py --world-size 2 --route-partition-only --hidden-dispatch-only`
-8. `torchrun --nproc_per_node=2 experiments/online/collect_native_ep_trace.py --world-size 2 --route-partition-only --hidden-dispatch-only`
+1. `experiments/offline/collect_router_trace.py`
+2. `experiments/offline/analyze_cross_layer_prediction.py`
+3. `legacy/historical_poc/experiments_legacy/exp_trace_replay.py`
+4. `experiments/online/collect_native_ep_trace.py`
 
 Present but expected to fail fast or reject non-qualifying input:
 
-1. `experiments/offline/fit_ep_cost_model.py`
-2. `experiments/offline/exp_calibrated_schedule.py`
-3. `experiments/online/collect_native_ep_trace.py --world-size > 1`
-   except the ws2 `--route-partition-only` metadata path
-4. `experiments/online/bench_native_ep.py --world-size > 1`
-   except the ws2 `--route-partition-only` metadata path
-5. `experiments/online/bench_scheduled_ep.py`
+1. historical offline study entrypoints parked under `legacy/historical_poc/experiments_offline/`
+2. historical online benchmark harness parked under `legacy/historical_poc/experiments_online/`
 
-That is intentional. The verified single-rank local-MoE harness exists, the
-verified ws2 route-partition stage exists, and the verified ws2 hidden-dispatch
-stage exists, but the real multi-rank online runtime still does not.
+That is intentional. This file is retained only as a historical handoff note;
+current canonical status is documented in `docs/handoff/pre_evaluation_handoff.md`.
 
 ## 6. What To Work On Next
 

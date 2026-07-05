@@ -25,3 +25,11 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "--ignore=tests/legacy -m \"not legacy and not gpu and not nccl and not multinode and not slow\""
+markers = [
+  "gpu: requires at least one visible GPU",
+  "nccl: requires distributed NCCL execution",
+  "multinode: requires multi-node environment",
+  "slow: long-running regression or reference solver coverage",
+  "legacy: historical POC or deprecated-path coverage excluded from the default suite",
+]

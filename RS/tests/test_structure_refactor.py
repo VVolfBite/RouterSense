@@ -31,32 +31,71 @@ def test_refactor_structure_exists() -> None:
         root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
         root / "src/rs/runtime/online/megatron_ep/execution/sync_wave_executor.py",
         root / "scripts",
+        root / "scripts/maintenance/archive/package_source_only.sh",
+        root / "scripts/plot/plot_makespan.py",
+        root / "scripts/metrics/summarize_pairwise.py",
+        root / "configs/experiment/ablation/formal.yaml",
         root / "experiments/offline/collect_router_trace.py",
         root / "experiments/offline/analyze_cross_layer_prediction.py",
-        root / "experiments/offline/run_multiphase_reference.py",
-        root / "experiments/offline/run_scheduler_ablation.py",
-        root / "experiments/offline/compare_prediction_inputs.py",
         root / "experiments/online/collect_native_ep_trace.py",
         root / "experiments/online/run_policy_correctness.py",
         root / "experiments/online/run_policy_benchmark.py",
         root / "experiments/online/run_injection_smoke.py",
         root / "experiments/online/run_host_api_probe.py",
-        root / "legacy/hf_olmoe_ep_harness/README.md",
-        root / "legacy/historical_poc/README.md",
         root / "archive/README.md",
     ]
     for path in required:
         assert path.exists(), path
 
+    legacy_readmes = [
+        root / "legacy/hf_olmoe_ep_harness/README.md",
+        root / "legacy/historical_poc/README.md",
+    ]
+    if (root / "legacy").exists():
+        for path in legacy_readmes:
+            assert path.exists(), path
+
 
 def test_legacy_paths_remain_outside_formal_mainline() -> None:
     root = Path(__file__).resolve().parents[1]
+    if not (root / "legacy").exists():
+        return
     legacy_runtime_paths = [
-        root / "src/rs/online/olmoe_ep",
-        root / "src/rs/runtime/distributed_ep",
-        root / "experiments/distributed",
-        root / "experiments/online/bench_native_ep.py",
-        root / "experiments/online/bench_scheduled_ep.py",
+        root / "legacy/historical_poc/experiments_distributed",
+        root / "legacy/historical_poc/experiments_online/bench_native_ep.py",
+        root / "legacy/historical_poc/experiments_online/bench_scheduled_ep.py",
+        root / "legacy/historical_poc/experiments_poc_line1",
+        root / "legacy/historical_poc/experiments_offline/run_multiphase_reference.py",
+        root / "legacy/historical_poc/experiments_offline/run_scheduler_ablation.py",
+        root / "legacy/historical_poc/experiments_offline/compare_prediction_inputs.py",
+        root / "legacy/historical_poc/experiments_legacy/exp_trace_replay.py",
+        root / "legacy/historical_poc/integrations",
+        root / "legacy/historical_poc/archives",
+        root / "legacy/historical_poc/src_rs_legacy/evaluation",
+        root / "legacy/historical_poc/src_rs_legacy/scheduler",
+        root / "legacy/historical_poc/src_rs_legacy/trace",
     ]
     for path in legacy_runtime_paths:
         assert path.exists(), path
+
+
+def test_removed_duplicate_formal_roots() -> None:
+    root = Path(__file__).resolve().parents[1]
+    removed_paths = [
+        root / "analysis",
+        root / "tools",
+        root / "archives",
+        root / "integrations",
+        root / "experiments/distributed",
+        root / "experiments/poc_line1",
+        root / "experiments/legacy",
+        root / "experiments/ablation",
+        root / "experiments/online/bench_native_ep.py",
+        root / "experiments/online/bench_scheduled_ep.py",
+        root / "src/rs/evaluation",
+        root / "src/rs/scheduler",
+        root / "src/rs/trace",
+        root / "src/rs/legacy",
+    ]
+    for path in removed_paths:
+        assert not path.exists(), path

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from integrations.megatron_ep.routersense.policy.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.policy.registry import resolve_phase_policy, supported_phase_policies
 from .helpers import make_contexts_from_matrix
 
 

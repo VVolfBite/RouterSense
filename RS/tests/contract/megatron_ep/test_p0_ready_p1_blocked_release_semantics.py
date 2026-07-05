@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from integrations.megatron_ep.routersense.policy.validation import build_phase_demands, build_remote_flows
+from rs.scheduling.policy.validation import build_phase_demands, build_remote_flows
 
 from .helpers import make_observation
 
