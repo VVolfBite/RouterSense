@@ -168,6 +168,7 @@ def write_rank_artifacts(
         write_jsonl(run_dir / f"rank{rank}_phase_contexts.jsonl", runtime.export_phase_contexts())
         write_jsonl(run_dir / f"rank{rank}_transport_bundles.jsonl", runtime.export_transport_bundles())
         write_jsonl(run_dir / f"rank{rank}_scheduled_phase_plans.jsonl", runtime.export_scheduled_phase_plans())
+        write_jsonl(run_dir / f"rank{rank}_plan_arrival_records.jsonl", runtime.export_plan_arrival_records())
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)
