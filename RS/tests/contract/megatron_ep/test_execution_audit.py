@@ -115,3 +115,57 @@ def test_execution_audit_detects_wave_mismatch() -> None:
     )
     assert audit.status == "failed"
     assert audit.executed_wave_count != audit.planned_wave_count
+
+
+def test_execution_audit_records_prepared_plan_lineage() -> None:
+    plan = {
+        "policy_name": "routersense_p0p1p2_hint",
+        "plan_hash": "plan-1",
+        "transport_mutation": True,
+        "metrics": {
+            "compiled_from_prepared_plan": True,
+            "prepared_plan_order_preserved": True,
+            "prepared_window_key": "window-1",
+            "source_logical_plan_hash": "logical-1",
+            "hint_edges_consumed": 1,
+            "hint_match_rate": 1.0,
+        },
+        "waves": [{"wave_id": 0, "bucket_tasks": [{"task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16}]}],
+    }
+    audit = build_execution_audit(
+        ExecutionAuditInput(
+            execution_plan=plan,
+            transport_events=(
+                {"wave_id": 0, "task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            ),
+            phase_contract={"phase": "P1", "layer_id": "0", "policy_enabled": True},
+        )
+    )
+    assert audit.status == "passed"
+    assert audit.details["compiled_from_prepared_plan"] is True
+    assert audit.details["prepared_window_key"] == "window-1"
+    assert audit.details["source_logical_plan_hash"] == "logical-1"
+
+
+def test_execution_audit_fails_when_prepared_plan_order_not_preserved() -> None:
+    plan = {
+        "policy_name": "routersense_p0p1p2_hint",
+        "plan_hash": "plan-1",
+        "transport_mutation": True,
+        "metrics": {
+            "compiled_from_prepared_plan": True,
+            "prepared_plan_order_preserved": False,
+        },
+        "waves": [{"wave_id": 0, "bucket_tasks": [{"task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16}]}],
+    }
+    audit = build_execution_audit(
+        ExecutionAuditInput(
+            execution_plan=plan,
+            transport_events=(
+                {"wave_id": 0, "task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            ),
+            phase_contract={"phase": "P1", "layer_id": "0", "policy_enabled": True},
+        )
+    )
+    assert audit.status == "failed"
+    assert audit.details["prepared_plan_order_preserved"] is False

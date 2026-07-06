@@ -117,6 +117,9 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
 
     local_copy_coverage_passed = planned_local_rows == actual_local_rows
     remote_flow_coverage_passed = planned_remote_rows == actual_remote_rows
+    metrics = plan_dict.get("metrics", {}) or {}
+    compiled_from_prepared_plan = bool(metrics.get("compiled_from_prepared_plan", False))
+    prepared_plan_order_preserved = bool(metrics.get("prepared_plan_order_preserved", False)) if compiled_from_prepared_plan else True
 
     status = "passed"
     if (
@@ -130,6 +133,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         or not local_copy_coverage_passed
         or not remote_flow_coverage_passed
         or not p0_bundle_atomicity_preserved
+        or not prepared_plan_order_preserved
         or native_fallback_events
         or contract_violation_events
     ):
@@ -165,6 +169,12 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             "actual_local_rows": actual_local_rows,
             "planned_remote_rows": planned_remote_rows,
             "actual_remote_rows": actual_remote_rows,
+            "compiled_from_prepared_plan": compiled_from_prepared_plan,
+            "prepared_plan_order_preserved": prepared_plan_order_preserved,
+            "prepared_window_key": str(metrics.get("prepared_window_key", "")),
+            "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
+            "hint_edges_consumed": int(metrics.get("hint_edges_consumed", 0) or 0),
+            "hint_match_rate": float(metrics.get("hint_match_rate", 0.0) or 0.0),
         },
     )
 

@@ -12,8 +12,9 @@ from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
+from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
 from rs.scheduling import resolve_phase_policy
-from rs.scheduling.contracts import FlowWindow, ForecastPressure, GlobalReadySetOptions, LogicalTopology, MultiPhaseSchedulingProblem, ReleaseConstraint
+from rs.scheduling.contracts import FlowDemand, FlowWindow, ForecastPressure, GlobalReadySetOptions, LogicalSchedulePlan, LogicalTopology, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint
 from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
 from rs.scheduling.observation_contracts import RankTopologyRecord, RuntimeObservation
 from rs.scheduling.phase_execution import FutureDemandHint
@@ -59,6 +60,31 @@ def _prepared_plan(*, forecast_digest: str = "forecast-abc", created: str = "0")
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
     ).build_prepared_window_plan(problem=problem, created_at_layer_id=created, applies_from_layer_id=str(int(created) + 1))
+
+
+def _manual_prepared_plan_with_priority(*, phase: str = "p0_dispatch", src_rank: int = 2, dst_rank: int = 0) -> PreparedWindowPlan:
+    flow = FlowDemand(
+        flow_id=f"{phase}:{src_rank}->{dst_rank}",
+        phase=phase,
+        src_rank=src_rank,
+        dst_rank=dst_rank,
+        byte_count=16,
+        release_state="ready",
+        is_executable=True,
+    )
+    logical_plan = LogicalSchedulePlan(
+        policy_name="routersense_multiphase_lookahead:p0_p1_p2",
+        waves=(LogicalWave(wave_id=0, flows=(flow,), duration=16.0),),
+        diagnostics={"unit": "manual-prepared-plan"},
+    )
+    return PreparedWindowPlan(
+        window_key="window-priority",
+        forecast_digest="forecast-priority",
+        logical_plan=logical_plan,
+        created_at_layer_id="0",
+        applies_from_layer_id="1",
+        execution_capability_required="multiphase_pending_window",
+    )
 
 
 def _runtime(*, control_mode: str = "sync_before_phase") -> RouterSenseInjectionRuntime:
@@ -128,6 +154,34 @@ def test_calibrated_artifact_digest_determinism() -> None:
     assert all(hint.metadata["window_key"] == prepared.window_key for hint in hints)
 
 
+def test_calibrated_artifact_exports_prepared_edge_priority() -> None:
+    prepared = _manual_prepared_plan_with_priority(phase="p0_dispatch", src_rank=2, dst_rank=0)
+    state = {"prepared_plan": prepared, "plan_created_at_us": 123, "plan_source_layer": "model.layers.0.mlp"}
+    hint = build_p2_hint_provider("calibrated_artifact", shared_state=state).build_hint(
+        P2HintRequest(
+            plan_key={"layer_id": "1", "phase": "P0"},
+            layer_id="1",
+            phase="P0",
+            global_rank=0,
+            local_rank=0,
+            ep_group_ranks=(0, 1, 2),
+        )
+    )
+    assert hint.metadata["preferred_edges"] == [
+        {
+            "phase": "P0",
+            "src_rank": 2,
+            "dst_rank": 0,
+            "priority": 0,
+            "origin_phase": "p0_dispatch",
+            "origin_flow_id": "p0_dispatch:2->0",
+            "byte_count": 16,
+            "wave_id": 0,
+        }
+    ]
+    assert hint.metadata["preferred_wave_count"] == 1
+
+
 def test_calibrated_artifact_no_plan_fallback() -> None:
     state = {"prepared_plan": None, "plan_created_at_us": 0, "plan_source_layer": ""}
     provider = build_p2_hint_provider("calibrated_artifact", shared_state=state)
@@ -190,6 +244,55 @@ def test_p0p1p2_hint_evaluation_eligible_with_calibrated_artifact() -> None:
     plan = policy.build_plan(local_context=hinted[0], global_contexts=hinted)
     assert plan.metrics["evaluation_eligible"] is True
     assert plan.metrics["p2_hint_source"].startswith("calibrated_artifact_from_layer_")
+
+
+def test_p0p1p2_hint_orders_by_prepared_edge_priority() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 1, 1), (1, 0, 1), (1, 1, 0)),
+        p2_hint_mode="none",
+    )
+    prepared = _manual_prepared_plan_with_priority(phase="p0_dispatch", src_rank=2, dst_rank=0)
+    state = {"prepared_plan": prepared, "plan_created_at_us": 123, "plan_source_layer": "model.layers.0.mlp"}
+    hint = build_p2_hint_provider("calibrated_artifact", shared_state=state).build_hint(
+        P2HintRequest(
+            plan_key={"layer_id": "1", "phase": "P0"},
+            layer_id="1",
+            phase="P0",
+            global_rank=0,
+            local_rank=0,
+            ep_group_ranks=(0, 1, 2),
+        )
+    )
+    hinted = tuple(replace(context, p2_hint=hint) for context in contexts)
+    plan = resolve_phase_policy(policy_name="routersense_p0p1p2_hint", bucket_rows=0).build_plan(
+        local_context=hinted[0],
+        global_contexts=hinted,
+    )
+    assert plan.metrics["ordered_by_prepared_plan"] is True
+    assert plan.metrics["hint_edges_available"] == 1
+    assert plan.metrics["hint_edges_consumed"] == 1
+    assert plan.metrics["bucket_order"][0].startswith("P0:2->0:")
+
+
+def test_compile_prepared_window_phase_plan_preserves_prepared_edge_order() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 1, 1), (1, 0, 1), (1, 1, 0)),
+        p2_hint_mode="none",
+    )
+    prepared = _manual_prepared_plan_with_priority(phase="p0_dispatch", src_rank=2, dst_rank=0)
+    plan = compile_prepared_window_phase_plan(
+        prepared_plan=prepared,
+        local_context=contexts[0],
+        global_contexts=contexts,
+        bucket_rows=0,
+        p2_hint_weight=1.0,
+    )
+    assert plan.metrics["compiled_from_prepared_plan"] is True
+    assert plan.metrics["prepared_window_key"] == "window-priority"
+    assert plan.metrics["prepared_plan_order_preserved"] is True
+    assert plan.metrics["bucket_order"][0].startswith("P0:2->0:")
 
 
 def test_shared_state_thread_isolation() -> None:
