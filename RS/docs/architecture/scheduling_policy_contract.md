@@ -149,5 +149,9 @@ This round does not implement:
 - full Aurora system reproduction
 - full FAST system reproduction
 - online RouterSense joint execution
-- P2 calibrated predictor artifact
+- offline P2 calibrated predictor artifact
 - performance claims
+
+## Online PreparedWindowPlan P2 Hints
+
+The online runtime can now carry a prior-layer `PreparedWindowPlan` as a `calibrated_artifact` `FutureDemandHint`. This is a runtime hint transport mechanism, not an offline predictor artifact implementation and not a multiphase online executor. The current executable consumer is the phase-local `routersense_p0p1p2_hint` policy.

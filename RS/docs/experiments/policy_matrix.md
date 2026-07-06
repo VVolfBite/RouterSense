@@ -50,7 +50,7 @@ Tier 1 comparisons must be separated by service model:
 | `shuffled_hint` | no | no | negative control only |
 | `perfect_trace` | yes | no | runtime-lookahead oracle predicted pressure, or compatibility name for execution-window actual P2 |
 | `actual_trace` | yes | no | execution-window actual P2 traffic only |
-| `calibrated_artifact` | n/a | no | fail-closed in this round |
+| `calibrated_artifact` | no for online PreparedWindowPlan hints; n/a for offline predictor artifacts | yes for online PreparedWindowPlan hints; no for unsupported offline predictor artifact | Online runtime consumes prior-layer PreparedWindowPlan hints. Offline calibrated predictor artifact remains fail-closed. |
 
 ## Online correctness suite
 
@@ -70,4 +70,4 @@ Offline-only references are never run online:
 - `birkhoff_von_neumann_fluid`: model `offline_fluid_crossbar`, not runtime-latency comparable.
 - `exact_small_instance_reference`: model `discrete_bucket_phase_sync_wave`, certified only for tiny fixtures.
 
-Historical diagnostic policies `routersense_p0p1_reservation` and `routersense_p0p1p2_hint` remain distinct from formal RouterSense multiphase lookahead and should not be used as production RouterSense claims.
+Online phase-local diagnostic policies `routersense_p0p1_reservation` and `routersense_p0p1p2_hint` remain distinct from formal offline RouterSense multiphase lookahead. `routersense_p0p1p2_hint` is valid for evaluating PreparedWindowPlan-derived P2 hints through the frozen phase-local executor, but it is not online multiphase joint execution.
