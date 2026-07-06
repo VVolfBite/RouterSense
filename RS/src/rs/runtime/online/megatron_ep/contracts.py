@@ -37,6 +37,7 @@ class OnlinePolicyParameters:
     p2_hint_weight: float = 0.0
     p2_hint_mode: str = "none"
     p2_hint_artifact: str = ""
+    calibrated_p2_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

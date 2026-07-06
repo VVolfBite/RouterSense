@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
 from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
 
@@ -40,16 +38,20 @@ def test_no_p2_hint_provider_returns_none_mode() -> None:
     assert hint.hint_digest == "none"
 
 
-def test_calibrated_artifact_p2_provider_fails_closed() -> None:
-    provider = build_p2_hint_provider("calibrated_artifact")
-    with pytest.raises(RuntimeError):
-        provider.build_hint(
-            P2HintRequest(
-                plan_key={"layer_id": "0", "phase": "P0"},
-                layer_id="0",
-                phase="P0",
-                global_rank=0,
-                local_rank=0,
-                ep_group_ranks=(0, 1),
-            )
+def test_calibrated_artifact_p2_provider_without_plan_falls_back_to_none() -> None:
+    provider = build_p2_hint_provider(
+        "calibrated_artifact",
+        shared_state={"prepared_plan": None, "plan_created_at_us": 0, "plan_source_layer": ""},
+    )
+    hint = provider.build_hint(
+        P2HintRequest(
+            plan_key={"layer_id": "0", "phase": "P0"},
+            layer_id="0",
+            phase="P0",
+            global_rank=0,
+            local_rank=0,
+            ep_group_ranks=(0, 1),
         )
+    )
+    assert hint.hint_mode == "none"
+    assert hint.hint_source == "no_prepared_plan_available"

@@ -589,12 +589,17 @@ def attach_formal_online_runtime(
     microbatch_id: str = "unknown",
     observer: RouterSenseObserver | None = None,
 ) -> RouterSenseInjectionRuntime:
+    p2_hint_mode = (
+        "calibrated_artifact"
+        if bool(runtime_config.policy_parameters.calibrated_p2_enabled)
+        else runtime_config.policy_parameters.p2_hint_mode
+    )
     injection_config = RouterSenseInjectionConfig(
         policy=runtime_config.policy_name,
         scheduler_mode="disabled",
         execution_mode=runtime_config.execution_mode,
         future_hint_mode="none",
-        p2_hint_mode=runtime_config.policy_parameters.p2_hint_mode,
+        p2_hint_mode=p2_hint_mode,
         control_mode=runtime_config.control_mode,
         bucket_rows=runtime_config.execution_selection.bucket_rows,
         p0_weight=runtime_config.policy_parameters.p0_weight,

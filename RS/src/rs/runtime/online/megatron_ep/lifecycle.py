@@ -65,6 +65,15 @@ class RouterSenseInjectionRuntime:
     ep_process_group: Any | None = None
     completed: list[PolicyRuntimeRecord] = field(default_factory=list)
     _pending_p0: dict[str, RuntimeObservation] = field(default_factory=dict)
+    _pending_p1: dict[str, RuntimeObservation] = field(default_factory=dict)
+    _prepared_plan_state: dict[str, Any] = field(
+        default_factory=lambda: {
+            "prepared_plan": None,
+            "plan_created_at_us": 0,
+            "plan_source_layer": "",
+        }
+    )
+    plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
     control_timeline: list[dict[str, Any]] = field(default_factory=list)
     control_commands: list[dict[str, Any]] = field(default_factory=list)
     assertion_state: dict[str, Any] = field(default_factory=dict)
@@ -72,6 +81,7 @@ class RouterSenseInjectionRuntime:
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
+    _p2_hint_provider: Any | None = None
 
     def __post_init__(self) -> None:
         if self.observation_recorder is None:
@@ -84,6 +94,11 @@ class RouterSenseInjectionRuntime:
                     heartbeat_enabled=bool(getattr(self.config, "heartbeat_enabled", False)),
                     per_wave_timing_enabled=bool(getattr(self.config, "per_wave_timing_enabled", False)),
                 )
+            )
+        if self.config.p2_hint_mode == "calibrated_artifact":
+            self._p2_hint_provider = build_p2_hint_provider(
+                self.config.p2_hint_mode,
+                shared_state=self._prepared_plan_state,
             )
 
     def _effective_phase_policy_name(self) -> str:
@@ -220,7 +235,15 @@ class RouterSenseInjectionRuntime:
                 self.observation_recorder.record_heartbeat(row)
 
     def _build_p2_hint(self, *, layer_name: str, phase: str):
-        provider = build_p2_hint_provider(self.config.p2_hint_mode)
+        if self.config.p2_hint_mode == "calibrated_artifact":
+            if self._p2_hint_provider is None:
+                self._p2_hint_provider = build_p2_hint_provider(
+                    self.config.p2_hint_mode,
+                    shared_state=self._prepared_plan_state,
+                )
+            provider = self._p2_hint_provider
+        else:
+            provider = build_p2_hint_provider(self.config.p2_hint_mode)
         return provider.build_hint(
             P2HintRequest(
                 plan_key=self._plan_key(layer_name, phase),
@@ -230,6 +253,131 @@ class RouterSenseInjectionRuntime:
                 local_rank=self.local_rank,
                 ep_group_ranks=self.ep_group_ranks,
             )
+        )
+
+    def _record_plan_arrival(self, *, layer_name: str, phase: str) -> None:
+        now_us = int(time.time() * 1e6)
+        plan = self._prepared_plan_state.get("prepared_plan")
+        plan_created_at = int(self._prepared_plan_state.get("plan_created_at_us", 0) or 0)
+        source_layer = str(self._prepared_plan_state.get("plan_source_layer", ""))
+        if plan is None:
+            arrival_status = "none"
+            plan_age_us = 0
+        else:
+            plan_age_us = max(0, now_us - plan_created_at)
+            if self.config.control_mode == "sync_before_phase":
+                arrival_status = "before_commit"
+            else:
+                arrival_status = "before_commit" if plan_age_us > 100 else "in_flight"
+        record = {
+            "ts_us": now_us,
+            "layer_name": layer_name,
+            "phase": phase,
+            "arrival_status": arrival_status,
+            "plan_age_us": plan_age_us,
+            "source_layer": source_layer,
+            "control_mode": self.config.control_mode,
+            "has_prepared_plan": plan is not None,
+            "window_key": str(getattr(plan, "window_key", "")) if plan is not None else "",
+            "forecast_digest": str(getattr(plan, "forecast_digest", "")) if plan is not None else "",
+        }
+        self.plan_arrival_records.append(record)
+        self._timeline(
+            "shadow_plan_arrival",
+            layer_name=layer_name,
+            phase_name=phase,
+            arrival_status=arrival_status,
+            plan_age_us=plan_age_us,
+            source_layer=source_layer,
+            has_prepared_plan=plan is not None,
+        )
+
+    def _store_prepared_plan(self, *, layer_name: str, observation_p1: RuntimeObservation) -> None:
+        from rs.scheduling.contracts import (
+            FlowWindow,
+            ForecastPressure,
+            GlobalReadySetOptions,
+            LogicalTopology,
+            MultiPhaseSchedulingProblem,
+            ReleaseConstraint,
+        )
+        from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
+        from rs.scheduling.validation import stable_hash
+
+        per_peer = tuple(int(value) for value in observation_p1.per_peer_bytes)
+        num_peers = len(per_peer)
+        if num_peers <= 0:
+            return
+        forecast_matrix = tuple(
+            tuple(int(per_peer[j]) if i != j else 0 for j in range(num_peers))
+            for i in range(num_peers)
+        )
+        p0_obs = self._pending_p0.get(layer_name)
+        if p0_obs is not None:
+            p0_per_peer = tuple(int(value) for value in p0_obs.per_peer_bytes)
+            dispatch_matrix = tuple(
+                tuple(int(p0_per_peer[j]) if j < len(p0_per_peer) and i != j else 0 for j in range(num_peers))
+                for i in range(num_peers)
+            )
+        else:
+            dispatch_matrix = forecast_matrix
+        forecast_digest = stable_hash({"per_peer_bytes": list(per_peer), "layer": layer_name})
+        problem = MultiPhaseSchedulingProblem(
+            flow_window=FlowWindow(ready_flows=(), blocked_flows=(), forecast_pressure=()),
+            topology=LogicalTopology(num_gpus=num_peers),
+            release_model=ReleaseConstraint(
+                phase="p1_return",
+                rank=0,
+                release_after_phase="p0_dispatch",
+                expert_compute_delay=0.0,
+            ),
+            forecast=ForecastPressure(
+                source="online_p1_observation",
+                digest=forecast_digest,
+                oracle=False,
+                evaluation_eligible=True,
+                matrix_shape=(num_peers, num_peers),
+                matrix_total_bytes=sum(int(value) for value in per_peer),
+                matrix=forecast_matrix,
+            ),
+            options=GlobalReadySetOptions(
+                scheduling_mode="runtime_lookahead",
+                information_mode="p0_p1_p2",
+                prediction_confidence=1.0,
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+                max_waves=256,
+            ),
+            p0_dispatch_matrix=dispatch_matrix,
+            p1_return_matrix=forecast_matrix,
+            p2_next_dispatch_forecast_matrix=forecast_matrix,
+        )
+        policy = RouterSenseMultiphaseLookaheadPolicy(
+            information_mode="p0_p1_p2",
+            p0_weight=self.config.p0_weight,
+            p1_reservation_weight=self.config.p1_reservation_weight,
+            p2_hint_weight=self.config.p2_hint_weight,
+        )
+        layer_id = parse_layer_id(layer_name)
+        try:
+            applies_from_layer_id = str(int(layer_id) + 1)
+        except ValueError:
+            applies_from_layer_id = layer_id
+        prepared = policy.build_prepared_window_plan(
+            problem=problem,
+            created_at_layer_id=str(layer_id),
+            applies_from_layer_id=applies_from_layer_id,
+        )
+        self._prepared_plan_state["prepared_plan"] = prepared
+        self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
+        self._prepared_plan_state["plan_source_layer"] = layer_name
+        self._timeline(
+            "prepared_window_plan_stored",
+            layer_name=layer_name,
+            window_key=prepared.window_key,
+            forecast_digest=prepared.forecast_digest,
+            applies_from_layer_id=prepared.applies_from_layer_id,
         )
 
     def capture_phase_transport_output(
@@ -348,6 +496,7 @@ class RouterSenseInjectionRuntime:
             phase="P0",
             hidden_states=packed_hidden_states,
         )
+        self._record_plan_arrival(layer_name=layer_name, phase="P0")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
         phase_ctx = build_phase_ready_context(
@@ -563,6 +712,9 @@ class RouterSenseInjectionRuntime:
     def after_token_combine(self, *, layer_name: str) -> None:
         if bool(self._effective_phase_policy_name()):
             self.clear_transport(layer_name=layer_name, phase="P1")
+            observation_p1 = self._pending_p1.pop(layer_name, None)
+            if observation_p1 is not None:
+                self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
                 raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")
             return
@@ -586,6 +738,8 @@ class RouterSenseInjectionRuntime:
             phase="P1",
             hidden_states=packed_hidden_states,
         )
+        self._pending_p1[layer_name] = observation
+        self._record_plan_arrival(layer_name=layer_name, phase="P1")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P1")
         phase_ctx = build_phase_ready_context(
             PhaseContextBuildRequest(
@@ -747,6 +901,9 @@ class RouterSenseInjectionRuntime:
 
     def export_control_commands(self) -> list[dict[str, Any]]:
         return list(self.control_commands)
+
+    def export_plan_arrival_records(self) -> list[dict[str, Any]]:
+        return list(self.plan_arrival_records)
 
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)

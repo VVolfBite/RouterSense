@@ -85,6 +85,7 @@ def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
             p2_hint_weight=config.online_policy.parameters.p2_hint_weight,
             p2_hint_mode=config.online_policy.p2.mode,
             p2_hint_artifact=config.online_policy.p2.artifact,
+            calibrated_p2_enabled=config.online_policy.p2.mode == "calibrated_artifact",
         ),
         observation=config.observation.to_dict(),
         validation=OnlineValidationConfig(
