@@ -1,4 +1,10 @@
-"""Megatron EP phase interfaces."""
+"""Phase 子包入口。
+
+这一层放 phase 级别的数据结构与辅助函数：
+- context_builder：把 dispatcher 现场信息整理成 PhaseReadyContext
+- contracts：phase 执行合同
+- layout_join / validation：布局拼接与校验
+"""
 
 from .context_builder import (
     DispatcherSnapshot,

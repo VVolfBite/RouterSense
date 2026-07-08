@@ -1,4 +1,10 @@
-"""Artifact recording contracts for the formal Megatron EP runtime."""
+"""观测面 artifact 记录器。
+
+主要职责：
+- 写 run manifest / summary / source provenance
+- 把 RuntimeObservationSnapshot 刷成 json/jsonl 文件
+不参与调度决策，只负责落盘。
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from rs.core.artifact import write_json, write_jsonl
-from rs.runtime.online.megatron_ep.observation import RuntimeObservationSnapshot
+
+from .contracts import RuntimeObservationSnapshot
 
 
 @dataclass

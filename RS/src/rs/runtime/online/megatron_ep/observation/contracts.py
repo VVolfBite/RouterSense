@@ -1,4 +1,11 @@
-"""Observation profile contracts and runtime observation builders."""
+"""观测面 schema 与 recorder。
+
+主要内容：
+- ObservationProfile / RuntimeObservationRecorder
+- ExecutionAudit 数据结构
+- build_runtime_observation() 运行时观测构建
+这里定义“记录什么、保留什么、如何导出”。
+"""
 
 from __future__ import annotations
 

@@ -1,3 +1,11 @@
+"""早期 pending task 状态机。
+
+主要函数：
+- can_transition()
+- transition_task()
+目前更多用于 contract tests 和历史控制模型验证。
+"""
+
 from __future__ import annotations
 
 from rs.runtime.online.megatron_ep.control.contracts import PendingCommTask, TaskCommitState

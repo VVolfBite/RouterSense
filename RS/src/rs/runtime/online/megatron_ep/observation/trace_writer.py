@@ -1,3 +1,11 @@
+"""观测/实验用的轻量 JSON 写文件工具。
+
+主要函数：
+- write_json()
+- write_jsonl()
+它本身不定义业务语义，只负责稳定落盘。
+"""
+
 from __future__ import annotations
 
 import json

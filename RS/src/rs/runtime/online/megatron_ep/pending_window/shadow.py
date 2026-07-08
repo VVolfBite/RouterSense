@@ -1,8 +1,8 @@
-"""Shadow pending-window planning for online multiphase execution.
+"""Pending-window shadow 构造器。
 
-This module does not mutate the frozen phase-local executor. It converts the
-currently available runtime window state into a deterministic shadow view of a
-future `multiphase_pending_window` runtime capability.
+它根据当前 window state 构造一个“如果 runtime 支持更强联合执行，
+现在理论上会怎么排”的 shadow 视图。
+这个文件只做 shadow 分析，不直接改执行面。
 """
 
 from __future__ import annotations

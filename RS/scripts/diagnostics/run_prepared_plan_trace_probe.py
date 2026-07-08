@@ -28,7 +28,7 @@ from rs.runtime.online.megatron_ep.phase import (
     RuntimeIdentity,
     build_phase_ready_context,
 )
-from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
+from rs.runtime.online.megatron_ep.pending_window import compile_prepared_window_phase_plan
 from rs.scheduling.contracts import (
     FlowWindow,
     ForecastPressure,

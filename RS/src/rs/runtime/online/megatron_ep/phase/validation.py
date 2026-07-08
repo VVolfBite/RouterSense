@@ -1,3 +1,11 @@
+"""Phase layout 与 bundle 合法性校验。
+
+主要函数：
+- validate_layout_offsets_cover_exactly_once()
+- validate_p0_atomic_bundle()
+用于确保 phase 级 layout 和 P0 原子 bundle 合同没有被破坏。
+"""
+
 from __future__ import annotations
 
 from .contracts import PhaseReadyContext

@@ -1,3 +1,10 @@
+"""同步 wave 执行器。
+
+主要函数：
+- execute_scheduled_phase_tensor()
+它按 PhaseExecutionPlan 的 wave 顺序驱动实际 collective 调用。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -9,12 +9,11 @@ import torch
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
-from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
-from rs.runtime.online.megatron_ep.multiphase_pending_window import build_pending_window_shadow
+from rs.runtime.online.megatron_ep.pending_window import MultiphasePendingWindowAdapter, build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
-from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
+from rs.runtime.online.megatron_ep.pending_window import compile_prepared_window_phase_plan
 from rs.scheduling import resolve_phase_policy
 from rs.scheduling.contracts import FlowDemand, FlowWindow, ForecastPressure, GlobalReadySetOptions, LogicalSchedulePlan, LogicalTopology, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint
 from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy

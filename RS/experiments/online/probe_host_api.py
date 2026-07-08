@@ -32,7 +32,7 @@ from rs.runtime.online.megatron_ep.host import (  # noqa: E402
     stage_barrier,
     summarize_rank_environment,
 )
-from rs.runtime.online.megatron_ep.trace_writer import write_json, write_jsonl  # noqa: E402
+from rs.runtime.online.megatron_ep.observation import write_json, write_jsonl  # noqa: E402
 from experiments.online.support.environment_validation import main as verify_env_main  # noqa: E402
 
 

@@ -1,4 +1,12 @@
-"""Host/bootstrap implementation for the formal Megatron EP runtime."""
+"""Megatron EP 在线运行时的外部入口与 bootstrap。
+
+这个文件主要负责：
+- 初始化/销毁分布式环境
+- 安装原生 observer
+- 安装正式 runtime facade
+- 暴露 attach_formal_online_runtime 等外部入口
+这里不承载调度算法本身，更多是“把运行时各模块装起来”。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +27,7 @@ import torch.distributed as dist
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
-from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
+from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
 from rs.scheduling.registry import supported_phase_policies
 

@@ -1,8 +1,9 @@
-"""Root-side multiphase pending-window adapter for online phase execution.
+"""Pending-window 适配器。
 
-This policy does not bypass the frozen phase-local executor. Instead, it uses a
-multiphase logical scheduler at the phase boundary, then compiles the current
-phase slice of that logical plan back into a `PhaseExecutionPlan`.
+它不是 scheduling policy，而是 runtime 侧编译器：
+- 先基于 joint logical window 生成逻辑计划
+- 再把“当前 phase 能执行的那一片”编译回 PhaseExecutionPlan
+它不绕过 frozen phase-local executor。
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import time
 from typing import Any
 from dataclasses import replace
 
-from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
+from rs.runtime.online.megatron_ep.pending_window.policy_adapter import compile_prepared_window_phase_plan
 from rs.scheduling.contracts import (
     FlowWindow,
     ForecastPressure,

@@ -1,3 +1,11 @@
+"""Phase context 构建器。
+
+主要函数：
+- build_phase_ready_context()：把 dispatcher snapshot、payload contract、
+  split 信息、packed tensor 元数据整理成 PhaseReadyContext
+这是 phase 级调度与执行之间最重要的桥。
+"""
+
 from __future__ import annotations
 
 import hashlib

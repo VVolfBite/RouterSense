@@ -1,3 +1,8 @@
+"""Native passthrough identity shadow policy。
+
+作用：不改变 transport，只记录“如果按原生身份路径走”时的控制面行为。
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace

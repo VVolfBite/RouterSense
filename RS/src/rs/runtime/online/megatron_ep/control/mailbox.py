@@ -1,3 +1,11 @@
+"""早期 mailbox 控制模型。
+
+主要提供：
+- ControlMailbox
+- apply_if_pending / expire_if_late
+当前主要服务于历史控制面测试，不是正式主线执行路径。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

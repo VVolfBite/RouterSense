@@ -1,3 +1,9 @@
+"""轻量原生 observer。
+
+这个文件只提供一个简单容器 RouterSenseObserver，
+用于在不接入正式 runtime 时记录原生 dispatcher 观测行。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

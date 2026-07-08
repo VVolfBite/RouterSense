@@ -29,7 +29,7 @@ from experiments.online.support.comparison_metrics import (
     render_markdown_report,
 )
 from experiments.online.support.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
-from rs.runtime.online.megatron_ep.trace_writer import write_json
+from rs.runtime.online.megatron_ep.observation import write_json
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

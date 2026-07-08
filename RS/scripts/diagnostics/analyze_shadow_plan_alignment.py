@@ -12,7 +12,7 @@ from scripts._bootstrap import ensure_src_on_path
 ensure_src_on_path()
 
 from experiments.online.support.shadow_plan_analysis import analyze_rank_artifacts
-from rs.runtime.online.megatron_ep.trace_writer import write_json
+from rs.runtime.online.megatron_ep.observation import write_json
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

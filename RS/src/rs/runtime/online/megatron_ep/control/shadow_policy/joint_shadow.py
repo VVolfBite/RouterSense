@@ -1,3 +1,9 @@
+"""Joint shadow policy。
+
+作用：只做影子联合规划/观测，不真正修改执行面 transport。
+主要用于 smoke 和控制面验证。
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace

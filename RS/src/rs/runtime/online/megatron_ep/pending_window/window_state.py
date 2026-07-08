@@ -1,4 +1,10 @@
-"""Window-state contracts for online joint-shadow scheduling."""
+"""Pending-window 状态与问题构造。
+
+主要职责：
+- 保存 online window 的 release state / prepared binding
+- 把 P0/P1 观测和 prepared plan 组装成 shadow scheduling problem
+这是 pending-window 子系统的数据核心。
+"""
 
 from __future__ import annotations
 
@@ -6,8 +12,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from rs.runtime.online.megatron_ep.contracts import RuntimeObservation
-from rs.runtime.online.megatron_ep.observation import parse_layer_id
 from rs.scheduling.contracts import FlowDemand, FlowWindow, ForecastPressure, GlobalReadySetOptions, LogicalTopology, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint
+
+from ..observation.contracts import parse_layer_id
 
 
 def _zero_matrix(num_gpus: int) -> tuple[tuple[int, ...], ...]:

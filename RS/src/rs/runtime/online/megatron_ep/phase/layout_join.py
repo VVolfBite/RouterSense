@@ -1,4 +1,7 @@
-"""Transfer-layout join exports."""
+"""Transfer layout 相关导出。
+
+当前主要是把 scheduling 里的 join 实现暴露给在线 runtime 与测试使用。
+"""
 
 from __future__ import annotations
 

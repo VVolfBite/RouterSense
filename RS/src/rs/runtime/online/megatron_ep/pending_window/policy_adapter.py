@@ -1,4 +1,9 @@
-"""Policy adapters for the formal online runtime path."""
+"""Prepared window plan 到当前 phase plan 的编译器。
+
+主要函数：
+- compile_prepared_window_phase_plan()
+它负责把 prepared logical plan 的优先级信息注入当前 phase 的可执行计划。
+"""
 
 from __future__ import annotations
 

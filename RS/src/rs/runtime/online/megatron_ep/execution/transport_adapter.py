@@ -1,3 +1,11 @@
+"""Megatron transport adapter。
+
+主要职责：
+- 接住被 hook 的 all_to_all
+- 根据当前激活的 PhaseExecutionPlan 决定走原生还是自定义执行
+它是执行面最关键的 runtime 适配器之一。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

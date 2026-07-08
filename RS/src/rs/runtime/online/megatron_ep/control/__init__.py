@@ -1,4 +1,11 @@
-"""Megatron EP control-plane interfaces."""
+"""控制面子包入口。
+
+控制面负责：
+- phase plan agreement
+- shadow policy / old control contracts
+- 早期 mailbox/state-machine 试验残留
+当前正式热路径主要消费 agreement_wire 和 plan_agreement。
+"""
 
 from .contracts import (
     BucketDescriptor,

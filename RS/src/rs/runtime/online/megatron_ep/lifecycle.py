@@ -1,4 +1,12 @@
-"""P0/P1 runtime lifecycle for formal Megatron EP execution."""
+"""Megatron EP 正式执行链路的 P0/P1 生命周期主线。
+
+这个文件是在线运行时的核心编排器，主要负责：
+- before/after token_dispatch
+- before/after token_combine
+- phase context 构建、计划协商、transport 激活/清理
+- prepared plan、release state、pending-window shadow 的记录
+如果想看“运行时一层里到底发生了什么”，优先看这里。
+"""
 
 from __future__ import annotations
 
@@ -22,20 +30,26 @@ from rs.runtime.online.megatron_ep.contracts import (
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
-from rs.runtime.online.megatron_ep.multiphase_pending_window import build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
+    RouterSenseObserver,
     RuntimeObservationRecorder,
     build_runtime_observation,
     digest_text,
     extract_int_tuple,
     parse_layer_id,
 )
-from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
-from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
-from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
-from rs.runtime.online.megatron_ep.release_engine import record_release_event
+from rs.runtime.online.megatron_ep.pending_window import (
+    MultiphasePendingWindowAdapter,
+    PreparedPlanBinding,
+    WindowReleaseState,
+    bind_prepared_plan,
+    build_pending_window_shadow,
+    build_window_state,
+    compile_prepared_window_phase_plan,
+    record_release_event,
+)
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     PhaseContextBuildRequest,
@@ -46,7 +60,6 @@ from rs.runtime.online.megatron_ep.phase import (
     build_phase_ready_context,
 )
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, UnsupportedSchedulerMode
-from rs.runtime.online.megatron_ep.window_state import PreparedPlanBinding, WindowReleaseState, bind_prepared_plan, build_window_state
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy

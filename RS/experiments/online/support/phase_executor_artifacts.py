@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from rs.runtime.online.megatron_ep.trace_writer import write_json, write_jsonl
+from rs.runtime.online.megatron_ep.observation import write_json, write_jsonl
 from rs.scheduling.registry import supported_phase_policies
 
 

@@ -1,4 +1,11 @@
-"""Formal public runtime API for Megatron EP injection."""
+"""Megatron EP 在线运行时的公共 API。
+
+这个文件主要给外部暴露：
+- RouterSenseDispatcherFacade
+- SelectedLayerStop / UnsupportedSchedulerMode
+- 少量 shadow policy 选择入口
+它不负责生命周期编排，更多是供 host 和实验脚本调用。
+"""
 
 from __future__ import annotations
 

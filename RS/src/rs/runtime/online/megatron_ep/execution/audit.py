@@ -1,4 +1,9 @@
-"""Execution audit for scheduled online phase execution."""
+"""在线 phase 执行后的审计逻辑。
+
+主要入口：
+- build_execution_audit()
+用于比较“计划里要做什么”和“实际执行了什么”。
+"""
 
 from __future__ import annotations
 

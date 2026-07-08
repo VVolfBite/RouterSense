@@ -39,7 +39,7 @@ from rs.runtime.online.megatron_ep.host import (
     summarize_observer_rows,
     summarize_rank_environment,
 )
-from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
+from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 
 from experiments.online.support.environment_validation import main as verify_env_main
 

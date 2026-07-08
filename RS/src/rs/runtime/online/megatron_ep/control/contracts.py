@@ -1,3 +1,9 @@
+"""早期 control-plane 试验合同。
+
+这里定义 mailbox / envelope / pending task 等控制面结构。
+当前更多用于历史测试和兼容，不是主热路径的核心实现。
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

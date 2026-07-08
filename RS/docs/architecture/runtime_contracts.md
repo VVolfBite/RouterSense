@@ -17,7 +17,7 @@ Canonical responsibilities:
   - P0 / P1 before/after hooks
   - transport activation / clear
   - scheduling-policy handoff
-- `artifact_recorder.py`
+- `observation/artifact_recorder.py`
   - record-only artifact output
 - `phase/`
   - `PhaseReadyContext`
@@ -33,8 +33,8 @@ Canonical responsibilities:
   - transport adapter
   - sync wave executor
   - layout validation
-- `policy_adapter.py`
-  - online runtime to scheduling boundary
+- `pending_window/policy_adapter.py`
+  - prepared logical plan to current phase-plan compiler
 - `p2_provider.py`
   - allowed P2 hint modes only
 

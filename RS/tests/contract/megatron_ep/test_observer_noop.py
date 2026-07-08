@@ -4,7 +4,7 @@ import torch
 
 from rs.runtime.online.megatron_ep.host import _snapshot_value, validate_observer_mode
 from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
-from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
+from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 
 
 def test_observer_records() -> None:

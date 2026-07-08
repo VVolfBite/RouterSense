@@ -18,7 +18,7 @@ from rs.core.artifact import write_json
 from rs.scheduling.phase_execution import PhaseReadyContext
 from rs.scheduling.phase_local.common import estimate_planning_quantum_rows_from_contexts
 from rs.scheduling.registry import resolve_phase_policy
-from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
+from rs.runtime.online.megatron_ep.pending_window import MultiphasePendingWindowAdapter
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

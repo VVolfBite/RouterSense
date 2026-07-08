@@ -1,3 +1,11 @@
+"""P2 hint provider：为在线 phase policy 提供未来压力提示。
+
+主要入口：
+- build_p2_hint_provider()：按 mode 选择 provider
+- 各 provider.build_hint()：基于当前请求生成 FutureDemandHint
+这个文件只负责“给 hint”，不直接做调度或执行。
+"""
+
 from __future__ import annotations
 
 import hashlib

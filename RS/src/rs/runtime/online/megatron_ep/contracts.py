@@ -1,3 +1,11 @@
+"""Megatron EP 在线运行时的顶层合同定义。
+
+这个文件主要放：
+- OnlineRuntimeConfig / RouterSenseInjectionConfig
+- 运行时记录、计划、断言等共享 dataclass
+它不负责执行逻辑，只定义 host/lifecycle/runtime 之间共享的数据形状。
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

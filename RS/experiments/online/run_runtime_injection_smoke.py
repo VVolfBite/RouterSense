@@ -38,8 +38,7 @@ from rs.runtime.online.megatron_ep.host import (  # noqa: E402
     validate_observer_mode,
 )
 from rs.runtime.online.megatron_ep.contracts import AssertionStatus, RouterSenseInjectionConfig  # noqa: E402
-from rs.runtime.online.megatron_ep.observer import RouterSenseObserver  # noqa: E402
-from rs.runtime.online.megatron_ep.trace_writer import write_json, write_jsonl  # noqa: E402
+from rs.runtime.online.megatron_ep.observation import RouterSenseObserver, write_json, write_jsonl  # noqa: E402
 from experiments.online.support.environment_validation import main as verify_env_main  # noqa: E402
 
 
@@ -93,7 +92,7 @@ def _source_archive_sha256(root: Path) -> str:
         root / "src/rs/runtime/online/megatron_ep/host.py",
         root / "src/rs/runtime/online/megatron_ep/lifecycle.py",
         root / "src/rs/runtime/online/megatron_ep/runtime.py",
-        root / "src/rs/runtime/online/megatron_ep/observation.py",
+        root / "src/rs/runtime/online/megatron_ep/observation/contracts.py",
         root / "src/rs/runtime/online/megatron_ep/control/agreement_wire.py",
         root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
         root / "src/rs/runtime/online/megatron_ep/execution/transport_adapter.py",
@@ -128,7 +127,7 @@ def _collect_source_provenance(base_dir: Path, dispatcher_fingerprint: dict[str,
         "host_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/host.py"),
         "lifecycle_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/lifecycle.py"),
         "runtime_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/runtime.py"),
-        "observation_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/observation.py"),
+        "observation_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/observation/contracts.py"),
         "agreement_py_sha256": _sha256_file(repo_root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py"),
     }
     write_json(base_dir / "source_provenance.json", payload)

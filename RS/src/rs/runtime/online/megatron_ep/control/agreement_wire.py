@@ -1,4 +1,10 @@
-"""Distributed plan-agreement wire helpers for the formal Megatron runtime."""
+"""分布式计划协商的 wire 层辅助逻辑。
+
+主要负责：
+- 组织 local observation / local plan 的跨 rank 传输
+- 生成 agreement 元数据与校验 hash
+它是控制面热路径的一部分。
+"""
 
 from __future__ import annotations
 

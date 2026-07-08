@@ -1,3 +1,10 @@
+"""控制命令过期与合法性检查。
+
+主要函数：
+- validate_command_not_expired()
+当前主要被控制面相关 contract tests 使用。
+"""
+
 from __future__ import annotations
 
 from collections import Counter

@@ -29,7 +29,7 @@ def test_refactor_structure_exists() -> None:
         root / "src/rs/runtime/online/megatron_ep/host.py",
         root / "src/rs/runtime/online/megatron_ep/runtime.py",
         root / "src/rs/runtime/online/megatron_ep/lifecycle.py",
-        root / "src/rs/runtime/online/megatron_ep/artifact_recorder.py",
+        root / "src/rs/runtime/online/megatron_ep/observation/artifact_recorder.py",
         root / "src/rs/runtime/online/megatron_ep/phase/contracts.py",
         root / "src/rs/runtime/online/megatron_ep/phase/layout_join.py",
         root / "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",

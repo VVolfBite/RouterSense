@@ -1,3 +1,8 @@
+"""Native order shadow policy。
+
+作用：按原生顺序生成 shadow 计划，方便和正式调度路径做对照。
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace

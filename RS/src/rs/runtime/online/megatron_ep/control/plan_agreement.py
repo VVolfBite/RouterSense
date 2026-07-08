@@ -1,4 +1,9 @@
-"""Root-authoritative phase plan agreement exports."""
+"""PhaseExecutionPlan 的 root-authoritative 协商流程。
+
+主要函数：
+- run_phase_plan_agreement()
+这是当前 sync_before_phase 路径里最核心的控制面入口之一。
+"""
 
 from __future__ import annotations
 

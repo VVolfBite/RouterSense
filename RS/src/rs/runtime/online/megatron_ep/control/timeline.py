@@ -1,3 +1,9 @@
+"""早期 control timeline 容器。
+
+当前正式 lifecycle 已经用自己的 timeline list 记录事件；
+这个文件主要保留给历史控制面结构和测试使用。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

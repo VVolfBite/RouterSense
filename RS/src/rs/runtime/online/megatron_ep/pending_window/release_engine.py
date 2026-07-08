@@ -1,4 +1,9 @@
-"""Release-state updates for online window shadow scheduling."""
+"""Pending-window release state 更新器。
+
+主要函数：
+- record_release_event()
+用于把 P0/P1 完成事件写回 window state，推进后续 shadow 规划。
+"""
 
 from __future__ import annotations
 

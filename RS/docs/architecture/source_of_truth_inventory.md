@@ -10,17 +10,18 @@ Canonical online Megatron EP implementation lives in:
 
 - `src/rs/runtime/online/megatron_ep/host.py`
 - `src/rs/runtime/online/megatron_ep/lifecycle.py`
-- `src/rs/runtime/online/megatron_ep/observation.py`
+- `src/rs/runtime/online/megatron_ep/observation/contracts.py`
 - `src/rs/runtime/online/megatron_ep/contracts.py`
 - `src/rs/runtime/online/megatron_ep/runtime.py`
-- `src/rs/runtime/online/megatron_ep/observer.py`
-- `src/rs/runtime/online/megatron_ep/trace_writer.py`
-- `src/rs/runtime/online/megatron_ep/artifact_recorder.py`
+- `src/rs/runtime/online/megatron_ep/observation/observer.py`
+- `src/rs/runtime/online/megatron_ep/observation/trace_writer.py`
+- `src/rs/runtime/online/megatron_ep/observation/artifact_recorder.py`
 - `src/rs/runtime/online/megatron_ep/p2_provider.py`
-- `src/rs/runtime/online/megatron_ep/policy_adapter.py`
-- `src/rs/runtime/online/megatron_ep/window_state.py`
-- `src/rs/runtime/online/megatron_ep/release_engine.py`
-- `src/rs/runtime/online/megatron_ep/joint_shadow_runtime.py`
+- `src/rs/runtime/online/megatron_ep/pending_window/policy_adapter.py`
+- `src/rs/runtime/online/megatron_ep/pending_window/window_state.py`
+- `src/rs/runtime/online/megatron_ep/pending_window/release_engine.py`
+- `src/rs/runtime/online/megatron_ep/pending_window/shadow.py`
+- `src/rs/runtime/online/megatron_ep/pending_window/adapter.py`
 - `src/rs/runtime/online/megatron_ep/phase/*`
 - `src/rs/runtime/online/megatron_ep/control/*`
 - `src/rs/runtime/online/megatron_ep/execution/*`
@@ -30,7 +31,7 @@ Stable public entrypoints:
 - `src/rs/runtime/online/megatron_ep/host.py`
 - `src/rs/runtime/online/megatron_ep/runtime.py`
 - `src/rs/runtime/online/megatron_ep/lifecycle.py`
-- `src/rs/runtime/online/megatron_ep/artifact_recorder.py`
+- `src/rs/runtime/online/megatron_ep/observation/artifact_recorder.py`
 
 Status:
 
