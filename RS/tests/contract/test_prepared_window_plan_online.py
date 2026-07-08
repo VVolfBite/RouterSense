@@ -9,6 +9,8 @@ import torch
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
+from rs.runtime.online.megatron_ep.pending_window_policy import MultiphasePendingWindowPolicy
+from rs.runtime.online.megatron_ep.multiphase_pending_window import build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
@@ -324,3 +326,276 @@ def test_attach_formal_online_runtime_enables_calibrated_p2_without_model_wrap()
     )
     assert runtime.config.p2_hint_mode == "calibrated_artifact"
     assert runtime._p2_hint_provider is not None
+
+
+def test_window_state_and_release_events_are_recorded() -> None:
+    runtime = _runtime()
+    layer0 = "model.layers.0.mlp"
+    p0 = _observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16))
+    p1 = _observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24))
+    runtime._record_window_state(layer_name=layer0, p0_observation=p0)
+    runtime._record_release_update(layer_name=layer0, event="p0_dispatch_completed")
+    runtime._record_window_state(layer_name=layer0, p1_observation=p1)
+    runtime._record_release_update(layer_name=layer0, event="p1_return_materialized")
+    runtime._record_release_update(layer_name=layer0, event="p1_return_completed")
+
+    state_rows = runtime.export_window_state_records()
+    release_rows = runtime.export_release_events()
+    shadow_rows = runtime.export_window_schedule_shadows()
+
+    assert state_rows
+    assert release_rows
+    assert shadow_rows
+    assert state_rows[-1]["has_p0_observation"] is True
+    assert state_rows[-1]["has_p1_observation"] is True
+    assert release_rows[-1]["event"] == "p1_return_completed"
+    assert shadow_rows[-1]["shadow_policy_name"].startswith("routersense_multiphase_lookahead:")
+
+
+def test_prepared_plan_binds_to_next_layer_shadow_window() -> None:
+    runtime = _runtime()
+    source_layer = "model.layers.0.mlp"
+    target_layer = "model.layers.1.mlp"
+    runtime._pending_p0[source_layer] = _observation(layer_name=source_layer, phase="P0", per_peer_bytes=(0, 10))
+    runtime._store_prepared_plan(
+        layer_name=source_layer,
+        observation_p1=_observation(layer_name=source_layer, phase="P1", per_peer_bytes=(0, 20)),
+    )
+    runtime._record_window_state(
+        layer_name=target_layer,
+        p0_observation=_observation(layer_name=target_layer, phase="P0", per_peer_bytes=(0, 12)),
+    )
+
+    bindings = runtime.export_prepared_plan_bindings()
+    shadows = runtime.export_window_schedule_shadows()
+
+    assert bindings
+    assert bindings[-1]["target_layer_id"] == "1"
+    assert bindings[-1]["source_layer_name"] == source_layer
+    assert shadows
+    assert shadows[-1]["prepared_plan_bound"] is True
+    assert shadows[-1]["prepared_window_key"] == bindings[-1]["window_key"]
+
+
+def test_prepared_phase_plan_shadow_is_recorded_for_bound_layer() -> None:
+    runtime = _runtime()
+    source_layer = "model.layers.0.mlp"
+    target_layer = "model.layers.1.mlp"
+    runtime._pending_p0[source_layer] = _observation(layer_name=source_layer, phase="P0", per_peer_bytes=(0, 10))
+    runtime._store_prepared_plan(
+        layer_name=source_layer,
+        observation_p1=_observation(layer_name=source_layer, phase="P1", per_peer_bytes=(0, 20)),
+    )
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (3, 0)), p2_hint_mode="none")
+    runtime._record_prepared_phase_plan_shadow(
+        layer_name=target_layer,
+        phase="P0",
+        local_context=contexts[0],
+        global_contexts=contexts,
+    )
+    rows = runtime.export_prepared_phase_plan_shadows()
+    assert rows
+    assert rows[-1]["compile_status"] == "ok"
+    assert rows[-1]["prepared_plan_order_preserved"] in {True, False}
+    assert rows[-1]["prepared_window_key"]
+
+
+def test_runtime_exports_planning_timing_records() -> None:
+    runtime = _runtime()
+    source_layer = "model.layers.0.mlp"
+    target_layer = "model.layers.1.mlp"
+    runtime._pending_p0[source_layer] = _observation(layer_name=source_layer, phase="P0", per_peer_bytes=(0, 10))
+    runtime._store_prepared_plan(
+        layer_name=source_layer,
+        observation_p1=_observation(layer_name=source_layer, phase="P1", per_peer_bytes=(0, 20)),
+    )
+    runtime._record_plan_arrival(layer_name=target_layer, phase="P0")
+    runtime._build_p2_hint(layer_name=target_layer, phase="P0")
+    runtime._record_window_state(
+        layer_name=target_layer,
+        p0_observation=_observation(layer_name=target_layer, phase="P0", per_peer_bytes=(0, 12)),
+    )
+
+    rows = runtime.export_planning_timing_records()
+    assert rows
+    stages = {row["stage"] for row in rows}
+    assert "store_prepared_plan" in stages
+    assert "build_p2_hint" in stages
+    assert "record_window_state" in stages
+    assert all(float(row["duration_us"]) >= 0.0 for row in rows)
+
+
+def test_pending_window_shadow_keeps_p1_blocked_until_p0_release() -> None:
+    runtime = _runtime()
+    layer0 = "model.layers.0.mlp"
+    p0 = _observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16))
+    p1 = _observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24))
+    runtime._record_window_state(layer_name=layer0, p0_observation=p0)
+    runtime._record_window_state(layer_name=layer0, p1_observation=p1)
+    state = runtime._window_states[layer0]
+    snapshot = build_pending_window_shadow(
+        state=state,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    )
+    assert snapshot["ready_flow_count"] >= 1
+    assert any(flow["phase"] == "p1_return" for flow in snapshot["blocked_flows"])
+    assert not any(flow["phase"] == "p1_return" for flow in snapshot["ready_flows"])
+
+
+def test_pending_window_shadow_releases_p1_after_p0_completion_and_materialization() -> None:
+    runtime = _runtime()
+    layer0 = "model.layers.0.mlp"
+    p0 = _observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16))
+    p1 = _observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24))
+    runtime._record_window_state(layer_name=layer0, p0_observation=p0)
+    runtime._record_release_update(layer_name=layer0, event="p0_dispatch_completed")
+    runtime._record_window_state(layer_name=layer0, p1_observation=p1)
+    runtime._record_release_update(layer_name=layer0, event="p1_return_materialized")
+    state = runtime._window_states[layer0]
+    snapshot = build_pending_window_shadow(
+        state=state,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    )
+    assert any(flow["phase"] == "p1_return" for flow in snapshot["ready_flows"])
+    assert snapshot["first_executable_wave"] is not None
+    assert snapshot["first_executable_wave"]["selected_edges"]
+
+
+def test_pending_window_shadow_never_marks_p2_forecast_executable() -> None:
+    runtime = _runtime()
+    source_layer = "model.layers.0.mlp"
+    target_layer = "model.layers.1.mlp"
+    runtime._pending_p0[source_layer] = _observation(layer_name=source_layer, phase="P0", per_peer_bytes=(0, 10))
+    runtime._store_prepared_plan(
+        layer_name=source_layer,
+        observation_p1=_observation(layer_name=source_layer, phase="P1", per_peer_bytes=(0, 20)),
+    )
+    runtime._record_window_state(
+        layer_name=target_layer,
+        p0_observation=_observation(layer_name=target_layer, phase="P0", per_peer_bytes=(0, 12)),
+    )
+    state = runtime._window_states[target_layer]
+    snapshot = build_pending_window_shadow(
+        state=state,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    )
+    assert snapshot["forecast_flow_count"] >= 0
+    assert all(flow["phase"] != "p2_next_dispatch_forecast" for flow in snapshot["ready_flows"])
+    assert snapshot["execution_capability_required"] == "multiphase_pending_window"
+
+
+def test_multiphase_pending_window_policy_compiles_current_phase_plan() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 2), (3, 0)),
+        p2_hint_mode="none",
+    )
+    prepared = _prepared_plan(forecast_digest="forecast-online", created="0")
+    policy = MultiphasePendingWindowPolicy(
+        shared_state={
+            "prepared_plan": prepared,
+            "plan_created_at_us": 1,
+            "plan_source_layer": "model.layers.0.mlp",
+        },
+        phase_policy_name="routersense_p0p1p2_hint",
+        bucket_rows=0,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    )
+    plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+    assert plan.metrics["compiled_from_pending_window"] is True
+    assert plan.metrics["pending_window_policy_name"].startswith("routersense_multiphase_lookahead:")
+    assert plan.metrics["pending_window_information_mode"] in {"p0_p1", "p0_p1_p2"}
+
+
+def test_multiphase_pending_window_policy_uses_prepared_p1_and_p2_matrices() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 2), (3, 0)),
+        p2_hint_mode="none",
+    )
+    flow_p1 = FlowDemand(
+        flow_id="p1_return:1->0",
+        phase="p1_return",
+        src_rank=1,
+        dst_rank=0,
+        byte_count=11,
+        release_state="blocked",
+        is_executable=False,
+    )
+    flow_p2 = FlowDemand(
+        flow_id="p2_next_dispatch_forecast:0->1",
+        phase="p2_next_dispatch_forecast",
+        src_rank=0,
+        dst_rank=1,
+        byte_count=7,
+        release_state="advisory_only",
+        is_executable=False,
+    )
+    prepared = PreparedWindowPlan(
+        window_key="window-semantic",
+        forecast_digest="forecast-semantic",
+        logical_plan=LogicalSchedulePlan(
+            policy_name="routersense_multiphase_lookahead:p0_p1_p2",
+            waves=(LogicalWave(wave_id=0, flows=(flow_p1, flow_p2), duration=11.0),),
+            diagnostics={},
+        ),
+        created_at_layer_id="0",
+        applies_from_layer_id="1",
+        execution_capability_required="multiphase_pending_window",
+    )
+    policy = MultiphasePendingWindowPolicy(
+        shared_state={
+            "prepared_plan": prepared,
+            "plan_created_at_us": 1,
+            "plan_source_layer": "model.layers.0.mlp",
+        },
+        phase_policy_name="routersense_p0p1p2_hint",
+        bucket_rows=0,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    )
+    plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+    assert plan.metrics["pending_window_information_mode"] == "p0_p1_p2"
+    assert plan.metrics["pending_window_p0_total_bytes"] == 40
+    assert plan.metrics["pending_window_p1_total_bytes"] == 11
+    assert plan.metrics["pending_window_p2_total_bytes"] == 7
+    assert plan.metrics["pending_window_p1_matrix_source"] == "prepared_window_plan"
+    assert plan.metrics["pending_window_p2_matrix_source"] == "prepared_window_plan"
+
+
+def test_pending_window_driver_records_export_compiled_plan_metadata() -> None:
+    runtime = _runtime()
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 2), (3, 0)),
+        p2_hint_mode="none",
+    )
+    prepared = _prepared_plan(forecast_digest="forecast-driver", created="0")
+    plan = MultiphasePendingWindowPolicy(
+        shared_state={
+            "prepared_plan": prepared,
+            "plan_created_at_us": 1,
+            "plan_source_layer": "model.layers.0.mlp",
+        },
+        phase_policy_name="routersense_p0p1p2_hint",
+        bucket_rows=0,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+    ).build_plan(local_context=contexts[0], global_contexts=contexts)
+    runtime.config = replace(runtime.config, execution_mode="multiphase_pending_window")
+    runtime._record_pending_window_driver(layer_name="model.layers.1.mlp", phase="P0", plan=plan)
+    rows = runtime.export_pending_window_driver_records()
+    assert rows
+    assert rows[-1]["compiled_from_pending_window"] is True
+    assert rows[-1]["pending_window_policy_name"].startswith("routersense_multiphase_lookahead:")
+    assert rows[-1]["wave_count"] == len(plan.waves)

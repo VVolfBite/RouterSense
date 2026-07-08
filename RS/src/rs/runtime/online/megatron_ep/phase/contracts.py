@@ -1,6 +1,9 @@
 """Compatibility re-export of shared phase execution contracts."""
 
 from rs.scheduling.phase_execution import (
+    AbstractPhaseExecutionPlan,
+    AbstractPlanWave,
+    AbstractTaskRef,
     BucketTask,
     FutureDemandHint,
     IncomingSlot,
@@ -10,6 +13,7 @@ from rs.scheduling.phase_execution import (
     PhaseExecutionPlan,
     PhaseHookResult,
     PhaseName,
+    PhasePlanningSummary,
     PhaseReadyContext,
     PlanWave,
     TransferLayout,
@@ -18,6 +22,9 @@ from rs.scheduling.phase_execution import (
 
 __all__ = [
     "BucketTask",
+    "AbstractPhaseExecutionPlan",
+    "AbstractPlanWave",
+    "AbstractTaskRef",
     "FutureDemandHint",
     "IncomingSlot",
     "OutgoingSegment",
@@ -26,6 +33,7 @@ __all__ = [
     "PhaseExecutionPlan",
     "PhaseHookResult",
     "PhaseName",
+    "PhasePlanningSummary",
     "PhaseReadyContext",
     "PlanWave",
     "TransferLayout",

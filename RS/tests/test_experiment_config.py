@@ -25,6 +25,20 @@ def test_load_online_policy_correctness_config() -> None:
     assert config.online_policy.name == "phase_barrier_fifo"
 
 
+def test_online_policy_correctness_accepts_multiphase_pending_window_for_hint_policy() -> None:
+    config = load_run_config(
+        config_path=ROOT / "configs/experiment/online_policy_correctness_local_2gpu.yaml",
+        overrides=[
+            "online_policy.name=routersense_p0p1p2_hint",
+            "execution.mode=multiphase_pending_window",
+            "online_policy.p2.mode=calibrated_artifact",
+            "online_policy.parameters.p2_hint_weight=1.0",
+        ],
+    )
+    assert config.execution.mode == "multiphase_pending_window"
+    assert config.online_policy.name == "routersense_p0p1p2_hint"
+
+
 def test_build_launch_command_uses_torchrun_for_online() -> None:
     config = load_run_config(config_path=ROOT / "configs/experiment/online_observe_local_2gpu.yaml")
     command = build_launch_command(
@@ -50,6 +64,17 @@ def test_online_observe_rejects_enabled_policy() -> None:
         load_run_config(
             config_path=ROOT / "configs/experiment/online_observe_local_2gpu.yaml",
             overrides=["online_policy.name=bucketed_fifo"],
+        )
+
+
+def test_multiphase_pending_window_rejects_non_hint_policy() -> None:
+    with pytest.raises(ValueError):
+        load_run_config(
+            config_path=ROOT / "configs/experiment/online_policy_correctness_local_2gpu.yaml",
+            overrides=[
+                "online_policy.name=greedy_ready_set",
+                "execution.mode=multiphase_pending_window",
+            ],
         )
 
 

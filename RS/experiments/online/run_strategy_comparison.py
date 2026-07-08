@@ -28,6 +28,7 @@ from experiments.online.support.comparison_metrics import (
     metrics_from_rank_dir,
     render_markdown_report,
 )
+from experiments.online.support.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
 from rs.runtime.online.megatron_ep.trace_writer import write_json
 
 
@@ -90,60 +91,79 @@ def _single_strategy_config(
     execution = comparison.get("execution", {}) or {}
     runtime = comparison.get("runtime", {}) or {}
     workload = comparison.get("workload", {}) or {}
+    observation = comparison.get("observation", {}) or {}
+    validation = comparison.get("validation", {}) or {}
     run_name = f"rep{repetition}"
+    policy_name = str(strategy.get("policy", ""))
+    is_native_baseline = not policy_name
+    p2_mode = str(strategy.get("p2_hint_mode", "none"))
+    calibrated_p2 = bool(strategy.get("calibrated_p2", False))
+    p2_hint_weight = float(execution.get("p2_hint_weight", 1.0))
+    if p2_mode in {"none", "deterministic_stub"} and not calibrated_p2:
+        p2_hint_weight = 0.0
     config = {
-        "run": {"kind": "online_policy_correctness", "name": run_name},
+        "run": {"kind": "online_observe" if is_native_baseline else "online_policy_correctness", "name": run_name},
         "model": {"config": model_config_path},
         "topology": {"config": topology_config_path},
         "workload": {"prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json"))},
         "runtime": {
             "precision": str(runtime.get("precision", "fp16")),
             "dispatcher": str(runtime.get("dispatcher", "alltoall")),
-            "control_mode": str(strategy.get("control_mode", "sync_before_phase")),
+            "control_mode": "none" if is_native_baseline else str(strategy.get("control_mode", "sync_before_phase")),
         },
         "online_policy": {
-            "name": str(strategy.get("policy", "")),
+            "name": "disabled" if is_native_baseline else policy_name,
             "parameters": {
                 "p0_weight": float(execution.get("p0_weight", 1.0)),
                 "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
-                "p2_hint_weight": float(execution.get("p2_hint_weight", 1.0)),
+                "p2_hint_weight": p2_hint_weight,
             },
-            "p2": {"mode": str(strategy.get("p2_hint_mode", "none")), "artifact": ""},
+            "p2": {"mode": p2_mode, "artifact": ""},
         },
         "offline_study": {"policies": []},
         "execution": {
-            "mode": str(strategy.get("execution_mode", "phase_sync_wave")),
-            "bucket_rows": int(execution.get("bucket_rows", 0)),
+            "mode": "native_passthrough" if is_native_baseline else str(strategy.get("execution_mode", "phase_sync_wave")),
+            "bucket_rows": 0 if is_native_baseline else int(execution.get("bucket_rows", 0)),
             "schedule": {
                 "layer_selector": str(execution.get("schedule_layer_selector", "all")),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),
             },
         },
         "observation": {
-            "profile": "execution",
-            "capture_enabled": False,
-            "capture_layer_selector": "",
-            "capture_phase_selector": "",
-            "heartbeat_enabled": False,
-            "per_wave_timing_enabled": False,
+            "profile": str(observation.get("profile", "execution")),
+            "capture_enabled": bool(observation.get("capture_enabled", False)),
+            "capture_layer_selector": str(observation.get("capture_layer_selector", "")),
+            "capture_phase_selector": str(observation.get("capture_phase_selector", "")),
+            "heartbeat_enabled": bool(observation.get("heartbeat_enabled", False)),
+            "per_wave_timing_enabled": bool(observation.get("per_wave_timing_enabled", False)),
         },
-        "validation": {"save_logits": False, "stop_after_selected_layer": False},
+        "validation": {
+            "save_logits": bool(validation.get("save_logits", False)),
+            "stop_after_selected_layer": bool(validation.get("stop_after_selected_layer", False)),
+        },
         "artifact": {"artifact_root": str(output_dir / "per_strategy" / str(strategy["name"]))},
     }
-    if bool(strategy.get("calibrated_p2", False)):
+    if calibrated_p2:
         config["online_policy"]["p2"]["mode"] = "calibrated_artifact"
     target = output_dir / "generated_configs" / f"{strategy['name']}_rep{repetition}.yaml"
     _dump_yaml(target, config)
     return target
 
 
-def _torchrun_command(*, ep_size: int, config_path: Path, run_id: str, strategy_dir: Path) -> list[str]:
+def _entrypoint_module(*, strategy: dict[str, Any]) -> str:
+    policy_name = str(strategy.get("policy", ""))
+    if not policy_name:
+        return "experiments.online.collect_native_ep_trace"
+    return "experiments.online.run_policy_correctness"
+
+
+def _torchrun_command(*, ep_size: int, config_path: Path, run_id: str, strategy_dir: Path, strategy: dict[str, Any]) -> list[str]:
     return [
         "torchrun",
         "--standalone",
         f"--nproc_per_node={ep_size}",
         "-m",
-        "experiments.online.run_policy_correctness",
+        _entrypoint_module(strategy=strategy),
         "--config",
         str(config_path),
         "--run-id",
@@ -159,6 +179,9 @@ def _child_env() -> dict[str, str]:
         env.pop(key, None)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = "src" if not existing else f"src:{existing}"
+    omp = env.get("OMP_NUM_THREADS", "").strip()
+    if not omp or not omp.isdigit() or int(omp) <= 0:
+        env["OMP_NUM_THREADS"] = "1"
     return env
 
 
@@ -184,6 +207,11 @@ def _collect_strategy_metrics(strategy_dir: Path, repetitions: int) -> list[dict
             metrics["total_forward_us"] = float(summary["total_forward_us"])
         rows.append(metrics)
     return rows
+
+
+def _write_runtime_analysis(run_dir: Path) -> None:
+    report = analyze_prepared_plan_runtime(run_dir, rank=0)
+    write_json(run_dir / "prepared_plan_runtime_analysis.json", report)
 
 
 def read_summary(run_dir: Path) -> dict[str, Any]:
@@ -223,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         timing[name] = []
         for repetition in range(repetitions):
             run_id = f"rep{repetition}"
+            run_dir = strategy_dir / run_id
             generated = _single_strategy_config(
                 comparison=comparison,
                 strategy=strategy,
@@ -231,11 +260,11 @@ def main(argv: list[str] | None = None) -> int:
                 model_config_path=model_config_path,
                 topology_config_path=topology_config_path,
             )
-            cmd = _torchrun_command(ep_size=ep_size, config_path=generated, run_id=run_id, strategy_dir=strategy_dir)
+            cmd = _torchrun_command(ep_size=ep_size, config_path=generated, run_id=run_id, strategy_dir=strategy_dir, strategy=strategy)
             timing_start = time.monotonic_ns()
             if args.dry_run:
-                (strategy_dir / run_id).mkdir(parents=True, exist_ok=True)
-                (strategy_dir / run_id / "command.txt").write_text(" ".join(cmd), encoding="utf-8")
+                run_dir.mkdir(parents=True, exist_ok=True)
+                (run_dir / "command.txt").write_text(" ".join(cmd), encoding="utf-8")
                 return_code = 0
             else:
                 proc = subprocess.run(cmd, cwd=ROOT, env=_child_env(), check=False)
@@ -245,7 +274,8 @@ def main(argv: list[str] | None = None) -> int:
             if return_code != 0:
                 raise SystemExit(return_code)
             if not args.dry_run:
-                metrics = metrics_from_rank_dir(strategy_dir / run_id, rank=0)
+                _write_runtime_analysis(run_dir)
+                metrics = metrics_from_rank_dir(run_dir, rank=0)
                 metrics["total_forward_us"] = elapsed_us
                 repetition_metrics.append(metrics)
         if args.dry_run:
@@ -254,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         strategy_entries.append(
             {
                 "name": name,
+                "family": str(strategy.get("family", "")),
                 "description": str(strategy.get("description", "")),
                 "repetitions": repetitions,
                 "metrics": aggregated,

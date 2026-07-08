@@ -13,7 +13,7 @@ def test_prepared_plan_trace_probe_outputs_online_plan_artifacts(tmp_path: Path)
         [
             sys.executable,
             "-m",
-            "experiments.online.probe_prepared_plan_trace",
+            "scripts.diagnostics.run_prepared_plan_trace_probe",
             "--fixture",
             "tests/fixtures/scheduling/p2_lookahead_sensitive_4rank.json",
             "--output-dir",

@@ -25,6 +25,7 @@ from rs.runtime.offline.runner import (
     build_policy_logical_plan,
     build_scheduling_problem,
     replay_and_audit_logical_plan,
+    summarize_schedule_tail_metrics,
 )
 from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
 from rs.scheduling.registry import resolve_policy, supported_policies
@@ -199,6 +200,13 @@ def main(argv: list[str] | None = None) -> int:
             online_executor_compatible = bool(getattr(policy.capabilities, "supports_online_phase_local_execution", False))
             runtime_latency_comparable = bool(logical_plan.diagnostics.get("runtime_latency_comparable", False))
             max_port_load_lower_bound = _max_port_load(problem)
+            schedule_tail_metrics = summarize_schedule_tail_metrics(problem=problem, plan=logical_plan, audit=audit)
+            makespan_to_lower_bound_ratio = (
+                float(makespan) / float(max_port_load_lower_bound)
+                if makespan is not None and max_port_load_lower_bound > 0
+                else None
+            )
+            write_json(run_dir / f"schedule_metrics_{artifact_name}.json", schedule_tail_metrics)
             write_json(run_dir / f"metrics_{artifact_name}.json", {
                 "policy_name": policy_name,
                 "policy_version": getattr(policy, "policy_version", "v1"),
@@ -212,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
                 "logical_wave_count": len(logical_plan.waves),
                 "logical_service_horizon": makespan if policy_supported else None,
                 "max_port_load_lower_bound": max_port_load_lower_bound,
+                "makespan_to_lower_bound_ratio": makespan_to_lower_bound_ratio,
                 "planning_time_ms": planning_time_ms,
                 "replay_valid": bool(audit["valid"]) if policy_supported else False,
                 "logical_validation": logical_validation,
@@ -223,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                 "certified_optimal": bool(exact_comparison.get("policy_reaches_optimum", False)),
                 "optimality_gap": exact_comparison["optimality_gap"],
                 "bvn_certificate_validation": bvn_certificate_validation,
+                "schedule_tail_metrics": schedule_tail_metrics,
             })
             row = {
                 "policy_name": policy_name,
@@ -237,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                 "logical_wave_count": len(logical_plan.waves),
                 "logical_service_horizon": makespan if policy_supported else None,
                 "max_port_load_lower_bound": max_port_load_lower_bound,
+                "makespan_to_lower_bound_ratio": makespan_to_lower_bound_ratio,
                 "planning_time_ms": planning_time_ms,
                 "replay_valid": bool(audit["valid"]) if policy_supported else False,
                 "logical_validation_passed": bool(logical_validation["valid"]),
@@ -247,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                 "exact_optimality_gap": exact_comparison["optimality_gap"],
                 "certified_optimal": bool(exact_comparison.get("policy_reaches_optimum", False)),
                 "optimality_gap": exact_comparison["optimality_gap"],
+                "schedule_tail_metrics": schedule_tail_metrics,
             }
             comparison.append(row)
             reference_comparison.append({"policy_name": policy_name, "exact": exact_comparison, "bvn_certificate": bvn_certificate_validation})

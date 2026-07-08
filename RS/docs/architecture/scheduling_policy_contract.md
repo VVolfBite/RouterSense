@@ -125,6 +125,8 @@ Tier 1 uses explicit future-information modes:
 
 Tier 1 comparisons must be grouped by service model. Atomic chunk schedules, fluid wave schedules, and the Lagrangian service model are not collapsed into a single performance ranking.
 
+For the current paper-facing mainline, the default Tier 1 comparison path is wave/fluid-first. Atomic variants remain implemented and tested, but they are opt-in diagnostics rather than default comparison entries.
+
 ## Diagnostics
 
 Every logical plan emits `PolicyDiagnostics` and per-wave `WaveDiagnostics` with:

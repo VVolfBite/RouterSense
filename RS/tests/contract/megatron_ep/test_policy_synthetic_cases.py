@@ -20,7 +20,7 @@ def test_policy_synthetic_cases_cover_exact_once() -> None:
     for fixture_name in ["asymmetric_4rank.json", "receiver_incast_4rank.json", "duplex_pair_4rank.json", "skewed_8rank.json"]:
         phase, bucket_rows, matrix = _load_case(fixture_name)
         contexts = make_contexts_from_matrix(phase=phase, matrix=matrix)
-        for policy_name in ["bucketed_fifo", "trivial_reverse_bucket", "aurora_order_fixed", "fast_bvn_single_tier"]:
+        for policy_name in ["bucketed_fifo", "trivial_reverse_bucket", "power_of_two_choices", "aurora_order_fixed", "fast_bvn_single_tier"]:
             plan = resolve_phase_policy(policy_name=policy_name, bucket_rows=bucket_rows).build_plan(
                 local_context=contexts[0],
                 global_contexts=contexts,
@@ -34,7 +34,7 @@ def test_policy_library_produces_distinct_valid_plans_on_at_least_one_case() -> 
     phase, bucket_rows, matrix = _load_case("receiver_incast_4rank.json")
     contexts = make_contexts_from_matrix(phase=phase, matrix=matrix)
     signatures = {}
-    for policy_name in ["bucketed_fifo", "trivial_reverse_bucket", "aurora_order_fixed", "fast_bvn_single_tier"]:
+    for policy_name in ["bucketed_fifo", "trivial_reverse_bucket", "power_of_two_choices", "aurora_order_fixed", "fast_bvn_single_tier"]:
         plan = resolve_phase_policy(policy_name=policy_name, bucket_rows=bucket_rows).build_plan(
             local_context=contexts[0],
             global_contexts=contexts,
@@ -48,6 +48,7 @@ def test_supported_policy_registry_contains_all_expected_names() -> None:
     assert {
         "bucketed_fifo",
         "trivial_reverse_bucket",
+        "power_of_two_choices",
         "aurora_order_fixed",
         "fast_bvn_single_tier",
         "routersense_p0p1_reservation",

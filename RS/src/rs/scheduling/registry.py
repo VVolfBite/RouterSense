@@ -8,6 +8,7 @@ from .phase_local.fast_bvn_fixed import FastBVNSingleTierPolicy
 from .phase_local.fifo import BucketedFIFOPolicy, PhaseBarrierFIFOPolicy
 from .phase_local.greedy_ready_set import GreedyReadySetPolicy
 from .phase_local.islip_round_robin import ISLIPRoundRobinPolicy
+from .phase_local.power_of_two_choices import PowerOfTwoChoicesPolicy
 from .phase_local.p0p1_reservation_order import RouterSenseP0P1ReservationPolicy
 from .phase_local.p0p1p2_hint_order import RouterSenseP0P1P2HintPolicy
 from .phase_local.trivial_reverse_bucket import TrivialReverseBucketPolicy
@@ -65,6 +66,8 @@ def resolve_policy(
         return GreedyReadySetPolicy(bucket_rows=bucket_rows)
     if base_name == "islip_round_robin":
         return ISLIPRoundRobinPolicy(bucket_rows=bucket_rows)
+    if base_name == "power_of_two_choices":
+        return PowerOfTwoChoicesPolicy(bucket_rows=bucket_rows)
     if base_name == "birkhoff_phase_local":
         return BirkhoffPhaseLocalPolicy(bucket_rows=bucket_rows)
     if base_name == "birkhoff_von_neumann_fluid":
@@ -130,6 +133,7 @@ def supported_phase_policies() -> tuple[str, ...]:
         "bucketed_fifo",
         "greedy_ready_set",
         "islip_round_robin",
+        "power_of_two_choices",
         "birkhoff_phase_local",
         "trivial_reverse_bucket",
         "aurora_order_fixed",
@@ -146,6 +150,7 @@ def supported_policies() -> tuple[str, ...]:
         "bucketed_fifo",
         "greedy_ready_set",
         "islip_round_robin",
+        "power_of_two_choices",
         "birkhoff_phase_local",
         "birkhoff_von_neumann_fluid",
         "exact_small_instance_reference",

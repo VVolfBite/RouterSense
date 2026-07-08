@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -231,6 +232,169 @@ def replay_and_audit_logical_plan(problem: MultiPhaseSchedulingProblem, plan: Lo
     }
 
 
+def summarize_schedule_tail_metrics(
+    *,
+    problem: MultiPhaseSchedulingProblem,
+    plan: LogicalSchedulePlan,
+    audit: dict[str, Any],
+) -> dict[str, Any]:
+    raw_schedule = list(plan.diagnostics.get("raw_schedule", ()))
+    if not raw_schedule:
+        wave_durations = [float(wave.duration) for wave in plan.waves]
+        makespan = float(audit.get("makespan", sum(wave_durations)))
+        return {
+            "active_wave_count": len(wave_durations),
+            "wave_duration_p50": _percentile(wave_durations, 0.50),
+            "wave_duration_p95": _percentile(wave_durations, 0.95),
+            "wave_duration_p99": _percentile(wave_durations, 0.99),
+            "wave_duration_max": max(wave_durations, default=0.0),
+            "first_p1_release_time": None,
+            "first_p1_start_time": None,
+            "first_p1_release_wait": None,
+            "mean_p1_release_wait": None,
+            "max_p1_release_wait": None,
+            "first_p2_release_time": None,
+            "first_p2_start_time": None,
+            "first_p2_release_wait": None,
+            "mean_p2_release_wait": None,
+            "max_p2_release_wait": None,
+            "p0_inbound_completion_p50": None,
+            "p0_inbound_completion_p95": None,
+            "p0_inbound_completion_p99": None,
+            "p0_inbound_completion_max": None,
+            "p1_inbound_completion_p50": None,
+            "p1_inbound_completion_p95": None,
+            "p1_inbound_completion_p99": None,
+            "p1_inbound_completion_max": None,
+            "p0_inbound_tail_gap": None,
+            "p1_inbound_tail_gap": None,
+            "bottleneck_send_busy_share": _busy_share(audit.get("send_busy_time", ()), makespan),
+            "bottleneck_recv_busy_share": _busy_share(audit.get("recv_busy_time", ()), makespan),
+        }
+
+    num_gpus = int(problem.topology.num_gpus)
+    entries = sorted(
+        raw_schedule,
+        key=lambda item: (
+            float(item.get("start", 0.0)),
+            float(item.get("end", 0.0)),
+            int(item.get("phase", 0)),
+            int(item.get("src_gpu", 0)),
+            int(item.get("dst_gpu", 0)),
+        ),
+    )
+    p0_inbound_completion = [0.0] * num_gpus
+    p1_inbound_completion = [0.0] * num_gpus
+    p1_release_waits: list[float] = []
+    p2_release_waits: list[float] = []
+    p1_release_times: list[float] = []
+    p1_start_times: list[float] = []
+    p2_release_times: list[float] = []
+    p2_start_times: list[float] = []
+    wave_bounds: dict[int, tuple[float, float]] = {}
+
+    for entry in entries:
+        phase = int(entry["phase"])
+        dst = int(entry["dst_gpu"])
+        start = float(entry.get("start", 0.0))
+        end = float(entry.get("end", 0.0))
+        wave_id = int(entry.get("wave_id", 0))
+        bounds = wave_bounds.get(wave_id)
+        if bounds is None:
+            wave_bounds[wave_id] = (start, end)
+        else:
+            wave_bounds[wave_id] = (min(bounds[0], start), max(bounds[1], end))
+        if phase == 0:
+            p0_inbound_completion[dst] = max(p0_inbound_completion[dst], end)
+        elif phase == 1:
+            p1_inbound_completion[dst] = max(p1_inbound_completion[dst], end)
+
+    for entry in entries:
+        phase = int(entry["phase"])
+        src = int(entry["src_gpu"])
+        start = float(entry.get("start", 0.0))
+        if phase == 1:
+            required = float(p0_inbound_completion[src]) + float(problem.release_model.expert_compute_delay)
+            p1_release_times.append(required)
+            p1_start_times.append(start)
+            p1_release_waits.append(start - required)
+        elif phase == 2 and problem.options.scheduling_mode == "execution_window":
+            required = float(p1_inbound_completion[src])
+            p2_release_times.append(required)
+            p2_start_times.append(start)
+            p2_release_waits.append(start - required)
+
+    active_p0 = [value for value in p0_inbound_completion if value > 0.0]
+    active_p1 = [value for value in p1_inbound_completion if value > 0.0]
+    wave_durations = [max(0.0, float(end) - float(start)) for start, end in wave_bounds.values()]
+    makespan = float(plan.diagnostics.get("makespan", audit.get("makespan", 0.0)) or 0.0)
+    return {
+        "active_wave_count": len(wave_durations),
+        "wave_duration_p50": _percentile(wave_durations, 0.50),
+        "wave_duration_p95": _percentile(wave_durations, 0.95),
+        "wave_duration_p99": _percentile(wave_durations, 0.99),
+        "wave_duration_max": max(wave_durations, default=0.0),
+        "first_p1_release_time": min(p1_release_times) if p1_release_times else None,
+        "first_p1_start_time": min(p1_start_times) if p1_start_times else None,
+        "first_p1_release_wait": min(p1_release_waits) if p1_release_waits else None,
+        "mean_p1_release_wait": _mean(p1_release_waits),
+        "max_p1_release_wait": max(p1_release_waits, default=None),
+        "first_p2_release_time": min(p2_release_times) if p2_release_times else None,
+        "first_p2_start_time": min(p2_start_times) if p2_start_times else None,
+        "first_p2_release_wait": min(p2_release_waits) if p2_release_waits else None,
+        "mean_p2_release_wait": _mean(p2_release_waits),
+        "max_p2_release_wait": max(p2_release_waits, default=None),
+        "p0_inbound_completion_p50": _percentile(active_p0, 0.50),
+        "p0_inbound_completion_p95": _percentile(active_p0, 0.95),
+        "p0_inbound_completion_p99": _percentile(active_p0, 0.99),
+        "p0_inbound_completion_max": max(active_p0, default=None),
+        "p1_inbound_completion_p50": _percentile(active_p1, 0.50),
+        "p1_inbound_completion_p95": _percentile(active_p1, 0.95),
+        "p1_inbound_completion_p99": _percentile(active_p1, 0.99),
+        "p1_inbound_completion_max": max(active_p1, default=None),
+        "p0_inbound_tail_gap": _tail_gap(active_p0),
+        "p1_inbound_tail_gap": _tail_gap(active_p1),
+        "bottleneck_send_busy_share": _busy_share(audit.get("send_busy_time", ()), makespan),
+        "bottleneck_recv_busy_share": _busy_share(audit.get("recv_busy_time", ()), makespan),
+    }
+
+
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _tail_gap(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(max(values) - min(values))
+
+
+def _busy_share(values: Any, makespan: float) -> float | None:
+    if makespan <= 0.0:
+        return None
+    busy = [float(value) for value in values]
+    if not busy:
+        return None
+    return float(max(busy) / makespan)
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * float(q)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
 __all__ = [
     "FlowWindowSelector",
     "LogicalTopology",
@@ -244,4 +408,5 @@ __all__ = [
     "replay_and_audit_logical_plan",
     "schedule_global_ready_set",
     "schedule_greedy",
+    "summarize_schedule_tail_metrics",
 ]

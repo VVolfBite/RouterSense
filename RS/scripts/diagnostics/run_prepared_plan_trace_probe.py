@@ -6,13 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from experiments._bootstrap import ensure_src_on_path
+from scripts._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
@@ -284,31 +283,37 @@ def main(argv: list[str] | None = None) -> int:
         "forecast_digest": prepared.forecast_digest,
     }
 
-    write_json(run_dir / "run_manifest.json", {
-        "run_id": args.run_id,
-        "run_kind": "prepared_plan_trace_probe",
-        "fixture": str(fixture_path),
-        "phase": args.phase,
-        "bucket_rows": args.bucket_rows,
-        "gpu_required": False,
-        "megatron_required": False,
-    })
+    write_json(
+        run_dir / "run_manifest.json",
+        {
+            "run_id": args.run_id,
+            "run_kind": "prepared_plan_trace_probe",
+            "fixture": str(fixture_path),
+            "phase": args.phase,
+            "bucket_rows": args.bucket_rows,
+            "gpu_required": False,
+            "megatron_required": False,
+        },
+    )
     write_json(run_dir / "prepared_window_plan.json", prepared.to_dict())
     write_json(run_dir / "future_demand_hint.json", hint.to_dict())
     write_json(run_dir / "phase_execution_plan.json", plan_dict)
     write_jsonl(run_dir / "synthetic_transport_execution.jsonl", transport_events)
     write_jsonl(run_dir / "plan_arrival_records.jsonl", [arrival_record])
     write_json(run_dir / "synthetic_execution_audit.json", audit.to_dict())
-    write_json(run_dir / "probe_summary.json", {
-        "compiled_from_prepared_plan": bool(execution_plan.metrics.get("compiled_from_prepared_plan", False)),
-        "prepared_plan_order_preserved": bool(execution_plan.metrics.get("prepared_plan_order_preserved", False)),
-        "hint_edges_available": int(execution_plan.metrics.get("hint_edges_available", 0) or 0),
-        "hint_edges_consumed": int(execution_plan.metrics.get("hint_edges_consumed", 0) or 0),
-        "hint_match_rate": float(execution_plan.metrics.get("hint_match_rate", 0.0) or 0.0),
-        "audit_status": audit.status,
-        "phase_wave_count": len(execution_plan.waves),
-        "phase_task_count": sum(len(wave.bucket_tasks) for wave in execution_plan.waves),
-    })
+    write_json(
+        run_dir / "probe_summary.json",
+        {
+            "compiled_from_prepared_plan": bool(execution_plan.metrics.get("compiled_from_prepared_plan", False)),
+            "prepared_plan_order_preserved": bool(execution_plan.metrics.get("prepared_plan_order_preserved", False)),
+            "hint_edges_available": int(execution_plan.metrics.get("hint_edges_available", 0) or 0),
+            "hint_edges_consumed": int(execution_plan.metrics.get("hint_edges_consumed", 0) or 0),
+            "hint_match_rate": float(execution_plan.metrics.get("hint_match_rate", 0.0) or 0.0),
+            "audit_status": audit.status,
+            "phase_wave_count": len(execution_plan.waves),
+            "phase_task_count": sum(len(wave.bucket_tasks) for wave in execution_plan.waves),
+        },
+    )
     return 0 if audit.status == "passed" else 1
 
 

@@ -8,6 +8,7 @@
 | `phase_barrier_fifo` | no | no | yes | yes | yes |
 | `greedy_ready_set` | no | no | yes | yes | yes |
 | `islip_round_robin` | no | no | yes | yes | yes |
+| `power_of_two_choices` | no | no | yes | yes | yes |
 | `birkhoff_phase_local` | no | no | yes | yes | yes |
 | `birkhoff_von_neumann_fluid` | no | no | yes | no | yes |
 | `exact_small_instance_reference` | no | no | yes | no | yes |
@@ -37,6 +38,15 @@ Tier 1 comparisons must be separated by service model:
 - `fluid_comparison`: `B_birkhoff_wave`, `U_gated_maxweight_matching`, `U_barrier_criticality_global_matching`.
 - `other_service_model_comparison`: `U_lagrangian` unless a later study explicitly maps it into an atomic/fluid table.
 
+Current pre-evaluation mainline recommendation:
+
+- Default Tier 1 CPU comparison uses wave/fluid-track policies only:
+  - `B_birkhoff_wave`
+  - `U_gated_maxweight_matching`
+  - `U_barrier_criticality_global_matching`
+  - `U_lagrangian`
+- Atomic policies remain available for diagnostics and historical recovery checks, but are not part of the default main comparison.
+
 `runtime_lookahead` suppresses real P2 transport. P2 can only influence forecast pressure and diagnostics. `zero_hint` maps to `future_information_mode=none`; `copy_current_dispatch` maps to `heuristic_runtime_lookahead`; `perfect_trace` maps to `oracle_predicted_runtime_lookahead`.
 
 `execution_window` requires actual fixture/trace P2 via `actual_trace` or compatibility name `perfect_trace`. P2 is real executable traffic in that mode, maps to `p2_role=executable_actual_traffic`, and is always `evaluation_eligible=false`.
@@ -59,6 +69,7 @@ Selected-layer EP=2 correctness is run only for:
 - `phase_barrier_fifo`
 - `greedy_ready_set`
 - `islip_round_robin`
+- `power_of_two_choices`
 - `birkhoff_phase_local`
 - `aurora_order_fixed`
 - `fast_bvn_single_tier`
@@ -71,3 +82,11 @@ Offline-only references are never run online:
 - `exact_small_instance_reference`: model `discrete_bucket_phase_sync_wave`, certified only for tiny fixtures.
 
 Online phase-local diagnostic policies `routersense_p0p1_reservation` and `routersense_p0p1p2_hint` remain distinct from formal offline RouterSense multiphase lookahead. `routersense_p0p1p2_hint` is valid for evaluating PreparedWindowPlan-derived P2 hints through the frozen phase-local executor, but it is not online multiphase joint execution.
+
+## Baseline families
+
+- Execution-order baselines: `phase_barrier_fifo`, `bucketed_fifo`, `islip_round_robin`.
+- Local greedy baseline: `greedy_ready_set`.
+- Load-balance baseline: `power_of_two_choices`.
+- Global / decomposition baselines: `birkhoff_phase_local`, `birkhoff_von_neumann_fluid`, `fast_bvn_single_tier`, `exact_small_instance_reference`.
+- Semantic / dependency-aware policies: `routersense_p0p1_reservation`, `routersense_p0p1p2_hint`, `routersense_multiphase_lookahead:*`, Tier 1 `U_*`.

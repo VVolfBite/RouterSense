@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 src/*.egg-info/
 src/**/*.egg-info/
+.codex/
+.codex-*/
 artifacts/
 outputs/
 runs/
@@ -13,7 +15,9 @@ deploy/inventory/*.current.yaml
 deploy/inventory/*.backup
 
 *.tar.gz
+*.tar
 *.zip
+*.tgz
 *.pt
 *.pth
 *.bin

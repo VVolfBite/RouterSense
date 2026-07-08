@@ -18,15 +18,44 @@ workload:
 strategies:
   - name: disabled
     description: "Native Megatron EP baseline (no RouterSense)"
+    family: native
     policy: ""
     execution_mode: native_passthrough
     control_mode: default_continue
     p2_hint_mode: none
     calibrated_p2: false
 
+  - name: phase_barrier_fifo
+    description: "Phase-serial FIFO execution-order baseline"
+    family: execution_order
+    policy: phase_barrier_fifo
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: none
+    calibrated_p2: false
+
+  - name: islip_round_robin
+    description: "Deterministic iSLIP-style execution-order baseline"
+    family: execution_order
+    policy: islip_round_robin
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: none
+    calibrated_p2: false
+
   - name: greedy_ready_set
     description: "Greedy matching baseline"
+    family: greedy
     policy: greedy_ready_set
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: none
+    calibrated_p2: false
+
+  - name: power_of_two_choices
+    description: "Deterministic load-balance baseline"
+    family: load_balance
+    policy: power_of_two_choices
     execution_mode: phase_sync_wave
     control_mode: sync_before_phase
     p2_hint_mode: none
@@ -34,7 +63,17 @@ strategies:
 
   - name: birkhoff_phase_local
     description: "Per-phase Birkhoff decomposition (local-optimal, no cross-phase)"
+    family: global_phase_local
     policy: birkhoff_phase_local
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: none
+    calibrated_p2: false
+
+  - name: fast_bvn_single_tier
+    description: "FAST-style single-tier matching decomposition adaptation"
+    family: global_phase_local
+    policy: fast_bvn_single_tier
     execution_mode: phase_sync_wave
     control_mode: sync_before_phase
     p2_hint_mode: none
@@ -42,6 +81,7 @@ strategies:
 
   - name: routersense_p0p1_reservation
     description: "P1 reservation without P2 prediction"
+    family: semantic
     policy: routersense_p0p1_reservation
     execution_mode: phase_sync_wave
     control_mode: sync_before_phase
@@ -50,6 +90,7 @@ strategies:
 
   - name: routersense_p0p1p2_hint
     description: "Cross-layer prediction scheduling"
+    family: semantic
     policy: routersense_p0p1p2_hint
     execution_mode: phase_sync_wave
     control_mode: sync_before_phase

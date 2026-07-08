@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-import pytest
-
 from rs.scheduling.registry import resolve_phase_policy
 from .helpers import make_contexts_from_matrix, with_p2_digest
 
 
-def test_routersense_p0p1p2_hint_rejects_missing_hint() -> None:
+def test_routersense_p0p1p2_hint_falls_back_without_prepared_hint() -> None:
     contexts = make_contexts_from_matrix(
         phase="P0",
         matrix=((0, 32, 32, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)),
         p2_hint_mode="none",
     )
-    with pytest.raises(ValueError, match="missing_p2_hint"):
-        resolve_phase_policy(policy_name="routersense_p0p1p2_hint", bucket_rows=16).build_plan(
-            local_context=contexts[0],
-            global_contexts=contexts,
-        )
+    plan = resolve_phase_policy(policy_name="routersense_p0p1p2_hint", bucket_rows=16).build_plan(
+        local_context=contexts[0],
+        global_contexts=contexts,
+    )
+    diagnostics = plan.metrics["policy_diagnostics"]
+    assert diagnostics["p2_hint_mode"] == "none"
+    assert diagnostics["p2_hint_available"] is False
+    assert diagnostics["p2_influenced_plan"] is False
+    assert diagnostics["evaluation_eligible"] is False
 
 
 def test_routersense_p0p1p2_hint_uses_stub_but_marks_not_evaluation_eligible() -> None:

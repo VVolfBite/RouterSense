@@ -19,17 +19,21 @@ Both online runtime and formal offline entrypoints are cut over to the canonical
 
 ### What is not yet fully closed
 
-- several oversized canonical modules still need responsibility-based splitting:
-  - `src/rs/runtime/online/megatron_ep/_host_impl.py`
-  - `src/rs/runtime/online/megatron_ep/_lifecycle.py`
-  - `src/rs/scheduling/multiphase/global_ready_set_impl.py`
 - some historical design docs under `docs/` still reference legacy paths and should be archived or rewritten before paper-facing documentation is finalized
+- online prepared-window support is now present for:
+  - calibrated P2 hint propagation
+  - shadow window state / release event observation
+  - prepared phase-plan shadow compilation
+  - artifact-side shadow-vs-actual alignment analysis
+- online multiphase joint execution is still not implemented:
+  - current executor remains phase-local
+  - prepared-window plans are used for hinting and observability, not for a shared cross-phase pending queue
 
 ### Immediate next cleanup targets
 
-1. split the oversized online runtime and multiphase solver implementation files by responsibility
-2. convert remaining historical docs to archive-oriented references
-3. keep archive provenance and source-only packaging aligned with the post-cutover tree
+1. convert remaining historical docs to archive-oriented references
+2. keep archive provenance and source-only packaging aligned with the post-cutover tree
+3. validate prepared-window hint consumption and shadow-plan alignment on single-node multi-GPU runs
 4. begin formal evaluation work only inside `src/rs/scheduling`, `experiments`, `configs`, and metrics/plot scripts
 
 ### Current safe editing zones
@@ -39,6 +43,8 @@ Both online runtime and formal offline entrypoints are cut over to the canonical
 - `src/rs/runtime/online/megatron_ep/*`
 - `experiments/offline/*`
 - `experiments/online/*`
+- `experiments/online/support/*`
+- `scripts/diagnostics/*`
 - `configs/*`
 - `docs/architecture/*`
 

@@ -34,9 +34,10 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             executed_wave_count=0,
         )
 
+    planned_waves = tuple(plan_dict.get("waves", []) or [])
     planned_tasks = [
         task
-        for wave in plan_dict.get("waves", [])
+        for wave in planned_waves
         for task in wave.get("bucket_tasks", []) or []
     ]
     planned_task_ids = tuple(str(task.get("task_id", "")) for task in planned_tasks)
@@ -48,7 +49,8 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             planned_bytes += sum(int(payload.get("payload_byte_count", 0)) for payload in payload_slices)
         else:
             planned_bytes += int(task.get("byte_count", 0))
-    planned_wave_count = len(plan_dict.get("waves", []))
+    planned_wave_count_total = len(planned_waves)
+    planned_wave_count = sum(1 for wave in planned_waves if wave.get("bucket_tasks"))
     planned_local_rows = sum(int(task.get("row_count", 0)) for task in planned_tasks if int(task.get("src_rank", -1)) == int(task.get("dst_rank", -2)))
     planned_remote_rows = planned_rows - planned_local_rows
 
@@ -165,6 +167,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         details={
             "planned_execution_order": planned_task_ids,
             "actual_execution_order": executed_task_ids,
+            "planned_wave_count_total": planned_wave_count_total,
             "planned_local_rows": planned_local_rows,
             "actual_local_rows": actual_local_rows,
             "planned_remote_rows": planned_remote_rows,

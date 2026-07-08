@@ -22,6 +22,7 @@ from rs.runtime.online.megatron_ep.contracts import (
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
+from rs.runtime.online.megatron_ep.joint_shadow_runtime import build_joint_shadow_snapshot
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
     RuntimeObservationRecorder,
@@ -32,6 +33,9 @@ from rs.runtime.online.megatron_ep.observation import (
 )
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
+from rs.runtime.online.megatron_ep.pending_window_policy import MultiphasePendingWindowPolicy
+from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
+from rs.runtime.online.megatron_ep.release_engine import record_release_event
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     PhaseContextBuildRequest,
@@ -42,10 +46,12 @@ from rs.runtime.online.megatron_ep.phase import (
     build_phase_ready_context,
 )
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, UnsupportedSchedulerMode
+from rs.runtime.online.megatron_ep.window_state import PreparedPlanBinding, WindowReleaseState, bind_prepared_plan, build_window_state
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.validation import stable_hash
 
 
 @dataclass
@@ -74,11 +80,19 @@ class RouterSenseInjectionRuntime:
         }
     )
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
+    window_state_records: list[dict[str, Any]] = field(default_factory=list)
+    prepared_plan_bindings: list[dict[str, Any]] = field(default_factory=list)
+    release_events: list[dict[str, Any]] = field(default_factory=list)
+    window_schedule_shadows: list[dict[str, Any]] = field(default_factory=list)
+    prepared_phase_plan_shadows: list[dict[str, Any]] = field(default_factory=list)
+    pending_window_driver_records: list[dict[str, Any]] = field(default_factory=list)
+    planning_timing_records: list[dict[str, Any]] = field(default_factory=list)
     control_timeline: list[dict[str, Any]] = field(default_factory=list)
     control_commands: list[dict[str, Any]] = field(default_factory=list)
     assertion_state: dict[str, Any] = field(default_factory=dict)
     _active_plan_versions: dict[str, int] = field(default_factory=dict)
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
+    _window_states: dict[str, Any] = field(default_factory=dict)
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
@@ -111,6 +125,15 @@ class RouterSenseInjectionRuntime:
     def _policy(self):
         phase_policy_name = self._effective_phase_policy_name()
         if phase_policy_name:
+            if self.config.execution_mode == "multiphase_pending_window":
+                return MultiphasePendingWindowPolicy(
+                    shared_state=self._prepared_plan_state,
+                    phase_policy_name=phase_policy_name,
+                    bucket_rows=self.config.bucket_rows,
+                    p0_weight=self.config.p0_weight,
+                    p1_reservation_weight=self.config.p1_reservation_weight,
+                    p2_hint_weight=self.config.p2_hint_weight,
+                )
             return resolve_phase_policy(
                 policy_name=phase_policy_name,
                 bucket_rows=self.config.bucket_rows,
@@ -143,7 +166,7 @@ class RouterSenseInjectionRuntime:
     def _should_schedule_phase(self, *, layer_name: str, phase: str) -> bool:
         return (
             bool(self._effective_phase_policy_name())
-            and self.config.execution_mode == "phase_sync_wave"
+            and self.config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}
             and self.config.control_mode == "sync_before_phase"
             and self._layer_selected(layer_name)
             and self._phase_selected(phase)
@@ -162,6 +185,7 @@ class RouterSenseInjectionRuntime:
         return True
 
     def _activate_transport(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
+        start_ns = time.monotonic_ns()
         self._active_transport = {
             "layer_name": layer_name,
             "phase": phase,
@@ -171,6 +195,16 @@ class RouterSenseInjectionRuntime:
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
             adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
+        end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase=phase,
+            stage="activate_transport",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            wave_count=int(len(plan.waves)),
+            bucket_count=int(sum(len(wave.bucket_tasks) for wave in plan.waves)),
+        )
 
     def current_transport(self) -> dict[str, Any] | None:
         return self._active_transport
@@ -234,7 +268,62 @@ class RouterSenseInjectionRuntime:
             if self.observation_recorder is not None:
                 self.observation_recorder.record_heartbeat(row)
 
+    def _record_planning_timing(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        stage: str,
+        start_ns: int,
+        end_ns: int,
+        **detail: Any,
+    ) -> float:
+        duration_us = max(0.0, float(end_ns - start_ns) / 1000.0)
+        record = {
+            "ts_us": int(time.time() * 1e6),
+            "layer_name": layer_name,
+            "layer_id": parse_layer_id(layer_name),
+            "phase": phase,
+            "stage": stage,
+            "duration_us": duration_us,
+            "rank": self.rank,
+            "local_rank": self.local_rank,
+            "execution_mode": self.config.execution_mode,
+            "control_mode": self.config.control_mode,
+            **detail,
+        }
+        self.planning_timing_records.append(record)
+        self._timeline(
+            "planning_stage_timing",
+            layer_name=layer_name,
+            phase_name=phase,
+            stage=stage,
+            duration_us=duration_us,
+            **detail,
+        )
+        return duration_us
+
+    def _record_hook_timing(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        hook_name: str,
+        start_ns: int,
+        end_ns: int,
+        **detail: Any,
+    ) -> float:
+        return self._record_planning_timing(
+            layer_name=layer_name,
+            phase=phase,
+            stage=f"hook_{hook_name}",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            **detail,
+        )
+
     def _build_p2_hint(self, *, layer_name: str, phase: str):
+        start_ns = time.monotonic_ns()
         if self.config.p2_hint_mode == "calibrated_artifact":
             if self._p2_hint_provider is None:
                 self._p2_hint_provider = build_p2_hint_provider(
@@ -244,7 +333,7 @@ class RouterSenseInjectionRuntime:
             provider = self._p2_hint_provider
         else:
             provider = build_p2_hint_provider(self.config.p2_hint_mode)
-        return provider.build_hint(
+        hint = provider.build_hint(
             P2HintRequest(
                 plan_key=self._plan_key(layer_name, phase),
                 layer_id=parse_layer_id(layer_name),
@@ -254,6 +343,17 @@ class RouterSenseInjectionRuntime:
                 ep_group_ranks=self.ep_group_ranks,
             )
         )
+        end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase=phase,
+            stage="build_p2_hint",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            hint_mode=str(hint.hint_mode),
+            hint_source=str(hint.hint_source),
+        )
+        return hint
 
     def _record_plan_arrival(self, *, layer_name: str, phase: str) -> None:
         now_us = int(time.time() * 1e6)
@@ -292,7 +392,206 @@ class RouterSenseInjectionRuntime:
             has_prepared_plan=plan is not None,
         )
 
+    def _current_prepared_plan_binding(self, *, layer_name: str) -> PreparedPlanBinding | None:
+        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        if prepared_plan is None:
+            return None
+        source_logical_plan_hash = ""
+        logical_plan = getattr(prepared_plan, "logical_plan", None)
+        if logical_plan is not None:
+            source_logical_plan_hash = stable_hash(logical_plan.to_dict())
+        return bind_prepared_plan(
+            layer_name=layer_name,
+            prepared_plan=prepared_plan,
+            source_layer_name=str(self._prepared_plan_state.get("plan_source_layer", "")),
+            source_logical_plan_hash=source_logical_plan_hash,
+        )
+
+    def _record_window_state(
+        self,
+        *,
+        layer_name: str,
+        p0_observation: RuntimeObservation | None = None,
+        p1_observation: RuntimeObservation | None = None,
+    ) -> None:
+        start_ns = time.monotonic_ns()
+        existing = self._window_states.get(layer_name)
+        release_state = WindowReleaseState() if existing is None else existing.release_state
+        state = build_window_state(
+            layer_name=layer_name,
+            ep_group_ranks=self.ep_group_ranks,
+            local_rank=self.local_rank,
+            p0_observation=p0_observation if p0_observation is not None else (None if existing is None else existing.p0_observation),
+            p1_observation=p1_observation if p1_observation is not None else (None if existing is None else existing.p1_observation),
+            prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+            prepared_plan_binding=self._current_prepared_plan_binding(layer_name=layer_name),
+            release_state=release_state,
+        )
+        self._window_states[layer_name] = state
+        self.window_state_records.append(state.to_record())
+        if state.prepared_plan_binding is not None:
+            self.prepared_plan_bindings.append(
+                {
+                    "ts_us": int(time.time() * 1e6),
+                    "layer_name": layer_name,
+                    **state.prepared_plan_binding.to_dict(),
+                }
+            )
+        self.window_schedule_shadows.append(
+            build_joint_shadow_snapshot(
+                state=state,
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+            )
+        )
+        end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="control",
+            stage="record_window_state",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            has_p0=bool(state.p0_observation is not None),
+            has_p1=bool(state.p1_observation is not None),
+            has_prepared_plan=bool(state.prepared_plan_binding is not None),
+        )
+
+    def _record_release_update(self, *, layer_name: str, event: str) -> None:
+        state = self._window_states.get(layer_name)
+        if state is None:
+            state = build_window_state(
+                layer_name=layer_name,
+                ep_group_ranks=self.ep_group_ranks,
+                local_rank=self.local_rank,
+                p0_observation=None,
+                p1_observation=None,
+                prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+                prepared_plan_binding=self._current_prepared_plan_binding(layer_name=layer_name),
+                release_state=WindowReleaseState(),
+            )
+        state, record = record_release_event(state=state, event=event, rank=self.rank, layer_name=layer_name)
+        self._window_states[layer_name] = state
+        self.release_events.append(record)
+        self.window_state_records.append(state.to_record())
+        self.window_schedule_shadows.append(
+            build_joint_shadow_snapshot(
+                state=state,
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+            )
+        )
+
+    def _record_prepared_phase_plan_shadow(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        local_context: PhaseReadyContext,
+        global_contexts: tuple[PhaseReadyContext, ...],
+    ) -> None:
+        start_ns = time.monotonic_ns()
+        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        if prepared_plan is None:
+            end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase=phase,
+                stage="prepared_phase_plan_shadow",
+                start_ns=start_ns,
+                end_ns=end_ns,
+                status="skipped_no_prepared_plan",
+            )
+            return
+        binding = self._current_prepared_plan_binding(layer_name=layer_name)
+        if binding is None:
+            end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase=phase,
+                stage="prepared_phase_plan_shadow",
+                start_ns=start_ns,
+                end_ns=end_ns,
+                status="skipped_no_binding",
+            )
+            return
+        phase_policy_name = self._effective_phase_policy_name()
+        if not phase_policy_name:
+            end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase=phase,
+                stage="prepared_phase_plan_shadow",
+                start_ns=start_ns,
+                end_ns=end_ns,
+                status="skipped_no_policy",
+            )
+            return
+        try:
+            compiled = compile_prepared_window_phase_plan(
+                prepared_plan=prepared_plan,
+                local_context=local_context,
+                global_contexts=global_contexts,
+                bucket_rows=self.config.bucket_rows,
+                p0_weight=self.config.p0_weight,
+                p1_reservation_weight=self.config.p1_reservation_weight,
+                p2_hint_weight=self.config.p2_hint_weight,
+                policy_name=phase_policy_name,
+            )
+        except Exception as exc:  # pragma: no cover
+            self.prepared_phase_plan_shadows.append(
+                {
+                    "ts_us": int(time.time() * 1e6),
+                    "layer_name": layer_name,
+                    "phase": phase,
+                    "prepared_window_key": binding.window_key,
+                    "compile_status": "failed",
+                    "exception": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase=phase,
+                stage="prepared_phase_plan_shadow",
+                start_ns=start_ns,
+                end_ns=end_ns,
+                status="failed",
+                exception=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.prepared_phase_plan_shadows.append(
+            {
+                "ts_us": int(time.time() * 1e6),
+                "layer_name": layer_name,
+                "phase": phase,
+                "prepared_window_key": binding.window_key,
+                "compile_status": "ok",
+                "source_layer_name": binding.source_layer_name,
+                "source_logical_plan_hash": binding.source_logical_plan_hash,
+                "compiled_plan_hash": compiled.plan_hash,
+                "compiled_wave_count": len(compiled.waves),
+                "compiled_bucket_order": list(compiled.metrics.get("bucket_order", [])),
+                "prepared_plan_order_preserved": bool(compiled.metrics.get("prepared_plan_order_preserved", False)),
+                "hint_edges_consumed": int(compiled.metrics.get("hint_edges_consumed", 0) or 0),
+                "hint_match_rate": float(compiled.metrics.get("hint_match_rate", 0.0) or 0.0),
+            }
+        )
+        end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase=phase,
+            stage="prepared_phase_plan_shadow",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            status="ok",
+            wave_count=int(len(compiled.waves)),
+            hint_edges_consumed=int(compiled.metrics.get("hint_edges_consumed", 0) or 0),
+        )
+
     def _store_prepared_plan(self, *, layer_name: str, observation_p1: RuntimeObservation) -> None:
+        total_start_ns = time.monotonic_ns()
         from rs.scheduling.contracts import (
             FlowWindow,
             ForecastPressure,
@@ -364,11 +663,13 @@ class RouterSenseInjectionRuntime:
             applies_from_layer_id = str(int(layer_id) + 1)
         except ValueError:
             applies_from_layer_id = layer_id
+        build_start_ns = time.monotonic_ns()
         prepared = policy.build_prepared_window_plan(
             problem=problem,
             created_at_layer_id=str(layer_id),
             applies_from_layer_id=applies_from_layer_id,
         )
+        build_end_ns = time.monotonic_ns()
         self._prepared_plan_state["prepared_plan"] = prepared
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
@@ -379,6 +680,56 @@ class RouterSenseInjectionRuntime:
             forecast_digest=prepared.forecast_digest,
             applies_from_layer_id=prepared.applies_from_layer_id,
         )
+        total_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P1",
+            stage="store_prepared_plan",
+            start_ns=total_start_ns,
+            end_ns=total_end_ns,
+            prepared_window_key=str(prepared.window_key),
+            forecast_digest=str(prepared.forecast_digest),
+            policy_name=str(prepared.logical_plan.policy_name),
+            logical_build_time_us=max(0.0, float(build_end_ns - build_start_ns) / 1000.0),
+        )
+
+    def _record_pending_window_driver(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        plan: PhaseExecutionPlan,
+    ) -> None:
+        if self.config.execution_mode != "multiphase_pending_window":
+            return
+        metrics = dict(plan.metrics)
+        record = {
+            "ts_us": int(time.time() * 1e6),
+            "layer_name": layer_name,
+            "layer_id": parse_layer_id(layer_name),
+            "phase": phase,
+            "plan_hash": plan.plan_hash,
+            "policy_name": plan.policy_name,
+            "compiled_from_pending_window": bool(metrics.get("compiled_from_pending_window", False)),
+            "pending_window_policy_name": str(metrics.get("pending_window_policy_name", "")),
+            "pending_window_plan_hash": str(metrics.get("pending_window_plan_hash", "")),
+            "pending_window_information_mode": str(metrics.get("pending_window_information_mode", "")),
+            "pending_window_forecast_available": bool(metrics.get("pending_window_forecast_available", False)),
+            "pending_window_p0_total_bytes": int(metrics.get("pending_window_p0_total_bytes", 0) or 0),
+            "pending_window_p1_total_bytes": int(metrics.get("pending_window_p1_total_bytes", 0) or 0),
+            "pending_window_p2_total_bytes": int(metrics.get("pending_window_p2_total_bytes", 0) or 0),
+            "pending_window_p1_matrix_source": str(metrics.get("pending_window_p1_matrix_source", "")),
+            "pending_window_p2_matrix_source": str(metrics.get("pending_window_p2_matrix_source", "")),
+            "prepared_window_key": str(metrics.get("prepared_window_key", "")),
+            "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
+            "wave_count": len(plan.waves),
+            "bucket_count": sum(len(wave.bucket_tasks) for wave in plan.waves),
+            "hint_edges_consumed": int(metrics.get("hint_edges_consumed", 0) or 0),
+            "hint_match_rate": float(metrics.get("hint_match_rate", 0.0) or 0.0),
+            "prepared_plan_order_preserved": bool(metrics.get("prepared_plan_order_preserved", False)),
+            "bucket_order": list(metrics.get("bucket_order", [])),
+        }
+        self.pending_window_driver_records.append(record)
 
     def capture_phase_transport_output(
         self,
@@ -479,6 +830,9 @@ class RouterSenseInjectionRuntime:
         packed_hidden_states: Any,
         packed_probs: Any,
     ) -> None:
+        hook_start_ns = time.monotonic_ns()
+        self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
+        observation_start_ns = time.monotonic_ns()
         ep_group_hash = compute_ep_group_hash(self.ep_group_ranks)
         observation = build_runtime_observation(
             run_id=self.run_id,
@@ -496,9 +850,21 @@ class RouterSenseInjectionRuntime:
             phase="P0",
             hidden_states=packed_hidden_states,
         )
+        observation_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="build_runtime_observation",
+            start_ns=observation_start_ns,
+            end_ns=observation_end_ns,
+            remote_rows=int(observation.remote_rows),
+            remote_bytes=int(sum(int(v) for v in observation.per_peer_bytes)),
+        )
         self._record_plan_arrival(layer_name=layer_name, phase="P0")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
+        self._record_window_state(layer_name=layer_name, p0_observation=observation)
+        phase_ctx_start_ns = time.monotonic_ns()
         phase_ctx = build_phase_ready_context(
             PhaseContextBuildRequest(
                 plan_key=self._plan_key(layer_name, "P0"),
@@ -535,10 +901,26 @@ class RouterSenseInjectionRuntime:
                 p2_hint=p2_hint,
             )
         )
+        phase_ctx_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="build_phase_ready_context",
+            start_ns=phase_ctx_start_ns,
+            end_ns=phase_ctx_end_ns,
+            remote_rows=int(observation.remote_rows),
+            hint_mode=str(p2_hint.hint_mode),
+        )
         if self.observation_recorder is not None:
             self.observation_recorder.record_phase_context(phase_ctx.to_dict())
             for bundle in phase_ctx.transport_bundles:
                 self.observation_recorder.record_transport_bundle(bundle.to_dict())
+        self._record_prepared_phase_plan_shadow(
+            layer_name=layer_name,
+            phase="P0",
+            local_context=phase_ctx,
+            global_contexts=(phase_ctx,),
+        )
         pre_input_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "input_splits", None)))
         pre_output_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "output_splits", None)))
         hidden_ptr = int(packed_hidden_states.data_ptr()) if isinstance(packed_hidden_states, torch.Tensor) else -1
@@ -555,9 +937,30 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P0")
         if self._should_schedule_phase(layer_name=layer_name, phase="P0"):
+            agreement_start_ns = time.monotonic_ns()
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
+            agreement_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="run_phase_plan_agreement",
+                start_ns=agreement_start_ns,
+                end_ns=agreement_end_ns,
+                wave_count=int(len(plan.waves)),
+                build_plan_time_us=float(plan.metrics.get("build_plan_time_us", 0.0) or 0.0),
+                all_gather_time_us=float(plan.metrics.get("all_gather_time_us", 0.0) or 0.0),
+                summary_build_time_us=float(plan.metrics.get("summary_build_time_us", 0.0) or 0.0),
+                summary_encode_time_us=float(plan.metrics.get("summary_encode_time_us", 0.0) or 0.0),
+                summary_decode_time_us=float(plan.metrics.get("summary_decode_time_us", 0.0) or 0.0),
+                broadcast_time_us=float(plan.metrics.get("broadcast_time_us", 0.0) or 0.0),
+                abstract_encode_time_us=float(plan.metrics.get("abstract_encode_time_us", 0.0) or 0.0),
+                abstract_decode_time_us=float(plan.metrics.get("abstract_decode_time_us", 0.0) or 0.0),
+                materialize_local_plan_time_us=float(plan.metrics.get("materialize_local_plan_time_us", 0.0) or 0.0),
+                verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
+            )
             if self.observation_recorder is not None:
                 self.observation_recorder.record_scheduled_plan(plan.to_dict())
+            self._record_pending_window_driver(layer_name=layer_name, phase="P0", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
             self._timeline(
                 "phase_execution_plan_agreed",
@@ -567,10 +970,44 @@ class RouterSenseInjectionRuntime:
                 wave_count=len(plan.waves),
                 bucket_count=sum(len(wave.bucket_tasks) for wave in plan.waves),
                 execution_mode=plan.execution_mode,
+                all_gather_time_us=float(plan.metrics.get("all_gather_time_us", 0.0) or 0.0),
+                build_plan_time_us=float(plan.metrics.get("build_plan_time_us", 0.0) or 0.0),
+                summary_build_time_us=float(plan.metrics.get("summary_build_time_us", 0.0) or 0.0),
+                summary_encode_time_us=float(plan.metrics.get("summary_encode_time_us", 0.0) or 0.0),
+                summary_decode_time_us=float(plan.metrics.get("summary_decode_time_us", 0.0) or 0.0),
+                broadcast_time_us=float(plan.metrics.get("broadcast_time_us", 0.0) or 0.0),
+                abstract_encode_time_us=float(plan.metrics.get("abstract_encode_time_us", 0.0) or 0.0),
+                abstract_decode_time_us=float(plan.metrics.get("abstract_decode_time_us", 0.0) or 0.0),
+                materialize_local_plan_time_us=float(plan.metrics.get("materialize_local_plan_time_us", 0.0) or 0.0),
+                verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
+                total_agreement_time_us=float(plan.metrics.get("total_agreement_time_us", 0.0) or 0.0),
             )
             self._timeline("after_phase_plan", layer_name=layer_name, phase_name="P0", plan_hash=plan.plan_hash)
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="before_token_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=True,
+                plan_hash=plan.plan_hash,
+                wave_count=int(len(plan.waves)),
+            )
+            self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=True, plan_hash=plan.plan_hash)
             return
         if self.config.scheduler_mode != "native_passthrough_identity":
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="before_token_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=False,
+                reason="phase_policy_not_selected",
+            )
+            self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
             return
         context = replace(self._context(layer_name), expert_placement_hash=observation.expert_placement_hash)
         local_observations = (observation,)
@@ -668,6 +1105,17 @@ class RouterSenseInjectionRuntime:
                 new_version=current_version + 1,
                 transport_mutation=False,
             )
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P0",
+            hook_name="before_token_dispatch_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+            scheduled=False,
+            reason="native_passthrough_identity",
+        )
+        self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
 
     def mark_token_dispatch_committed(self, *, layer_name: str) -> None:
         if self.config.scheduler_mode != "native_passthrough_identity" and not bool(self._effective_phase_policy_name()):
@@ -679,12 +1127,43 @@ class RouterSenseInjectionRuntime:
         )
 
     def after_token_dispatch(self, *, layer_name: str) -> None:
+        hook_start_ns = time.monotonic_ns()
+        self._timeline("after_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
         if bool(self._effective_phase_policy_name()):
+            clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P0")
+            clear_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="clear_transport",
+                start_ns=clear_start_ns,
+                end_ns=clear_end_ns,
+            )
+            self._record_release_update(layer_name=layer_name, event="p0_dispatch_completed")
             if str(self.config.schedule_phase_selector).lower() == "p0" and self._should_stop_after_layer(layer_name=layer_name, phase="P0"):
                 raise SelectedLayerStop(f"Stopped after selected P0 layer {layer_name}")
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="after_token_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+            )
+            self._timeline("after_token_dispatch_exit", layer_name=layer_name, phase_name="P0")
             return
         if self.config.scheduler_mode != "native_passthrough_identity":
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="after_token_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                skipped=True,
+            )
+            self._timeline("after_token_dispatch_exit", layer_name=layer_name, phase_name="P0", skipped=True)
             return
         if self.config.control_mode == "default_continue" and self.config.shadow_command_arrival == "after_commit":
             current = self._active_plan_versions.get(layer_name, 0)
@@ -708,20 +1187,63 @@ class RouterSenseInjectionRuntime:
                 attempted_version=current + 1,
                 transport_mutation=False,
             )
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P0",
+            hook_name="after_token_dispatch_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+        )
+        self._timeline("after_token_dispatch_exit", layer_name=layer_name, phase_name="P0")
 
     def after_token_combine(self, *, layer_name: str) -> None:
+        hook_start_ns = time.monotonic_ns()
+        self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
         if bool(self._effective_phase_policy_name()):
+            clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P1")
+            clear_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P1",
+                stage="clear_transport",
+                start_ns=clear_start_ns,
+                end_ns=clear_end_ns,
+            )
             observation_p1 = self._pending_p1.pop(layer_name, None)
             if observation_p1 is not None:
                 self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
+                self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
+            self._record_release_update(layer_name=layer_name, event="p1_return_completed")
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
                 raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="after_token_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+            )
+            self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
             return
         if self.config.scheduler_mode == "native_passthrough_identity":
             self._timeline("native_p1_observed", layer_name=layer_name)
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P1",
+            hook_name="after_token_combine_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+        )
+        self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
 
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
+        hook_start_ns = time.monotonic_ns()
+        self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        observation_start_ns = time.monotonic_ns()
         observation = build_runtime_observation(
             run_id=self.run_id,
             step_id=self.step_id,
@@ -738,9 +1260,22 @@ class RouterSenseInjectionRuntime:
             phase="P1",
             hidden_states=packed_hidden_states,
         )
+        observation_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P1",
+            stage="build_runtime_observation",
+            start_ns=observation_start_ns,
+            end_ns=observation_end_ns,
+            remote_rows=int(observation.remote_rows),
+            remote_bytes=int(sum(int(v) for v in observation.per_peer_bytes)),
+        )
         self._pending_p1[layer_name] = observation
+        self._record_window_state(layer_name=layer_name, p1_observation=observation)
+        self._record_release_update(layer_name=layer_name, event="p1_return_materialized")
         self._record_plan_arrival(layer_name=layer_name, phase="P1")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P1")
+        phase_ctx_start_ns = time.monotonic_ns()
         phase_ctx = build_phase_ready_context(
             PhaseContextBuildRequest(
                 plan_key=self._plan_key(layer_name, "P1"),
@@ -775,10 +1310,26 @@ class RouterSenseInjectionRuntime:
                 p2_hint=p2_hint,
             )
         )
+        phase_ctx_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P1",
+            stage="build_phase_ready_context",
+            start_ns=phase_ctx_start_ns,
+            end_ns=phase_ctx_end_ns,
+            remote_rows=int(observation.remote_rows),
+            hint_mode=str(p2_hint.hint_mode),
+        )
         if self.observation_recorder is not None:
             self.observation_recorder.record_phase_context(phase_ctx.to_dict())
             for bundle in phase_ctx.transport_bundles:
                 self.observation_recorder.record_transport_bundle(bundle.to_dict())
+        self._record_prepared_phase_plan_shadow(
+            layer_name=layer_name,
+            phase="P1",
+            local_context=phase_ctx,
+            global_contexts=(phase_ctx,),
+        )
         self._timeline(
             "p1_pre_transport_observation_ready",
             layer_name=layer_name,
@@ -787,9 +1338,30 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P1")
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
+            agreement_start_ns = time.monotonic_ns()
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
+            agreement_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P1",
+                stage="run_phase_plan_agreement",
+                start_ns=agreement_start_ns,
+                end_ns=agreement_end_ns,
+                wave_count=int(len(plan.waves)),
+                build_plan_time_us=float(plan.metrics.get("build_plan_time_us", 0.0) or 0.0),
+                all_gather_time_us=float(plan.metrics.get("all_gather_time_us", 0.0) or 0.0),
+                summary_build_time_us=float(plan.metrics.get("summary_build_time_us", 0.0) or 0.0),
+                summary_encode_time_us=float(plan.metrics.get("summary_encode_time_us", 0.0) or 0.0),
+                summary_decode_time_us=float(plan.metrics.get("summary_decode_time_us", 0.0) or 0.0),
+                broadcast_time_us=float(plan.metrics.get("broadcast_time_us", 0.0) or 0.0),
+                abstract_encode_time_us=float(plan.metrics.get("abstract_encode_time_us", 0.0) or 0.0),
+                abstract_decode_time_us=float(plan.metrics.get("abstract_decode_time_us", 0.0) or 0.0),
+                materialize_local_plan_time_us=float(plan.metrics.get("materialize_local_plan_time_us", 0.0) or 0.0),
+                verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
+            )
             if self.observation_recorder is not None:
                 self.observation_recorder.record_scheduled_plan(plan.to_dict())
+            self._record_pending_window_driver(layer_name=layer_name, phase="P1", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
             self._timeline(
                 "phase_execution_plan_agreed",
@@ -799,11 +1371,56 @@ class RouterSenseInjectionRuntime:
                 wave_count=len(plan.waves),
                 bucket_count=sum(len(wave.bucket_tasks) for wave in plan.waves),
                 execution_mode=plan.execution_mode,
+                all_gather_time_us=float(plan.metrics.get("all_gather_time_us", 0.0) or 0.0),
+                build_plan_time_us=float(plan.metrics.get("build_plan_time_us", 0.0) or 0.0),
+                summary_build_time_us=float(plan.metrics.get("summary_build_time_us", 0.0) or 0.0),
+                summary_encode_time_us=float(plan.metrics.get("summary_encode_time_us", 0.0) or 0.0),
+                summary_decode_time_us=float(plan.metrics.get("summary_decode_time_us", 0.0) or 0.0),
+                broadcast_time_us=float(plan.metrics.get("broadcast_time_us", 0.0) or 0.0),
+                abstract_encode_time_us=float(plan.metrics.get("abstract_encode_time_us", 0.0) or 0.0),
+                abstract_decode_time_us=float(plan.metrics.get("abstract_decode_time_us", 0.0) or 0.0),
+                materialize_local_plan_time_us=float(plan.metrics.get("materialize_local_plan_time_us", 0.0) or 0.0),
+                verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
+                total_agreement_time_us=float(plan.metrics.get("total_agreement_time_us", 0.0) or 0.0),
             )
             self._timeline("after_phase_plan", layer_name=layer_name, phase_name="P1", plan_hash=plan.plan_hash)
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="before_token_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=True,
+                plan_hash=plan.plan_hash,
+                wave_count=int(len(plan.waves)),
+            )
+            self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=True, plan_hash=plan.plan_hash)
             return
         if self.config.scheduler_mode != "native_passthrough_identity":
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="before_token_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=False,
+                reason="phase_policy_not_selected",
+            )
+            self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
             return
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P1",
+            hook_name="before_token_combine_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+            scheduled=False,
+            reason="native_passthrough_identity",
+        )
+        self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
 
     def on_dispatch(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
         if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or bool(self._effective_phase_policy_name()):
@@ -904,6 +1521,27 @@ class RouterSenseInjectionRuntime:
 
     def export_plan_arrival_records(self) -> list[dict[str, Any]]:
         return list(self.plan_arrival_records)
+
+    def export_window_state_records(self) -> list[dict[str, Any]]:
+        return list(self.window_state_records)
+
+    def export_prepared_plan_bindings(self) -> list[dict[str, Any]]:
+        return list(self.prepared_plan_bindings)
+
+    def export_release_events(self) -> list[dict[str, Any]]:
+        return list(self.release_events)
+
+    def export_window_schedule_shadows(self) -> list[dict[str, Any]]:
+        return list(self.window_schedule_shadows)
+
+    def export_prepared_phase_plan_shadows(self) -> list[dict[str, Any]]:
+        return list(self.prepared_phase_plan_shadows)
+
+    def export_pending_window_driver_records(self) -> list[dict[str, Any]]:
+        return list(self.pending_window_driver_records)
+
+    def export_planning_timing_records(self) -> list[dict[str, Any]]:
+        return list(self.planning_timing_records)
 
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)

@@ -246,6 +246,8 @@ def build_phase_ready_context(request: PhaseContextBuildRequest) -> PhaseReadyCo
         per_peer_bytes=tuple(int(v) for v in per_peer_bytes),
         packed_send_layout_id=packed_send_layout_id,
         canonical_receive_layout_id=canonical_receive_layout_id,
+        payload_specs=payload_descriptors,
+        atomic_submit=bool(request.payload_contract.atomic_submit),
         outgoing_segments=tuple(outgoing_segments),
         incoming_slots=tuple(incoming_slots),
         transport_bundles=tuple(bundles),

@@ -123,6 +123,7 @@ class PreparedWindowPlan:
     created_at_layer_id: str
     applies_from_layer_id: str
     execution_capability_required: str
+    forecast_matrix: tuple[tuple[int, ...], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

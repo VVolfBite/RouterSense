@@ -14,6 +14,7 @@ from rs.scheduling.multiphase.tier1 import FLUID_SERVICE_MODEL, TIER1_ALGORITHM_
 from rs.scheduling.validation import stable_hash, validate_logical_plan
 
 from experiments.offline.run_tier1_cpu_validation import _build_problem
+from experiments.offline.run_tier1_cpu_validation import DEFAULT_WAVE_TIER1_POLICIES
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "tier1"
@@ -145,6 +146,40 @@ def test_tier1_cpu_runner_outputs_service_model_comparison(tmp_path: Path) -> No
     assert comparison["atomic_comparison"][0]["planning_time_ms_in_plan_hash"] == 0.0
     assert (output_dir / "policy_plan_B_birkhoff.json").exists()
     assert (output_dir / "diagnostics_U_gated_maxweight_matching.json").exists()
+
+
+def test_tier1_cpu_runner_default_all_uses_wave_track_only(tmp_path: Path) -> None:
+    output_dir = tmp_path / "tier1_default"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "experiments.offline.run_tier1_cpu_validation",
+            "--fixture",
+            str(FIXTURE_ROOT / "unlock_hotspot_4rank.json"),
+            "--policy",
+            "all",
+            "--mode",
+            RUNTIME_LOOKAHEAD_MODE,
+            "--p2-source",
+            "copy_current_dispatch",
+            "--expert-compute-delay",
+            "1.0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+    )
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert tuple(manifest["policies"]) == DEFAULT_WAVE_TIER1_POLICIES
+    comparison = json.loads((output_dir / "comparison_by_service_model.json").read_text(encoding="utf-8"))
+    assert comparison["atomic_comparison"] == []
+    assert [item["algorithm_id"] for item in comparison["fluid_comparison"]] == [
+        "B_birkhoff_wave",
+        "U_gated_maxweight_matching",
+        "U_barrier_criticality_global_matching",
+    ]
+    assert [item["algorithm_id"] for item in comparison["other_service_model_comparison"]] == ["U_lagrangian"]
 
 
 def test_execution_window_rejects_forecast_p2_sources(tmp_path: Path) -> None:

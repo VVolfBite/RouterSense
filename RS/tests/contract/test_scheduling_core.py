@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from rs.scheduling import GlobalReadySetOptions, LogicalTopology, MultiPhaseSchedulingProblem, ReleaseConstraint, resolve_policy
+from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "scheduling"
@@ -98,6 +99,105 @@ def test_phase_local_policies_cover_exactly_once() -> None:
         for flow in problem.flow_window.blocked_flows:
             expected[(flow.phase, flow.src_rank, flow.dst_rank)] = expected.get((flow.phase, flow.src_rank, flow.dst_rank), 0) + int(flow.byte_count)
         assert covered == expected
+
+
+def test_phase_local_policies_schedule_real_p2_under_execution_window() -> None:
+    problem = _load_problem("receiver_incast_4rank")
+    problem = MultiPhaseSchedulingProblem(
+        flow_window=problem.flow_window,
+        topology=problem.topology,
+        release_model=problem.release_model,
+        forecast=problem.forecast,
+        options=GlobalReadySetOptions(
+            scheduling_mode="execution_window",
+            information_mode="p0_p1_p2",
+            prediction_confidence=1.0,
+            p0_weight=1.0,
+            p1_reservation_weight=1.0,
+            p2_hint_weight=1.0,
+        ),
+        p0_dispatch_matrix=problem.p0_dispatch_matrix,
+        p1_return_matrix=problem.p1_return_matrix,
+        p2_next_dispatch_forecast_matrix=problem.p2_next_dispatch_forecast_matrix,
+    )
+    for policy_name in (
+        "phase_barrier_fifo",
+        "greedy_ready_set",
+        "birkhoff_phase_local",
+        "aurora_order_fixed",
+        "fast_bvn_single_tier",
+    ):
+        plan = resolve_policy(policy_name=policy_name, bucket_rows=16).build_logical_plan(problem)
+        assert plan.diagnostics["future_information_mode"] == "oracle_execution_window"
+        assert plan.diagnostics["prediction_used"] is False
+        assert plan.diagnostics["forecast_consumed"] is False
+        assert plan.diagnostics["evaluation_eligible"] is False
+        assert plan.diagnostics["valid"] is True, plan.diagnostics["audit"].get("validation_errors")
+        assert any(flow.phase == "p2_next_dispatch" for wave in plan.waves for flow in wave.flows)
+
+
+def test_phase_local_policies_do_not_consume_unused_oracle_forecast() -> None:
+    problem = _load_problem("receiver_incast_4rank", p2_source="perfect_trace")
+    for policy_name in (
+        "phase_barrier_fifo",
+        "greedy_ready_set",
+        "birkhoff_phase_local",
+        "aurora_order_fixed",
+        "fast_bvn_single_tier",
+    ):
+        plan = resolve_policy(policy_name=policy_name, bucket_rows=16).build_logical_plan(problem)
+        assert plan.diagnostics["future_information_mode"] == "none"
+        assert plan.diagnostics["forecast_available"] is True
+        assert plan.diagnostics["forecast_source"] == "perfect_trace"
+        assert plan.diagnostics["forecast_consumed"] is False
+        assert plan.diagnostics["prediction_used"] is False
+        assert plan.diagnostics["evaluation_eligible"] is True
+        assert all(flow.phase != "p2_next_dispatch" for wave in plan.waves for flow in wave.flows)
+
+
+def test_offline_schedule_tail_metrics_capture_unlock_and_tail_signals() -> None:
+    problem = _load_problem("receiver_incast_4rank")
+    problem = MultiPhaseSchedulingProblem(
+        flow_window=problem.flow_window,
+        topology=problem.topology,
+        release_model=ReleaseConstraint(phase="p1_return", rank=0, release_after_phase="p0_dispatch", expert_compute_delay=2.0),
+        forecast=problem.forecast,
+        options=GlobalReadySetOptions(
+            scheduling_mode="execution_window",
+            information_mode="p0_p1_p2",
+            prediction_confidence=1.0,
+            p0_weight=1.0,
+            p1_reservation_weight=1.0,
+            p2_hint_weight=1.0,
+        ),
+        p0_dispatch_matrix=problem.p0_dispatch_matrix,
+        p1_return_matrix=problem.p1_return_matrix,
+        p2_next_dispatch_forecast_matrix=problem.p2_next_dispatch_forecast_matrix,
+    )
+    plan = resolve_policy(policy_name="birkhoff_phase_local", bucket_rows=16).build_logical_plan(problem)
+    audit = replay_and_audit_logical_plan(problem, plan)
+    metrics = summarize_schedule_tail_metrics(problem=problem, plan=plan, audit=audit)
+    assert metrics["active_wave_count"] > 0
+    assert metrics["wave_duration_p95"] >= metrics["wave_duration_p50"]
+    assert metrics["wave_duration_p99"] >= metrics["wave_duration_p95"]
+    assert metrics["p0_inbound_completion_p95"] >= metrics["p0_inbound_completion_p50"]
+    assert metrics["first_p1_release_time"] is not None
+    assert metrics["first_p1_start_time"] is not None
+    assert metrics["first_p1_start_time"] >= metrics["first_p1_release_time"]
+    assert metrics["mean_p1_release_wait"] is not None
+    assert metrics["max_p1_release_wait"] is not None
+    assert metrics["bottleneck_send_busy_share"] is not None
+    assert metrics["bottleneck_recv_busy_share"] is not None
+
+
+def test_offline_schedule_tail_metrics_suppress_p2_release_in_runtime_lookahead() -> None:
+    problem = _load_problem("receiver_incast_4rank", p2_source="perfect_trace")
+    plan = resolve_policy(policy_name="greedy_ready_set", bucket_rows=16).build_logical_plan(problem)
+    audit = replay_and_audit_logical_plan(problem, plan)
+    metrics = summarize_schedule_tail_metrics(problem=problem, plan=plan, audit=audit)
+    assert metrics["first_p2_release_time"] is None
+    assert metrics["first_p2_start_time"] is None
+    assert metrics["mean_p2_release_wait"] is None
 
 
 def test_fast_bvn_respects_scale_limit() -> None:

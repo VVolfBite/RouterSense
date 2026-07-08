@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import time
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -156,6 +157,7 @@ def _snapshot_value(value: Any, *, max_items: int = 256) -> Any:
 
 def _observer_safe_record(observer: RouterSenseObserver, **payload: Any) -> None:
     try:
+        payload.setdefault("ts_us", int(time.time() * 1e6))
         observer.record(**payload)
     except Exception:
         pass
@@ -399,6 +401,26 @@ def attach_dispatch_observer(
                 return result
 
             def wrapped_combine(hidden_states, _orig=orig_combine, _dispatcher=dispatcher, _name=name):
+                try:
+                    _observer_safe_record(
+                        observer,
+                        phase="token_combine_enter",
+                        layer=_name,
+                        rank=rank,
+                        local_rank=local_rank,
+                        hidden_shape=_snapshot_shape(hidden_states),
+                        output_splits_raw=_snapshot_value(getattr(_dispatcher, "output_splits", None)),
+                    )
+                except Exception as exc:
+                    _observer_safe_record(
+                        observer,
+                        phase="observer_warning",
+                        layer=_name,
+                        rank=rank,
+                        local_rank=local_rank,
+                        where="token_combine_enter",
+                        warning=f"{type(exc).__name__}: {exc}",
+                    )
                 result = _orig(hidden_states)
                 try:
                     _observer_safe_record(
@@ -504,7 +526,7 @@ def attach_dispatch_facade(
     original_all_to_all = None
     supported_policies = set(supported_phase_policies())
     phase_policy_name = config.policy or (config.scheduler_mode if config.scheduler_mode in supported_policies else "")
-    if phase_policy_name and config.execution_mode == "phase_sync_wave" and sample_dispatcher is not None:
+    if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"} and sample_dispatcher is not None:
         import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
 
         original_all_to_all = token_dispatcher_mod.all_to_all

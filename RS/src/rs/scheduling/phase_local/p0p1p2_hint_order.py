@@ -53,8 +53,6 @@ class RouterSenseP0P1P2HintPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        if local_context.p2_hint.hint_mode == "none":
-            raise ValueError("missing_p2_hint")
         transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
@@ -67,12 +65,21 @@ class RouterSenseP0P1P2HintPolicy:
                 continue
             future_out_pressure[int(layout.dst_rank)] += int(layout.byte_count)
             future_in_pressure[int(layout.src_rank)] += int(layout.byte_count)
+        hint_available = local_context.p2_hint.hint_mode != "none"
         hint_pressure = {
-            int(rank): _hint_rank_pressure(local_context.p2_hint.hint_digest, int(rank))
+            int(rank): (
+                _hint_rank_pressure(local_context.p2_hint.hint_digest, int(rank))
+                if hint_available and self.p2_hint_weight > 0.0
+                else 0
+            )
             for rank in local_context.ep_group_ranks
         }
-        edge_priority = _preferred_edge_priority(local_context.p2_hint.metadata, phase=local_context.phase)
-        use_prepared_priority = bool(edge_priority) and self.p2_hint_weight > 0.0
+        edge_priority = (
+            _preferred_edge_priority(local_context.p2_hint.metadata, phase=local_context.phase)
+            if hint_available
+            else {}
+        )
+        use_prepared_priority = hint_available and bool(edge_priority) and self.p2_hint_weight > 0.0
         matched_hint_edges = {
             (int(task.src_rank), int(task.dst_rank))
             for task in all_tasks
@@ -124,6 +131,7 @@ class RouterSenseP0P1P2HintPolicy:
             waves.append(PlanWave(wave_id=wave_id, phase=local_context.phase, bucket_tasks=tuple(chosen)))
             pending = remaining
             wave_id += 1
+        p2_influenced_plan = hint_available and (bool(edge_priority) or self.p2_hint_weight > 0.0)
         evaluation_eligible = local_context.p2_hint.hint_mode == "calibrated_artifact"
         diagnostics = {
             "policy_name": self.policy_name,
@@ -150,9 +158,10 @@ class RouterSenseP0P1P2HintPolicy:
             "evaluation_eligible": evaluation_eligible,
             "p2_hint_source": local_context.p2_hint.hint_source,
             "p2_hint_digest": local_context.p2_hint.hint_digest,
-            "p2_hint_available": True,
-            "p2_influenced_plan": True,
-            "prepared_plan_hint_available": bool(edge_priority),
+            "p2_hint_mode": local_context.p2_hint.hint_mode,
+            "p2_hint_available": hint_available,
+            "p2_influenced_plan": p2_influenced_plan,
+            "prepared_plan_hint_available": hint_available and bool(edge_priority),
             "ordered_by_prepared_plan": bool(use_prepared_priority),
             "hint_edges_available": len(edge_priority),
             "hint_edges_matched": len(matched_hint_edges),

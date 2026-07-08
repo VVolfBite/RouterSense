@@ -47,6 +47,8 @@ model_cache/
 *.pid
 
 # Large experimental artifacts should stay local unless explicitly curated
+deliverables/
+RS/artifacts/
 RS/artifacts/**/auxiliary/
 RS/artifacts/**/*.pt
 RS/artifacts/**/trace.jsonl
@@ -60,7 +62,6 @@ archive/backup/**/prediction_rows.json
 # RS tracked exceptions
 !configs/model/olmoe_1b_7b_instruct.yaml
 !configs/topology/
-!configs/topology/torchrun_2node_2gpu.yaml
 !deploy/inventory/
 !deploy/inventory/README.md
 !deploy/inventory/hosts.example.yaml
@@ -75,15 +76,4 @@ deploy/inventory/*.local.yaml
 RS/deploy/inventory/hosts.local.yaml
 RS/deploy/inventory/*.local.yaml
 !RS/deploy/inventory/*.local.yaml.example
-!deploy/scripts/
-!deploy/scripts/*.sh
-!deploy/scripts/*.py
-!experiments/prerun/
-!experiments/prerun/*.py
-!experiments/distributed/
-!experiments/distributed/**/*.py
-!experiments/ablation/
-!experiments/ablation/**/*.yaml
 !docs/router_trace_schema.md
-!src/routesense/
-!src/routesense/**

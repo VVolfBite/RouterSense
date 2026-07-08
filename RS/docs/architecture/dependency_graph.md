@@ -37,5 +37,8 @@ Equivalent restrictions:
 
 ### Remaining structural debt
 
-- oversized formal modules such as `src/rs/runtime/online/megatron_ep/_host_impl.py`, `_lifecycle.py`, and `src/rs/scheduling/multiphase/global_ready_set_impl.py` still need responsibility-based splitting
 - legacy trees remain preserved under `legacy/historical_poc/*` for historical audit only and are intentionally excluded from default validation
+- online multiphase joint execution is still not implemented:
+  - prepared-window plans currently feed calibrated P2 hint and shadow analysis
+  - actual online execution remains phase-local under the frozen executor contract
+- artifact-side diagnostics now include prepared-window shadow alignment analysis under `experiments/online/support/*` and `scripts/diagnostics/*`

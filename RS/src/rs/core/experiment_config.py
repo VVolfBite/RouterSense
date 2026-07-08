@@ -20,16 +20,19 @@ SUPPORTED_RUN_KINDS = {
 
 SUPPORTED_OBSERVATION_PROFILES = {"minimal", "execution", "debug"}
 SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
-SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave"}
+SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window"}
 SUPPORTED_ONLINE_PHASE_POLICIES = {
     "phase_barrier_fifo",
     "bucketed_fifo",
     "greedy_ready_set",
     "islip_round_robin",
+    "power_of_two_choices",
     "birkhoff_phase_local",
     "trivial_reverse_bucket",
     "aurora_order_fixed",
     "fast_bvn_single_tier",
+    "routersense_p0p1_reservation",
+    "routersense_p0p1p2_hint",
 }
 
 
@@ -239,12 +242,14 @@ def validate_run_config(config: RunConfig) -> None:
                 "online_policy_correctness only supports phase-local executable policies; "
                 f"got {config.online_policy.name!r}"
             )
-        if config.execution.mode != "phase_sync_wave":
-            raise ValueError("online_policy_correctness requires phase_sync_wave execution")
+        if config.execution.mode not in {"phase_sync_wave", "multiphase_pending_window"}:
+            raise ValueError("online_policy_correctness requires phase_sync_wave or multiphase_pending_window execution")
         if config.runtime.control_mode != "sync_before_phase":
             raise ValueError("online_policy_correctness requires sync_before_phase control mode")
         if config.offline_study.policies:
             raise ValueError("online_policy_correctness must not declare offline_study.policies")
+        if config.execution.mode == "multiphase_pending_window" and config.online_policy.name != "routersense_p0p1p2_hint":
+            raise ValueError("multiphase_pending_window currently supports online_policy.name=routersense_p0p1p2_hint only")
     if config.online_policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
         raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
     _assert_no_credential_fields(config.to_dict())

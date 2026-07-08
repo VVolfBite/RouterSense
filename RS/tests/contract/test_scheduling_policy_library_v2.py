@@ -149,6 +149,7 @@ def test_exact_reference_detects_nonoptimal_heuristic_and_optimal_policy() -> No
 
 def test_policy_matrix_consistency() -> None:
     assert "islip_round_robin" in SUPPORTED_ONLINE_PHASE_POLICIES
+    assert "power_of_two_choices" in SUPPORTED_ONLINE_PHASE_POLICIES
     assert resolve_policy(policy_name="islip_round_robin", bucket_rows=16).capabilities.supports_online_phase_local_execution
     assert not resolve_policy(policy_name="birkhoff_von_neumann_fluid", bucket_rows=16).capabilities.supports_online_phase_local_execution
     assert not resolve_policy(policy_name="exact_small_instance_reference", bucket_rows=16).capabilities.supports_online_phase_local_execution

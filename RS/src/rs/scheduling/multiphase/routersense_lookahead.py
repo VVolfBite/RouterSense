@@ -213,4 +213,5 @@ class RouterSenseMultiphaseLookaheadPolicy:
             created_at_layer_id=str(created_at_layer_id),
             applies_from_layer_id=str(applies_from_layer_id),
             execution_capability_required="multiphase_pending_window",
+            forecast_matrix=tuple(tuple(int(value) for value in row) for row in problem.p2_next_dispatch_forecast_matrix),
         )

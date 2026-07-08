@@ -6,6 +6,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from experiments.online.support.shadow_plan_analysis import analyze_rank_artifacts
+
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -38,6 +40,97 @@ def communication_makespan_from_timeline(timeline: list[dict[str, Any]]) -> floa
     if not before or not after:
         return 0.0
     return float(max(after) - min(before))
+
+
+def _phase_key(row: dict[str, Any]) -> tuple[str, str]:
+    layer = str(row.get("layer", row.get("layer_name", "")))
+    phase = str(row.get("phase_name", row.get("phase", "")))
+    return layer, phase
+
+
+def communication_phase_window_from_timeline(timeline: list[dict[str, Any]]) -> float:
+    starts: dict[tuple[str, str], int] = {}
+    ends: dict[tuple[str, str], int] = {}
+    for row in timeline:
+        event = str(row.get("event", ""))
+        ts = int(row.get("ts_us", 0) or 0)
+        if ts <= 0:
+            continue
+        if event not in {"before_payload_collective", "after_payload_collective", "before_wave", "after_wave"}:
+            continue
+        key = _phase_key(row)
+        if not key[0] or key[1] not in {"P0", "P1"}:
+            continue
+        if event in {"before_payload_collective", "before_wave"}:
+            current = starts.get(key)
+            starts[key] = ts if current is None else min(current, ts)
+        elif event in {"after_payload_collective", "after_wave"}:
+            current = ends.get(key)
+            ends[key] = ts if current is None else max(current, ts)
+    total_us = 0.0
+    for key, start in starts.items():
+        end = ends.get(key)
+        if end is not None and end >= start:
+            total_us += float(end - start)
+    return total_us
+
+
+def communication_collective_time_from_timeline(timeline: list[dict[str, Any]]) -> float:
+    starts: dict[tuple[str, str, int, str], int] = {}
+    total_us = 0.0
+    for row in timeline:
+        event = str(row.get("event", ""))
+        if event not in {"before_payload_collective", "after_payload_collective"}:
+            continue
+        ts = int(row.get("ts_us", 0) or 0)
+        if ts <= 0:
+            continue
+        key = (
+            str(row.get("layer", row.get("layer_name", ""))),
+            str(row.get("phase_name", row.get("phase", ""))),
+            int(row.get("wave_id", -1)),
+            str(row.get("tensor_role", "")),
+        )
+        if not key[0] or key[1] not in {"P0", "P1"}:
+            continue
+        if event == "before_payload_collective":
+            starts[key] = ts
+            continue
+        start = starts.pop(key, None)
+        if start is not None and ts >= start:
+            total_us += float(ts - start)
+    return total_us
+
+
+def native_communication_makespan_from_observer(rows: list[dict[str, Any]]) -> float:
+    dispatch_enter_by_layer: dict[str, int] = {}
+    dispatch_done_by_layer: dict[str, int] = {}
+    combine_enter_by_layer: dict[str, int] = {}
+    combine_done_by_layer: dict[str, int] = {}
+    for row in rows:
+        layer = str(row.get("layer", ""))
+        phase = str(row.get("phase", ""))
+        ts = int(row.get("ts_us", 0) or 0)
+        if not layer or ts <= 0:
+            continue
+        if phase == "token_dispatch_enter":
+            dispatch_enter_by_layer[layer] = ts
+        elif phase == "P0_comm":
+            dispatch_done_by_layer[layer] = ts
+        elif phase == "token_combine_enter":
+            combine_enter_by_layer[layer] = ts
+        elif phase == "P1_comm":
+            combine_done_by_layer[layer] = ts
+    total_us = 0.0
+    for layer, start in dispatch_enter_by_layer.items():
+        end = dispatch_done_by_layer.get(layer)
+        if end is not None and end >= start:
+            total_us += float(end - start)
+    for layer, start in combine_enter_by_layer.items():
+        end = combine_done_by_layer.get(layer)
+        if end is not None and end >= start:
+            total_us += float(end - start)
+    return total_us
 
 
 def plan_timing_from_timeline(timeline: list[dict[str, Any]]) -> dict[str, float]:
@@ -100,6 +193,10 @@ def transport_metrics(events: list[dict[str, Any]]) -> dict[str, float]:
 def scheduled_plan_metrics(plans: list[dict[str, Any]]) -> dict[str, float]:
     wave_count = 0
     all_gather = build = broadcast = verify = total = 0.0
+    summary_build = summary_encode = summary_decode = 0.0
+    abstract_encode = abstract_decode = materialize_local_plan = 0.0
+    pending_window_logical = 0.0
+    pending_window_compile = 0.0
     for plan in plans:
         waves = plan.get("waves", []) or []
         wave_count += len(waves)
@@ -109,13 +206,44 @@ def scheduled_plan_metrics(plans: list[dict[str, Any]]) -> dict[str, float]:
         broadcast += float(metrics.get("broadcast_time_us", 0.0) or 0.0)
         verify += float(metrics.get("verify_time_us", 0.0) or 0.0)
         total += float(metrics.get("total_agreement_time_us", 0.0) or 0.0)
+        summary_build += float(metrics.get("summary_build_time_us", 0.0) or 0.0)
+        summary_encode += float(metrics.get("summary_encode_time_us", 0.0) or 0.0)
+        summary_decode += float(metrics.get("summary_decode_time_us", 0.0) or 0.0)
+        abstract_encode += float(metrics.get("abstract_encode_time_us", 0.0) or 0.0)
+        abstract_decode += float(metrics.get("abstract_decode_time_us", 0.0) or 0.0)
+        materialize_local_plan += float(metrics.get("materialize_local_plan_time_us", 0.0) or 0.0)
+        pending_window_logical += float(metrics.get("pending_window_logical_build_time_us", 0.0) or 0.0)
+        pending_window_compile += float(metrics.get("pending_window_compile_time_us", 0.0) or 0.0)
+    plan_count = float(len(plans))
     return {
+        "scheduled_plan_count": plan_count,
         "total_wave_count": float(wave_count),
         "all_gather_time_us": all_gather,
         "build_plan_time_us": build,
         "broadcast_time_us": broadcast,
         "hash_verify_time_us": verify,
         "plan_metrics_total_agreement_us": total,
+        "summary_build_time_us": summary_build,
+        "summary_encode_time_us": summary_encode,
+        "summary_decode_time_us": summary_decode,
+        "abstract_encode_time_us": abstract_encode,
+        "abstract_decode_time_us": abstract_decode,
+        "materialize_local_plan_time_us": materialize_local_plan,
+        "avg_all_gather_time_us": all_gather / plan_count if plan_count else 0.0,
+        "avg_build_plan_time_us": build / plan_count if plan_count else 0.0,
+        "avg_broadcast_time_us": broadcast / plan_count if plan_count else 0.0,
+        "avg_hash_verify_time_us": verify / plan_count if plan_count else 0.0,
+        "avg_total_agreement_time_us": total / plan_count if plan_count else 0.0,
+        "avg_summary_build_time_us": summary_build / plan_count if plan_count else 0.0,
+        "avg_summary_encode_time_us": summary_encode / plan_count if plan_count else 0.0,
+        "avg_summary_decode_time_us": summary_decode / plan_count if plan_count else 0.0,
+        "avg_abstract_encode_time_us": abstract_encode / plan_count if plan_count else 0.0,
+        "avg_abstract_decode_time_us": abstract_decode / plan_count if plan_count else 0.0,
+        "avg_materialize_local_plan_time_us": materialize_local_plan / plan_count if plan_count else 0.0,
+        "pending_window_logical_build_time_us": pending_window_logical,
+        "pending_window_compile_time_us": pending_window_compile,
+        "avg_pending_window_logical_build_time_us": pending_window_logical / plan_count if plan_count else 0.0,
+        "avg_pending_window_compile_time_us": pending_window_compile / plan_count if plan_count else 0.0,
     }
 
 
@@ -145,6 +273,24 @@ def plan_arrival_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+def planning_stage_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        stage = str(row.get("stage", "") or "")
+        if not stage:
+            continue
+        duration_us = float(row.get("duration_us", 0.0) or 0.0)
+        totals[stage] = totals.get(stage, 0.0) + duration_us
+        counts[stage] = counts.get(stage, 0) + 1
+    metrics: dict[str, float] = {}
+    for stage, total in totals.items():
+        metrics[f"{stage}_time_us"] = total
+        metrics[f"avg_{stage}_time_us"] = total / counts[stage] if counts[stage] else 0.0
+        metrics[f"{stage}_count"] = float(counts[stage])
+    return metrics
+
+
 def p2_hint_modes_from_phase_contexts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -160,10 +306,22 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
     transport = read_jsonl(rank_dir / f"rank{rank}_transport_execution.jsonl")
     bundles = read_jsonl(rank_dir / f"rank{rank}_transport_bundles.jsonl")
     arrivals = read_jsonl(rank_dir / f"rank{rank}_plan_arrival_records.jsonl")
+    planning_timing = read_jsonl(rank_dir / f"rank{rank}_planning_timing.jsonl")
     phase_contexts = read_jsonl(rank_dir / f"rank{rank}_phase_contexts.jsonl")
+    observer_rows = read_jsonl(rank_dir / f"rank{rank}_observer.jsonl")
     summary = read_json(rank_dir / f"rank{rank}_summary.json")
+    if not summary:
+        summary = read_json(rank_dir / f"rank{rank}_native_dispatch.json")
+    communication_phase_window_us = communication_phase_window_from_timeline(timeline)
+    communication_collective_active_us = communication_collective_time_from_timeline(timeline)
+    if communication_phase_window_us <= 0.0:
+        communication_phase_window_us = native_communication_makespan_from_observer(observer_rows)
+    if communication_collective_active_us <= 0.0:
+        communication_collective_active_us = communication_phase_window_us
     metrics: dict[str, Any] = {
-        "communication_makespan_us": communication_makespan_from_timeline(timeline),
+        "communication_makespan_us": communication_phase_window_us,
+        "communication_phase_window_us": communication_phase_window_us,
+        "communication_collective_active_us": communication_collective_active_us,
         "remote_dispatch_rows": float(summary.get("remote_dispatch_rows", summary.get("p0_remote_rows", 0)) or 0),
         "remote_combine_rows": float(summary.get("remote_combine_rows", summary.get("p1_remote_rows", 0)) or 0),
         "p2_hint_modes_used": p2_hint_modes_from_phase_contexts(phase_contexts),
@@ -173,6 +331,8 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
     metrics.update(transport_metrics(transport))
     metrics.update(bundle_metrics(bundles))
     metrics.update(plan_arrival_metrics(arrivals))
+    metrics.update(planning_stage_metrics(planning_timing))
+    metrics.update(analyze_rank_artifacts(rank_dir, rank=rank)["summary"])
     return metrics
 
 

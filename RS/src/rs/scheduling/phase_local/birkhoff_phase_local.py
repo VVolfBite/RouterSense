@@ -6,7 +6,7 @@ from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext,
 
 from ..capabilities import PolicyCapabilities
 from ..matching import maximum_weight_bipartite_matching
-from .common import build_transfer_layouts_and_tasks, finalize_execution_plan
+from .common import build_phase_serial_release_aware_plan, build_transfer_layouts_and_tasks, finalize_execution_plan, include_real_p2_phase
 
 
 class BirkhoffPhaseLocalPolicy:
@@ -89,25 +89,31 @@ class BirkhoffPhaseLocalPolicy:
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
         p0_waves, p0_diags = self._logical_decompose(problem.p0_dispatch_matrix, phase="p0_dispatch", start_wave_id=0)
         p1_waves, p1_diags = self._logical_decompose(problem.p1_return_matrix, phase="p1_return", start_wave_id=len(p0_waves))
-        waves = tuple(p0_waves + p1_waves)
-        diag = PolicyDiagnostics(
+        p2_waves: list[LogicalWave] = []
+        p2_diags: list[WaveDiagnostics] = []
+        if include_real_p2_phase(problem):
+            p2_waves, p2_diags = self._logical_decompose(
+                problem.p2_next_dispatch_forecast_matrix,
+                phase="p2_next_dispatch",
+                start_wave_id=len(p0_waves) + len(p1_waves),
+            )
+        return build_phase_serial_release_aware_plan(
+            problem=problem,
             policy_name=self.policy_name,
             policy_version=self.policy_version,
+            capabilities=self.capabilities,
             information_mode="phase_local_matrix_decomposition",
             tie_break_rule="lexicographic support matching",
-            wave_count=len(waves),
-            logical_flow_count=sum(len(wave.flows) for wave in waves),
-            ready_flow_count=sum(1 for row in problem.p0_dispatch_matrix for value in row if int(value) > 0),
-            blocked_flow_count=sum(1 for row in problem.p1_return_matrix for value in row if int(value) > 0),
-            forecast_flow_count=len(problem.flow_window.forecast_pressure),
-            p1_dependency_used=False,
-            p2_forecast_used=False,
-            p2_source=problem.forecast.source if problem.forecast is not None else "none",
-            evaluation_eligible=True,
-            per_wave=tuple(p0_diags + p1_diags),
-            priority_components={"selection_rule": "support matching", "service_quantum": "minimum residual on matching"},
+            priority_components={
+                "selection_rule": "support matching",
+                "service_quantum": "minimum residual on matching",
+                "phase_wave_diagnostics": [item.to_dict() for item in (p0_diags + p1_diags + p2_diags)],
+            },
+            p0_waves=tuple(p0_waves),
+            p1_waves=tuple(p1_waves),
+            p2_waves=tuple(p2_waves),
+            service_model="phase_serial_fluid",
         )
-        return LogicalSchedulePlan(policy_name=self.policy_name, waves=waves, diagnostics=diag.to_dict())
 
     def build_plan(
         self,

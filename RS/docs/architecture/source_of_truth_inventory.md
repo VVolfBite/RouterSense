@@ -8,17 +8,22 @@ surfaces that remain active in the mainline tree.
 
 Canonical online Megatron EP implementation lives in:
 
-- `src/rs/runtime/online/megatron_ep/_host_impl.py`
-- `src/rs/runtime/online/megatron_ep/_lifecycle.py`
-- `src/rs/runtime/online/megatron_ep/_observation.py`
+- `src/rs/runtime/online/megatron_ep/host.py`
+- `src/rs/runtime/online/megatron_ep/lifecycle.py`
+- `src/rs/runtime/online/megatron_ep/observation.py`
 - `src/rs/runtime/online/megatron_ep/contracts.py`
+- `src/rs/runtime/online/megatron_ep/runtime.py`
 - `src/rs/runtime/online/megatron_ep/observer.py`
 - `src/rs/runtime/online/megatron_ep/trace_writer.py`
+- `src/rs/runtime/online/megatron_ep/artifact_recorder.py`
 - `src/rs/runtime/online/megatron_ep/p2_provider.py`
+- `src/rs/runtime/online/megatron_ep/policy_adapter.py`
+- `src/rs/runtime/online/megatron_ep/window_state.py`
+- `src/rs/runtime/online/megatron_ep/release_engine.py`
+- `src/rs/runtime/online/megatron_ep/joint_shadow_runtime.py`
 - `src/rs/runtime/online/megatron_ep/phase/*`
 - `src/rs/runtime/online/megatron_ep/control/*`
 - `src/rs/runtime/online/megatron_ep/execution/*`
-- `src/rs/runtime/online/megatron_ep/policy_adapter.py`
 
 Stable public entrypoints:
 
@@ -31,6 +36,12 @@ Status:
 
 - canonical implementation: `src/rs/runtime/online/megatron_ep`
 - formal tests: now import `rs.runtime.online.megatron_ep.*`
+- prepared-window online shadow observability is recorded from the canonical runtime and exported as:
+  - `rank*_window_state.jsonl`
+  - `rank*_prepared_plan_bindings.jsonl`
+  - `rank*_release_events.jsonl`
+  - `rank*_window_schedule_shadow.jsonl`
+  - `rank*_prepared_phase_plan_shadow.jsonl`
 
 ### Formal offline runtime
 
@@ -66,6 +77,20 @@ Status:
 - policy library used by the online runtime is canonical under `src/rs/scheduling/phase_local` plus the root registry/capabilities surface
 - pure wire/agreement logic moved out of scheduling into `runtime/online/megatron_ep/control/agreement_wire.py`
 - formal `scheduling/baselines/birkhoff.py` and `scheduling/reference/{oracle_guided,exact_small_instance}.py` now fail closed with explicit `unsupported` metadata instead of returning placeholder optimality claims
+
+### Formal diagnostics and experiment support
+
+Canonical experiment support and diagnostics now live in:
+
+- `experiments/online/support/*`
+- `scripts/diagnostics/analyze_shadow_plan_alignment.py`
+- `scripts/diagnostics/run_prepared_plan_trace_probe.py`
+
+Status:
+
+- formal `experiments/online/*` remains limited to runnable experiment entrypoints
+- CPU-only observability probes and artifact post-processing live under `scripts/diagnostics`
+- shadow-plan alignment analysis is an artifact-side tool, not part of runtime execution semantics
 
 Detailed migration mapping lives under `docs/migration/`. The formal mainline
 inventory intentionally records only the active canonical paths.

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import json
+
 from experiments.online.support.comparison_metrics import (
     add_baseline_deltas,
     build_comparison_report,
+    communication_collective_time_from_timeline,
+    communication_phase_window_from_timeline,
     communication_makespan_from_timeline,
+    metrics_from_rank_dir,
+    native_communication_makespan_from_observer,
 )
+from experiments.online.support.shadow_plan_analysis import build_shadow_plan_alignment
 from rs.runtime.online.megatron_ep.control import plan_agreement as plan_agreement_mod
 from rs.scheduling.registry import resolve_phase_policy
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
@@ -18,6 +25,30 @@ def test_communication_makespan_from_timeline() -> None:
         {"event": "after_wave", "ts_us": 260},
     ]
     assert communication_makespan_from_timeline(timeline) == 160.0
+
+
+def test_communication_phase_window_from_timeline() -> None:
+    timeline = [
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 100},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 140},
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 170},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 210},
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 300},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 360},
+    ]
+    assert communication_phase_window_from_timeline(timeline) == 170.0
+
+
+def test_communication_collective_time_from_timeline() -> None:
+    timeline = [
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 100},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 140},
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 170},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 210},
+        {"event": "before_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 300},
+        {"event": "after_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 360},
+    ]
+    assert communication_collective_time_from_timeline(timeline) == 140.0
 
 
 def test_net_benefit_formula() -> None:
@@ -34,6 +65,20 @@ def test_net_benefit_formula() -> None:
     assert out["net_comm_savings_us"]["mean"] == 200.0
     assert out["net_benefit_us"]["mean"] == 150.0
     assert out["benefit_ratio"]["mean"] == 4.0
+
+
+def test_native_communication_makespan_from_observer() -> None:
+    observer_rows = [
+        {"layer": "layer0", "phase": "token_dispatch_enter", "ts_us": 100},
+        {"layer": "layer0", "phase": "P0_comm", "ts_us": 180},
+        {"layer": "layer0", "phase": "token_combine_enter", "ts_us": 220},
+        {"layer": "layer0", "phase": "P1_comm", "ts_us": 300},
+        {"layer": "layer1", "phase": "token_dispatch_enter", "ts_us": 350},
+        {"layer": "layer1", "phase": "P0_comm", "ts_us": 410},
+        {"layer": "layer1", "phase": "token_combine_enter", "ts_us": 470},
+        {"layer": "layer1", "phase": "P1_comm", "ts_us": 540},
+    ]
+    assert native_communication_makespan_from_observer(observer_rows) == 290.0
 
 
 def test_comparison_report_structure() -> None:
@@ -70,25 +115,49 @@ def test_plan_agreement_timing_in_metrics(monkeypatch) -> None:
     monkeypatch.setattr(plan_agreement_mod.dist, "get_world_size", lambda group=None: 2)
     monkeypatch.setattr(plan_agreement_mod.dist, "get_rank", lambda group=None: 0)
     monkeypatch.setattr(plan_agreement_mod.dist, "get_process_group_ranks", lambda group=None: [0, 1])
+    monkeypatch.setattr(plan_agreement_mod.dist, "get_backend", lambda group=None: "gloo")
 
     class _Group:
         WORLD = object()
 
     monkeypatch.setattr(plan_agreement_mod.dist, "group", _Group)
 
-    def all_gather_object(output, value, group=None):
-        if isinstance(value, str):
-            output[0] = value
-            output[1] = value
-            return
-        output[0] = contexts[0]
-        output[1] = contexts[1]
+    all_gather_calls: list[object] = []
 
-    def broadcast_object_list(buffer, src=0, group=None):
+    encoded = [
+        plan_agreement_mod._encode_planning_summary_tensor(
+            ctx.to_planning_summary(),
+            world_size=2,
+            device=plan_agreement_mod.torch.device("cpu"),
+        )
+        for ctx in contexts
+    ]
+
+    def all_gather(output, value, group=None):
+        all_gather_calls.append(value.clone())
+        output[0].copy_(encoded[0])
+        output[1].copy_(encoded[1])
+
+    broadcast_state: dict[str, object] = {}
+
+    def broadcast(tensor, src=0, group=None):
+        if tensor.numel() == 1:
+            broadcast_state["length"] = int(tensor.item())
+            return None
+        if "payload" not in broadcast_state:
+            root_plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+            payload = plan_agreement_mod._encode_abstract_plan_tensor(
+                root_plan.to_abstract_plan(),
+                device=plan_agreement_mod.torch.device("cpu"),
+            )
+            broadcast_state["payload"] = payload
+            tensor.copy_(payload)
+            return None
+        tensor.copy_(broadcast_state["payload"])
         return None
 
-    monkeypatch.setattr(plan_agreement_mod.dist, "all_gather_object", all_gather_object)
-    monkeypatch.setattr(plan_agreement_mod.dist, "broadcast_object_list", broadcast_object_list)
+    monkeypatch.setattr(plan_agreement_mod.dist, "all_gather", all_gather)
+    monkeypatch.setattr(plan_agreement_mod.dist, "broadcast", broadcast)
 
     plan = plan_agreement_mod.run_phase_plan_agreement(local_context=local_context, policy=policy, group=None)
     for key in (
@@ -100,3 +169,285 @@ def test_plan_agreement_timing_in_metrics(monkeypatch) -> None:
     ):
         assert key in plan.metrics
         assert float(plan.metrics[key]) >= 0.0
+    assert len(all_gather_calls) == 1
+
+
+def test_shadow_plan_alignment_exact_match() -> None:
+    rows = build_shadow_plan_alignment(
+        prepared_phase_plan_shadow=[
+            {
+                "ts_us": 10,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "prepared_window_key": "window-1",
+                "compiled_plan_hash": "plan-a",
+                "compiled_bucket_order": ["P0:1->0:0:0", "P0:0->1:0:0"],
+                "prepared_plan_order_preserved": True,
+                "hint_edges_consumed": 2,
+                "hint_match_rate": 1.0,
+            }
+        ],
+        scheduled_phase_plans=[
+            {
+                "ts_us": 11,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "plan_hash": "plan-a",
+                "metrics": {
+                    "bucket_order": ["P0:1->0:0:0", "P0:0->1:0:0"],
+                    "ordered_by_prepared_plan": True,
+                    "hint_edges_consumed": 2,
+                    "hint_match_rate": 1.0,
+                },
+            }
+        ],
+        transport_execution=[
+            {"layer_name": "model.layers.1.mlp", "phase": "P0", "task_id": "P0:1->0:0:0"},
+            {"layer_name": "model.layers.1.mlp", "phase": "P0", "task_id": "P0:0->1:0:0"},
+        ],
+    )
+    assert len(rows) == 1
+    assert rows[0]["plan_hash_match"] is True
+    assert rows[0]["prepared_to_actual_exact_match"] is True
+    assert rows[0]["actual_plan_to_execution_exact_match"] is True
+
+
+def test_metrics_from_rank_dir_includes_shadow_alignment_summary(tmp_path) -> None:
+    run_dir = tmp_path
+    (run_dir / "rank0_control_timeline.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_bundles.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    (run_dir / "rank0_prepared_phase_plan_shadow.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_us": 10,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "prepared_window_key": "window-1",
+                "compiled_plan_hash": "plan-a",
+                "compiled_bucket_order": ["P0:1->0:0:0"],
+                "prepared_plan_order_preserved": True,
+                "hint_edges_consumed": 1,
+                "hint_match_rate": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text(
+        json.dumps(
+            {
+                "ts_us": 11,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "plan_hash": "plan-a",
+                "waves": [],
+                "metrics": {
+                    "bucket_order": ["P0:1->0:0:0"],
+                    "ordered_by_prepared_plan": True,
+                    "hint_edges_consumed": 1,
+                    "hint_match_rate": 1.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "rank0_transport_execution.jsonl").write_text(
+        json.dumps({"layer_name": "model.layers.1.mlp", "phase": "P0", "task_id": "P0:1->0:0:0"}) + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = metrics_from_rank_dir(run_dir, rank=0)
+    assert metrics["prepared_shadow_phase_count"] == 1.0
+    assert metrics["prepared_shadow_plan_hash_match_count"] == 1.0
+    assert metrics["prepared_shadow_exact_order_match_count"] == 1.0
+    assert metrics["prepared_shadow_execution_exact_match_count"] == 1.0
+
+
+def test_metrics_from_rank_dir_uses_native_observer_fallback(tmp_path) -> None:
+    run_dir = tmp_path
+    (run_dir / "rank0_control_timeline.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_execution.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_bundles.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    (run_dir / "rank0_observer.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"layer": "layer0", "phase": "token_dispatch_enter", "ts_us": 100}),
+                json.dumps({"layer": "layer0", "phase": "P0_comm", "ts_us": 180}),
+                json.dumps({"layer": "layer0", "phase": "token_combine_enter", "ts_us": 220}),
+                json.dumps({"layer": "layer0", "phase": "P1_comm", "ts_us": 300}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    metrics = metrics_from_rank_dir(run_dir, rank=0)
+    assert metrics["communication_makespan_us"] == 160.0
+    assert metrics["communication_phase_window_us"] == 160.0
+    assert metrics["communication_collective_active_us"] == 160.0
+
+
+def test_metrics_from_rank_dir_prefers_timeline_phase_window(tmp_path) -> None:
+    run_dir = tmp_path
+    (run_dir / "rank0_control_timeline.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 100}),
+                json.dumps({"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 140}),
+                json.dumps({"event": "before_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 170}),
+                json.dumps({"event": "after_payload_collective", "layer": "layer0", "phase": "P0", "wave_id": 1, "tensor_role": "hidden_states", "ts_us": 210}),
+                json.dumps({"event": "before_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 300}),
+                json.dumps({"event": "after_payload_collective", "layer": "layer0", "phase": "P1", "wave_id": 0, "tensor_role": "hidden_states", "ts_us": 360}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_execution.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_bundles.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    metrics = metrics_from_rank_dir(run_dir, rank=0)
+    assert metrics["communication_makespan_us"] == 170.0
+    assert metrics["communication_phase_window_us"] == 170.0
+    assert metrics["communication_collective_active_us"] == 140.0
+
+
+def test_metrics_from_rank_dir_includes_planning_stage_metrics(tmp_path) -> None:
+    run_dir = tmp_path
+    (run_dir / "rank0_control_timeline.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_execution.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_bundles.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    (run_dir / "rank0_planning_timing.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"stage": "build_p2_hint", "duration_us": 10.5}),
+                json.dumps({"stage": "build_p2_hint", "duration_us": 9.5}),
+                json.dumps({"stage": "run_phase_plan_agreement", "duration_us": 100.0}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    metrics = metrics_from_rank_dir(run_dir, rank=0)
+    assert metrics["build_p2_hint_time_us"] == 20.0
+    assert metrics["avg_build_p2_hint_time_us"] == 10.0
+    assert metrics["build_p2_hint_count"] == 2.0
+    assert metrics["run_phase_plan_agreement_time_us"] == 100.0
+
+
+def test_shadow_plan_alignment_uses_transport_plan_hash_to_recover_layer_name() -> None:
+    rows = build_shadow_plan_alignment(
+        prepared_phase_plan_shadow=[
+            {
+                "ts_us": 10,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "compiled_plan_hash": "plan-a",
+                "compiled_bucket_order": ["P0:1->0:0:0"],
+            }
+        ],
+        scheduled_phase_plans=[
+            {
+                "ts_us": 11,
+                "plan_key": {"layer_id": "1", "phase": "P0"},
+                "phase": "P0",
+                "plan_hash": "plan-a",
+                "metrics": {"bucket_order": ["P0:1->0:0:0"]},
+            }
+        ],
+        transport_execution=[
+            {
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "plan_hash": "plan-a",
+                "task_id": "P0:1->0:0:0",
+            }
+        ],
+    )
+    assert len(rows) == 1
+    assert rows[0]["layer_name"] == "model.layers.1.mlp"
+    assert rows[0]["has_actual_scheduled_plan"] is True
+    assert rows[0]["plan_hash_match"] is True
+
+
+def test_shadow_plan_alignment_summary_excludes_compile_failures() -> None:
+    rows = build_shadow_plan_alignment(
+        prepared_phase_plan_shadow=[
+            {
+                "ts_us": 10,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "compile_status": "failed",
+                "exception": "ValueError: missing incoming slot",
+            },
+            {
+                "ts_us": 12,
+                "layer_name": "model.layers.2.mlp",
+                "phase": "P0",
+                "compile_status": "ok",
+                "compiled_plan_hash": "plan-b",
+                "compiled_bucket_order": ["P0:1->0:0:0"],
+            },
+        ],
+        scheduled_phase_plans=[
+            {
+                "ts_us": 13,
+                "layer_name": "model.layers.2.mlp",
+                "phase": "P0",
+                "plan_hash": "plan-b",
+                "metrics": {"bucket_order": ["P0:1->0:0:0"]},
+            }
+        ],
+        transport_execution=[
+            {"layer_name": "model.layers.2.mlp", "phase": "P0", "plan_hash": "plan-b", "task_id": "P0:1->0:0:0"}
+        ],
+    )
+    considered = [row for row in rows if row["layer_name"] == "model.layers.2.mlp"]
+    assert len(considered) == 1
+    assert considered[0]["prepared_compile_status"] == "ok"
+    from experiments.online.support.shadow_plan_analysis import summarize_shadow_plan_alignment
+
+    summary = summarize_shadow_plan_alignment(rows)
+    assert summary["prepared_shadow_phase_count"] == 1.0
+    assert summary["prepared_shadow_compile_failed_count"] == 1.0
+
+
+def test_shadow_plan_alignment_deduplicates_transport_task_ids() -> None:
+    rows = build_shadow_plan_alignment(
+        prepared_phase_plan_shadow=[],
+        scheduled_phase_plans=[
+            {
+                "ts_us": 11,
+                "layer_name": "model.layers.1.mlp",
+                "phase": "P0",
+                "plan_hash": "plan-a",
+                "metrics": {"bucket_order": ["P0:1->0:0:0", "P0:0->1:0:0"]},
+            }
+        ],
+        transport_execution=[
+            {"layer_name": "model.layers.1.mlp", "phase": "P0", "plan_hash": "plan-a", "task_id": "P0:1->0:0:0", "tensor_role": "hidden_states"},
+            {"layer_name": "model.layers.1.mlp", "phase": "P0", "plan_hash": "plan-a", "task_id": "P0:1->0:0:0", "tensor_role": "routing_probs"},
+            {"layer_name": "model.layers.1.mlp", "phase": "P0", "plan_hash": "plan-a", "task_id": "P0:0->1:0:0", "tensor_role": "hidden_states"},
+        ],
+    )
+    assert rows[0]["actual_execution_order"] == ["P0:1->0:0:0", "P0:0->1:0:0"]

@@ -13,13 +13,23 @@ from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE, RUNTIME_L
 from rs.scheduling.multiphase.tier1 import TIER1_ALGORITHM_IDS, tier1_inventory
 from rs.scheduling.validation import stable_hash, validate_logical_plan
 
+DEFAULT_WAVE_TIER1_POLICIES = (
+    "B_birkhoff_wave",
+    "U_gated_maxweight_matching",
+    "U_barrier_criticality_global_matching",
+    "U_lagrangian",
+)
+
 
 def main() -> None:
     args = _parse_args()
     fixture = _load_fixture(Path(args.fixture))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    policies = TIER1_ALGORITHM_IDS if args.policy == "all" else tuple(item.strip() for item in args.policy.split(",") if item.strip())
+    if args.policy == "all":
+        policies = DEFAULT_WAVE_TIER1_POLICIES
+    else:
+        policies = tuple(item.strip() for item in args.policy.split(",") if item.strip())
     problem = _build_problem(
         fixture,
         mode=args.mode,
@@ -95,7 +105,17 @@ def main() -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", required=True)
-    parser.add_argument("--policy", default="all", help="Tier 1 algorithm id, comma list, or all")
+    parser.add_argument(
+        "--policy",
+        default="all",
+        help=(
+            "Tier 1 algorithm id, comma list, or all. "
+            "'all' defaults to the wave/fluid mainline set "
+            "(B_birkhoff_wave,U_gated_maxweight_matching,"
+            "U_barrier_criticality_global_matching,U_lagrangian). "
+            "Atomic variants must be requested explicitly."
+        ),
+    )
     parser.add_argument("--mode", choices=(EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE), default=RUNTIME_LOOKAHEAD_MODE)
     parser.add_argument("--p2-source", choices=("zero_hint", "copy_current_dispatch", "perfect_trace", "actual_trace"), default="zero_hint")
     parser.add_argument("--expert-compute-delay", type=float, default=0.0)
@@ -225,6 +245,8 @@ def _expected_real_flows(problem: MultiPhaseSchedulingProblem) -> tuple[FlowDema
 
 
 def _comparison_bucket(service_model: str) -> str:
+    if "lagrangian" in service_model:
+        return "other_service_model_comparison"
     if "fluid" in service_model:
         return "fluid_comparison"
     if "atomic" in service_model:

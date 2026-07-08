@@ -8,6 +8,9 @@ from .context_builder import (
     build_phase_ready_context,
 )
 from .contracts import (
+    AbstractPhaseExecutionPlan,
+    AbstractPlanWave,
+    AbstractTaskRef,
     BucketTask,
     FutureDemandHint,
     IncomingSlot,
@@ -17,6 +20,7 @@ from .contracts import (
     PhaseExecutionPlan,
     PhaseHookResult,
     PhaseName,
+    PhasePlanningSummary,
     PhaseReadyContext,
     PlanWave,
     TransferLayout,
@@ -27,6 +31,9 @@ from .validation import validate_layout_offsets_cover_exactly_once, validate_p0_
 
 __all__ = [
     "BucketTask",
+    "AbstractPhaseExecutionPlan",
+    "AbstractPlanWave",
+    "AbstractTaskRef",
     "DispatcherSnapshot",
     "FutureDemandHint",
     "IncomingSlot",
@@ -37,6 +44,7 @@ __all__ = [
     "PhaseContextBuildRequest",
     "PhaseHookResult",
     "PhaseName",
+    "PhasePlanningSummary",
     "PhasePayloadContract",
     "PhaseReadyContext",
     "RuntimeIdentity",

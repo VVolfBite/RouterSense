@@ -24,7 +24,7 @@ offline_study:
   policies: []
 execution:
   mode: phase_sync_wave
-  bucket_rows: 16
+  bucket_rows: 1024
   schedule:
     layer_selector: all
     phase_selector: both
