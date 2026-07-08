@@ -701,7 +701,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 observer_mode = validate_observer_mode(str(mode["observer_mode"]))
                 if observer_mode == "lightweight":
-                    attach_dispatch_observer(observer, rank=rank, local_rank=local_rank)(model)
+                    attach_dispatch_observer(
+                        observer,
+                        rank=rank,
+                        local_rank=local_rank,
+                        include_tensor_values=False,
+                    )(model)
                 injection_config = RouterSenseInjectionConfig(
                     scheduler_mode=str(mode["scheduler_mode"]),
                     future_hint_mode="none",

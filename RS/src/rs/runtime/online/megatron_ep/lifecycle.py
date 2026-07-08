@@ -22,7 +22,7 @@ from rs.runtime.online.megatron_ep.contracts import (
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
-from rs.runtime.online.megatron_ep.joint_shadow_runtime import build_joint_shadow_snapshot
+from rs.runtime.online.megatron_ep.multiphase_pending_window import build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
     RuntimeObservationRecorder,
@@ -96,6 +96,8 @@ class RouterSenseInjectionRuntime:
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
+
+    # Configuration and policy selection
 
     def __post_init__(self) -> None:
         if self.observation_recorder is None:
@@ -183,6 +185,8 @@ class RouterSenseInjectionRuntime:
         if selector in {"", "both", "all"}:
             return str(phase).upper() == "P1"
         return True
+
+    # Transport activation and timing
 
     def _activate_transport(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
         start_ns = time.monotonic_ns()
@@ -322,6 +326,8 @@ class RouterSenseInjectionRuntime:
             **detail,
         )
 
+    # Hint, shadow, and pending-window state
+
     def _build_p2_hint(self, *, layer_name: str, phase: str):
         start_ns = time.monotonic_ns()
         if self.config.p2_hint_mode == "calibrated_artifact":
@@ -437,14 +443,16 @@ class RouterSenseInjectionRuntime:
                     **state.prepared_plan_binding.to_dict(),
                 }
             )
-        self.window_schedule_shadows.append(
-            build_joint_shadow_snapshot(
-                state=state,
-                p0_weight=float(self.config.p0_weight),
-                p1_reservation_weight=float(self.config.p1_reservation_weight),
-                p2_hint_weight=float(self.config.p2_hint_weight),
-            )
+        shadow = build_pending_window_shadow(
+            state=state,
+            p0_weight=float(self.config.p0_weight),
+            p1_reservation_weight=float(self.config.p1_reservation_weight),
+            p2_hint_weight=float(self.config.p2_hint_weight),
         )
+        first_wave = shadow.get("first_executable_wave") or {}
+        shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
+        shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
+        self.window_schedule_shadows.append(shadow)
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -474,14 +482,16 @@ class RouterSenseInjectionRuntime:
         self._window_states[layer_name] = state
         self.release_events.append(record)
         self.window_state_records.append(state.to_record())
-        self.window_schedule_shadows.append(
-            build_joint_shadow_snapshot(
-                state=state,
-                p0_weight=float(self.config.p0_weight),
-                p1_reservation_weight=float(self.config.p1_reservation_weight),
-                p2_hint_weight=float(self.config.p2_hint_weight),
-            )
+        shadow = build_pending_window_shadow(
+            state=state,
+            p0_weight=float(self.config.p0_weight),
+            p1_reservation_weight=float(self.config.p1_reservation_weight),
+            p2_hint_weight=float(self.config.p2_hint_weight),
         )
+        first_wave = shadow.get("first_executable_wave") or {}
+        shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
+        shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
+        self.window_schedule_shadows.append(shadow)
 
     def _record_prepared_phase_plan_shadow(
         self,
@@ -821,6 +831,8 @@ class RouterSenseInjectionRuntime:
             "expert_placement_hash": "unknown",
             "request_table_hash": self.request_table_hash,
         }
+
+    # Main lifecycle hooks
 
     def before_token_dispatch(
         self,
@@ -1197,49 +1209,6 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("after_token_dispatch_exit", layer_name=layer_name, phase_name="P0")
 
-    def after_token_combine(self, *, layer_name: str) -> None:
-        hook_start_ns = time.monotonic_ns()
-        self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
-        if bool(self._effective_phase_policy_name()):
-            clear_start_ns = time.monotonic_ns()
-            self.clear_transport(layer_name=layer_name, phase="P1")
-            clear_end_ns = time.monotonic_ns()
-            self._record_planning_timing(
-                layer_name=layer_name,
-                phase="P1",
-                stage="clear_transport",
-                start_ns=clear_start_ns,
-                end_ns=clear_end_ns,
-            )
-            observation_p1 = self._pending_p1.pop(layer_name, None)
-            if observation_p1 is not None:
-                self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
-                self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
-            self._record_release_update(layer_name=layer_name, event="p1_return_completed")
-            if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
-                raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")
-            hook_end_ns = time.monotonic_ns()
-            self._record_hook_timing(
-                layer_name=layer_name,
-                phase="P1",
-                hook_name="after_token_combine_total",
-                start_ns=hook_start_ns,
-                end_ns=hook_end_ns,
-            )
-            self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
-            return
-        if self.config.scheduler_mode == "native_passthrough_identity":
-            self._timeline("native_p1_observed", layer_name=layer_name)
-        hook_end_ns = time.monotonic_ns()
-        self._record_hook_timing(
-            layer_name=layer_name,
-            phase="P1",
-            hook_name="after_token_combine_total",
-            start_ns=hook_start_ns,
-            end_ns=hook_end_ns,
-        )
-        self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
-
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
@@ -1422,6 +1391,51 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
 
+    def after_token_combine(self, *, layer_name: str) -> None:
+        hook_start_ns = time.monotonic_ns()
+        self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        if bool(self._effective_phase_policy_name()):
+            clear_start_ns = time.monotonic_ns()
+            self.clear_transport(layer_name=layer_name, phase="P1")
+            clear_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P1",
+                stage="clear_transport",
+                start_ns=clear_start_ns,
+                end_ns=clear_end_ns,
+            )
+            observation_p1 = self._pending_p1.pop(layer_name, None)
+            if observation_p1 is not None:
+                self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
+                self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
+            self._record_release_update(layer_name=layer_name, event="p1_return_completed")
+            if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
+                raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="after_token_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+            )
+            self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
+            return
+        if self.config.scheduler_mode == "native_passthrough_identity":
+            self._timeline("native_p1_observed", layer_name=layer_name)
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P1",
+            hook_name="after_token_combine_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+        )
+        self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1")
+
+    # Shadow-only native observation hooks
+
     def on_dispatch(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
         if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or bool(self._effective_phase_policy_name()):
             return
@@ -1510,57 +1524,68 @@ class RouterSenseInjectionRuntime:
             decision=decision.to_dict(),
         )
 
+    # Export helpers
+
+    def _export_list(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return list(rows)
+
+    def _export_observation_rows(self, method_name: str) -> list[dict[str, Any]]:
+        if self.observation_recorder is None:
+            return []
+        export_fn = getattr(self.observation_recorder, method_name)
+        return list(export_fn())
+
     def export_records(self) -> list[dict[str, Any]]:
         return [item.to_dict() for item in self.completed]
 
     def export_control_timeline(self) -> list[dict[str, Any]]:
-        return list(self.control_timeline)
+        return self._export_list(self.control_timeline)
 
     def export_control_commands(self) -> list[dict[str, Any]]:
-        return list(self.control_commands)
+        return self._export_list(self.control_commands)
 
     def export_plan_arrival_records(self) -> list[dict[str, Any]]:
-        return list(self.plan_arrival_records)
+        return self._export_list(self.plan_arrival_records)
 
     def export_window_state_records(self) -> list[dict[str, Any]]:
-        return list(self.window_state_records)
+        return self._export_list(self.window_state_records)
 
     def export_prepared_plan_bindings(self) -> list[dict[str, Any]]:
-        return list(self.prepared_plan_bindings)
+        return self._export_list(self.prepared_plan_bindings)
 
     def export_release_events(self) -> list[dict[str, Any]]:
-        return list(self.release_events)
+        return self._export_list(self.release_events)
 
     def export_window_schedule_shadows(self) -> list[dict[str, Any]]:
-        return list(self.window_schedule_shadows)
+        return self._export_list(self.window_schedule_shadows)
 
     def export_prepared_phase_plan_shadows(self) -> list[dict[str, Any]]:
-        return list(self.prepared_phase_plan_shadows)
+        return self._export_list(self.prepared_phase_plan_shadows)
 
     def export_pending_window_driver_records(self) -> list[dict[str, Any]]:
-        return list(self.pending_window_driver_records)
+        return self._export_list(self.pending_window_driver_records)
 
     def export_planning_timing_records(self) -> list[dict[str, Any]]:
-        return list(self.planning_timing_records)
+        return self._export_list(self.planning_timing_records)
 
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:
-        return [] if self.observation_recorder is None else self.observation_recorder.export_phase_contexts()
+        return self._export_observation_rows("export_phase_contexts")
 
     def export_transport_bundles(self) -> list[dict[str, Any]]:
-        return [] if self.observation_recorder is None else self.observation_recorder.export_transport_bundles()
+        return self._export_observation_rows("export_transport_bundles")
 
     def export_scheduled_phase_plans(self) -> list[dict[str, Any]]:
-        return [] if self.observation_recorder is None else self.observation_recorder.export_scheduled_phase_plans()
+        return self._export_observation_rows("export_scheduled_phase_plans")
 
     def export_transport_execution_results(self) -> list[dict[str, Any]]:
-        return [] if self.observation_recorder is None else self.observation_recorder.export_transport_execution()
+        return self._export_observation_rows("export_transport_execution")
 
     def export_captured_phase_tensors(self) -> list[dict[str, Any]]:
-        rows = [] if self.observation_recorder is None else self.observation_recorder.export_captured_phase_tensors()
+        rows = self._export_observation_rows("export_captured_phase_tensors")
         return [{key: value for key, value in item.items() if key != "tensor"} for item in rows]
 
     def export_captured_phase_tensors_with_payload(self) -> list[dict[str, Any]]:
-        return [] if self.observation_recorder is None else self.observation_recorder.export_captured_phase_tensors()
+        return self._export_observation_rows("export_captured_phase_tensors")

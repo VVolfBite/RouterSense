@@ -32,6 +32,9 @@ class StageStatus:
     detail: str = ""
 
 
+# Basic runtime/bootstrap helpers
+
+
 def get_process_group_ranks_safe(group: dist.ProcessGroup | None) -> tuple[int, ...]:
     if group is None:
         return tuple(range(dist.get_world_size())) if dist.is_initialized() else (0,)
@@ -107,6 +110,9 @@ def summarize_rank_environment(rank: int, local_rank: int) -> dict[str, Any]:
     }
 
 
+# Snapshot helpers
+
+
 def _maybe_list(value: Any) -> list[int]:
     if value is None:
         return []
@@ -123,7 +129,16 @@ def _maybe_list(value: Any) -> list[int]:
     return []
 
 
-def _snapshot_value(value: Any, *, max_items: int = 256) -> Any:
+def _snapshot_int_sequence(value: Any, *, max_items: int = 256) -> list[int] | None:
+    if value is None:
+        return None
+    payload = _maybe_list(value)
+    if len(payload) <= max_items:
+        return payload
+    return payload[:max_items]
+
+
+def _snapshot_value(value: Any, *, max_items: int = 256, include_tensor_values: bool = False) -> Any:
     if value is None:
         return None
     if isinstance(value, torch.Tensor):
@@ -135,7 +150,7 @@ def _snapshot_value(value: Any, *, max_items: int = 256) -> Any:
             "device": str(tensor.device),
             "numel": int(tensor.numel()),
         }
-        if tensor.numel() <= max_items:
+        if include_tensor_values and tensor.numel() <= max_items:
             payload["values"] = tensor.cpu().tolist()
         return payload
     if isinstance(value, (list, tuple)):
@@ -143,10 +158,13 @@ def _snapshot_value(value: Any, *, max_items: int = 256) -> Any:
         payload = sequence[:max_items]
         if len(sequence) > max_items:
             payload.append(f"... truncated {len(sequence) - max_items} items")
-        return [_snapshot_value(item, max_items=max_items) for item in payload]
+        return [_snapshot_value(item, max_items=max_items, include_tensor_values=include_tensor_values) for item in payload]
     if isinstance(value, dict):
         items = list(value.items())[:max_items]
-        payload = {str(key): _snapshot_value(item, max_items=max_items) for key, item in items}
+        payload = {
+            str(key): _snapshot_value(item, max_items=max_items, include_tensor_values=include_tensor_values)
+            for key, item in items
+        }
         if len(value) > max_items:
             payload["__truncated__"] = len(value) - max_items
         return payload
@@ -182,6 +200,15 @@ def _extract_int_list(value: Any) -> list[int]:
         if matches:
             return [int(item) for item in matches]
     return _maybe_list(value)
+
+
+# Observer helpers
+
+
+def validate_observer_mode(mode: str) -> str:
+    if mode not in {"off", "lightweight"}:
+        raise ValueError(f"Unsupported observer_mode={mode!r}; expected 'off' or 'lightweight'")
+    return mode
 
 
 def summarize_observer_rows(rows: list[dict[str, Any]], *, rank: int) -> dict[str, Any]:
@@ -282,6 +309,7 @@ def attach_dispatch_observer(
     *,
     rank: int,
     local_rank: int,
+    include_tensor_values: bool = False,
 ) -> Callable[[torch.nn.Module], None]:
     def _instrument(model: torch.nn.Module) -> None:
         for name, module in model.named_modules():
@@ -308,8 +336,15 @@ def attach_dispatch_observer(
                             hidden_shape=_snapshot_shape(hidden_states),
                             routing_map_shape=_snapshot_shape(routing_map),
                             probs_shape=_snapshot_shape(probs),
-                            routing_expert_totals_raw=_snapshot_value(routing_map.sum(dim=0) if isinstance(routing_map, torch.Tensor) else None),
-                            local_expert_indices_raw=_snapshot_value(local_expert_indices),
+                            routing_expert_totals_raw=(
+                                _snapshot_value(
+                                    routing_map.sum(dim=0),
+                                    include_tensor_values=True,
+                                )
+                                if include_tensor_values and isinstance(routing_map, torch.Tensor)
+                                else None
+                            ),
+                            local_expert_indices_raw=_snapshot_int_sequence(local_expert_indices),
                             dispatcher_class=type(_dispatcher).__name__,
                         )
                     except Exception as exc:
@@ -330,8 +365,8 @@ def attach_dispatch_observer(
                             layer=_name,
                             rank=rank,
                             local_rank=local_rank,
-                            input_splits_raw=_snapshot_value(getattr(_dispatcher, "input_splits", None)),
-                            output_splits_raw=_snapshot_value(getattr(_dispatcher, "output_splits", None)),
+                            input_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "input_splits", None)),
+                            output_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "output_splits", None)),
                             packed_hidden_shape=_snapshot_shape(out[0] if isinstance(out, tuple) and len(out) >= 1 else None),
                             packed_probs_shape=_snapshot_shape(out[1] if isinstance(out, tuple) and len(out) >= 2 else None),
                         )
@@ -359,8 +394,8 @@ def attach_dispatch_observer(
                         local_rank=local_rank,
                         hidden_shape=_snapshot_shape(hidden_states),
                         probs_shape=_snapshot_shape(probs),
-                        input_splits_raw=_snapshot_value(getattr(_dispatcher, "input_splits", None)),
-                        output_splits_raw=_snapshot_value(getattr(_dispatcher, "output_splits", None)),
+                        input_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "input_splits", None)),
+                        output_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "output_splits", None)),
                     )
                 except Exception as exc:
                     _observer_safe_record(
@@ -382,8 +417,8 @@ def attach_dispatch_observer(
                         local_rank=local_rank,
                         hidden_shape=_snapshot_shape(hidden_states),
                         probs_shape=_snapshot_shape(probs),
-                        input_splits_raw=_snapshot_value(getattr(_dispatcher, "input_splits", None)),
-                        num_global_tokens_per_local_expert_raw=_snapshot_value(
+                        input_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "input_splits", None)),
+                        num_global_tokens_per_local_expert_raw=_snapshot_int_sequence(
                             getattr(_dispatcher, "num_global_tokens_per_local_expert", None)
                         ),
                         dispatcher_class=type(_dispatcher).__name__,
@@ -409,7 +444,7 @@ def attach_dispatch_observer(
                         rank=rank,
                         local_rank=local_rank,
                         hidden_shape=_snapshot_shape(hidden_states),
-                        output_splits_raw=_snapshot_value(getattr(_dispatcher, "output_splits", None)),
+                        output_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "output_splits", None)),
                     )
                 except Exception as exc:
                     _observer_safe_record(
@@ -430,7 +465,7 @@ def attach_dispatch_observer(
                         rank=rank,
                         local_rank=local_rank,
                         hidden_shape=_snapshot_shape(hidden_states),
-                        output_splits_raw=_snapshot_value(getattr(_dispatcher, "output_splits", None)),
+                        output_splits_raw=_snapshot_int_sequence(getattr(_dispatcher, "output_splits", None)),
                         dispatcher_class=type(_dispatcher).__name__,
                     )
                 except Exception as exc:
@@ -479,10 +514,7 @@ def attach_dispatch_observer(
     return _instrument
 
 
-def validate_observer_mode(mode: str) -> str:
-    if mode not in {"off", "lightweight"}:
-        raise ValueError(f"Unsupported observer_mode={mode!r}; expected 'off' or 'lightweight'")
-    return mode
+# Runtime attachment helpers
 
 
 def attach_dispatch_facade(
@@ -492,11 +524,11 @@ def attach_dispatch_facade(
     rank: int,
     local_rank: int,
     run_id: str,
+    step_id: str = "unknown",
+    microbatch_id: str = "unknown",
     model_revision: str,
     request_table_hash: str,
     hostname: str,
-    step_id: str = "unknown",
-    microbatch_id: str = "unknown",
     observer: RouterSenseObserver | None = None,
 ) -> RouterSenseInjectionRuntime:
     sample_dispatcher = None
@@ -507,6 +539,8 @@ def attach_dispatch_facade(
             break
     ep_process_group = getattr(sample_dispatcher, "ep_group", None) if sample_dispatcher is not None else None
     ep_group_ranks = get_process_group_ranks_safe(ep_process_group) if dist.is_initialized() else (rank,)
+    model_revision_hash = hashlib.sha256(model_revision.encode("utf-8")).hexdigest()[:16]
+    request_table_hash_digest = hashlib.sha256(request_table_hash.encode("utf-8")).hexdigest()[:16]
     runtime = RouterSenseInjectionRuntime(
         config=config,
         rank=rank,
@@ -514,8 +548,8 @@ def attach_dispatch_facade(
         run_id=run_id,
         step_id=step_id,
         microbatch_id=microbatch_id,
-        model_revision_hash=hashlib.sha256(model_revision.encode("utf-8")).hexdigest()[:16],
-        request_table_hash=hashlib.sha256(request_table_hash.encode("utf-8")).hexdigest()[:16],
+        model_revision_hash=model_revision_hash,
+        request_table_hash=request_table_hash_digest,
         hostname=hostname,
         observer=observer,
         ep_group_ranks=ep_group_ranks,

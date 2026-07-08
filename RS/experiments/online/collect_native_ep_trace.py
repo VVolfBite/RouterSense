@@ -177,7 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         model_load_end_ns = time.monotonic_ns()
         record_event("model_loaded", duration_us=(model_load_end_ns - model_load_start_ns) / 1000.0)
 
-        attach_dispatch_observer(observer, rank=rank, local_rank=local_rank)(model)
+        attach_dispatch_observer(
+            observer,
+            rank=rank,
+            local_rank=local_rank,
+            include_tensor_values=(
+                config.observation.profile == "debug" and bool(config.observation.capture_enabled)
+            ),
+        )(model)
         if config.observation.profile in {"execution", "debug"}:
             policy_runtime = attach_formal_online_runtime(
                 model=model,
