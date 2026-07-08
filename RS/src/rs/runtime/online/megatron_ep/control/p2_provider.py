@@ -78,6 +78,8 @@ class CalibratedArtifactP2HintProvider:
                 "source_logical_plan_hash": _digest(getattr(prepared_plan, "logical_plan").to_dict()),
                 "forecast_digest": forecast_digest,
                 "applies_from_layer_id": str(getattr(prepared_plan, "applies_from_layer_id", "")),
+                "p2_matrix_source": str(self._shared_state.get("p2_matrix_source", "")),
+                "p2_matrix_is_replicated_local_row": bool(self._shared_state.get("p2_matrix_is_replicated_local_row", False)),
                 **plan_priority,
             },
         )

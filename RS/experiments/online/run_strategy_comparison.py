@@ -130,7 +130,7 @@ def _single_strategy_config(
             },
         },
         "observation": {
-            "profile": str(observation.get("profile", "execution")),
+            "profile": str(observation.get("profile", "perf")),
             "capture_enabled": bool(observation.get("capture_enabled", False)),
             "capture_layer_selector": str(observation.get("capture_layer_selector", "")),
             "capture_phase_selector": str(observation.get("capture_phase_selector", "")),

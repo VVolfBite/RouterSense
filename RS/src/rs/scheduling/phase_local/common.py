@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import defaultdict
 from dataclasses import replace
 from types import SimpleNamespace
@@ -17,7 +18,15 @@ from rs.scheduling.contracts import (
 from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
 from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE
 from rs.scheduling.multiphase.replay import replay_and_audit_schedule
-from rs.scheduling.phase_execution import BucketTask, PackedTensorDescriptor, PayloadSlice, PhaseExecutionPlan, PhaseReadyContext, PlanWave
+from rs.scheduling.phase_execution import (
+    BucketTask,
+    PackedTensorDescriptor,
+    PayloadSlice,
+    PhaseExecutionPlan,
+    PhaseReadyContext,
+    PlanWave,
+    PlanningEdgeSummary,
+)
 from rs.scheduling.phase_execution_utils import validate_phase_execution_plan
 from rs.scheduling.validation import stable_hash
 
@@ -37,15 +46,37 @@ def build_transfer_layouts_and_tasks(
     local_context: PhaseReadyContext,
     global_contexts: tuple[PhaseReadyContext, ...],
     bucket_rows: int,
-) -> tuple[tuple[Any, ...], list[BucketTask]]:
-    def _payload_specs(context: PhaseReadyContext) -> tuple[PackedTensorDescriptor, ...]:
-        if context.payload_specs:
+    return_stats: bool = False,
+) -> tuple[tuple[Any, ...], list[BucketTask]] | tuple[tuple[Any, ...], list[BucketTask], dict[str, Any]]:
+    started_ns = time.perf_counter_ns()
+
+    def _payload_specs(context: Any) -> tuple[PackedTensorDescriptor, ...]:
+        if getattr(context, "payload_specs", ()):
             return tuple(context.payload_specs)
-        if context.transport_bundles:
+        if getattr(context, "transport_bundles", ()):
             return tuple(context.transport_bundles[0].payloads)
         if local_context.payload_specs:
             return tuple(local_context.payload_specs)
         return ()
+
+    def _iter_remote_edges(context: Any) -> list[Any]:
+        outgoing_segments = getattr(context, "outgoing_segments", None)
+        if outgoing_segments is not None:
+            return [
+                segment
+                for segment in outgoing_segments
+                if str(segment.phase) == str(local_context.phase)
+                and int(segment.src_rank) != int(segment.dst_rank)
+                and int(segment.row_count) > 0
+            ]
+        return [
+            item
+            for item in getattr(context, "outgoing_edges", ())
+            if isinstance(item, PlanningEdgeSummary)
+            and str(item.phase) == str(local_context.phase)
+            and int(item.src_rank) != int(item.dst_rank)
+            and int(item.row_count) > 0
+        ]
 
     def _rows_to_bytes(row_count: int, *, shape_suffix: tuple[int, ...], element_size_bytes: int) -> int:
         multiplier = 1
@@ -55,24 +86,35 @@ def build_transfer_layouts_and_tasks(
 
     transfer_layouts: list[Any] = []
     all_tasks: list[BucketTask] = []
+    layout_count = 0
+    payload_slice_count = 0
     for context in global_contexts:
         payload_specs = _payload_specs(context)
-        for segment in context.outgoing_segments:
-            if str(segment.phase) != str(local_context.phase) or int(segment.src_rank) == int(segment.dst_rank) or int(segment.row_count) <= 0:
-                continue
+        for segment in _iter_remote_edges(context):
+            if isinstance(segment, PlanningEdgeSummary):
+                segment_id = f"{segment.phase}:{segment.src_rank}->{segment.dst_rank}:{segment.segment_ordinal}"
+                destination_peer_index = -1
+                send_offset_rows = 0
+                packed_send_layout_id = ""
+            else:
+                segment_id = str(segment.segment_id)
+                destination_peer_index = int(segment.destination_peer_index)
+                send_offset_rows = int(segment.send_offset_rows)
+                packed_send_layout_id = str(segment.packed_send_layout_id)
+            layout_count += 1
             transfer_layouts.append(
                 SimpleNamespace(
                     transfer_key=f"{segment.phase}:{segment.src_rank}->{segment.dst_rank}",
-                    bundle_id=f"{segment.segment_id}:bundle",
+                    bundle_id=f"{segment_id}:bundle",
                     phase=segment.phase,
                     src_rank=int(segment.src_rank),
                     dst_rank=int(segment.dst_rank),
                     segment_ordinal=int(segment.segment_ordinal),
-                    sender_offset_rows=int(segment.send_offset_rows),
+                    sender_offset_rows=send_offset_rows,
                     receiver_offset_rows=0,
                     row_count=int(segment.row_count),
                     byte_count=int(segment.byte_count),
-                    packed_send_layout_id=str(segment.packed_send_layout_id),
+                    packed_send_layout_id=packed_send_layout_id,
                     canonical_receive_layout_id="",
                     atomic_submit=bool(getattr(context, "atomic_submit", True)),
                     payloads=payload_specs,
@@ -83,10 +125,10 @@ def build_transfer_layouts_and_tasks(
             bucket_ordinal = 0
             while consumed < int(segment.row_count):
                 current_rows = min(step, int(segment.row_count) - consumed)
-                sender_offset = int(segment.send_offset_rows) + consumed
+                sender_offset = send_offset_rows + consumed
                 payload_slices = tuple(
                     PayloadSlice(
-                        bundle_id=f"{segment.segment_id}:bundle",
+                        bundle_id=f"{segment_id}:bundle",
                         tensor_role=str(payload.tensor_role),
                         src_rank=int(segment.src_rank),
                         dst_rank=int(segment.dst_rank),
@@ -102,26 +144,27 @@ def build_transfer_layouts_and_tasks(
                             shape_suffix=tuple(int(v) for v in payload.shape_suffix),
                             element_size_bytes=int(payload.element_size_bytes),
                         ),
-                        packed_layout_id=str(segment.packed_send_layout_id),
+                        packed_layout_id=packed_send_layout_id,
                     )
                     for payload in payload_specs
                 )
+                payload_slice_count += len(payload_slices)
                 all_tasks.append(
                     BucketTask(
                         task_id=f"{segment.phase}:{segment.src_rank}->{segment.dst_rank}:bucket:{bucket_ordinal}",
-                        bundle_id=f"{segment.segment_id}:bundle",
+                        bundle_id=f"{segment_id}:bundle",
                         phase=segment.phase,
                         src_rank=int(segment.src_rank),
                         dst_rank=int(segment.dst_rank),
                         source_peer_index=-1,
-                        destination_peer_index=int(segment.destination_peer_index),
+                        destination_peer_index=destination_peer_index,
                         segment_ordinal=int(segment.segment_ordinal),
                         bucket_ordinal=bucket_ordinal,
                         sender_offset_rows=sender_offset,
                         receiver_offset_rows=0,
                         row_count=int(current_rows),
                         byte_count=int(payload_slices[0].payload_byte_count) if payload_slices else 0,
-                        packed_send_layout_id=str(segment.packed_send_layout_id),
+                        packed_send_layout_id=packed_send_layout_id,
                         canonical_receive_layout_id="",
                         payload_slices=payload_slices,
                     )
@@ -129,7 +172,20 @@ def build_transfer_layouts_and_tasks(
                 consumed += current_rows
                 bucket_ordinal += 1
     transfer_layouts.sort(key=lambda item: (int(item.src_rank), int(item.dst_rank), int(item.segment_ordinal)))
-    return tuple(transfer_layouts), all_tasks
+    if not return_stats:
+        return tuple(transfer_layouts), all_tasks
+    total_remote_rows = sum(int(task.row_count) for task in all_tasks)
+    total_remote_bytes = sum(int(task.byte_count) for task in all_tasks)
+    stats = {
+        "build_transfer_layouts_and_tasks_time_us": (time.perf_counter_ns() - started_ns) / 1000.0,
+        "transfer_layout_count": int(layout_count),
+        "task_count": int(len(all_tasks)),
+        "payload_slice_count": int(payload_slice_count),
+        "remote_row_count": int(total_remote_rows),
+        "remote_byte_count": int(total_remote_bytes),
+        "bucket_rows_effective": int(bucket_rows),
+    }
+    return tuple(transfer_layouts), all_tasks, stats
 
 
 def estimate_planning_quantum_rows_from_values(values: list[int] | tuple[int, ...]) -> int:
@@ -213,7 +269,23 @@ def _compact_policy_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def pack_phase_tasks(tasks: list[BucketTask], *, phase: str) -> tuple[PlanWave, ...]:
+def _bucket_stats(tasks: list[BucketTask]) -> tuple[float, int, int]:
+    if not tasks:
+        return 0.0, 0, 0
+    counts: dict[tuple[str, int, int, int], int] = {}
+    for task in tasks:
+        key = (str(task.phase), int(task.src_rank), int(task.dst_rank), int(task.segment_ordinal))
+        counts[key] = counts.get(key, 0) + 1
+    return float(len(tasks)) / float(len(counts)), int(max(counts.values())), int(sum(len(task.payload_slices) for task in tasks))
+
+
+def pack_phase_tasks(
+    tasks: list[BucketTask],
+    *,
+    phase: str,
+    return_stats: bool = False,
+) -> tuple[PlanWave, ...] | tuple[PlanWave, ... , dict[str, Any]]:
+    started_ns = time.perf_counter_ns()
     wave_tasks: list[list[BucketTask]] = []
     used_outgoing_masks: list[int] = []
     used_incoming_masks: list[int] = []
@@ -239,7 +311,16 @@ def pack_phase_tasks(tasks: list[BucketTask], *, phase: str) -> tuple[PlanWave, 
     waves: list[PlanWave] = []
     for wave_id, bucket_tasks in enumerate(wave_tasks):
         waves.append(PlanWave(wave_id=wave_id, phase=phase, bucket_tasks=tuple(bucket_tasks)))
-    return tuple(waves)
+    result = tuple(waves)
+    if not return_stats:
+        return result
+    stats = {
+        "pack_phase_tasks_time_us": (time.perf_counter_ns() - started_ns) / 1000.0,
+        "wave_count": int(len(result)),
+        "max_wave_task_count": int(max((len(wave.bucket_tasks) for wave in result), default=0)),
+        "task_count": int(len(tasks)),
+    }
+    return result, stats
 
 
 def finalize_execution_plan(
@@ -253,11 +334,16 @@ def finalize_execution_plan(
     all_tasks: list[BucketTask],
     waves: tuple[PlanWave, ...],
     diagnostics: dict[str, Any],
+    timing_metrics: dict[str, Any] | None = None,
 ) -> PhaseExecutionPlan:
+    finalize_started_ns = time.perf_counter_ns()
     compact_transfer_layouts = [_compact_transfer_layout_dict(layout) for layout in transfer_layouts]
     compact_tasks = [_compact_bucket_task_dict(task) for task in all_tasks]
     compact_waves = [_compact_wave_dict(wave) for wave in waves]
     compact_diagnostics = _compact_policy_diagnostics(diagnostics)
+    avg_buckets_per_edge, max_buckets_per_edge, expected_collective_count = _bucket_stats(all_tasks)
+    total_row_count = int(sum(int(layout.row_count) for layout in transfer_layouts))
+    total_byte_count = int(sum(int(layout.byte_count) for layout in transfer_layouts))
     phase_key = stable_hash(
         {
             "plan_key": local_context.plan_key,
@@ -287,6 +373,9 @@ def finalize_execution_plan(
             "bucket_rows": int(bucket_rows),
             "bucket_count": len(all_tasks),
             "wave_count": len(waves),
+            "nonzero_edge_count": int(len(transfer_layouts)),
+            "total_row_count": total_row_count,
+            "total_byte_count": total_byte_count,
             "phase": local_context.phase,
             "transport_mutation": True,
             "policy_name": policy_name,
@@ -294,8 +383,13 @@ def finalize_execution_plan(
             "uses_p2": capabilities.uses_p2,
             "p2_hint_seen": local_context.p2_hint.hint_mode != "none",
             "p2_influenced_plan": bool(diagnostics.get("p2_forecast_used", False)),
+            "flow_count": int(len(transfer_layouts)),
+            "avg_buckets_per_edge": avg_buckets_per_edge,
+            "max_buckets_per_edge": int(max_buckets_per_edge),
+            "expected_collective_count": int(expected_collective_count),
             "transfer_layouts": compact_transfer_layouts,
             "policy_diagnostics": compact_diagnostics,
+            **(timing_metrics or {}),
             **compact_diagnostics,
         },
     )
@@ -316,6 +410,13 @@ def finalize_execution_plan(
                 "waves": compact_waves,
             }
         ),
+    )
+    plan = replace(
+        plan,
+        metrics={
+            **plan.metrics,
+            "finalize_execution_plan_time_us": (time.perf_counter_ns() - finalize_started_ns) / 1000.0,
+        },
     )
     validate_phase_execution_plan(local_context, plan)
     return plan

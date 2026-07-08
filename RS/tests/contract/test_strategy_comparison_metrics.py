@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from experiments.online.support.comparison_metrics import (
     add_baseline_deltas,
@@ -13,6 +14,7 @@ from experiments.online.support.comparison_metrics import (
 )
 from experiments.online.support.shadow_plan_analysis import build_shadow_plan_alignment
 from rs.runtime.online.megatron_ep.control import plan_agreement as plan_agreement_mod
+from rs.scheduling.phase_execution import FutureDemandHint
 from rs.scheduling.registry import resolve_phase_policy
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
 
@@ -162,14 +164,68 @@ def test_plan_agreement_timing_in_metrics(monkeypatch) -> None:
     plan = plan_agreement_mod.run_phase_plan_agreement(local_context=local_context, policy=policy, group=None)
     for key in (
         "all_gather_time_us",
+        "all_gather_submit_time_us",
+        "all_gather_sync_time_us",
         "build_plan_time_us",
         "broadcast_time_us",
+        "broadcast_length_submit_time_us",
+        "broadcast_length_sync_time_us",
+        "broadcast_payload_submit_time_us",
+        "broadcast_payload_sync_time_us",
         "verify_time_us",
         "total_agreement_time_us",
+        "summary_stack_time_us",
+        "summary_tensor_to_cpu_time_us",
+        "summary_object_decode_time_us",
+        "abstract_tensor_to_cpu_time_us",
+        "abstract_object_decode_time_us",
+        "planning_summary_tensor_len",
+        "planning_summary_total_elements",
+        "abstract_plan_tensor_len",
+        "abstract_plan_total_elements",
+        "abstract_plan_task_ref_count",
+        "broadcast_payload_elements",
     ):
         assert key in plan.metrics
         assert float(plan.metrics[key]) >= 0.0
     assert len(all_gather_calls) == 1
+
+
+def test_planning_summary_tensor_length_is_not_quadratic() -> None:
+    assert plan_agreement_mod._summary_tensor_length(2) == 3 + 2 + (2 * 4)
+    assert plan_agreement_mod._summary_tensor_length(4) == 3 + 4 + (4 * 4)
+    assert plan_agreement_mod._summary_tensor_length(8) == 3 + 8 + (8 * 4)
+
+
+def test_planning_summary_encoding_ignores_prepared_hint_metadata() -> None:
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (3, 0)), p2_hint_mode="deterministic_stub")
+    base = contexts[0]
+    hinted = replace(
+        base,
+        p2_hint=FutureDemandHint(
+            hint_mode="calibrated_artifact",
+            hint_digest="digest",
+            hint_source="prepared",
+            metadata={
+                "preferred_edges": [
+                    {"phase": "P0", "src_rank": 0, "dst_rank": 1, "priority": 0},
+                    {"phase": "P0", "src_rank": 1, "dst_rank": 0, "priority": 1},
+                ],
+                "preferred_waves": [{"wave_id": 0, "edges": []}],
+            },
+        ),
+    )
+    encoded_base = plan_agreement_mod._encode_planning_summary_tensor(
+        base.to_planning_summary(),
+        world_size=2,
+        device=plan_agreement_mod.torch.device("cpu"),
+    )
+    encoded_hinted = plan_agreement_mod._encode_planning_summary_tensor(
+        hinted.to_planning_summary(),
+        world_size=2,
+        device=plan_agreement_mod.torch.device("cpu"),
+    )
+    assert encoded_base.tolist() == encoded_hinted.tolist()
 
 
 def test_shadow_plan_alignment_exact_match() -> None:
@@ -353,6 +409,68 @@ def test_metrics_from_rank_dir_includes_planning_stage_metrics(tmp_path) -> None
     assert metrics["avg_build_p2_hint_time_us"] == 10.0
     assert metrics["build_p2_hint_count"] == 2.0
     assert metrics["run_phase_plan_agreement_time_us"] == 100.0
+
+
+def test_metrics_from_rank_dir_reads_prepared_plan_summary(tmp_path) -> None:
+    run_dir = tmp_path
+    (run_dir / "rank0_control_timeline.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_execution.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_transport_bundles.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text(
+        json.dumps(
+            {
+                "waves": [{"wave_id": 0, "task_count": 2}],
+                "metrics": {
+                    "bucket_count": 4,
+                    "nonzero_edge_count": 2,
+                    "total_row_count": 128,
+                    "total_byte_count": 4096,
+                    "avg_buckets_per_edge": 2.0,
+                    "max_buckets_per_edge": 3,
+                    "expected_collective_count": 8,
+                    "max_wave_task_count": 2,
+                    "hint_edges_available": 3,
+                    "hint_edges_matched": 2,
+                    "hint_match_rate": 2.0 / 3.0,
+                    "preferred_wave_count": 1,
+                    "preferred_edge_count": 2,
+                    "all_gather_submit_time_us": 10.0,
+                    "all_gather_sync_time_us": 20.0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "rank0_prepared_plan_summary.json").write_text(
+        json.dumps(
+            {
+                "p2_matrix_source": "replicated_local_row",
+                "p2_matrix_total_bytes": 777,
+                "p2_matrix_is_replicated_local_row": True,
+                "p2_matrix_row_sums": [1, 2],
+                "p2_matrix_col_sums": [3, 4],
+            }
+        ),
+        encoding="utf-8",
+    )
+    metrics = metrics_from_rank_dir(run_dir, rank=0)
+    assert metrics["p2_matrix_source"] == "replicated_local_row"
+    assert metrics["p2_matrix_total_bytes"] == 777.0
+    assert metrics["p2_matrix_is_replicated_local_row"] is True
+    assert metrics["p2_matrix_row_sums"] == [1, 2]
+    assert metrics["p2_matrix_col_sums"] == [3, 4]
+    assert metrics["bucket_count"] == 4.0
+    assert metrics["nonzero_edge_count"] == 2.0
+    assert metrics["avg_buckets_per_edge"] == 2.0
+    assert metrics["collective_count"] == 8.0
+    assert metrics["hint_edges_available"] == 3.0
+    assert metrics["hint_edges_matched"] == 2.0
 
 
 def test_shadow_plan_alignment_uses_transport_plan_hash_to_recover_layer_name() -> None:

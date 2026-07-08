@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -90,11 +91,13 @@ class ISLIPRoundRobinPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
+        schedule_started_ns = time.perf_counter_ns()
         waves, trace = _schedule_tasks(
             all_tasks,
             ranks=tuple(int(rank) for rank in local_context.ep_group_ranks),
@@ -102,6 +105,7 @@ class ISLIPRoundRobinPolicy:
             phase=local_context.phase,
             max_rounds=self.max_rounds,
         )
+        pack_time_us = (time.perf_counter_ns() - schedule_started_ns) / 1000.0
         ordered_tasks = [task for wave in waves for task in wave.bucket_tasks]
         diagnostics = {
             "policy_name": self.policy_name,
@@ -134,6 +138,13 @@ class ISLIPRoundRobinPolicy:
             all_tasks=ordered_tasks,
             waves=tuple(waves),
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                "pack_phase_tasks_time_us": pack_time_us,
+                "wave_count": int(len(waves)),
+                "max_wave_task_count": int(max((len(wave.bucket_tasks) for wave in waves), default=0)),
+                "task_count": int(len(all_tasks)),
+            },
         )
 
 

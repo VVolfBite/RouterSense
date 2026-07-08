@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from rs.scheduling.contracts import LogicalSchedulePlan, MultiPhaseSchedulingProblem
 from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext
 
@@ -85,13 +87,16 @@ class PhaseBarrierFIFOPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
+        sort_started_ns = time.perf_counter_ns()
         all_tasks.sort(key=fifo_task_key)
-        waves = pack_phase_tasks(all_tasks, phase=local_context.phase)
+        sort_time_us = (time.perf_counter_ns() - sort_started_ns) / 1000.0
+        waves, pack_stats = pack_phase_tasks(all_tasks, phase=local_context.phase, return_stats=True)
         diagnostics = {
             "policy_name": self.reported_policy_name,
             "policy_version": self.policy_version,
@@ -120,6 +125,11 @@ class PhaseBarrierFIFOPolicy:
             all_tasks=all_tasks,
             waves=waves,
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                **pack_stats,
+                "sort_tasks_time_us": sort_time_us,
+            },
         )
 
 

@@ -110,6 +110,7 @@ class RouterSenseInjectionRuntime:
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
+    _pending_window_adapter_instance: MultiphasePendingWindowAdapter | None = None
 
     # Configuration and policy selection
 
@@ -130,6 +131,100 @@ class RouterSenseInjectionRuntime:
                 self.config.p2_hint_mode,
                 shared_state=self._prepared_plan_state,
             )
+
+    def _artifact_profile(self) -> str:
+        return str(getattr(self.config, "observation_profile", "minimal"))
+
+    def _is_perf_profile(self) -> bool:
+        return self._artifact_profile() == "perf"
+
+    def _is_debug_profile(self) -> bool:
+        return self._artifact_profile() == "debug"
+
+    def _allow_shadow_artifacts(self) -> bool:
+        return not self._is_perf_profile()
+
+    def _phase_context_artifact(self, context: PhaseReadyContext) -> dict[str, Any]:
+        if not self._is_perf_profile():
+            return context.to_dict()
+        remote_segments = [segment for segment in context.outgoing_segments if not bool(segment.is_local) and int(segment.row_count) > 0]
+        return {
+            "plan_key": dict(context.plan_key),
+            "phase": str(context.phase),
+            "layer_id": str(context.layer_id),
+            "layer_name": str(context.layer_name),
+            "global_rank": int(context.global_rank),
+            "local_rank": int(context.local_rank),
+            "control_mode": str(context.control_mode),
+            "release_state": str(context.release_state),
+            "demand_known_at": str(context.demand_known_at),
+            "payload_exists": bool(context.payload_exists),
+            "atomic_submit": bool(context.atomic_submit),
+            "per_peer_rows": [int(v) for v in context.per_peer_rows],
+            "per_peer_bytes": [int(v) for v in context.per_peer_bytes],
+            "nonzero_edge_count": int(len(remote_segments)),
+            "remote_row_count": int(sum(int(segment.row_count) for segment in remote_segments)),
+            "remote_byte_count": int(sum(int(segment.byte_count) for segment in remote_segments)),
+            "transport_bundle_count": int(len(context.transport_bundles)),
+            "payload_roles": [str(spec.tensor_role) for spec in context.payload_specs],
+            "p2_hint": {
+                "hint_mode": str(context.p2_hint.hint_mode),
+                "hint_digest": str(context.p2_hint.hint_digest),
+                "hint_source": str(context.p2_hint.hint_source),
+                "preferred_edge_count": int(context.p2_hint.metadata.get("preferred_edge_count", 0) or 0),
+                "preferred_wave_count": int(context.p2_hint.metadata.get("preferred_wave_count", 0) or 0),
+            },
+        }
+
+    def _transport_bundle_artifact(self, bundle: Any) -> dict[str, Any]:
+        if not self._is_perf_profile():
+            return bundle.to_dict()
+        segment = bundle.outgoing_segment
+        return {
+            "bundle_id": str(bundle.bundle_id),
+            "phase": str(bundle.phase),
+            "atomic_submit": bool(bundle.atomic_submit),
+            "src_rank": int(segment.src_rank),
+            "dst_rank": int(segment.dst_rank),
+            "segment_ordinal": int(segment.segment_ordinal),
+            "row_count": int(segment.row_count),
+            "byte_count": int(segment.byte_count),
+            "is_local": bool(segment.is_local),
+            "payload_roles": [str(payload.tensor_role) for payload in bundle.payloads],
+            "payload_count": int(len(bundle.payloads)),
+        }
+
+    def _scheduled_plan_artifact(self, plan: PhaseExecutionPlan) -> dict[str, Any]:
+        if not self._is_perf_profile():
+            return plan.to_dict()
+        metrics = dict(plan.metrics)
+        return {
+            "plan_key": dict(plan.plan_key),
+            "phase": str(plan.phase),
+            "policy_name": str(plan.policy_name),
+            "policy_version": str(plan.policy_version),
+            "control_mode": str(plan.control_mode),
+            "execution_mode": str(plan.execution_mode),
+            "transport_mutation": bool(plan.transport_mutation),
+            "future_hint_mode": str(plan.future_hint_mode),
+            "root_rank": int(plan.root_rank),
+            "observation_digest": str(plan.observation_digest),
+            "plan_hash": str(plan.plan_hash),
+            "wave_count": int(len(plan.waves)),
+            "waves": [
+                {
+                    "wave_id": int(wave.wave_id),
+                    "task_count": int(len(wave.bucket_tasks)),
+                    "task_ids": [str(task.task_id) for task in wave.bucket_tasks],
+                }
+                for wave in plan.waves
+            ],
+            "metrics": {
+                key: value
+                for key, value in metrics.items()
+                if key not in {"transfer_layouts", "policy_diagnostics", "bucket_order", "wave_edges"}
+            },
+        }
 
     def _effective_phase_policy_name(self) -> str:
         if self.config.policy:
@@ -161,14 +256,17 @@ class RouterSenseInjectionRuntime:
         phase_policy_name = self._effective_phase_policy_name()
         if not phase_policy_name:
             raise UnsupportedSchedulerMode("multiphase_pending_window requires a resolved phase policy name")
-        return MultiphasePendingWindowAdapter(
-            shared_state=self._prepared_plan_state,
-            phase_policy_name=phase_policy_name,
-            bucket_rows=self.config.bucket_rows,
-            p0_weight=self.config.p0_weight,
-            p1_reservation_weight=self.config.p1_reservation_weight,
-            p2_hint_weight=self.config.p2_hint_weight,
-        )
+        if self._pending_window_adapter_instance is None:
+            self._pending_window_adapter_instance = MultiphasePendingWindowAdapter(
+                shared_state=self._prepared_plan_state,
+                phase_policy_name=phase_policy_name,
+                bucket_rows=self.config.bucket_rows,
+                p0_weight=self.config.p0_weight,
+                p1_reservation_weight=self.config.p1_reservation_weight,
+                p2_hint_weight=self.config.p2_hint_weight,
+                fast_path_enabled=self._is_perf_profile(),
+            )
+        return self._pending_window_adapter_instance
 
     def _layer_selected(self, layer_name: str) -> bool:
         selector = str(self.config.schedule_layer_selector)
@@ -461,16 +559,17 @@ class RouterSenseInjectionRuntime:
                     **state.prepared_plan_binding.to_dict(),
                 }
             )
-        shadow = build_pending_window_shadow(
-            state=state,
-            p0_weight=float(self.config.p0_weight),
-            p1_reservation_weight=float(self.config.p1_reservation_weight),
-            p2_hint_weight=float(self.config.p2_hint_weight),
-        )
-        first_wave = shadow.get("first_executable_wave") or {}
-        shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
-        shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
-        self.window_schedule_shadows.append(shadow)
+        if self._allow_shadow_artifacts():
+            shadow = build_pending_window_shadow(
+                state=state,
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+            )
+            first_wave = shadow.get("first_executable_wave") or {}
+            shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
+            shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
+            self.window_schedule_shadows.append(shadow)
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -500,16 +599,17 @@ class RouterSenseInjectionRuntime:
         self._window_states[layer_name] = state
         self.release_events.append(record)
         self.window_state_records.append(state.to_record())
-        shadow = build_pending_window_shadow(
-            state=state,
-            p0_weight=float(self.config.p0_weight),
-            p1_reservation_weight=float(self.config.p1_reservation_weight),
-            p2_hint_weight=float(self.config.p2_hint_weight),
-        )
-        first_wave = shadow.get("first_executable_wave") or {}
-        shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
-        shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
-        self.window_schedule_shadows.append(shadow)
+        if self._allow_shadow_artifacts():
+            shadow = build_pending_window_shadow(
+                state=state,
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+            )
+            first_wave = shadow.get("first_executable_wave") or {}
+            shadow.setdefault("shadow_first_wave_flow_ids", list(first_wave.get("selected_flow_ids", []) or []))
+            shadow.setdefault("shadow_first_wave_edges", list(first_wave.get("selected_edges", []) or []))
+            self.window_schedule_shadows.append(shadow)
 
     def _record_prepared_phase_plan_shadow(
         self,
@@ -519,6 +619,8 @@ class RouterSenseInjectionRuntime:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> None:
+        if not self._allow_shadow_artifacts():
+            return
         start_ns = time.monotonic_ns()
         prepared_plan = self._prepared_plan_state.get("prepared_plan")
         if prepared_plan is None:
@@ -628,6 +730,7 @@ class RouterSenseInjectionRuntime:
             MultiPhaseSchedulingProblem,
             ReleaseConstraint,
         )
+        from rs.runtime.online.megatron_ep.pending_window.policy_adapter import get_or_build_prepared_priority_cache
         from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
         from rs.scheduling.validation import stable_hash
 
@@ -648,7 +751,10 @@ class RouterSenseInjectionRuntime:
             )
         else:
             dispatch_matrix = forecast_matrix
-        forecast_digest = stable_hash({"per_peer_bytes": list(per_peer), "layer": layer_name})
+        p2_matrix_source = "replicated_local_row"
+        row_sums = [int(sum(row)) for row in forecast_matrix]
+        col_sums = [int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(num_peers))) for col_idx in range(num_peers)]
+        forecast_digest = stable_hash({"per_peer_bytes": list(per_peer), "layer": layer_name, "source": p2_matrix_source})
         problem = MultiPhaseSchedulingProblem(
             flow_window=FlowWindow(ready_flows=(), blocked_flows=(), forecast_pressure=()),
             topology=LogicalTopology(num_gpus=num_peers),
@@ -659,13 +765,20 @@ class RouterSenseInjectionRuntime:
                 expert_compute_delay=0.0,
             ),
             forecast=ForecastPressure(
-                source="online_p1_observation",
+                source=p2_matrix_source,
                 digest=forecast_digest,
                 oracle=False,
                 evaluation_eligible=True,
                 matrix_shape=(num_peers, num_peers),
                 matrix_total_bytes=sum(int(value) for value in per_peer),
                 matrix=forecast_matrix,
+                metadata={
+                    "p2_matrix_source": p2_matrix_source,
+                    "p2_matrix_is_replicated_local_row": True,
+                    "p2_matrix_row_sums": row_sums,
+                    "p2_matrix_col_sums": col_sums,
+                    "p2_matrix_total_bytes": sum(int(value) for value in per_peer),
+                },
             ),
             options=GlobalReadySetOptions(
                 scheduling_mode="runtime_lookahead",
@@ -701,12 +814,26 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["prepared_plan"] = prepared
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
+        self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
+        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(int(value) for value in per_peer))
+        self._prepared_plan_state["p2_matrix_row_sums"] = row_sums
+        self._prepared_plan_state["p2_matrix_col_sums"] = col_sums
+        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = True
+        self._prepared_plan_state["p2_matrix_shape"] = [num_peers, num_peers]
+        self._prepared_plan_state.pop("prepared_priority_cache", None)
+        cache_build_start_ns = time.monotonic_ns()
+        _, _, cache_build_time_us = get_or_build_prepared_priority_cache(
+            shared_state=self._prepared_plan_state,
+            prepared_plan=prepared,
+        )
+        cache_build_end_ns = time.monotonic_ns()
         self._timeline(
             "prepared_window_plan_stored",
             layer_name=layer_name,
             window_key=prepared.window_key,
             forecast_digest=prepared.forecast_digest,
             applies_from_layer_id=prepared.applies_from_layer_id,
+            p2_matrix_source=p2_matrix_source,
         )
         total_end_ns = time.monotonic_ns()
         self._record_planning_timing(
@@ -719,6 +846,8 @@ class RouterSenseInjectionRuntime:
             forecast_digest=str(prepared.forecast_digest),
             policy_name=str(prepared.logical_plan.policy_name),
             logical_build_time_us=max(0.0, float(build_end_ns - build_start_ns) / 1000.0),
+            prepared_priority_cache_build_time_us=float(cache_build_time_us),
+            prepared_priority_cache_total_time_us=(cache_build_end_ns - cache_build_start_ns) / 1000.0,
         )
 
     def _record_pending_window_driver(
@@ -748,6 +877,11 @@ class RouterSenseInjectionRuntime:
             "pending_window_p2_total_bytes": int(metrics.get("pending_window_p2_total_bytes", 0) or 0),
             "pending_window_p1_matrix_source": str(metrics.get("pending_window_p1_matrix_source", "")),
             "pending_window_p2_matrix_source": str(metrics.get("pending_window_p2_matrix_source", "")),
+            "p2_matrix_source": str(self._prepared_plan_state.get("p2_matrix_source", "")),
+            "p2_matrix_total_bytes": int(self._prepared_plan_state.get("p2_matrix_total_bytes", 0) or 0),
+            "p2_matrix_row_sums": list(self._prepared_plan_state.get("p2_matrix_row_sums", []) or []),
+            "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
+            "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
             "prepared_window_key": str(metrics.get("prepared_window_key", "")),
             "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
             "wave_count": len(plan.waves),
@@ -755,8 +889,9 @@ class RouterSenseInjectionRuntime:
             "hint_edges_consumed": int(metrics.get("hint_edges_consumed", 0) or 0),
             "hint_match_rate": float(metrics.get("hint_match_rate", 0.0) or 0.0),
             "prepared_plan_order_preserved": bool(metrics.get("prepared_plan_order_preserved", False)),
-            "bucket_order": list(metrics.get("bucket_order", [])),
         }
+        if not self._is_perf_profile():
+            record["bucket_order"] = list(metrics.get("bucket_order", []))
         self.pending_window_driver_records.append(record)
 
     # Tensor/debug capture and context builders
@@ -944,9 +1079,9 @@ class RouterSenseInjectionRuntime:
             hint_mode=str(p2_hint.hint_mode),
         )
         if self.observation_recorder is not None:
-            self.observation_recorder.record_phase_context(phase_ctx.to_dict())
+            self.observation_recorder.record_phase_context(self._phase_context_artifact(phase_ctx))
             for bundle in phase_ctx.transport_bundles:
-                self.observation_recorder.record_transport_bundle(bundle.to_dict())
+                self.observation_recorder.record_transport_bundle(self._transport_bundle_artifact(bundle))
         self._record_prepared_phase_plan_shadow(
             layer_name=layer_name,
             phase="P0",
@@ -992,7 +1127,7 @@ class RouterSenseInjectionRuntime:
                 verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
             )
             if self.observation_recorder is not None:
-                self.observation_recorder.record_scheduled_plan(plan.to_dict())
+                self.observation_recorder.record_scheduled_plan(self._scheduled_plan_artifact(plan))
             self._record_pending_window_driver(layer_name=layer_name, phase="P0", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
             self._timeline(
@@ -1311,9 +1446,9 @@ class RouterSenseInjectionRuntime:
             hint_mode=str(p2_hint.hint_mode),
         )
         if self.observation_recorder is not None:
-            self.observation_recorder.record_phase_context(phase_ctx.to_dict())
+            self.observation_recorder.record_phase_context(self._phase_context_artifact(phase_ctx))
             for bundle in phase_ctx.transport_bundles:
-                self.observation_recorder.record_transport_bundle(bundle.to_dict())
+                self.observation_recorder.record_transport_bundle(self._transport_bundle_artifact(bundle))
         self._record_prepared_phase_plan_shadow(
             layer_name=layer_name,
             phase="P1",
@@ -1351,7 +1486,7 @@ class RouterSenseInjectionRuntime:
                 verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
             )
             if self.observation_recorder is not None:
-                self.observation_recorder.record_scheduled_plan(plan.to_dict())
+                self.observation_recorder.record_scheduled_plan(self._scheduled_plan_artifact(plan))
             self._record_pending_window_driver(layer_name=layer_name, phase="P1", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
             self._timeline(
@@ -1570,18 +1705,28 @@ class RouterSenseInjectionRuntime:
         return self._export_list(self.plan_arrival_records)
 
     def export_window_state_records(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
         return self._export_list(self.window_state_records)
 
     def export_prepared_plan_bindings(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
         return self._export_list(self.prepared_plan_bindings)
 
     def export_release_events(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
         return self._export_list(self.release_events)
 
     def export_window_schedule_shadows(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
         return self._export_list(self.window_schedule_shadows)
 
     def export_prepared_phase_plan_shadows(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
         return self._export_list(self.prepared_phase_plan_shadows)
 
     def export_pending_window_driver_records(self) -> list[dict[str, Any]]:
@@ -1592,6 +1737,19 @@ class RouterSenseInjectionRuntime:
 
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)
+
+    def export_prepared_plan_summary(self) -> dict[str, Any]:
+        return {
+            "has_prepared_plan": bool(self._prepared_plan_state.get("prepared_plan") is not None),
+            "plan_source_layer": str(self._prepared_plan_state.get("plan_source_layer", "")),
+            "plan_created_at_us": int(self._prepared_plan_state.get("plan_created_at_us", 0) or 0),
+            "p2_matrix_source": str(self._prepared_plan_state.get("p2_matrix_source", "")),
+            "p2_matrix_total_bytes": int(self._prepared_plan_state.get("p2_matrix_total_bytes", 0) or 0),
+            "p2_matrix_row_sums": list(self._prepared_plan_state.get("p2_matrix_row_sums", []) or []),
+            "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
+            "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
+            "p2_matrix_shape": list(self._prepared_plan_state.get("p2_matrix_shape", []) or []),
+        }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:
         return self._export_observation_rows("export_phase_contexts")

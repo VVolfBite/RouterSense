@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 
 
-ObservationProfile = Literal["minimal", "execution", "debug"]
+ObservationProfile = Literal["minimal", "perf", "execution", "debug"]
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -157,13 +158,16 @@ class PowerOfTwoChoicesPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
+        sort_started_ns = time.perf_counter_ns()
         ordered_tasks = _power_of_two_order(all_tasks)
-        waves = pack_phase_tasks(ordered_tasks, phase=local_context.phase)
+        sort_time_us = (time.perf_counter_ns() - sort_started_ns) / 1000.0
+        waves, pack_stats = pack_phase_tasks(ordered_tasks, phase=local_context.phase, return_stats=True)
         diagnostics = {
             "policy_name": self.policy_name,
             "policy_version": self.policy_version,
@@ -192,4 +196,9 @@ class PowerOfTwoChoicesPolicy:
             all_tasks=ordered_tasks,
             waves=waves,
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                **pack_stats,
+                "sort_tasks_time_us": sort_time_us,
+            },
         )

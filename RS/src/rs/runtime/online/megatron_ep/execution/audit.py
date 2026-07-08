@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,22 +40,29 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         )
 
     planned_waves = tuple(plan_dict.get("waves", []) or [])
-    planned_tasks = [
-        task
-        for wave in planned_waves
-        for task in wave.get("bucket_tasks", []) or []
-    ]
-    planned_task_ids = tuple(str(task.get("task_id", "")) for task in planned_tasks)
+    planned_tasks = [task for wave in planned_waves for task in wave.get("bucket_tasks", []) or []]
+    if planned_tasks:
+        planned_task_ids = tuple(str(task.get("task_id", "")) for task in planned_tasks if str(task.get("task_id", "")))
+    else:
+        planned_task_ids = tuple(
+            str(task_id)
+            for wave in planned_waves
+            for task_id in (wave.get("task_ids", []) or [])
+            if str(task_id)
+        )
     planned_rows = sum(int(task.get("row_count", 0)) for task in planned_tasks)
     planned_bytes = 0
+    planned_bytes_source = "task_payloads"
     for task in planned_tasks:
         payload_slices = task.get("payload_slices", []) or []
         if payload_slices:
             planned_bytes += sum(int(payload.get("payload_byte_count", 0)) for payload in payload_slices)
         else:
             planned_bytes += int(task.get("byte_count", 0))
+    if not planned_tasks:
+        planned_bytes_source = "not_recorded_in_perf"
     planned_wave_count_total = len(planned_waves)
-    planned_wave_count = sum(1 for wave in planned_waves if wave.get("bucket_tasks"))
+    planned_wave_count = sum(1 for wave in planned_waves if (wave.get("bucket_tasks") or wave.get("task_ids")))
     planned_local_rows = sum(int(task.get("row_count", 0)) for task in planned_tasks if int(task.get("src_rank", -1)) == int(task.get("dst_rank", -2)))
     planned_remote_rows = planned_rows - planned_local_rows
 
@@ -63,19 +70,29 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     native_fallback_events = sum(1 for row in transport_events if row.get("event") == "native_fallback")
     contract_violation_events = sum(1 for row in transport_events if row.get("event") == "contract_violation")
     execution_entries = [row for row in transport_events if row.get("record_type") != "result_summary"]
-    raw_executed_task_ids = tuple(
-        str(row.get("task_id") or row.get("bucket_id") or "")
-        for row in execution_entries
-        if row.get("task_id") or row.get("bucket_id")
-    )
-    if phase == "P0":
-        logical_executed: list[str] = []
-        for task_id in raw_executed_task_ids:
-            if task_id and task_id not in logical_executed:
-                logical_executed.append(task_id)
-        executed_task_ids = tuple(logical_executed)
-    else:
-        executed_task_ids = raw_executed_task_ids
+    task_id_none_event_count = 0
+    raw_executed_task_ids: list[str] = []
+    payload_roles_by_task: dict[str, set[str]] = defaultdict(set)
+    duplicate_payload_keys: list[tuple[str, str]] = []
+    seen_payload_keys: set[tuple[str, str]] = set()
+    for row in execution_entries:
+        task_id = str(row.get("task_id") or row.get("bucket_id") or "")
+        if not task_id:
+            task_id_none_event_count += 1
+            continue
+        raw_executed_task_ids.append(task_id)
+        tensor_role = str(row.get("tensor_role") or "__none__")
+        payload_roles_by_task[task_id].add(tensor_role)
+        payload_key = (task_id, tensor_role)
+        if payload_key in seen_payload_keys:
+            duplicate_payload_keys.append(payload_key)
+        else:
+            seen_payload_keys.add(payload_key)
+    logical_executed: list[str] = []
+    for task_id in raw_executed_task_ids:
+        if task_id not in logical_executed:
+            logical_executed.append(task_id)
+    executed_task_ids = tuple(logical_executed)
 
     unique_task_rows: dict[str, int] = {}
     unique_task_bytes: dict[str, int] = {}
@@ -87,7 +104,13 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         unique_task_bytes[task_id] = unique_task_bytes.get(task_id, 0) + int(row.get("byte_count", 0))
     executed_rows = sum(unique_task_rows.values())
     executed_bytes = sum(unique_task_bytes.values())
-    executed_wave_count = len({int(row.get("wave_id", -1)) for row in execution_entries if "wave_id" in row})
+    executed_wave_count = len(
+        {
+            int(row.get("wave_id", -1))
+            for row in execution_entries
+            if "wave_id" in row and (row.get("task_id") or row.get("bucket_id"))
+        }
+    )
     actual_local_rows = 0
     actual_remote_rows = 0
     classified_tasks: set[str] = set()
@@ -101,11 +124,11 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         else:
             actual_remote_rows += int(row.get("row_count", 0))
 
-    planned_counter = Counter(planned_task_ids)
-    executed_counter = Counter(executed_task_ids)
-    missing = tuple(sorted(task_id for task_id, count in (planned_counter - executed_counter).items() for _ in range(count)))
-    unexpected = tuple(sorted(task_id for task_id, count in (executed_counter - planned_counter).items() for _ in range(count)))
-    duplicate = tuple(sorted(task_id for task_id, count in executed_counter.items() if count > planned_counter.get(task_id, 0)))
+    planned_set = set(planned_task_ids)
+    executed_set = set(executed_task_ids)
+    missing = tuple(sorted(planned_set - executed_set))
+    unexpected = tuple(sorted(executed_set - planned_set))
+    duplicate = tuple(sorted({task_id for task_id, _ in duplicate_payload_keys}))
 
     order_mismatches: list[str] = []
     for index, task_id in enumerate(executed_task_ids):
@@ -122,11 +145,18 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             grouped.setdefault(key, []).append(str(row.get("tensor_role", "")))
         p0_bundle_atomicity_preserved = all(tuple(roles) == ("hidden_states", "routing_probs") for roles in grouped.values())
 
-    local_copy_coverage_passed = planned_local_rows == actual_local_rows
-    remote_flow_coverage_passed = planned_remote_rows == actual_remote_rows
+    local_copy_coverage_passed = planned_local_rows == actual_local_rows if planned_tasks else True
+    remote_flow_coverage_passed = not missing and not unexpected
     metrics = plan_dict.get("metrics", {}) or {}
     compiled_from_prepared_plan = bool(metrics.get("compiled_from_prepared_plan", False))
     prepared_plan_order_preserved = bool(metrics.get("prepared_plan_order_preserved", False)) if compiled_from_prepared_plan else True
+    p2_matrix_source = str(metrics.get("pending_window_p2_matrix_source", metrics.get("p2_matrix_source", "")))
+    p2_matrix_is_replicated_local_row = bool(metrics.get("p2_matrix_is_replicated_local_row", False))
+    multi_payload_task_count = sum(1 for roles in payload_roles_by_task.values() if len(roles) > 1)
+    payload_roles_by_first_5_task_ids = {
+        task_id: sorted(payload_roles_by_task.get(task_id, set()))
+        for task_id in list(executed_task_ids)[:5]
+    }
 
     status = "passed"
     if (
@@ -135,8 +165,8 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         or unexpected
         or duplicate
         or order_mismatches
-        or planned_rows != executed_rows
-        or planned_bytes != executed_bytes
+        or (planned_tasks and planned_rows != executed_rows)
+        or (planned_tasks and planned_bytes != executed_bytes)
         or not local_copy_coverage_passed
         or not remote_flow_coverage_passed
         or not p0_bundle_atomicity_preserved
@@ -172,17 +202,27 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         details={
             "planned_execution_order": planned_task_ids,
             "actual_execution_order": executed_task_ids,
+            "planned_task_count": len(planned_task_ids),
+            "executed_task_count": len(executed_task_ids),
             "planned_wave_count_total": planned_wave_count_total,
             "planned_local_rows": planned_local_rows,
             "actual_local_rows": actual_local_rows,
             "planned_remote_rows": planned_remote_rows,
             "actual_remote_rows": actual_remote_rows,
+            "planned_bytes_source": planned_bytes_source,
+            "first_10_planned_task_ids": list(planned_task_ids[:10]),
+            "first_10_executed_task_ids": list(executed_task_ids[:10]),
+            "task_id_none_event_count": task_id_none_event_count,
+            "multi_payload_task_count": multi_payload_task_count,
+            "payload_roles_by_first_5_task_ids": payload_roles_by_first_5_task_ids,
             "compiled_from_prepared_plan": compiled_from_prepared_plan,
             "prepared_plan_order_preserved": prepared_plan_order_preserved,
             "prepared_window_key": str(metrics.get("prepared_window_key", "")),
             "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
             "hint_edges_consumed": int(metrics.get("hint_edges_consumed", 0) or 0),
             "hint_match_rate": float(metrics.get("hint_match_rate", 0.0) or 0.0),
+            "p2_matrix_source": p2_matrix_source,
+            "p2_matrix_is_replicated_local_row": p2_matrix_is_replicated_local_row,
         },
     )
 

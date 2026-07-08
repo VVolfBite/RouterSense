@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -53,10 +54,11 @@ class RouterSenseP0P1P2HintPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
         future_out_pressure = defaultdict(int)
         future_in_pressure = defaultdict(int)
@@ -112,13 +114,16 @@ class RouterSenseP0P1P2HintPolicy:
                 int(task.bucket_ordinal),
             )
 
+        sort_started_ns = time.perf_counter_ns()
         ordered_tasks = sorted(
             all_tasks,
             key=task_priority,
         )
+        sort_time_us = (time.perf_counter_ns() - sort_started_ns) / 1000.0
         waves: list[PlanWave] = []
         pending = ordered_tasks[:]
         wave_id = 0
+        pack_started_ns = time.perf_counter_ns()
         while pending:
             used_outgoing, used_incoming, chosen, remaining = set(), set(), [], []
             for task in pending:
@@ -131,6 +136,7 @@ class RouterSenseP0P1P2HintPolicy:
             waves.append(PlanWave(wave_id=wave_id, phase=local_context.phase, bucket_tasks=tuple(chosen)))
             pending = remaining
             wave_id += 1
+        pack_time_us = (time.perf_counter_ns() - pack_started_ns) / 1000.0
         p2_influenced_plan = hint_available and (bool(edge_priority) or self.p2_hint_weight > 0.0)
         evaluation_eligible = local_context.p2_hint.hint_mode == "calibrated_artifact"
         diagnostics = {
@@ -167,6 +173,10 @@ class RouterSenseP0P1P2HintPolicy:
             "hint_edges_matched": len(matched_hint_edges),
             "hint_edges_consumed": len(matched_hint_edges),
             "hint_match_rate": float(len(matched_hint_edges) / len(edge_priority)) if edge_priority else 0.0,
+            "preferred_edge_count": int(local_context.p2_hint.metadata.get("preferred_edge_count", len(edge_priority)) or 0),
+            "preferred_wave_count": int(local_context.p2_hint.metadata.get("preferred_wave_count", 0) or 0),
+            "forecast_consumed": bool(p2_influenced_plan),
+            "prediction_used": bool(p2_influenced_plan),
             "source_logical_plan_hash": str(local_context.p2_hint.metadata.get("source_logical_plan_hash", "")),
             "prepared_window_key": str(local_context.p2_hint.metadata.get("window_key", "")),
         }
@@ -180,4 +190,12 @@ class RouterSenseP0P1P2HintPolicy:
             all_tasks=ordered_tasks,
             waves=tuple(waves),
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                "sort_tasks_time_us": sort_time_us,
+                "pack_phase_tasks_time_us": pack_time_us,
+                "wave_count": int(len(waves)),
+                "max_wave_task_count": int(max((len(wave.bucket_tasks) for wave in waves), default=0)),
+                "task_count": int(len(ordered_tasks)),
+            },
         )

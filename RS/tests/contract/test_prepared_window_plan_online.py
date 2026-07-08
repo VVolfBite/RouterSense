@@ -14,6 +14,7 @@ from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
 from rs.runtime.online.megatron_ep.pending_window import compile_prepared_window_phase_plan
+from rs.scheduling.validation import validate_phase_execution_plan
 from rs.scheduling import resolve_phase_policy
 from rs.scheduling.contracts import FlowDemand, FlowWindow, ForecastPressure, GlobalReadySetOptions, LogicalSchedulePlan, LogicalTopology, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint
 from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
@@ -88,7 +89,7 @@ def _manual_prepared_plan_with_priority(*, phase: str = "p0_dispatch", src_rank:
     )
 
 
-def _runtime(*, control_mode: str = "sync_before_phase") -> RouterSenseInjectionRuntime:
+def _runtime(*, control_mode: str = "sync_before_phase", observation_profile: str = "minimal") -> RouterSenseInjectionRuntime:
     return RouterSenseInjectionRuntime(
         config=RouterSenseInjectionConfig(
             policy="routersense_p0p1p2_hint",
@@ -96,6 +97,7 @@ def _runtime(*, control_mode: str = "sync_before_phase") -> RouterSenseInjection
             control_mode=control_mode,
             p2_hint_mode="calibrated_artifact",
             p2_hint_weight=1.0,
+            observation_profile=observation_profile,
         ),
         rank=0,
         local_rank=0,
@@ -226,6 +228,70 @@ def test_plan_arrival_status_recording() -> None:
     assert records[-1]["arrival_status"] in {"before_commit", "in_flight"}
     assert records[-1]["plan_age_us"] >= 0
     assert records[-1]["has_prepared_plan"] is True
+
+
+def test_perf_profile_suppresses_window_shadow_exports() -> None:
+    runtime = _runtime(observation_profile="perf")
+    runtime.window_state_records.append({"window": "x"})
+    runtime.prepared_plan_bindings.append({"binding": "x"})
+    runtime.release_events.append({"event": "x"})
+    runtime.window_schedule_shadows.append({"shadow": "x"})
+    runtime.prepared_phase_plan_shadows.append({"prepared": "x"})
+    assert runtime.export_window_state_records() == []
+    assert runtime.export_prepared_plan_bindings() == []
+    assert runtime.export_release_events() == []
+    assert runtime.export_window_schedule_shadows() == []
+    assert runtime.export_prepared_phase_plan_shadows() == []
+
+
+def test_debug_profile_keeps_window_shadow_exports() -> None:
+    runtime = _runtime(observation_profile="debug")
+    runtime.window_state_records.append({"window": "x"})
+    runtime.prepared_plan_bindings.append({"binding": "x"})
+    runtime.release_events.append({"event": "x"})
+    runtime.window_schedule_shadows.append({"shadow": "x"})
+    runtime.prepared_phase_plan_shadows.append({"prepared": "x"})
+    assert runtime.export_window_state_records() == [{"window": "x"}]
+    assert runtime.export_prepared_plan_bindings() == [{"binding": "x"}]
+    assert runtime.export_release_events() == [{"event": "x"}]
+    assert runtime.export_window_schedule_shadows() == [{"shadow": "x"}]
+    assert runtime.export_prepared_phase_plan_shadows() == [{"prepared": "x"}]
+
+
+def test_prepared_plan_summary_exposes_p2_matrix_source() -> None:
+    runtime = _runtime(observation_profile="perf")
+    runtime._prepared_plan_state.update(
+        {
+            "prepared_plan": _prepared_plan(),
+            "plan_created_at_us": 123,
+            "plan_source_layer": "model.layers.0.mlp",
+            "p2_matrix_source": "replicated_local_row",
+            "p2_matrix_total_bytes": 64,
+            "p2_matrix_row_sums": [32, 32],
+            "p2_matrix_col_sums": [16, 48],
+            "p2_matrix_is_replicated_local_row": True,
+            "p2_matrix_shape": [2, 2],
+        }
+    )
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["has_prepared_plan"] is True
+    assert summary["p2_matrix_source"] == "replicated_local_row"
+    assert summary["p2_matrix_total_bytes"] == 64
+    assert summary["p2_matrix_is_replicated_local_row"] is True
+    assert summary["p2_matrix_shape"] == [2, 2]
+
+
+def test_perf_scheduled_plan_artifact_keeps_task_ids_only() -> None:
+    runtime = _runtime(observation_profile="perf")
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (3, 0)), p2_hint_mode="none")
+    policy = resolve_phase_policy(policy_name="birkhoff_phase_local", bucket_rows=0)
+    plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+    artifact = runtime._scheduled_plan_artifact(plan)
+    assert artifact["waves"]
+    first_wave = artifact["waves"][0]
+    assert "task_ids" in first_wave
+    assert "bucket_tasks" not in first_wave
+    assert isinstance(first_wave["task_ids"], list)
 
 
 def test_p0p1p2_hint_evaluation_eligible_with_calibrated_artifact() -> None:
@@ -507,6 +573,7 @@ def test_multiphase_pending_window_adapter_compiles_current_phase_plan() -> None
         p0_weight=1.0,
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
+        fast_path_enabled=False,
     )
     plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
     assert plan.metrics["compiled_from_pending_window"] is True
@@ -561,6 +628,7 @@ def test_multiphase_pending_window_adapter_uses_prepared_p1_and_p2_matrices() ->
         p0_weight=1.0,
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
+        fast_path_enabled=False,
     )
     plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
     assert plan.metrics["pending_window_information_mode"] == "p0_p1_p2"
@@ -590,6 +658,7 @@ def test_pending_window_driver_records_export_compiled_plan_metadata() -> None:
         p0_weight=1.0,
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
+        fast_path_enabled=False,
     ).build_plan(local_context=contexts[0], global_contexts=contexts)
     runtime.config = replace(runtime.config, execution_mode="multiphase_pending_window")
     runtime._record_pending_window_driver(layer_name="model.layers.1.mlp", phase="P0", plan=plan)
@@ -598,3 +667,65 @@ def test_pending_window_driver_records_export_compiled_plan_metadata() -> None:
     assert rows[-1]["compiled_from_pending_window"] is True
     assert rows[-1]["pending_window_logical_policy_name"].startswith("routersense_multiphase_lookahead:")
     assert rows[-1]["wave_count"] == len(plan.waves)
+
+
+def test_multiphase_pending_window_fast_path_skips_logical_build(monkeypatch) -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 2), (3, 0)),
+        p2_hint_mode="none",
+    )
+    prepared = _prepared_plan(forecast_digest="forecast-fast", created="0")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("heavy logical build should not run")
+
+    monkeypatch.setattr(
+        "rs.scheduling.multiphase.routersense_lookahead.RouterSenseMultiphaseLookaheadPolicy.build_logical_plan",
+        _boom,
+    )
+    adapter = MultiphasePendingWindowAdapter(
+        shared_state={
+            "prepared_plan": prepared,
+            "plan_created_at_us": 1,
+            "plan_source_layer": "model.layers.0.mlp",
+            "p2_matrix_source": "replicated_local_row",
+            "p2_matrix_is_replicated_local_row": True,
+        },
+        phase_policy_name="routersense_p0p1p2_hint",
+        bucket_rows=0,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+        fast_path_enabled=True,
+    )
+    plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
+    validation = validate_phase_execution_plan(plan)
+    assert not validation["errors"]
+    assert plan.metrics["routersense_fast_path_enabled"] is True
+    assert plan.metrics["routersense_heavy_path_used"] is False
+    assert plan.metrics["pending_window_logical_build_time_us"] == 0.0
+    assert plan.metrics["fast_path_wave_plan_valid"] is True
+    assert len(plan.waves) >= 1
+
+
+def test_multiphase_pending_window_fast_path_falls_back_without_prepared_plan() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 2), (3, 0)),
+        p2_hint_mode="none",
+    )
+    adapter = MultiphasePendingWindowAdapter(
+        shared_state={},
+        phase_policy_name="routersense_p0p1p2_hint",
+        bucket_rows=0,
+        p0_weight=1.0,
+        p1_reservation_weight=1.0,
+        p2_hint_weight=1.0,
+        fast_path_enabled=True,
+    )
+    plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
+    assert plan.metrics["routersense_fast_path_enabled"] is True
+    assert plan.metrics["routersense_heavy_path_used"] is False
+    assert plan.metrics["fast_path_fallback_reason"] == "no_prepared_plan"
+    assert len(plan.waves) >= 1

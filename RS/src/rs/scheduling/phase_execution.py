@@ -361,13 +361,10 @@ class PhasePlanningSummary:
     control_mode: str
     layer_id: str
     global_rank: int
-    local_rank: int
     ep_group_ranks: tuple[int, ...]
     ep_group_root_rank: int
-    per_peer_rows: tuple[int, ...]
     per_peer_bytes: tuple[int, ...]
     outgoing_edges: tuple[PlanningEdgeSummary, ...]
-    p2_hint: FutureDemandHint = field(default_factory=FutureDemandHint)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -376,13 +373,10 @@ class PhasePlanningSummary:
             "control_mode": str(self.control_mode),
             "layer_id": str(self.layer_id),
             "global_rank": int(self.global_rank),
-            "local_rank": int(self.local_rank),
             "ep_group_ranks": [int(v) for v in self.ep_group_ranks],
             "ep_group_root_rank": int(self.ep_group_root_rank),
-            "per_peer_rows": [int(v) for v in self.per_peer_rows],
             "per_peer_bytes": [int(v) for v in self.per_peer_bytes],
             "outgoing_edges": [item.to_dict() for item in self.outgoing_edges],
-            "p2_hint": self.p2_hint.to_dict(),
         }
 
     @classmethod
@@ -393,27 +387,23 @@ class PhasePlanningSummary:
             control_mode=str(payload["control_mode"]),
             layer_id=str(payload["layer_id"]),
             global_rank=int(payload["global_rank"]),
-            local_rank=int(payload["local_rank"]),
             ep_group_ranks=tuple(int(v) for v in payload["ep_group_ranks"]),
             ep_group_root_rank=int(payload["ep_group_root_rank"]),
-            per_peer_rows=tuple(int(v) for v in payload["per_peer_rows"]),
             per_peer_bytes=tuple(int(v) for v in payload["per_peer_bytes"]),
             outgoing_edges=tuple(PlanningEdgeSummary.from_dict(item) for item in payload["outgoing_edges"]),
-            p2_hint=FutureDemandHint.from_dict(payload.get("p2_hint", {})),
         )
 
-    def to_wire_payload(self) -> tuple[int, tuple[int, ...], tuple[tuple[int, int, int, int, int], ...], tuple[str, str, str, dict[str, Any]]]:
+    def to_wire_payload(self) -> tuple[int, tuple[int, ...], tuple[tuple[int, int, int, int, int], ...]]:
         return (
             int(self.global_rank),
             tuple(int(v) for v in self.per_peer_bytes),
             tuple(item.to_wire_payload() for item in self.outgoing_edges),
-            self.p2_hint.to_wire_payload(),
         )
 
     @classmethod
     def from_wire_payload(
         cls,
-        payload: tuple[int, tuple[int, ...], tuple[tuple[int, int, int, int, int], ...], tuple[str, str, str, dict[str, Any]]] | list[Any],
+        payload: tuple[int, tuple[int, ...], tuple[tuple[int, int, int, int, int], ...]] | list[Any],
         *,
         phase: str,
         control_mode: str,
@@ -422,20 +412,53 @@ class PhasePlanningSummary:
         ep_group_root_rank: int,
         plan_key_factory,
     ) -> "PhasePlanningSummary":
-        global_rank, per_peer_bytes, outgoing_edges, p2_hint = payload
+        global_rank, per_peer_bytes, outgoing_edges = payload
         return cls(
             plan_key=dict(plan_key_factory(int(global_rank))),
             phase=str(phase),
             control_mode=str(control_mode),
             layer_id=str(layer_id),
             global_rank=int(global_rank),
-            local_rank=tuple(int(v) for v in ep_group_ranks).index(int(global_rank)),
             ep_group_ranks=tuple(int(v) for v in ep_group_ranks),
             ep_group_root_rank=int(ep_group_root_rank),
-            per_peer_rows=tuple(0 for _ in tuple(per_peer_bytes)),
             per_peer_bytes=tuple(int(v) for v in per_peer_bytes),
             outgoing_edges=tuple(PlanningEdgeSummary.from_wire_payload(item, phase=str(phase)) for item in outgoing_edges),
-            p2_hint=FutureDemandHint.from_wire_payload(p2_hint),
+        )
+
+
+@dataclass(frozen=True)
+class PlanningSummaryContext:
+    """供 root 侧 planner 使用的轻量上下文，不构造完整执行期对象树。"""
+
+    plan_key: dict[str, Any]
+    phase: PhaseName
+    control_mode: str
+    layer_id: str
+    global_rank: int
+    local_rank: int
+    ep_group_ranks: tuple[int, ...]
+    ep_group_root_rank: int
+    per_peer_bytes: tuple[int, ...]
+    outgoing_edges: tuple[PlanningEdgeSummary, ...]
+    p2_hint: FutureDemandHint = field(default_factory=FutureDemandHint)
+    payload_specs: tuple[PackedTensorDescriptor, ...] = field(default_factory=tuple)
+    transport_bundles: tuple[Any, ...] = field(default_factory=tuple)
+    atomic_submit: bool = True
+
+    @classmethod
+    def from_summary(cls, summary: PhasePlanningSummary) -> "PlanningSummaryContext":
+        ranks = tuple(int(v) for v in summary.ep_group_ranks)
+        return cls(
+            plan_key=dict(summary.plan_key),
+            phase=str(summary.phase),
+            control_mode=str(summary.control_mode),
+            layer_id=str(summary.layer_id),
+            global_rank=int(summary.global_rank),
+            local_rank=ranks.index(int(summary.global_rank)),
+            ep_group_ranks=ranks,
+            ep_group_root_rank=int(summary.ep_group_root_rank),
+            per_peer_bytes=tuple(int(v) for v in summary.per_peer_bytes),
+            outgoing_edges=tuple(summary.outgoing_edges),
         )
 
 
@@ -766,10 +789,8 @@ class PhaseReadyContext:
             control_mode=str(self.control_mode),
             layer_id=str(self.layer_id),
             global_rank=int(self.global_rank),
-            local_rank=int(self.local_rank),
             ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
             ep_group_root_rank=int(self.ep_group_root_rank),
-            per_peer_rows=tuple(int(v) for v in self.per_peer_rows),
             per_peer_bytes=tuple(int(v) for v in self.per_peer_bytes),
             outgoing_edges=tuple(
                 PlanningEdgeSummary(
@@ -783,7 +804,6 @@ class PhaseReadyContext:
                 for segment in self.outgoing_segments
                 if not bool(segment.is_local) and int(segment.row_count) > 0
             ),
-            p2_hint=self.p2_hint,
         )
 
     def _agreement_payload_specs(self) -> list[dict[str, Any]]:
@@ -968,7 +988,7 @@ class PhaseReadyContext:
             layer_id=str(summary.layer_id),
             layer_name=str(summary.layer_id),
             global_rank=int(summary.global_rank),
-            local_rank=int(summary.local_rank),
+            local_rank=tuple(int(v) for v in summary.ep_group_ranks).index(int(summary.global_rank)),
             ep_group_ranks=tuple(int(v) for v in summary.ep_group_ranks),
             ep_group_root_rank=int(summary.ep_group_root_rank),
             topology={},
@@ -979,7 +999,7 @@ class PhaseReadyContext:
             output_splits=tuple(),
             send_splits=tuple(),
             recv_splits=tuple(),
-            per_peer_rows=tuple(int(v) for v in summary.per_peer_rows),
+            per_peer_rows=tuple(0 for _ in summary.per_peer_bytes),
             per_peer_bytes=tuple(int(v) for v in summary.per_peer_bytes),
             packed_send_layout_id="",
             canonical_receive_layout_id="",
@@ -1006,7 +1026,7 @@ class PhaseReadyContext:
             release_state="ready",
             demand_known_at="runtime",
             payload_exists=True,
-            p2_hint=summary.p2_hint,
+            p2_hint=FutureDemandHint(),
         )
 
 

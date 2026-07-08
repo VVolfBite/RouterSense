@@ -162,6 +162,9 @@ def write_rank_artifacts(
     write_json(run_dir / f"rank{rank}_summary.json", rank_summary)
     write_json(run_dir / f"rank{rank}_native_dispatch.json", native_dispatch_summary)
     if runtime is not None:
+        prepared_plan_summary = runtime.export_prepared_plan_summary()
+        if prepared_plan_summary:
+            rank_summary.update(prepared_plan_summary)
         write_jsonl(run_dir / f"rank{rank}_control_timeline.jsonl", runtime.export_control_timeline())
         write_jsonl(run_dir / f"rank{rank}_control_commands.jsonl", runtime.export_control_commands())
         write_json(run_dir / f"rank{rank}_assertions.json", runtime.export_assertions())
@@ -176,6 +179,7 @@ def write_rank_artifacts(
         write_jsonl(run_dir / f"rank{rank}_prepared_phase_plan_shadow.jsonl", runtime.export_prepared_phase_plan_shadows())
         write_jsonl(run_dir / f"rank{rank}_pending_window_driver.jsonl", runtime.export_pending_window_driver_records())
         write_jsonl(run_dir / f"rank{rank}_planning_timing.jsonl", runtime.export_planning_timing_records())
+        write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)

@@ -9,10 +9,14 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 from dataclasses import replace
+from typing import Any
 
-from rs.runtime.online.megatron_ep.pending_window.policy_adapter import compile_prepared_window_phase_plan
+from rs.runtime.online.megatron_ep.pending_window.policy_adapter import (
+    build_phase_policy_fast_path,
+    compile_prepared_window_phase_plan,
+    get_or_build_prepared_priority_cache,
+)
 from rs.scheduling.contracts import (
     FlowWindow,
     ForecastPressure,
@@ -43,6 +47,7 @@ class MultiphasePendingWindowAdapter:
         p0_weight: float,
         p1_reservation_weight: float,
         p2_hint_weight: float,
+        fast_path_enabled: bool = False,
     ) -> None:
         if phase_policy_name not in {"routersense_p0p1p2_hint"}:
             raise UnsupportedPendingWindowAdapter(
@@ -55,6 +60,13 @@ class MultiphasePendingWindowAdapter:
         self._p0_weight = float(p0_weight)
         self._p1_reservation_weight = float(p1_reservation_weight)
         self._p2_hint_weight = float(p2_hint_weight)
+        self._fast_path_enabled = bool(fast_path_enabled)
+        self._phase_policy = build_phase_policy_fast_path(
+            bucket_rows=self._bucket_rows,
+            p0_weight=self._p0_weight,
+            p1_reservation_weight=self._p1_reservation_weight,
+            p2_hint_weight=self._p2_hint_weight,
+        )
 
     def build_plan(
         self,
@@ -62,10 +74,114 @@ class MultiphasePendingWindowAdapter:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
+        prepared_plan = self._shared_state.get("prepared_plan")
+        if self._fast_path_enabled:
+            fast_path_start_ns = time.monotonic_ns()
+            fallback_reason = ""
+            cache_hit = False
+            cache_build_time_us = 0.0
+            lookup_time_us = 0.0
+            if prepared_plan is not None:
+                prepared_priority_cache, cache_hit, cache_build_time_us = get_or_build_prepared_priority_cache(
+                    shared_state=self._shared_state,
+                    prepared_plan=prepared_plan,
+                )
+                lookup_start_ns = time.monotonic_ns()
+                phase_priority = dict(prepared_priority_cache.get("priority_by_phase", {}).get(str(local_context.phase), {}))
+                lookup_end_ns = time.monotonic_ns()
+                lookup_time_us = (lookup_end_ns - lookup_start_ns) / 1000.0
+                if phase_priority:
+                    compile_start_ns = time.monotonic_ns()
+                    phase_plan = compile_prepared_window_phase_plan(
+                        prepared_plan=prepared_plan,
+                        local_context=local_context,
+                        global_contexts=global_contexts,
+                        bucket_rows=self._bucket_rows,
+                        p0_weight=self._p0_weight,
+                        p1_reservation_weight=self._p1_reservation_weight,
+                        p2_hint_weight=self._p2_hint_weight,
+                        policy_name=self._phase_policy_name,
+                        prepared_priority_cache=prepared_priority_cache,
+                        phase_policy=self._phase_policy,
+                    )
+                    compile_end_ns = time.monotonic_ns()
+                    wave_sizes = [len(wave.bucket_tasks) for wave in phase_plan.waves]
+                    wave_conflict_count = sum(
+                        1
+                        for wave in phase_plan.waves
+                        if len({int(task.src_rank) for task in wave.bucket_tasks}) != len(wave.bucket_tasks)
+                        or len({int(task.dst_rank) for task in wave.bucket_tasks}) != len(wave.bucket_tasks)
+                    )
+                    fast_path_end_ns = time.monotonic_ns()
+                    return replace(
+                        phase_plan,
+                        metrics={
+                            **phase_plan.metrics,
+                            "compiled_from_pending_window": True,
+                            "pending_window_logical_policy_name": "routersense_fast_path",
+                            "pending_window_plan_hash": str(prepared_priority_cache.get("source_logical_plan_hash", "")),
+                            "pending_window_information_mode": "p0_p1_p2",
+                            "pending_window_forecast_available": True,
+                            "pending_window_phase": local_context.phase,
+                            "pending_window_p0_total_bytes": int(sum(int(v) for v in local_context.per_peer_bytes)),
+                            "pending_window_p1_total_bytes": 0,
+                            "pending_window_p2_total_bytes": int(self._shared_state.get("p2_matrix_total_bytes", 0) or 0),
+                            "pending_window_p1_matrix_source": "current_phase_context",
+                            "pending_window_p2_matrix_source": "prepared_window_plan",
+                            "pending_window_logical_build_time_us": 0.0,
+                            "pending_window_compile_time_us": (compile_end_ns - compile_start_ns) / 1000.0,
+                            "routersense_fast_path_enabled": True,
+                            "routersense_heavy_path_used": False,
+                            "routersense_fast_path_fallback_reason": "",
+                            "fast_path_mode": "edge_priority_wave_pack",
+                            "fast_path_wave_plan_valid": wave_conflict_count == 0,
+                            "wave_conflict_count": int(wave_conflict_count),
+                            "planned_wave_count": int(len(phase_plan.waves)),
+                            "max_tasks_per_wave": int(max(wave_sizes, default=0)),
+                            "min_tasks_per_wave": int(min(wave_sizes, default=0)) if wave_sizes else 0,
+                            "zero_participation_rank_count": max(0, len(local_context.ep_group_ranks) - len({int(task.src_rank) for wave in phase_plan.waves for task in wave.bucket_tasks} | {int(task.dst_rank) for wave in phase_plan.waves for task in wave.bucket_tasks})),
+                            "fallback_policy": "",
+                            "fast_path_fallback_reason": "",
+                            "prepared_priority_cache_hit": bool(cache_hit),
+                            "prepared_priority_cache_build_time_us": float(cache_build_time_us),
+                            "prepared_priority_lookup_time_us": float(lookup_time_us),
+                            "source_logical_plan_hash": str(prepared_priority_cache.get("source_logical_plan_hash", "")),
+                            "fast_path_total_time_us": (fast_path_end_ns - fast_path_start_ns) / 1000.0,
+                        },
+                    )
+                fallback_reason = "no_prepared_priority_for_phase"
+            else:
+                fallback_reason = "no_prepared_plan"
+            fallback_start_ns = time.monotonic_ns()
+            fallback_plan = self._phase_policy.build_plan(local_context=local_context, global_contexts=global_contexts)
+            fallback_end_ns = time.monotonic_ns()
+            return replace(
+                fallback_plan,
+                metrics={
+                    **fallback_plan.metrics,
+                    "compiled_from_pending_window": False,
+                    "pending_window_logical_build_time_us": 0.0,
+                    "pending_window_compile_time_us": 0.0,
+                    "routersense_fast_path_enabled": True,
+                    "routersense_heavy_path_used": False,
+                    "routersense_fast_path_fallback_reason": str(fallback_reason),
+                    "fast_path_mode": "edge_priority_wave_pack",
+                    "fast_path_wave_plan_valid": True,
+                    "wave_conflict_count": 0,
+                    "planned_wave_count": int(len(fallback_plan.waves)),
+                    "fallback_policy": self._phase_policy_name,
+                    "fast_path_fallback_reason": str(fallback_reason),
+                    "prepared_priority_cache_hit": bool(cache_hit),
+                    "prepared_priority_cache_build_time_us": float(cache_build_time_us),
+                    "prepared_priority_lookup_time_us": float(lookup_time_us),
+                    "fast_path_total_time_us": (fallback_end_ns - fallback_start_ns) / 1000.0,
+                },
+            )
+
         problem = _build_problem_from_contexts(
             local_context=local_context,
             global_contexts=global_contexts,
-            prepared_plan=self._shared_state.get("prepared_plan"),
+            prepared_plan=prepared_plan,
             p0_weight=self._p0_weight,
             p1_reservation_weight=self._p1_reservation_weight,
             p2_hint_weight=self._p2_hint_weight,
@@ -103,6 +219,7 @@ class MultiphasePendingWindowAdapter:
             p1_reservation_weight=self._p1_reservation_weight,
             p2_hint_weight=self._p2_hint_weight,
             policy_name=self._phase_policy_name,
+            phase_policy=self._phase_policy,
         )
         compile_end_ns = time.monotonic_ns()
         return replace(
@@ -122,6 +239,9 @@ class MultiphasePendingWindowAdapter:
                 "pending_window_p2_matrix_source": "prepared_window_plan",
                 "pending_window_logical_build_time_us": (logical_build_end_ns - logical_build_start_ns) / 1000.0,
                 "pending_window_compile_time_us": (compile_end_ns - compile_start_ns) / 1000.0,
+                "routersense_fast_path_enabled": False,
+                "routersense_heavy_path_used": True,
+                "routersense_fast_path_fallback_reason": "disabled",
             },
         )
 

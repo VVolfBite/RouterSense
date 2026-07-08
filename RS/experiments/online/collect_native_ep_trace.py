@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 config.observation.profile == "debug" and bool(config.observation.capture_enabled)
             ),
         )(model)
-        if config.observation.profile in {"execution", "debug"}:
+        if config.observation.profile in {"perf", "execution", "debug"}:
             policy_runtime = attach_formal_online_runtime(
                 model=model,
                 runtime_config=OnlineRuntimeConfig(

@@ -28,7 +28,7 @@ from rs.runtime.online.megatron_ep.contracts import (
 from rs.scheduling.validation import stable_hash
 
 
-ObservationProfile = Literal["minimal", "execution", "debug"]
+ObservationProfile = Literal["minimal", "perf", "execution", "debug"]
 ExecutionAuditStatus = Literal["passed", "failed", "not_applicable"]
 
 
@@ -69,10 +69,13 @@ class ObservationEmitter:
         self.config = config
 
     def includes_execution(self) -> bool:
-        return self.config.profile in {"execution", "debug"}
+        return self.config.profile in {"perf", "execution", "debug"}
 
     def includes_debug(self) -> bool:
         return self.config.profile == "debug"
+
+    def includes_perf(self) -> bool:
+        return self.config.profile == "perf"
 
 
 @dataclass(frozen=True)

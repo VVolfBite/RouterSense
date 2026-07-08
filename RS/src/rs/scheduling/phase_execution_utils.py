@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
+import time
 from .phase_execution import (
     AbstractPhaseExecutionPlan,
     BucketTask,
@@ -354,9 +356,15 @@ def materialize_local_execution_plan(
     local_context: PhaseReadyContext,
     abstract_plan: AbstractPhaseExecutionPlan,
 ) -> PhaseExecutionPlan:
+    total_started_ns = time.perf_counter_ns()
     bucket_rows = int(abstract_plan.metrics.get("bucket_rows", 0) or 0)
+    outgoing_started_ns = time.perf_counter_ns()
     outgoing_catalog = _local_outgoing_task_catalog(local_context, bucket_rows=bucket_rows)
+    outgoing_ended_ns = time.perf_counter_ns()
+    incoming_started_ns = time.perf_counter_ns()
     incoming_catalog = _local_incoming_task_catalog(local_context, bucket_rows=bucket_rows)
+    incoming_ended_ns = time.perf_counter_ns()
+    wave_materialize_started_ns = time.perf_counter_ns()
     waves: list[PlanWave] = []
     for abstract_wave in abstract_plan.waves:
         local_tasks: list[BucketTask] = []
@@ -374,6 +382,7 @@ def materialize_local_execution_plan(
             if task is not None:
                 local_tasks.append(task)
         waves.append(PlanWave(wave_id=int(abstract_wave.wave_id), phase=str(abstract_wave.phase), bucket_tasks=tuple(local_tasks)))
+    wave_materialize_ended_ns = time.perf_counter_ns()
     plan = PhaseExecutionPlan(
         plan_key=dict(abstract_plan.plan_key),
         phase=str(abstract_plan.phase),
@@ -388,10 +397,27 @@ def materialize_local_execution_plan(
         observation_digest=str(abstract_plan.observation_digest),
         plan_hash=str(abstract_plan.plan_hash),
         waves=tuple(waves),
-        metrics={**dict(abstract_plan.metrics), "local_materialized": True},
+        metrics={
+            **dict(abstract_plan.metrics),
+            "local_materialized": True,
+            "local_outgoing_catalog_build_time_us": (outgoing_ended_ns - outgoing_started_ns) / 1000.0,
+            "local_incoming_catalog_build_time_us": (incoming_ended_ns - incoming_started_ns) / 1000.0,
+            "local_wave_materialize_time_us": (wave_materialize_ended_ns - wave_materialize_started_ns) / 1000.0,
+            "local_outgoing_catalog_task_count": int(len(outgoing_catalog)),
+            "local_incoming_catalog_task_count": int(len(incoming_catalog)),
+        },
     )
+    validate_started_ns = time.perf_counter_ns()
     validate_phase_execution_plan(local_context, plan)
-    return plan
+    validate_ended_ns = time.perf_counter_ns()
+    return replace(
+        plan,
+        metrics={
+            **plan.metrics,
+            "local_materialize_validate_time_us": (validate_ended_ns - validate_started_ns) / 1000.0,
+            "materialize_local_execution_plan_total_time_us": (validate_ended_ns - total_started_ns) / 1000.0,
+        },
+    )
 
 
 def validate_phase_execution_plan(context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:

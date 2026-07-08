@@ -29,6 +29,8 @@ if [[ "$scope" == "mainline" ]]; then
   tar -czf "$archive_path" \
     --exclude='.git' \
     --exclude='.pytest_cache' \
+    --exclude='RS/.codex' \
+    --exclude='RS/.codex/*' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='RS/deploy/inventory/*.local.yaml' \
@@ -61,6 +63,8 @@ else
   tar -czf "$archive_path" \
     --exclude='.git' \
     --exclude='.pytest_cache' \
+    --exclude='RS/.codex' \
+    --exclude='RS/.codex/*' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='legacy/**/outputs' \

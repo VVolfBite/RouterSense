@@ -195,8 +195,35 @@ def scheduled_plan_metrics(plans: list[dict[str, Any]]) -> dict[str, float]:
     all_gather = build = broadcast = verify = total = 0.0
     summary_build = summary_encode = summary_decode = 0.0
     abstract_encode = abstract_decode = materialize_local_plan = 0.0
+    all_gather_submit = all_gather_sync = 0.0
+    broadcast_length_submit = broadcast_length_sync = 0.0
+    broadcast_payload_submit = broadcast_payload_sync = 0.0
+    summary_stack = summary_tensor_to_cpu = summary_object_decode = 0.0
+    abstract_tensor_to_cpu = abstract_object_decode = 0.0
     pending_window_logical = 0.0
     pending_window_compile = 0.0
+    prepared_priority_extract = 0.0
+    prepared_context_replace = 0.0
+    prepared_phase_policy_build = 0.0
+    planning_summary_tensor_len = 0.0
+    planning_summary_total_elements = 0.0
+    abstract_plan_tensor_len = 0.0
+    abstract_plan_total_elements = 0.0
+    abstract_plan_task_ref_count = 0.0
+    broadcast_payload_elements = 0.0
+    bucket_count = 0.0
+    nonzero_edge_count = 0.0
+    total_row_count = 0.0
+    total_byte_count = 0.0
+    avg_buckets_per_edge_sum = 0.0
+    max_buckets_per_edge = 0.0
+    expected_collective_count = 0.0
+    max_wave_task_count = 0.0
+    hint_edges_available = 0.0
+    hint_edges_matched = 0.0
+    hint_match_rate_sum = 0.0
+    preferred_wave_count = 0.0
+    preferred_edge_count = 0.0
     for plan in plans:
         waves = plan.get("waves", []) or []
         wave_count += len(waves)
@@ -211,39 +238,120 @@ def scheduled_plan_metrics(plans: list[dict[str, Any]]) -> dict[str, float]:
         summary_decode += float(metrics.get("summary_decode_time_us", 0.0) or 0.0)
         abstract_encode += float(metrics.get("abstract_encode_time_us", 0.0) or 0.0)
         abstract_decode += float(metrics.get("abstract_decode_time_us", 0.0) or 0.0)
+        all_gather_submit += float(metrics.get("all_gather_submit_time_us", 0.0) or 0.0)
+        all_gather_sync += float(metrics.get("all_gather_sync_time_us", 0.0) or 0.0)
+        broadcast_length_submit += float(metrics.get("broadcast_length_submit_time_us", 0.0) or 0.0)
+        broadcast_length_sync += float(metrics.get("broadcast_length_sync_time_us", 0.0) or 0.0)
+        broadcast_payload_submit += float(metrics.get("broadcast_payload_submit_time_us", 0.0) or 0.0)
+        broadcast_payload_sync += float(metrics.get("broadcast_payload_sync_time_us", 0.0) or 0.0)
+        summary_stack += float(metrics.get("summary_stack_time_us", 0.0) or 0.0)
+        summary_tensor_to_cpu += float(metrics.get("summary_tensor_to_cpu_time_us", 0.0) or 0.0)
+        summary_object_decode += float(metrics.get("summary_object_decode_time_us", 0.0) or 0.0)
+        abstract_tensor_to_cpu += float(metrics.get("abstract_tensor_to_cpu_time_us", 0.0) or 0.0)
+        abstract_object_decode += float(metrics.get("abstract_object_decode_time_us", 0.0) or 0.0)
         materialize_local_plan += float(metrics.get("materialize_local_plan_time_us", 0.0) or 0.0)
         pending_window_logical += float(metrics.get("pending_window_logical_build_time_us", 0.0) or 0.0)
         pending_window_compile += float(metrics.get("pending_window_compile_time_us", 0.0) or 0.0)
+        prepared_priority_extract += float(metrics.get("prepared_priority_extract_time_us", 0.0) or 0.0)
+        prepared_context_replace += float(metrics.get("prepared_context_replace_time_us", 0.0) or 0.0)
+        prepared_phase_policy_build += float(metrics.get("prepared_phase_policy_build_time_us", 0.0) or 0.0)
+        planning_summary_tensor_len += float(metrics.get("planning_summary_tensor_len", 0.0) or 0.0)
+        planning_summary_total_elements += float(metrics.get("planning_summary_total_elements", 0.0) or 0.0)
+        abstract_plan_tensor_len += float(metrics.get("abstract_plan_tensor_len", 0.0) or 0.0)
+        abstract_plan_total_elements += float(metrics.get("abstract_plan_total_elements", 0.0) or 0.0)
+        abstract_plan_task_ref_count += float(metrics.get("abstract_plan_task_ref_count", 0.0) or 0.0)
+        broadcast_payload_elements += float(metrics.get("broadcast_payload_elements", 0.0) or 0.0)
+        bucket_count += float(metrics.get("bucket_count", 0.0) or 0.0)
+        nonzero_edge_count += float(metrics.get("nonzero_edge_count", 0.0) or 0.0)
+        total_row_count += float(metrics.get("total_row_count", 0.0) or 0.0)
+        total_byte_count += float(metrics.get("total_byte_count", 0.0) or 0.0)
+        avg_buckets_per_edge_sum += float(metrics.get("avg_buckets_per_edge", 0.0) or 0.0)
+        max_buckets_per_edge = max(max_buckets_per_edge, float(metrics.get("max_buckets_per_edge", 0.0) or 0.0))
+        expected_collective_count += float(metrics.get("expected_collective_count", 0.0) or 0.0)
+        max_wave_task_count = max(max_wave_task_count, float(metrics.get("max_wave_task_count", 0.0) or 0.0))
+        hint_edges_available += float(metrics.get("hint_edges_available", 0.0) or 0.0)
+        hint_edges_matched += float(metrics.get("hint_edges_matched", 0.0) or 0.0)
+        hint_match_rate_sum += float(metrics.get("hint_match_rate", 0.0) or 0.0)
+        preferred_wave_count += float(metrics.get("preferred_wave_count", 0.0) or 0.0)
+        preferred_edge_count += float(metrics.get("preferred_edge_count", 0.0) or 0.0)
     plan_count = float(len(plans))
     return {
         "scheduled_plan_count": plan_count,
         "total_wave_count": float(wave_count),
         "all_gather_time_us": all_gather,
+        "all_gather_submit_time_us": all_gather_submit,
+        "all_gather_sync_time_us": all_gather_sync,
         "build_plan_time_us": build,
         "broadcast_time_us": broadcast,
+        "broadcast_length_submit_time_us": broadcast_length_submit,
+        "broadcast_length_sync_time_us": broadcast_length_sync,
+        "broadcast_payload_submit_time_us": broadcast_payload_submit,
+        "broadcast_payload_sync_time_us": broadcast_payload_sync,
         "hash_verify_time_us": verify,
         "plan_metrics_total_agreement_us": total,
         "summary_build_time_us": summary_build,
         "summary_encode_time_us": summary_encode,
         "summary_decode_time_us": summary_decode,
+        "summary_stack_time_us": summary_stack,
+        "summary_tensor_to_cpu_time_us": summary_tensor_to_cpu,
+        "summary_object_decode_time_us": summary_object_decode,
         "abstract_encode_time_us": abstract_encode,
         "abstract_decode_time_us": abstract_decode,
+        "abstract_tensor_to_cpu_time_us": abstract_tensor_to_cpu,
+        "abstract_object_decode_time_us": abstract_object_decode,
         "materialize_local_plan_time_us": materialize_local_plan,
         "avg_all_gather_time_us": all_gather / plan_count if plan_count else 0.0,
+        "avg_all_gather_submit_time_us": all_gather_submit / plan_count if plan_count else 0.0,
+        "avg_all_gather_sync_time_us": all_gather_sync / plan_count if plan_count else 0.0,
         "avg_build_plan_time_us": build / plan_count if plan_count else 0.0,
         "avg_broadcast_time_us": broadcast / plan_count if plan_count else 0.0,
+        "avg_broadcast_length_submit_time_us": broadcast_length_submit / plan_count if plan_count else 0.0,
+        "avg_broadcast_length_sync_time_us": broadcast_length_sync / plan_count if plan_count else 0.0,
+        "avg_broadcast_payload_submit_time_us": broadcast_payload_submit / plan_count if plan_count else 0.0,
+        "avg_broadcast_payload_sync_time_us": broadcast_payload_sync / plan_count if plan_count else 0.0,
         "avg_hash_verify_time_us": verify / plan_count if plan_count else 0.0,
         "avg_total_agreement_time_us": total / plan_count if plan_count else 0.0,
         "avg_summary_build_time_us": summary_build / plan_count if plan_count else 0.0,
         "avg_summary_encode_time_us": summary_encode / plan_count if plan_count else 0.0,
         "avg_summary_decode_time_us": summary_decode / plan_count if plan_count else 0.0,
+        "avg_summary_stack_time_us": summary_stack / plan_count if plan_count else 0.0,
+        "avg_summary_tensor_to_cpu_time_us": summary_tensor_to_cpu / plan_count if plan_count else 0.0,
+        "avg_summary_object_decode_time_us": summary_object_decode / plan_count if plan_count else 0.0,
         "avg_abstract_encode_time_us": abstract_encode / plan_count if plan_count else 0.0,
         "avg_abstract_decode_time_us": abstract_decode / plan_count if plan_count else 0.0,
+        "avg_abstract_tensor_to_cpu_time_us": abstract_tensor_to_cpu / plan_count if plan_count else 0.0,
+        "avg_abstract_object_decode_time_us": abstract_object_decode / plan_count if plan_count else 0.0,
         "avg_materialize_local_plan_time_us": materialize_local_plan / plan_count if plan_count else 0.0,
         "pending_window_logical_build_time_us": pending_window_logical,
         "pending_window_compile_time_us": pending_window_compile,
         "avg_pending_window_logical_build_time_us": pending_window_logical / plan_count if plan_count else 0.0,
         "avg_pending_window_compile_time_us": pending_window_compile / plan_count if plan_count else 0.0,
+        "prepared_priority_extract_time_us": prepared_priority_extract,
+        "prepared_context_replace_time_us": prepared_context_replace,
+        "prepared_phase_policy_build_time_us": prepared_phase_policy_build,
+        "avg_prepared_priority_extract_time_us": prepared_priority_extract / plan_count if plan_count else 0.0,
+        "avg_prepared_context_replace_time_us": prepared_context_replace / plan_count if plan_count else 0.0,
+        "avg_prepared_phase_policy_build_time_us": prepared_phase_policy_build / plan_count if plan_count else 0.0,
+        "planning_summary_tensor_len": planning_summary_tensor_len,
+        "planning_summary_total_elements": planning_summary_total_elements,
+        "abstract_plan_tensor_len": abstract_plan_tensor_len,
+        "abstract_plan_total_elements": abstract_plan_total_elements,
+        "abstract_plan_task_ref_count": abstract_plan_task_ref_count,
+        "broadcast_payload_elements": broadcast_payload_elements,
+        "bucket_count": bucket_count,
+        "nonzero_edge_count": nonzero_edge_count,
+        "total_row_count": total_row_count,
+        "total_byte_count": total_byte_count,
+        "avg_buckets_per_edge": avg_buckets_per_edge_sum / plan_count if plan_count else 0.0,
+        "max_buckets_per_edge": max_buckets_per_edge,
+        "collective_count": expected_collective_count,
+        "expected_collective_count": expected_collective_count,
+        "max_wave_task_count": max_wave_task_count,
+        "hint_edges_available": hint_edges_available,
+        "hint_edges_matched": hint_edges_matched,
+        "hint_match_rate": hint_match_rate_sum / plan_count if plan_count else 0.0,
+        "preferred_wave_count": preferred_wave_count,
+        "preferred_edge_count": preferred_edge_count,
     }
 
 
@@ -309,6 +417,7 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
     planning_timing = read_jsonl(rank_dir / f"rank{rank}_planning_timing.jsonl")
     phase_contexts = read_jsonl(rank_dir / f"rank{rank}_phase_contexts.jsonl")
     observer_rows = read_jsonl(rank_dir / f"rank{rank}_observer.jsonl")
+    prepared_plan_summary = read_json(rank_dir / f"rank{rank}_prepared_plan_summary.json")
     summary = read_json(rank_dir / f"rank{rank}_summary.json")
     if not summary:
         summary = read_json(rank_dir / f"rank{rank}_native_dispatch.json")
@@ -325,6 +434,11 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
         "remote_dispatch_rows": float(summary.get("remote_dispatch_rows", summary.get("p0_remote_rows", 0)) or 0),
         "remote_combine_rows": float(summary.get("remote_combine_rows", summary.get("p1_remote_rows", 0)) or 0),
         "p2_hint_modes_used": p2_hint_modes_from_phase_contexts(phase_contexts),
+        "p2_matrix_source": str(prepared_plan_summary.get("p2_matrix_source", "")),
+        "p2_matrix_total_bytes": float(prepared_plan_summary.get("p2_matrix_total_bytes", 0) or 0),
+        "p2_matrix_is_replicated_local_row": bool(prepared_plan_summary.get("p2_matrix_is_replicated_local_row", False)),
+        "p2_matrix_row_sums": list(prepared_plan_summary.get("p2_matrix_row_sums", []) or []),
+        "p2_matrix_col_sums": list(prepared_plan_summary.get("p2_matrix_col_sums", []) or []),
     }
     metrics.update(plan_timing_from_timeline(timeline))
     metrics.update(scheduled_plan_metrics(plans))
@@ -337,13 +451,27 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
 
 
 def aggregate_repetitions(repetition_metrics: list[dict[str, Any]]) -> dict[str, Any]:
-    keys = sorted({key for metrics in repetition_metrics for key, value in metrics.items() if isinstance(value, (int, float))})
+    keys = sorted(
+        {
+            key
+            for metrics in repetition_metrics
+            for key, value in metrics.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+    )
     aggregated = {key: summarize_values([float(metrics.get(key, 0.0)) for metrics in repetition_metrics]) for key in keys}
     hint_counts: dict[str, int] = {}
     for metrics in repetition_metrics:
         for mode, count in (metrics.get("p2_hint_modes_used", {}) or {}).items():
             hint_counts[str(mode)] = hint_counts.get(str(mode), 0) + int(count)
     aggregated["p2_hint_modes_used"] = hint_counts
+    if repetition_metrics:
+        aggregated["p2_matrix_source"] = str(repetition_metrics[0].get("p2_matrix_source", ""))
+        aggregated["p2_matrix_is_replicated_local_row"] = bool(
+            repetition_metrics[0].get("p2_matrix_is_replicated_local_row", False)
+        )
+        aggregated["p2_matrix_row_sums"] = list(repetition_metrics[0].get("p2_matrix_row_sums", []) or [])
+        aggregated["p2_matrix_col_sums"] = list(repetition_metrics[0].get("p2_matrix_col_sums", []) or [])
     return aggregated
 
 

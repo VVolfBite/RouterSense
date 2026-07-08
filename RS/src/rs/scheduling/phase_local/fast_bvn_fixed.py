@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
@@ -131,11 +132,13 @@ class FastBVNSingleTierPolicy:
     ) -> PhaseExecutionPlan:
         if len(local_context.ep_group_ranks) > 8:
             raise ValueError("unsupported_policy_scale")
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
+        schedule_started_ns = time.perf_counter_ns()
         edge_queues: dict[tuple[int, int], list[BucketTask]] = defaultdict(list)
         for task in all_tasks:
             edge_queues[(int(task.src_rank), int(task.dst_rank))].append(task)
@@ -182,6 +185,7 @@ class FastBVNSingleTierPolicy:
                 }
             )
             wave_id += 1
+        pack_time_us = (time.perf_counter_ns() - schedule_started_ns) / 1000.0
 
         diagnostics = {
             "policy_name": self.policy_name,
@@ -208,4 +212,11 @@ class FastBVNSingleTierPolicy:
             all_tasks=[task for wave in waves for task in wave.bucket_tasks],
             waves=tuple(waves),
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                "pack_phase_tasks_time_us": pack_time_us,
+                "wave_count": int(len(waves)),
+                "max_wave_task_count": int(max((len(wave.bucket_tasks) for wave in waves), default=0)),
+                "task_count": int(len(all_tasks)),
+            },
         )

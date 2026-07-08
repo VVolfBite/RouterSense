@@ -91,6 +91,8 @@ def test_execution_audit_preserves_p0_bundle_atomicity() -> None:
     )
     assert audit.status == "passed"
     assert audit.p0_bundle_atomicity_preserved is True
+    assert audit.duplicate_tasks == ()
+    assert audit.details["multi_payload_task_count"] == 1
 
 
 def test_execution_audit_detects_wave_mismatch() -> None:
@@ -169,3 +171,48 @@ def test_execution_audit_fails_when_prepared_plan_order_not_preserved() -> None:
     )
     assert audit.status == "failed"
     assert audit.details["prepared_plan_order_preserved"] is False
+
+
+def test_execution_audit_reads_perf_task_ids_without_bucket_tasks() -> None:
+    plan = {
+        "policy_name": "birkhoff_phase_local",
+        "plan_hash": "plan-perf",
+        "transport_mutation": True,
+        "waves": [
+            {"wave_id": 0, "task_count": 2, "task_ids": ["a", "b"]},
+        ],
+    }
+    audit = build_execution_audit(
+        ExecutionAuditInput(
+            execution_plan=plan,
+            transport_events=(
+                {"wave_id": 0, "task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+                {"wave_id": 0, "task_id": "b", "src_rank": 1, "dst_rank": 0, "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            ),
+            phase_contract={"phase": "P1", "layer_id": "0", "policy_enabled": True},
+        )
+    )
+    assert audit.status == "passed"
+    assert audit.planned_task_ids == ("a", "b")
+    assert audit.details["planned_bytes_source"] == "not_recorded_in_perf"
+
+
+def test_execution_audit_ignores_taskless_records_for_coverage() -> None:
+    plan = {
+        "policy_name": "birkhoff_phase_local",
+        "plan_hash": "plan-taskless",
+        "transport_mutation": True,
+        "waves": [{"wave_id": 0, "task_ids": ["a"]}],
+    }
+    audit = build_execution_audit(
+        ExecutionAuditInput(
+            execution_plan=plan,
+            transport_events=(
+                {"wave_id": 0, "task_id": None, "event": "marker", "tensor_role": "hidden_states"},
+                {"wave_id": 0, "task_id": "a", "src_rank": 0, "dst_rank": 1, "row_count": 4, "byte_count": 16, "tensor_role": "hidden_states"},
+            ),
+            phase_contract={"phase": "P1", "layer_id": "0", "policy_enabled": True},
+        )
+    )
+    assert audit.status == "passed"
+    assert audit.details["task_id_none_event_count"] == 1

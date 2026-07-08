@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
 from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
 from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext, PlanWave
@@ -121,11 +123,13 @@ class BirkhoffPhaseLocalPolicy:
         local_context: PhaseReadyContext,
         global_contexts: tuple[PhaseReadyContext, ...],
     ) -> PhaseExecutionPlan:
-        transfer_layouts, all_tasks = build_transfer_layouts_and_tasks(
+        transfer_layouts, all_tasks, build_stats = build_transfer_layouts_and_tasks(
             local_context=local_context,
             global_contexts=global_contexts,
             bucket_rows=self.bucket_rows,
+            return_stats=True,
         )
+        schedule_started_ns = time.perf_counter_ns()
         residual = {}
         for task in all_tasks:
             residual.setdefault((int(task.src_rank), int(task.dst_rank)), []).append(task)
@@ -149,6 +153,7 @@ class BirkhoffPhaseLocalPolicy:
             waves.append(PlanWave(wave_id=wave_id, phase=local_context.phase, bucket_tasks=tuple(chosen_tasks)))
             wave_diags.append(float(sum(int(task.byte_count) for task in chosen_tasks)))
             wave_id += 1
+        pack_time_us = (time.perf_counter_ns() - schedule_started_ns) / 1000.0
         diagnostics = {
             "policy_name": self.policy_name,
             "policy_version": self.policy_version,
@@ -177,4 +182,11 @@ class BirkhoffPhaseLocalPolicy:
             all_tasks=[task for wave in waves for task in wave.bucket_tasks],
             waves=tuple(waves),
             diagnostics=diagnostics,
+            timing_metrics={
+                **build_stats,
+                "pack_phase_tasks_time_us": pack_time_us,
+                "wave_count": int(len(waves)),
+                "max_wave_task_count": int(max((len(wave.bucket_tasks) for wave in waves), default=0)),
+                "task_count": int(len(all_tasks)),
+            },
         )

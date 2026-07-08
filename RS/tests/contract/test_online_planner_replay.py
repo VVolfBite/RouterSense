@@ -31,7 +31,11 @@ def test_phase_ready_context_roundtrip_from_planning_summary() -> None:
     )[0]
     summary = ctx.to_planning_summary()
     rebuilt = PhaseReadyContext.from_planning_summary(summary)
-    assert rebuilt.to_planning_summary().to_dict() == summary.to_dict()
+    rebuilt_summary = rebuilt.to_planning_summary()
+    assert rebuilt_summary.to_dict() == summary.to_dict()
+    assert rebuilt.local_rank == ctx.local_rank
+    assert rebuilt.per_peer_bytes == ctx.per_peer_bytes
+    assert rebuilt.p2_hint.hint_mode == "none"
 
 
 def test_phase_ready_context_roundtrip_from_artifact_dict() -> None:
@@ -57,6 +61,26 @@ def test_abstract_plan_materializes_to_local_execution_plan() -> None:
     assert local_plan.plan_hash == full_plan.plan_hash
     assert len(local_plan.waves) == len(full_plan.waves)
     assert sum(len(wave.bucket_tasks) for wave in local_plan.waves) >= 1
+    for key in (
+        "build_transfer_layouts_and_tasks_time_us",
+        "sort_tasks_time_us",
+        "pack_phase_tasks_time_us",
+        "finalize_execution_plan_time_us",
+    ):
+        assert key in full_plan.metrics
+        assert float(full_plan.metrics[key]) >= 0.0
+    for key in (
+        "materialize_local_execution_plan_total_time_us",
+        "local_outgoing_catalog_build_time_us",
+        "local_incoming_catalog_build_time_us",
+        "local_wave_materialize_time_us",
+        "local_materialize_validate_time_us",
+    ):
+        assert key in local_plan.metrics
+        assert float(local_plan.metrics[key]) >= 0.0
+    assert int(full_plan.metrics["remote_row_count"]) > 0
+    assert int(full_plan.metrics["remote_byte_count"]) > 0
+    assert int(full_plan.metrics["task_count"]) >= int(full_plan.metrics["flow_count"]) >= 1
 
 
 def test_abstract_plan_materialization_matches_receiver_side_wave_participation() -> None:

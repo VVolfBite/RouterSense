@@ -1,0 +1,49 @@
+model:
+  path: /root/autodl-tmp/models/OLMoE-1B-7B-0924
+  trust_remote_code: false
+
+topology:
+  ep_size: 4
+  launcher:
+    kind: torchrun
+
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+
+workload:
+  prompts: configs/workload/comparison_768x32_prompts.json
+
+observation:
+  profile: perf
+  capture_enabled: false
+  capture_layer_selector: ""
+  capture_phase_selector: ""
+  heartbeat_enabled: false
+  per_wave_timing_enabled: false
+
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+
+strategies:
+  - name: disabled
+    description: "Native Megatron EP baseline (disabled ramp)"
+    policy: ""
+    execution_mode: native_passthrough
+    control_mode: default_continue
+    p2_hint_mode: none
+    calibrated_p2: false
+
+execution:
+  repetitions: 1
+  bucket_rows: 0
+  p0_weight: 1.0
+  p1_reservation_weight: 1.0
+  p2_hint_weight: 1.0
+  schedule_layer_selector: all
+  schedule_phase_selector: both
+
+comparison:
+  baseline_strategy: disabled
+  primary_metric: communication_makespan_us
