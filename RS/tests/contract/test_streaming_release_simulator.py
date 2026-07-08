@@ -8,9 +8,12 @@ from pathlib import Path
 
 from rs.scheduling.multiphase.streaming_simulator import compare_barrier_and_streaming
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _fixture() -> dict:
-    return json.loads(Path("tests/fixtures/scheduling/p1_release_sensitive_4rank.json").read_text(encoding="utf-8"))
+    fixture = REPO_ROOT / "tests/fixtures/scheduling/p1_release_sensitive_4rank.json"
+    return json.loads(fixture.read_text(encoding="utf-8"))
 
 
 def _p2(payload: dict) -> list[list[int]]:
@@ -60,7 +63,8 @@ def test_streaming_release_cli_writes_report(tmp_path: Path) -> None:
             "2",
         ],
         check=True,
-        env={**os.environ, "PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
     report = json.loads((out / "case" / "streaming_release_report.json").read_text(encoding="utf-8"))
     assert report["service_granularity"] == "chunk"

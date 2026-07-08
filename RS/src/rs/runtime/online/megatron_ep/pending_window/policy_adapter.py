@@ -11,7 +11,7 @@ import hashlib
 import json
 from dataclasses import replace
 
-from rs.runtime.online.megatron_ep.p2_provider import extract_prepared_plan_priority
+from rs.runtime.online.megatron_ep.control.p2_provider import extract_prepared_plan_priority
 from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
 from rs.scheduling.contracts import PreparedWindowPlan
 from rs.scheduling.phase_execution import FutureDemandHint, PhaseExecutionPlan, PhaseReadyContext

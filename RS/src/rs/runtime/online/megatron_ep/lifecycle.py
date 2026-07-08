@@ -30,6 +30,8 @@ from rs.runtime.online.megatron_ep.contracts import (
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
+from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
+from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
     RouterSenseObserver,
@@ -39,7 +41,6 @@ from rs.runtime.online.megatron_ep.observation import (
     extract_int_tuple,
     parse_layer_id,
 )
-from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
 from rs.runtime.online.megatron_ep.pending_window import (
     MultiphasePendingWindowAdapter,
     PreparedPlanBinding,
@@ -757,6 +758,8 @@ class RouterSenseInjectionRuntime:
             "bucket_order": list(metrics.get("bucket_order", [])),
         }
         self.pending_window_driver_records.append(record)
+
+    # Tensor/debug capture and context builders
 
     def capture_phase_transport_output(
         self,

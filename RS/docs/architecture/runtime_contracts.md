@@ -35,7 +35,7 @@ Canonical responsibilities:
   - layout validation
 - `pending_window/policy_adapter.py`
   - prepared logical plan to current phase-plan compiler
-- `p2_provider.py`
+- `control/p2_provider.py`
   - allowed P2 hint modes only
 
 Frozen semantic boundaries:

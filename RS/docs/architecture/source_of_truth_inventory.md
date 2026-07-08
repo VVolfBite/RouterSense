@@ -16,7 +16,7 @@ Canonical online Megatron EP implementation lives in:
 - `src/rs/runtime/online/megatron_ep/observation/observer.py`
 - `src/rs/runtime/online/megatron_ep/observation/trace_writer.py`
 - `src/rs/runtime/online/megatron_ep/observation/artifact_recorder.py`
-- `src/rs/runtime/online/megatron_ep/p2_provider.py`
+- `src/rs/runtime/online/megatron_ep/control/p2_provider.py`
 - `src/rs/runtime/online/megatron_ep/pending_window/policy_adapter.py`
 - `src/rs/runtime/online/megatron_ep/pending_window/window_state.py`
 - `src/rs/runtime/online/megatron_ep/pending_window/release_engine.py`

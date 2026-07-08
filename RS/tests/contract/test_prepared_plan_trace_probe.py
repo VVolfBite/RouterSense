@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_prepared_plan_trace_probe_outputs_online_plan_artifacts(tmp_path: Path) -> None:
     output_dir = tmp_path / "probe"
@@ -15,7 +17,7 @@ def test_prepared_plan_trace_probe_outputs_online_plan_artifacts(tmp_path: Path)
             "-m",
             "scripts.diagnostics.run_prepared_plan_trace_probe",
             "--fixture",
-            "tests/fixtures/scheduling/p2_lookahead_sensitive_4rank.json",
+            str(REPO_ROOT / "tests/fixtures/scheduling/p2_lookahead_sensitive_4rank.json"),
             "--output-dir",
             str(output_dir),
             "--run-id",
@@ -24,7 +26,8 @@ def test_prepared_plan_trace_probe_outputs_online_plan_artifacts(tmp_path: Path)
             "P0",
         ],
         check=True,
-        env={**os.environ, "PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
     run_dir = output_dir / "case"
     summary = json.loads((run_dir / "probe_summary.json").read_text(encoding="utf-8"))

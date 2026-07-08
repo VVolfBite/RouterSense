@@ -5,9 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def test_verify_env_contract() -> None:
-    script = Path("experiments/online/support/environment_validation.py")
+    script = REPO_ROOT / "experiments/online/support/environment_validation.py"
     proc = subprocess.run(
         [sys.executable, str(script), "--model", "/definitely/missing/model"],
         check=False,

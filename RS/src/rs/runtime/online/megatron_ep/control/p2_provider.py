@@ -1,9 +1,11 @@
 """P2 hint provider：为在线 phase policy 提供未来压力提示。
 
-主要入口：
-- build_p2_hint_provider()：按 mode 选择 provider
-- 各 provider.build_hint()：基于当前请求生成 FutureDemandHint
-这个文件只负责“给 hint”，不直接做调度或执行。
+控制面在这里负责：
+- 选择 hint provider
+- 从 prepared-plan 共享状态抽取 phase-local 优先级
+- 产出 FutureDemandHint 给 lifecycle 和 phase policy 消费
+
+它只生成 hint，不直接做调度或执行。
 """
 
 from __future__ import annotations
@@ -16,11 +18,6 @@ from rs.runtime.online.megatron_ep.phase.contracts import FutureDemandHint
 from rs.scheduling.contracts import PreparedWindowPlan
 
 from .p2_contracts import P2HintRequest
-
-
-def _digest(payload: dict) -> str:
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()[:16]
 
 
 class P2HintProvider(Protocol):
@@ -148,3 +145,8 @@ def _runtime_phase_name(phase: str) -> str:
     if normalized in {"p1", "p1_return", "combine", "return"}:
         return "P1"
     return phase
+
+
+def _digest(payload: dict) -> str:
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]

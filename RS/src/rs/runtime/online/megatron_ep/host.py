@@ -210,7 +210,7 @@ def _extract_int_list(value: Any) -> list[int]:
     return _maybe_list(value)
 
 
-# Observer helpers
+# Observer helpers and summaries
 
 
 def validate_observer_mode(mode: str) -> str:
@@ -522,7 +522,7 @@ def attach_dispatch_observer(
     return _instrument
 
 
-# Runtime attachment helpers
+# Runtime attachment entrypoints
 
 
 def attach_dispatch_facade(
@@ -695,6 +695,9 @@ def attach_formal_online_runtime(
         microbatch_id=microbatch_id,
         observer=observer,
     )
+
+
+# Small distributed/export helpers
 
 
 def gather_rank_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:

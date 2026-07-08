@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 FORBIDDEN = [
     "rs.runtime.distributed_ep",
@@ -13,8 +15,8 @@ FORBIDDEN = [
 
 def test_no_legacy_runtime_imports() -> None:
     roots = [
-        Path("src/rs/runtime/online/megatron_ep"),
-        Path("experiments/online"),
+        REPO_ROOT / "src/rs/runtime/online/megatron_ep",
+        REPO_ROOT / "experiments/online",
     ]
     for root in roots:
         for path in root.rglob("*.py"):

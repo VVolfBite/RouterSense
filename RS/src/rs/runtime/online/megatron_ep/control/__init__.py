@@ -1,39 +1,19 @@
 """控制面子包入口。
 
-控制面负责：
-- phase plan agreement
-- shadow policy / old control contracts
-- 早期 mailbox/state-machine 试验残留
-当前正式热路径主要消费 agreement_wire 和 plan_agreement。
+控制面当前分三类：
+- 正式热路径：agreement_wire、plan_agreement、p2_provider
+- shadow / native-order 兼容路径：shadow_policy/*
+- 早期异步 control-plane 试验残留：mailbox / state_machine / timeline
 """
 
-from .contracts import (
-    BucketDescriptor,
-    ControlCommand,
-    ControlEnvelope,
-    ControlTimelineEvent,
-    PendingCommTask,
-    PlanExpiry,
-    PlanKey,
-)
-from .mailbox import ControlMailbox, apply_if_pending, expire_if_late
+from .p2_contracts import P2HintMetadata, P2HintRequest
+from .p2_provider import build_p2_hint_provider, extract_prepared_plan_priority
 from .plan_agreement import run_phase_plan_agreement
-from .state_machine import can_transition, transition_task
-from .timeline import ControlTimeline
 
 __all__ = [
-    "BucketDescriptor",
-    "ControlCommand",
-    "ControlEnvelope",
-    "ControlMailbox",
-    "ControlTimeline",
-    "ControlTimelineEvent",
-    "PendingCommTask",
-    "PlanExpiry",
-    "PlanKey",
-    "apply_if_pending",
-    "can_transition",
-    "expire_if_late",
+    "P2HintMetadata",
+    "P2HintRequest",
+    "build_p2_hint_provider",
+    "extract_prepared_plan_priority",
     "run_phase_plan_agreement",
-    "transition_task",
 ]

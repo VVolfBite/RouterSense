@@ -17,8 +17,8 @@ ROOT = ensure_src_on_path()
 
 from rs.core.artifact import write_json, write_jsonl
 from rs.runtime.online.megatron_ep.execution.audit import ExecutionAuditInput, build_execution_audit
-from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
-from rs.runtime.online.megatron_ep.p2_provider import build_p2_hint_provider
+from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
+from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     FutureDemandHint,

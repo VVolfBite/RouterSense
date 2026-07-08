@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_plot_strategy_comparison_generates_svg(tmp_path: Path) -> None:
     report = {
@@ -19,7 +21,7 @@ def test_plot_strategy_comparison_generates_svg(tmp_path: Path) -> None:
     subprocess.run(
         [
             sys.executable,
-            "scripts/plot/plot_strategy_comparison.py",
+            str(REPO_ROOT / "scripts/plot/plot_strategy_comparison.py"),
             "--report",
             str(report_path),
             "--output-dir",
@@ -28,6 +30,7 @@ def test_plot_strategy_comparison_generates_svg(tmp_path: Path) -> None:
             "communication_makespan_us",
         ],
         check=True,
+        cwd=str(REPO_ROOT),
     )
     svg = (out_dir / "communication_makespan_us.svg").read_text(encoding="utf-8")
     assert svg.startswith("<svg")
