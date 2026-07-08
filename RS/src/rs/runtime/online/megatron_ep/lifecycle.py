@@ -33,7 +33,7 @@ from rs.runtime.online.megatron_ep.observation import (
 )
 from rs.runtime.online.megatron_ep.observer import RouterSenseObserver
 from rs.runtime.online.megatron_ep.p2_provider import P2HintRequest, build_p2_hint_provider
-from rs.runtime.online.megatron_ep.pending_window_policy import MultiphasePendingWindowPolicy
+from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
 from rs.runtime.online.megatron_ep.policy_adapter import compile_prepared_window_phase_plan
 from rs.runtime.online.megatron_ep.release_engine import record_release_event
 from rs.runtime.online.megatron_ep.phase import (
@@ -124,18 +124,9 @@ class RouterSenseInjectionRuntime:
             return str(self.config.scheduler_mode)
         return ""
 
-    def _policy(self):
+    def _phase_policy(self):
         phase_policy_name = self._effective_phase_policy_name()
         if phase_policy_name:
-            if self.config.execution_mode == "multiphase_pending_window":
-                return MultiphasePendingWindowPolicy(
-                    shared_state=self._prepared_plan_state,
-                    phase_policy_name=phase_policy_name,
-                    bucket_rows=self.config.bucket_rows,
-                    p0_weight=self.config.p0_weight,
-                    p1_reservation_weight=self.config.p1_reservation_weight,
-                    p2_hint_weight=self.config.p2_hint_weight,
-                )
             return resolve_phase_policy(
                 policy_name=phase_policy_name,
                 bucket_rows=self.config.bucket_rows,
@@ -151,6 +142,19 @@ class RouterSenseInjectionRuntime:
         if self.config.scheduler_mode == "joint_shadow_p0p1":
             return JointShadowP0P1Policy()
         raise UnsupportedSchedulerMode(f"Unsupported scheduler_mode={self.config.scheduler_mode!r}")
+
+    def _pending_window_adapter(self) -> MultiphasePendingWindowAdapter:
+        phase_policy_name = self._effective_phase_policy_name()
+        if not phase_policy_name:
+            raise UnsupportedSchedulerMode("multiphase_pending_window requires a resolved phase policy name")
+        return MultiphasePendingWindowAdapter(
+            shared_state=self._prepared_plan_state,
+            phase_policy_name=phase_policy_name,
+            bucket_rows=self.config.bucket_rows,
+            p0_weight=self.config.p0_weight,
+            p1_reservation_weight=self.config.p1_reservation_weight,
+            p2_hint_weight=self.config.p2_hint_weight,
+        )
 
     def _layer_selected(self, layer_name: str) -> bool:
         selector = str(self.config.schedule_layer_selector)
@@ -721,7 +725,7 @@ class RouterSenseInjectionRuntime:
             "plan_hash": plan.plan_hash,
             "policy_name": plan.policy_name,
             "compiled_from_pending_window": bool(metrics.get("compiled_from_pending_window", False)),
-            "pending_window_policy_name": str(metrics.get("pending_window_policy_name", "")),
+            "pending_window_logical_policy_name": str(metrics.get("pending_window_logical_policy_name", "")),
             "pending_window_plan_hash": str(metrics.get("pending_window_plan_hash", "")),
             "pending_window_information_mode": str(metrics.get("pending_window_information_mode", "")),
             "pending_window_forecast_available": bool(metrics.get("pending_window_forecast_available", False)),
@@ -950,7 +954,8 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P0")
         if self._should_schedule_phase(layer_name=layer_name, phase="P0"):
             agreement_start_ns = time.monotonic_ns()
-            plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
+            policy = self._pending_window_adapter() if self.config.execution_mode == "multiphase_pending_window" else self._phase_policy()
+            plan = run_phase_plan_agreement(local_context=phase_ctx, policy=policy, group=self.ep_process_group)
             agreement_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -1026,7 +1031,7 @@ class RouterSenseInjectionRuntime:
         plan, agreement = run_policy_agreement(
             local_observations=local_observations,
             context=context,
-            policy=self._policy(),
+            policy=self._phase_policy(),
             device=torch.device(f"cuda:{self.local_rank}"),
             group=self.ep_process_group,
         )
@@ -1308,7 +1313,8 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P1")
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
             agreement_start_ns = time.monotonic_ns()
-            plan = run_phase_plan_agreement(local_context=phase_ctx, policy=self._policy(), group=self.ep_process_group)
+            policy = self._pending_window_adapter() if self.config.execution_mode == "multiphase_pending_window" else self._phase_policy()
+            plan = run_phase_plan_agreement(local_context=phase_ctx, policy=policy, group=self.ep_process_group)
             agreement_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -1481,7 +1487,7 @@ class RouterSenseInjectionRuntime:
         )
         context = replace(self._context(layer_name), expert_placement_hash=p0_observation.expert_placement_hash)
         local_observations = (p0_observation, p1_observation)
-        policy = self._policy()
+        policy = self._phase_policy()
         plan, agreement = run_policy_agreement(
             local_observations=local_observations,
             context=context,

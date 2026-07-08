@@ -9,7 +9,7 @@ import torch
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
-from rs.runtime.online.megatron_ep.pending_window_policy import MultiphasePendingWindowPolicy
+from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
 from rs.runtime.online.megatron_ep.multiphase_pending_window import build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.p2_contracts import P2HintRequest
@@ -490,14 +490,14 @@ def test_pending_window_shadow_never_marks_p2_forecast_executable() -> None:
     assert snapshot["execution_capability_required"] == "multiphase_pending_window"
 
 
-def test_multiphase_pending_window_policy_compiles_current_phase_plan() -> None:
+def test_multiphase_pending_window_adapter_compiles_current_phase_plan() -> None:
     contexts = make_contexts_from_matrix(
         phase="P0",
         matrix=((0, 2), (3, 0)),
         p2_hint_mode="none",
     )
     prepared = _prepared_plan(forecast_digest="forecast-online", created="0")
-    policy = MultiphasePendingWindowPolicy(
+    adapter = MultiphasePendingWindowAdapter(
         shared_state={
             "prepared_plan": prepared,
             "plan_created_at_us": 1,
@@ -509,13 +509,13 @@ def test_multiphase_pending_window_policy_compiles_current_phase_plan() -> None:
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
     )
-    plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+    plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
     assert plan.metrics["compiled_from_pending_window"] is True
-    assert plan.metrics["pending_window_policy_name"].startswith("routersense_multiphase_lookahead:")
+    assert plan.metrics["pending_window_logical_policy_name"].startswith("routersense_multiphase_lookahead:")
     assert plan.metrics["pending_window_information_mode"] in {"p0_p1", "p0_p1_p2"}
 
 
-def test_multiphase_pending_window_policy_uses_prepared_p1_and_p2_matrices() -> None:
+def test_multiphase_pending_window_adapter_uses_prepared_p1_and_p2_matrices() -> None:
     contexts = make_contexts_from_matrix(
         phase="P0",
         matrix=((0, 2), (3, 0)),
@@ -551,7 +551,7 @@ def test_multiphase_pending_window_policy_uses_prepared_p1_and_p2_matrices() -> 
         applies_from_layer_id="1",
         execution_capability_required="multiphase_pending_window",
     )
-    policy = MultiphasePendingWindowPolicy(
+    adapter = MultiphasePendingWindowAdapter(
         shared_state={
             "prepared_plan": prepared,
             "plan_created_at_us": 1,
@@ -563,7 +563,7 @@ def test_multiphase_pending_window_policy_uses_prepared_p1_and_p2_matrices() -> 
         p1_reservation_weight=1.0,
         p2_hint_weight=1.0,
     )
-    plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
+    plan = adapter.build_plan(local_context=contexts[0], global_contexts=contexts)
     assert plan.metrics["pending_window_information_mode"] == "p0_p1_p2"
     assert plan.metrics["pending_window_p0_total_bytes"] == 40
     assert plan.metrics["pending_window_p1_total_bytes"] == 11
@@ -580,7 +580,7 @@ def test_pending_window_driver_records_export_compiled_plan_metadata() -> None:
         p2_hint_mode="none",
     )
     prepared = _prepared_plan(forecast_digest="forecast-driver", created="0")
-    plan = MultiphasePendingWindowPolicy(
+    plan = MultiphasePendingWindowAdapter(
         shared_state={
             "prepared_plan": prepared,
             "plan_created_at_us": 1,
@@ -597,5 +597,5 @@ def test_pending_window_driver_records_export_compiled_plan_metadata() -> None:
     rows = runtime.export_pending_window_driver_records()
     assert rows
     assert rows[-1]["compiled_from_pending_window"] is True
-    assert rows[-1]["pending_window_policy_name"].startswith("routersense_multiphase_lookahead:")
+    assert rows[-1]["pending_window_logical_policy_name"].startswith("routersense_multiphase_lookahead:")
     assert rows[-1]["wave_count"] == len(plan.waves)

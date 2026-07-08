@@ -18,7 +18,7 @@ from rs.core.artifact import write_json
 from rs.scheduling.phase_execution import PhaseReadyContext
 from rs.scheduling.phase_local.common import estimate_planning_quantum_rows_from_contexts
 from rs.scheduling.registry import resolve_phase_policy
-from rs.runtime.online.megatron_ep.pending_window_policy import MultiphasePendingWindowPolicy
+from rs.runtime.online.megatron_ep.pending_window_adapter import MultiphasePendingWindowAdapter
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     skipped: list[dict[str, Any]] = []
     shared_state = _shared_state_from_run_dir(run_dir)
     if args.mode == "multiphase_pending_window":
-        policy = MultiphasePendingWindowPolicy(
+        policy = MultiphasePendingWindowAdapter(
             shared_state=shared_state,
             phase_policy_name=args.policy,
             bucket_rows=args.bucket_rows,

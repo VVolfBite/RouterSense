@@ -1,4 +1,4 @@
-"""Root-side multiphase pending-window planner for online phase execution.
+"""Root-side multiphase pending-window adapter for online phase execution.
 
 This policy does not bypass the frozen phase-local executor. Instead, it uses a
 multiphase logical scheduler at the phase boundary, then compiles the current
@@ -26,11 +26,11 @@ from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext
 from rs.scheduling.validation import stable_hash
 
 
-class UnsupportedPendingWindowPolicy(ValueError):
+class UnsupportedPendingWindowAdapter(ValueError):
     pass
 
 
-class MultiphasePendingWindowPolicy:
+class MultiphasePendingWindowAdapter:
     """Compile a current phase plan from a joint logical window schedule."""
 
     def __init__(
@@ -44,7 +44,7 @@ class MultiphasePendingWindowPolicy:
         p2_hint_weight: float,
     ) -> None:
         if phase_policy_name not in {"routersense_p0p1p2_hint"}:
-            raise UnsupportedPendingWindowPolicy(
+            raise UnsupportedPendingWindowAdapter(
                 "multiphase_pending_window currently supports only "
                 f"'routersense_p0p1p2_hint'; got {phase_policy_name!r}"
             )
@@ -109,7 +109,7 @@ class MultiphasePendingWindowPolicy:
             metrics={
                 **phase_plan.metrics,
                 "compiled_from_pending_window": True,
-                "pending_window_policy_name": logical_plan.policy_name,
+                "pending_window_logical_policy_name": logical_plan.policy_name,
                 "pending_window_plan_hash": stable_hash(logical_plan.to_dict()),
                 "pending_window_information_mode": problem.options.information_mode,
                 "pending_window_forecast_available": problem.forecast is not None,
@@ -229,4 +229,4 @@ def _matrix_total(matrix: tuple[tuple[int, ...], ...]) -> int:
     return sum(sum(int(value) for value in row) for row in matrix)
 
 
-__all__ = ["MultiphasePendingWindowPolicy", "UnsupportedPendingWindowPolicy"]
+__all__ = ["MultiphasePendingWindowAdapter", "UnsupportedPendingWindowAdapter"]
