@@ -13,7 +13,7 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
-from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_bridge_suite, run_policy_suite
+from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_bridge_suite, run_paired_suite, run_policy_suite
 
 
 def _parse_args() -> argparse.Namespace:
@@ -96,11 +96,30 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- total_p1_bytes: {audit['total_p1_bytes']}",
         f"- total_p2_bytes: {audit['total_p2_bytes']}",
         "",
-        "## Phase-sync-compatible transport replay",
+        "## Paired B-vs-U transport replay",
         "",
-        "| Policy | Mean Comm Makespan | Mean Waves | Relative to Birkhoff | Throughput(bytes/unit) |",
-        "|---|---:|---:|---:|---:|",
+        "| Family | B | U | B Mean | U Mean | U vs B |",
+        "|---|---|---|---:|---:|---:|",
     ]
+    for row in payload["paired_b_vs_u"]["summary"]:
+        b_mean = "-" if row["B_mean_makespan"] is None else f"{float(row['B_mean_makespan']):.0f}"
+        u_mean = "-" if row["U_mean_makespan"] is None else f"{float(row['U_mean_makespan']):.0f}"
+        improvement = "-" if row["U_vs_B_improvement_pct"] is None else f"{float(row['U_vs_B_improvement_pct']):.2f}%"
+        lines.append(
+            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['U_algorithm']} | "
+            f"{b_mean} | "
+            f"{u_mean} | "
+            f"{improvement} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Phase-sync-compatible transport replay",
+            "",
+            "| Policy | Mean Comm Makespan | Mean Waves | Relative to Birkhoff | Throughput(bytes/unit) |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
     for row in phase_sync:
         rel = row["relative_to_birkhoff_phase_local"]
         lines.append(
@@ -182,6 +201,10 @@ def main() -> None:
         fixture_dir=suite_fixture_dir,
         expert_compute_delay=float(args.expert_compute_delay),
     )
+    paired = run_paired_suite(
+        fixture_dir=suite_fixture_dir,
+        expert_compute_delay=float(args.expert_compute_delay),
+    )
     payload = {
         "fixture_dir": str(suite_fixture_dir),
         "fixture_audit": audit,
@@ -195,6 +218,7 @@ def main() -> None:
             "summary": joint_rows,
             "mean_transport_makespan": statistics.mean([row["mean_makespan"] for row in joint_rows if row["mean_makespan"] is not None]),
         },
+        "paired_b_vs_u": paired,
         "bridge_candidates": bridge,
     }
     (output_dir / "transport_stress_phase_sync_summary.json").write_text(
@@ -203,6 +227,10 @@ def main() -> None:
     )
     (output_dir / "transport_stress_joint_summary.json").write_text(
         json.dumps(payload["joint_transport"], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "transport_stress_paired_summary.json").write_text(
+        json.dumps(paired, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (output_dir / "transport_stress_replay_summary.json").write_text(

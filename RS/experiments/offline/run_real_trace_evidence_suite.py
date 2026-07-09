@@ -15,10 +15,11 @@ ROOT = ensure_src_on_path()
 from experiments.offline.run_replay_fixture_policy_suite import (
     TABLE_A_POLICIES,
     TABLE_B_POLICIES,
-    TABLE_C_POLICIES,
+    build_oracle_table,
+    run_paired_suite,
     run_bridge_suite,
     run_policy_suite,
-    run_prediction_suite,
+    run_prediction_u_suite,
 )
 
 
@@ -77,11 +78,34 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- total_p2_bytes: {audit['total_p2_bytes']}",
         "- P2 uses next-layer actual P0 when available; the last layer uses a zero matrix.",
         "",
-        "## Joint scheduling space",
+        "## Paired B-vs-U result",
         "",
-        "| Policy | Valid | Mean Makespan | Relative to B_birkhoff_wave |",
-        "|---|---:|---:|---:|",
+        "| Family | B | U | B Mean | U Mean | U vs B | Ready |",
+        "|---|---|---|---:|---:|---:|---|",
     ]
+    for row in payload["paired_b_vs_u"]["summary"]:
+        improvement = row["U_vs_B_improvement_pct"]
+        b_mean = "-" if row["B_mean_makespan"] is None else f"{float(row['B_mean_makespan']):.0f}"
+        u_mean = "-" if row["U_mean_makespan"] is None else f"{float(row['U_mean_makespan']):.0f}"
+        improvement_text = "-" if improvement is None else f"{float(improvement):.2f}%"
+        lines.append(
+            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['U_algorithm']} | "
+            f"{b_mean} | "
+            f"{u_mean} | "
+            f"{improvement_text} | "
+            f"{row['paired_comparison_ready']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "多个 pair 中如果 U 系统性优于 B，说明收益来自联合调度建模，而不是来自换了完全不同的启发式。",
+            "",
+            "## Joint scheduling space",
+            "",
+            "| Policy | Valid | Mean Makespan | Relative to B_birkhoff_wave |",
+            "|---|---:|---:|---:|",
+        ]
+    )
     for row in payload["execution_window_joint"]["summary"]:
         rel = row["relative_to_B_birkhoff_wave"]
         lines.append(
@@ -95,15 +119,16 @@ def _render_md(payload: dict[str, Any]) -> str:
             "",
             "## Cross-layer prediction value",
             "",
-            "| Policy | P2 Source | Mean Makespan | Relative to zero_hint | Relative to perfect_trace | Future Mode |",
+            "| U Policy | Family | P2 Source | Mean Makespan | Relative to zero_hint | Relative to perfect_trace |",
             "|---|---|---:|---:|---:|---|",
         ]
     )
     for row in payload["prediction_oracle"]["summary"]:
         rel_zero = row["relative_to_zero_hint"]
         rel_perfect = row["relative_to_perfect_trace"]
+        mean_text = "-" if row["mean_makespan"] is None else f"{float(row['mean_makespan']):.0f}"
         lines.append(
-            f"| {row['policy_name']} | {row['p2_source']} | {row['mean_makespan']:.0f} | "
+            f"| {row['U_algorithm']} | {row['heuristic_family']} | {row['p2_source']} | {mean_text} | "
             f"{('-' if rel_zero is None else f'{rel_zero * 100:.2f}%')} | "
             f"{('-' if rel_perfect is None else f'{rel_perfect * 100:.2f}%')} | "
             f"{row['future_information_mode']} |"
@@ -112,6 +137,20 @@ def _render_md(payload: dict[str, Any]) -> str:
         [
             "",
             "zero_hint 表示没有跨层预测；copy_current_dispatch 是廉价启发式；perfect_trace_oracle / actual_trace_oracle 仅代表 oracle predict 上界，不是实时 predictor。",
+            "",
+            "## Oracle table",
+            "",
+            "| Oracle | Type | Implementation | Objective | Heavy Solver |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for row in payload["oracle_table"]["summary"]:
+        lines.append(
+            f"| {row['oracle_name']} | {row['oracle_type']} | {row['implementation']} | "
+            f"{row['objective']} | {row['heavy_solver']} |"
+        )
+    lines.extend(
+        [
             "",
             "## RouterSense bridge candidates",
             "",
@@ -175,12 +214,16 @@ def main() -> None:
         baseline_policy="B_birkhoff_wave",
         relative_key="relative_to_B_birkhoff_wave",
     )
-    prediction = run_prediction_suite(
+    prediction = run_prediction_u_suite(
         fixture_dir=suite_fixture_dir,
-        policies=TABLE_C_POLICIES,
         p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history", "fate_style_linear", "perfect_trace", "actual_trace"),
         expert_compute_delay=float(args.expert_compute_delay),
     )
+    paired = run_paired_suite(
+        fixture_dir=suite_fixture_dir,
+        expert_compute_delay=float(args.expert_compute_delay),
+    )
+    oracle_table = build_oracle_table()
     bridge = run_bridge_suite(
         fixture_dir=suite_fixture_dir,
         expert_compute_delay=float(args.expert_compute_delay),
@@ -191,6 +234,8 @@ def main() -> None:
         "phase_sync_compatible": phase_sync,
         "execution_window_joint": execution_window,
         "prediction_oracle": prediction,
+        "paired_b_vs_u": paired,
+        "oracle_table": oracle_table,
         "bridge_candidates": bridge,
     }
     (output_dir / "phase_sync_compatible_summary.json").write_text(
@@ -203,6 +248,14 @@ def main() -> None:
     )
     (output_dir / "prediction_oracle_summary.json").write_text(
         json.dumps(prediction, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "paired_b_vs_u_summary.json").write_text(
+        json.dumps(paired, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "oracle_table_summary.json").write_text(
+        json.dumps(oracle_table, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (output_dir / "bridge_candidates_summary.json").write_text(

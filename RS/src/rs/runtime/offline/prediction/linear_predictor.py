@@ -36,7 +36,12 @@ class FATEStyleLinearTrafficPredictor:
         design = torch.cat([features, ones], dim=1)
         eye = torch.eye(design.shape[1], dtype=torch.float64)
         eye[-1, -1] = 0.0
-        solution = torch.linalg.solve(design.T @ design + self.ridge_lambda * eye, design.T @ targets)
+        normal_matrix = design.T @ design + self.ridge_lambda * eye
+        rhs = design.T @ targets
+        try:
+            solution = torch.linalg.solve(normal_matrix, rhs)
+        except RuntimeError:
+            solution = torch.linalg.pinv(normal_matrix) @ rhs
         self._weight = solution[:-1, :]
         self._bias = solution[-1, :]
         self._shape = _matrix_shape(samples[0])

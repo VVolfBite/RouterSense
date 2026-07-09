@@ -17,6 +17,7 @@ from experiments.offline.replay_fixture_policy_study import _build_problem, _exp
 from rs.runtime.offline.prediction import rolling_predictor_records, summarize_prediction_records
 from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
+from rs.scheduling.algorithm_catalog import get_algorithm_metadata, is_joint_oracle, is_paired_comparison_ready, local_oracle_reference, joint_oracle_reference, list_heuristic_families
 from rs.scheduling import resolve_policy
 from rs.scheduling.validation import validate_logical_plan
 
@@ -54,6 +55,12 @@ TABLE_D_UPPER_BOUND_POLICIES = (
     "U_barrier_criticality_global_matching",
 )
 
+PAIRED_FAMILY_ROWS = (
+    ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
+    ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
+    ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),
+)
+
 PREDICTION_SOURCE_LABELS = {
     "zero_hint": "zero_hint",
     "copy_current_dispatch": "copy_current_dispatch",
@@ -62,6 +69,11 @@ PREDICTION_SOURCE_LABELS = {
     "fate_style_history": "fate_style_history",
     "fate_style_linear": "fate_style_linear",
 }
+
+PREDICTION_U_POLICIES = (
+    "U_gated_maxweight_matching",
+    "U_barrier_criticality_global_matching",
+)
 
 
 def _predicted_matrices_by_source(fixture_dir: Path) -> dict[str, dict[str, tuple[tuple[int, ...], ...]]]:
@@ -117,6 +129,7 @@ def run_policy_suite(
                     "fixture_name": fixture_path.name,
                     "layer_id": str(fixture.get("metadata", {}).get("layer_id", "")),
                     "policy_name": policy_name,
+                    "segment_count": int(sum(len(wave.flows) for wave in plan.waves)),
                     "future_information_mode": str(plan.diagnostics.get("future_information_mode", "")),
                     "evaluation_eligible": bool(plan.diagnostics.get("evaluation_eligible", True)),
                     "valid": bool(validation["valid"]) and bool(audit.get("valid", False)),
@@ -137,6 +150,7 @@ def run_policy_suite(
         invalid_rows = [row for row in policy_rows if not row["valid"]]
         makespans = [row["makespan"] for row in valid_rows]
         wave_counts = [row["wave_count"] for row in valid_rows]
+        segment_counts = [row["segment_count"] for row in valid_rows]
         tail_completion = [row["tail_completion"] for row in valid_rows]
         p0_completion = [row["p0_completion"] for row in valid_rows]
         p1_completion = [row["p1_completion"] for row in valid_rows]
@@ -152,6 +166,7 @@ def run_policy_suite(
                 "min_makespan": min(makespans) if makespans else None,
                 "max_makespan": max(makespans) if makespans else None,
                 "mean_wave_count": statistics.mean(wave_counts) if wave_counts else None,
+                "mean_segment_count": statistics.mean(segment_counts) if segment_counts else None,
                 "mean_tail_completion": statistics.mean(tail_completion) if tail_completion else None,
                 "mean_p0_completion": statistics.mean(p0_completion) if p0_completion else None,
                 "mean_p1_completion": statistics.mean(p1_completion) if p1_completion else None,
@@ -168,6 +183,107 @@ def run_policy_suite(
         "rows": rows,
         "summary": summary_rows,
     }
+
+
+def run_paired_suite(
+    *,
+    fixture_dir: Path,
+    expert_compute_delay: float,
+) -> dict[str, Any]:
+    policies = tuple(sorted({name for _family, b_name, u_name in PAIRED_FAMILY_ROWS for name in (b_name, u_name)}))
+    phase_sync = run_policy_suite(
+        fixture_dir=fixture_dir,
+        policies=policies,
+        mode="runtime_lookahead",
+        p2_source="copy_current_dispatch",
+        expert_compute_delay=expert_compute_delay,
+        baseline_policy="B_gated_maxweight_matching",
+        relative_key="relative_to_phase_local_pair_baseline",
+    )
+    summary_by_policy = {row["policy_name"]: row for row in phase_sync["summary"]}
+    rows: list[dict[str, Any]] = []
+    for family, b_name, u_name in PAIRED_FAMILY_ROWS:
+        b_row = summary_by_policy.get(b_name)
+        u_row = summary_by_policy.get(u_name)
+        b_meta = get_algorithm_metadata(b_name)
+        u_meta = get_algorithm_metadata(u_name)
+        b_mean = None if b_row is None else b_row.get("mean_makespan")
+        u_mean = None if u_row is None else u_row.get("mean_makespan")
+        improvement = None
+        if b_mean not in (None, 0.0) and u_mean is not None:
+            improvement = float((float(u_mean) - float(b_mean)) / float(b_mean))
+        rows.append(
+            {
+                "heuristic_family": family,
+                "B_algorithm": b_name,
+                "U_algorithm": u_name,
+                "B_display_name": b_meta["display_name"],
+                "U_display_name": u_meta["display_name"],
+                "B_granularity_mode": b_meta["granularity_mode"],
+                "U_granularity_mode": u_meta["granularity_mode"],
+                "B_mean_makespan": b_mean,
+                "U_mean_makespan": u_mean,
+                "U_vs_B_improvement_pct": None if improvement is None else float(-100.0 * improvement),
+                "B_valid_layer_count": 0 if b_row is None else int(b_row["valid_layer_count"]),
+                "U_valid_layer_count": 0 if u_row is None else int(u_row["valid_layer_count"]),
+                "B_segment_count": None if b_row is None else b_row.get("mean_segment_count"),
+                "U_segment_count": None if u_row is None else u_row.get("mean_segment_count"),
+                "uses_p2_forecast": bool(u_meta["planning_scope"] in {"multiphase_joint", "execution_window"}),
+                "uses_dependency": True,
+                "paired_comparison_ready": bool(is_paired_comparison_ready(family)),
+                "evaluation_eligible": bool((u_row or {}).get("evaluation_eligible", False)),
+                "notes": str(u_meta.get("notes", "")),
+            }
+        )
+    return {
+        "families": list(PAIRED_FAMILY_ROWS),
+        "phase_sync_policy_suite": phase_sync,
+        "summary": rows,
+    }
+
+
+def build_oracle_table() -> dict[str, Any]:
+    local_ref = local_oracle_reference()
+    joint_ref = joint_oracle_reference()
+    rows = [
+        {
+            "oracle_name": local_ref["algorithm_id"],
+            "oracle_type": "phase_local",
+            "implementation": "B_birkhoff / legacy fast_schedule_birkhoff",
+            "objective": "single_phase_fluid_makespan",
+            "deterministic_solver": bool(local_ref["deterministic_solver"]),
+            "heavy_solver": bool(local_ref["heavy_solver"]),
+            "best_bound": None,
+            "optimality_gap": None,
+            "gap_from_best_U": None,
+            "notes": local_ref["notes"],
+        },
+        {
+            "oracle_name": joint_ref["algorithm_id"],
+            "oracle_type": "joint",
+            "implementation": "legacy/historical_poc/src_rs_legacy/scheduler/oracle.py::pairwise_oracle",
+            "objective": "joint_p0_p1_p2_cp_sat",
+            "deterministic_solver": bool(joint_ref["deterministic_solver"]),
+            "heavy_solver": bool(joint_ref["heavy_solver"]),
+            "best_bound": "legacy_exposes_best_bound",
+            "optimality_gap": "legacy_exposes_optimality_gap",
+            "gap_from_best_U": None,
+            "notes": joint_ref["notes"],
+        },
+        {
+            "oracle_name": "exact_small_instance_reference",
+            "oracle_type": "joint",
+            "implementation": "formal exact_small_instance_reference",
+            "objective": "small_exact_joint_reference",
+            "deterministic_solver": True,
+            "heavy_solver": True,
+            "best_bound": "exact",
+            "optimality_gap": 0.0,
+            "gap_from_best_U": None,
+            "notes": "Small-instance exact reference only.",
+        },
+    ]
+    return {"summary": rows}
 
 
 def run_prediction_suite(
@@ -220,6 +336,10 @@ def run_prediction_suite(
                 )
     summary_rows: list[dict[str, Any]] = []
     for policy_name in policies:
+        try:
+            meta = get_algorithm_metadata(policy_name)
+        except KeyError:
+            meta = None
         policy_rows = [row for row in rows if row["policy_name"] == policy_name]
         by_source = {source: [row for row in policy_rows if row["p2_source"] == source and row["valid"]] for source in p2_sources}
         zero_mean = statistics.mean([row["makespan"] for row in by_source["zero_hint"]]) if by_source["zero_hint"] else None
@@ -237,6 +357,8 @@ def run_prediction_suite(
             seed_row = next((row for row in policy_rows if row["p2_source"] == p2_source), None)
             summary_rows.append(
                 {
+                    "heuristic_family": "" if meta is None else str(meta["heuristic_family"]),
+                    "U_algorithm": policy_name,
                     "policy_name": policy_name,
                     "p2_source": str(PREDICTION_SOURCE_LABELS.get(p2_source, p2_source)),
                     "mean_makespan": mean_makespan,
@@ -248,6 +370,7 @@ def run_prediction_suite(
                     "future_information_mode": str(seed_row["future_information_mode"]) if seed_row else "",
                     "evaluation_eligible": bool(seed_row["evaluation_eligible"]) if seed_row else False,
                     "predictor_name": str(seed_row["predictor_name"]) if seed_row else "",
+                    "planning_time_ms": None,
                 }
             )
     return {
@@ -261,6 +384,22 @@ def run_prediction_suite(
             for predictor_name in ("fate_style_history", "fate_style_linear")
         },
     }
+
+
+def run_prediction_u_suite(
+    *,
+    fixture_dir: Path,
+    p2_sources: tuple[str, ...],
+    expert_compute_delay: float,
+) -> dict[str, Any]:
+    payload = run_prediction_suite(
+        fixture_dir=fixture_dir,
+        policies=PREDICTION_U_POLICIES,
+        p2_sources=p2_sources,
+        expert_compute_delay=expert_compute_delay,
+    )
+    payload["u_policies"] = list(PREDICTION_U_POLICIES)
+    return payload
 
 
 def run_bridge_suite(
