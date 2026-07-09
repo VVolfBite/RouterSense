@@ -71,6 +71,11 @@
   - `fate_style_linear`
   - `perfect_trace`
   - `actual_trace`
+- 已有 `run_expert_to_traffic_reconstruction.py`，用于 GPU expert trace 到位后先回答：
+  - O1 actual source-expert -> actual traffic
+  - O2 global expert counts -> traffic
+  - O3 current source-expert copy -> next traffic
+  - O4 current traffic copy -> next traffic
 - 当前 `prediction` 证据链可以比较：
   - predictor 误差
   - predicted-P2 下 safe-U makespan
@@ -78,6 +83,12 @@
 - 当前 expert trace 如果不存在，suite 必须明确输出：
   - `expert_trace_available=false`
   - `gpu_collection_required=true`
+- 当前 `MockGateReplayPredictor` 仍然只是 mock/contract：
+  - `faithful_fate_style=false`
+  - 不能进入 paper claim
+- `run_prediction_replay_suite.py` 现在必须对
+  `zero_hint` / `copy_current_dispatch` / `perfect_trace` / `actual_trace`
+  统一输出真实 prediction error，而不是默认 0
 - prepared-plan 应消费 `predicted_next_dispatch`，而不是把 gathered current matrix 本身写成 predictor。
 - online 端当前只有 phase_sync 下的 prediction-aware policy。
 - 但这还不等于真实 online predictor 已完成部署：当前 FATE-style predictor 主要服务 offline artifact、预测误差分析和 future async-release 设计。
@@ -107,6 +118,9 @@
   - CPU executable simulator
   - `AsyncReleaseExecutionPlan`
   - `AsyncReleasePlanBuilder`
+  - compiled tensor schedule
+  - tensor-only agreement helper
+  - fail-closed executor skeleton（默认关闭）
 - 但还没有 GPU executor integration。
 
 因此当前论文口径必须保持诚实：

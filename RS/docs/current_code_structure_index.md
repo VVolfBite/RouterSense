@@ -62,15 +62,15 @@
 
 ### `src/rs/runtime/online/megatron_ep/prediction/`
 
-- 负责什么：轻量 predictor contract、simple predictor、prediction audit
+- 负责什么：轻量 predictor contract、simple predictor、prediction audit、expert trace schema/capture、expert-to-traffic foundation
 - 不负责什么：真实复杂 predictor 训练、executor、offline oracle
 - 是否属于 perf hot path：部分 lightweight heuristic 路径属于
 - 是否可以慢：不可以重到替代 planner 本体
 
 ### `src/rs/runtime/online/megatron_ep/async_release/`
 
-- 负责什么：future async-release 的 shadow-only contract、state machine、validation skeleton
-- 不负责什么：真实 online executor、真实通信 launch
+- 负责什么：future async-release 的 shadow/runtime contract、compiled schedule、agreement、fail-closed executor skeleton、CPU simulator
+- 不负责什么：默认启用的真实 online executor、默认真实通信 launch
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
@@ -157,6 +157,11 @@
 
 - 负责什么：把 `runtime.line` / `runtime.output_mode` / public strategy name 映射成现有内部字段
 - 不负责什么：真实调度执行与 runtime 状态管理
+
+### `experiments/online/prepare_gpu_expert_trace_collection.py`
+
+- 负责什么：GPU 采集前 dry-run checklist，确认 expert trace 输出和 fast-path 约束
+- 不负责什么：真正跑模型或执行 benchmark
 
 ### `configs/comparison/natural_256x128_4gpu.yaml`
 

@@ -5,7 +5,12 @@ from typing import Any
 
 PUBLIC_RUNTIME_LINES = {"phase_sync", "async_release"}
 PUBLIC_OUTPUT_MODES = {"paper", "debug_replay"}
-PUBLIC_STRATEGIES = {"disabled", "birkhoff_phase_local", "routersense_p0p1p2_hint"}
+PUBLIC_STRATEGIES = {
+    "disabled",
+    "birkhoff_phase_local",
+    "routersense_p0p1p2_hint",
+    "routersense_joint_priority_phase_sync",
+}
 
 
 def normalize_strategy_entry(entry: Any) -> dict[str, Any]:
@@ -122,6 +127,15 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "policy": "routersense_p0p1p2_hint",
             "run_kind": "online_policy_correctness",
             "execution_mode": "multiphase_pending_window",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "calibrated_artifact",
+            "calibrated_p2": True,
+        }
+    if strategy_name == "routersense_joint_priority_phase_sync":
+        return {
+            "policy": "routersense_joint_priority_phase_sync",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "phase_sync_wave",
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,

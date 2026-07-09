@@ -28,6 +28,12 @@
 - natural 4GPU `256x128` workload主线
 - async_release shadow-only skeleton
 - async_release CPU executable simulator
+- async_release fail-closed executor framework:
+  - `compiled_schedule.py`
+  - `agreement.py`
+  - `executor.py`
+  - default `enabled=false`
+  - real collectives require explicit flags + agreement pass
 - transport-stress / EP replay offline 入口
 - safe-U closure:
   - `RS_safe_barrier_criticality`
@@ -47,6 +53,7 @@
   - `expert_evaluation.py`
   - `gate_replay_predictor.py`
   - `traffic_calibration.py`
+  - `expert_trace_capture.py`
 
 当前明确不要做：
 
@@ -61,9 +68,16 @@
 - 当前 online RouterSense 仍然是 prediction-aware phase-local runtime policy
 - 它不是 full online multiphase live pending queue executor
 - `async_release` 当前只有 shadow-only skeleton，还没有 executor integration
+- `async_release` 现在已有 fail-closed executor framework，但默认只允许 CPU/dry-run：
+  - `allow_real_collectives=false`
+  - `dry_run=true`
+  - agreement 失败必须 fallback `phase_sync`
 - 当前 online prepared-plan 应优先消费 `predicted_next_dispatch`；
   dispatch matrix 的全局构造方式必须是 tensorized gather，不能再走 Python object collective
 - 当前 `fate_style_history` / `fate_style_linear` 只是 traffic-matrix baseline，不要再把它们当 faithful FATE predictor
+- `MockGateReplayPredictor` 仍然只是 mock/contract：
+  - `faithful_fate_style=false`
+  - 不得进入 paper claim
 - 当前真实 fixture 还没有 `expert_route_trace` / `source_expert_counts`；
   contribution 2 现在是 “expert foundation ready, GPU collection still required”
 - 当前真实 fixture CPU 主线结论应先看：
@@ -149,6 +163,7 @@ Online runtime：
 - `src/rs/runtime/online/megatron_ep/pending_window/policy_adapter.py`
 - `src/rs/runtime/online/megatron_ep/observation/views.py`
 - `src/rs/runtime/online/megatron_ep/async_release/`
+- `experiments/online/prepare_gpu_expert_trace_collection.py`
 
 Offline / replay：
 
@@ -166,7 +181,9 @@ Offline / replay：
    - prediction replay 是否真能让 safe-U 受益
 2. 基于 transport-stress / EP replay 评估 communication-only 空间，但不要把 stress 当主论文结论
 3. 开 GPU 时优先验证：
-   - `RS_safe_barrier_criticality` vs `birkhoff_phase_local`
+   - 先跑：
+     - `python experiments/online/prepare_gpu_expert_trace_collection.py --capture-expert-trace --output outputs/comparison/gpu_expert_trace_collection_checklist.json`
+  - `RS_safe_barrier_criticality` bridge / `routersense_joint_priority_phase_sync` vs `birkhoff_phase_local`
    - prediction timing / layer interval / prepared-plan overlap
    - collect expert route trace:
      - `selected_experts`
@@ -178,7 +195,13 @@ Offline / replay：
      - `rank*_expert_route_trace.jsonl`
      - `rank*_source_expert_counts.jsonl`
      - `rank*_expert_to_traffic_audit.jsonl`
-4. 如果 GPU 结果显示 phase_sync safe-U 仍弱，再推进 async_release executor integration
+     - `rank*_expert_trace_warnings.jsonl`
+   - collection 成功后只做：
+     1. `source_expert_counts` non-empty 检查
+     2. `run_expert_to_traffic_reconstruction.py`
+     3. O1/O2/O3/O4 比较
+     4. 再决定是否做真实 gate replay predictor
+4. 如果 GPU 结果显示 phase_sync safe-U 仍弱，再推进 async_release executor real-collective integration
 
 ## 7. Repository rule
 

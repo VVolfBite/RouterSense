@@ -40,6 +40,7 @@ _POLICY_NAME_TO_CODE = {
     "fast_bvn_single_tier": 8,
     "aurora_order_fixed": 9,
     "trivial_reverse_bucket": 10,
+    "routersense_joint_priority_phase_sync": 11,
 }
 _CODE_TO_POLICY_NAME = {value: key for key, value in _POLICY_NAME_TO_CODE.items()}
 
@@ -208,7 +209,10 @@ def _decode_abstract_plan_values(
     local_context: PhaseReadyContext,
 ) -> AbstractPhaseExecutionPlan:
     phase = _CODE_TO_PHASE[int(values[1])]
-    policy_name = _CODE_TO_POLICY_NAME.get(int(values[2]), "phase_barrier_fifo")
+    policy_code = int(values[2])
+    if policy_code not in _CODE_TO_POLICY_NAME:
+        raise RuntimeError(f"unknown abstract-plan policy code {policy_code}")
+    policy_name = _CODE_TO_POLICY_NAME[policy_code]
     transport_mutation = bool(values[3])
     is_shadow_only = bool(values[4])
     root_rank = int(values[5])
@@ -261,10 +265,13 @@ def _decode_abstract_plan_values(
 
 
 def _encode_abstract_plan_tensor(plan: AbstractPhaseExecutionPlan, *, device: torch.device) -> torch.Tensor:
+    policy_name = str(plan.policy_name)
+    if policy_name not in _POLICY_NAME_TO_CODE:
+        raise RuntimeError(f"unknown abstract-plan policy {policy_name!r}")
     payload: list[int] = [
         _WIRE_VERSION,
         _PHASE_TO_CODE[str(plan.phase)],
-        _POLICY_NAME_TO_CODE.get(str(plan.policy_name), -1),
+        _POLICY_NAME_TO_CODE[policy_name],
         int(plan.transport_mutation),
         int(plan.is_shadow_only),
         int(plan.root_rank),

@@ -73,6 +73,9 @@ Current pre-evaluation mainline recommendation:
 - `routersense_p0p1p2_hint` is a legacy/early online adapter, not the final RouterSense theory line.
 - `U_*` are raw joint heuristics.
 - `RS_safe_*` are the current RouterSense mainline candidates because they guard raw U against paired-B regression.
+- `routersense_joint_priority_phase_sync` is the pre-GPU online bridge candidate for
+  phase_sync execution. It is not the same thing as directly running offline
+  `RS_safe_*`; it consumes joint-priority ideas through a runtime-safe adapter.
 - `birkhoff_von_neumann_fluid` is the formal `O_local_phase_oracle`.
 - `B_birkhoff` / `birkhoff_phase_local` are strong engineering baselines, not the formal fluid oracle object itself.
 
@@ -96,6 +99,16 @@ Offline-only references are never run online:
 - `exact_small_instance_reference`: model `discrete_bucket_phase_sync_wave`, certified only for tiny fixtures.
 
 Online phase-local diagnostic policies `routersense_p0p1_reservation` and `routersense_p0p1p2_hint` remain distinct from formal offline RouterSense multiphase lookahead. `routersense_p0p1p2_hint` is valid for evaluating PreparedWindowPlan-derived P2 hints through the frozen phase-local executor, but it is not online multiphase joint execution.
+
+`async_release` currently has:
+
+- CPU simulator
+- plan builder
+- compiled tensor schedule
+- tensor-only agreement helper
+- fail-closed executor skeleton
+
+It does not yet have validated real collective execution.
 
 ## Baseline families
 

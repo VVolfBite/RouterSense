@@ -41,6 +41,7 @@ class AsyncReleasePlanBuilder:
             phase_tasks.append(
                 {
                     "task_id": task_id,
+                    "global_order_index": int(len(phase_tasks)),
                     "phase": str(entry.phase),
                     "src_rank": int(entry.src_rank),
                     "dst_rank": int(entry.dst_rank),
@@ -49,6 +50,14 @@ class AsyncReleasePlanBuilder:
                     "wave_id": int(entry.wave_id),
                     "bucket_hint": int(entry.bucket_hint),
                     "release_dependency": release_dependency,
+                    "participating_ranks": tuple(sorted({int(entry.src_rank), int(entry.dst_rank)})),
+                    "dependency_task_ids": (),
+                    "transfer_key": f"{entry.phase}:{entry.src_rank}:{entry.dst_rank}:{entry.wave_id}",
+                    "metadata": {
+                        "heuristic_family": str(priority_artifact.heuristic_family),
+                        "predictor_name": str(priority_artifact.predictor_name),
+                        "p2_source": str(priority_artifact.p2_source),
+                    },
                 }
             )
             if release_dependency == "wait_p0_complete":

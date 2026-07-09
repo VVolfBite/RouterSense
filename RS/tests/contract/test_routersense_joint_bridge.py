@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rs.scheduling import ForecastPressure, FlowDemand, FlowWindow, GlobalReadySetOptions, LogicalTopology, MultiPhaseSchedulingProblem, ReleaseConstraint, resolve_policy
+from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
 
 
@@ -77,6 +78,27 @@ def test_joint_bridge_policy_exposes_online_metadata() -> None:
     assert plan.diagnostics["policy_name"] == "routersense_joint_priority_phase_sync"
     assert plan.diagnostics["service_model"] == "phase_sync_joint_priority"
     assert plan.diagnostics["p2_source"] == "copy_current_dispatch"
+    assert plan.diagnostics["priority_components"]["remote_only_matrix_invariant"] is True
+
+
+def test_joint_bridge_is_diagonal_invariant() -> None:
+    clean = _problem()
+    dirty = MultiPhaseSchedulingProblem(
+        flow_window=clean.flow_window,
+        topology=clean.topology,
+        release_model=clean.release_model,
+        forecast=clean.forecast,
+        options=clean.options,
+        p0_dispatch_matrix=clean.p0_dispatch_matrix,
+        p1_return_matrix=((99, 0, 0, 0), (0, 77, 0, 9), (0, 0, 55, 0), (0, 0, 0, 44)),
+        p2_next_dispatch_forecast_matrix=((88, 4, 6, 0), (0, 66, 0, 2), (0, 0, 33, 0), (3, 0, 0, 22)),
+    )
+    policy = resolve_policy(policy_name="routersense_joint_priority_phase_sync", bucket_rows=0)
+    clean_plan = policy.build_logical_plan(clean)
+    dirty_plan = policy.build_logical_plan(dirty)
+    assert stable_hash(clean_plan.to_dict()) == stable_hash(dirty_plan.to_dict())
+    assert clean_plan.diagnostics["priority_components"]["remote_only_matrix_invariant"] is True
+    assert dirty_plan.diagnostics["priority_components"]["remote_only_matrix_invariant"] is True
 
 
 def test_async_release_joint_bridge_path_can_beat_phase_sync_birkhoff_on_sensitive_case() -> None:

@@ -49,6 +49,8 @@ class RuntimeArtifactRecorder:
             write_jsonl(self.run_dir / "source_expert_counts.jsonl", list(snapshot.source_expert_counts))
         if snapshot.expert_to_traffic_audits:
             write_jsonl(self.run_dir / "expert_to_traffic_audit.jsonl", list(snapshot.expert_to_traffic_audits))
+        if snapshot.expert_trace_warnings:
+            write_jsonl(self.run_dir / "expert_trace_warnings.jsonl", list(snapshot.expert_trace_warnings))
         if snapshot.heartbeats:
             write_jsonl(self.run_dir / "heartbeats.jsonl", list(snapshot.heartbeats))
         if snapshot.failures:

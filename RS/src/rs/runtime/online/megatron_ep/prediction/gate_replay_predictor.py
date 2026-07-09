@@ -1,4 +1,4 @@
-"""CPU/offline contract for a faithful FATE-style gate-replay predictor.
+"""CPU/offline contract for future FATE-style gate-replay predictors.
 
 This module intentionally provides only an interface and a mock implementation.
 It does not claim to be a real next-layer router execution path yet.
@@ -31,7 +31,10 @@ class GateReplayPredictionResult:
     predicted_traffic_digest: str
     predicted_remote_bytes: int
     predicted_nonzero_edge_count: int
+    faithful_fate_style: bool
+    requires_next_layer_router: bool
     requires_router_input: bool
+    requires_gpu_trace: bool
     gpu_collection_required: bool
     expert_metrics: ExpertPredictionMetrics | None = None
     traffic_metrics: dict[str, Any] | None = None
@@ -64,7 +67,7 @@ class GateReplayPredictor(Protocol):
 
 
 class MockGateReplayPredictor:
-    predictor_name = "gate_replay"
+    predictor_name = "MockGateReplayPredictor"
     predictor_family = "fate_style_gate_replay"
     predictor_version = "mock_v1"
 
@@ -123,7 +126,10 @@ class MockGateReplayPredictor:
             predicted_traffic_digest=_traffic_digest(predicted_matrix),
             predicted_remote_bytes=int(matrix_remote_bytes(predicted_matrix)),
             predicted_nonzero_edge_count=int(matrix_nonzero_remote_edge_count(predicted_matrix)),
+            faithful_fate_style=False,
+            requires_next_layer_router=True,
             requires_router_input=True,
+            requires_gpu_trace=True,
             gpu_collection_required=True,
             expert_metrics=expert_metrics,
             traffic_metrics=traffic_metrics,

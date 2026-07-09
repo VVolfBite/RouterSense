@@ -36,10 +36,19 @@ def test_prediction_replay_suite_cli(tmp_path: Path) -> None:
     payload = run_prediction_replay_suite(
         fixture_dir=fixture_dir,
         policies=("RS_safe_barrier_criticality",),
-        p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history"),
+        p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history", "perfect_trace"),
+        traffic_calibration="oracle_total",
     )
     assert payload["summary"]
     assert any(row["policy_name"] == "RS_safe_barrier_criticality" for row in payload["summary"])
     assert any(row["p2_source"] == "zero_hint" for row in payload["summary"])
     assert payload["expert_trace_available"] is False
     assert payload["expert_trace_unavailable_reason"] == "expert_trace_unavailable_for_real_fixture"
+    zero_row = next(row for row in payload["summary"] if row["p2_source"] == "zero_hint")
+    copy_row = next(row for row in payload["summary"] if row["p2_source"] == "copy_current_dispatch")
+    perfect_row = next(row for row in payload["summary"] if row["p2_source"] == "perfect_trace")
+    assert zero_row["mean_prediction_relative_l1_error"] > 0.0
+    assert copy_row["mean_prediction_relative_l1_error"] > 0.0
+    assert perfect_row["forecast_remote_bytes"] == perfect_row["actual_remote_bytes"]
+    assert perfect_row["evaluation_eligible"] is False
+    assert copy_row["mean_traffic_error_after_calibration"] is not None

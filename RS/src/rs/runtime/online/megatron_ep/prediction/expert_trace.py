@@ -29,6 +29,13 @@ class SourceExpertCountMatrix:
     num_experts: int
     counts: tuple[tuple[int, ...], ...]
     weighted_counts: tuple[tuple[float, ...], ...] | None = None
+    rank: int | None = None
+    source_rank: int | None = None
+    expert_to_rank_map: tuple[int, ...] | None = None
+    tokens_per_source_rank: tuple[int, ...] | None = None
+    bytes_per_token: int = 1
+    selected_experts_available: bool = True
+    routing_weights_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,6 +55,9 @@ def aggregate_route_records(
             num_experts=int(num_experts),
             counts=tuple(tuple(0 for _ in range(num_experts)) for _ in range(world_size)),
             weighted_counts=tuple(tuple(0.0 for _ in range(num_experts)) for _ in range(world_size)) if use_routing_weights else None,
+            tokens_per_source_rank=tuple(0 for _ in range(world_size)),
+            selected_experts_available=False,
+            routing_weights_available=use_routing_weights,
         )
     layer_id = int(records[0].layer_id)
     counts = [[0 for _ in range(num_experts)] for _ in range(world_size)]
@@ -70,6 +80,12 @@ def aggregate_route_records(
         num_experts=int(num_experts),
         counts=tuple(tuple(int(value) for value in row) for row in counts),
         weighted_counts=None if weighted is None else tuple(tuple(float(value) for value in row) for row in weighted),
+        tokens_per_source_rank=tuple(
+            int(sum(len(record.expert_ids) for record in records if int(record.source_rank) == source_rank))
+            for source_rank in range(world_size)
+        ),
+        selected_experts_available=True,
+        routing_weights_available=use_routing_weights,
     )
 
 
@@ -120,6 +136,17 @@ def load_source_expert_counts_jsonl(path: Path) -> tuple[SourceExpertCountMatrix
                 weighted_counts=None
                 if payload.get("weighted_counts") is None
                 else tuple(tuple(float(v) for v in row) for row in payload["weighted_counts"]),
+                rank=None if payload.get("rank") is None else int(payload["rank"]),
+                source_rank=None if payload.get("source_rank") is None else int(payload["source_rank"]),
+                expert_to_rank_map=None
+                if payload.get("expert_to_rank_map") is None
+                else tuple(int(v) for v in payload["expert_to_rank_map"]),
+                tokens_per_source_rank=None
+                if payload.get("tokens_per_source_rank") is None
+                else tuple(int(v) for v in payload["tokens_per_source_rank"]),
+                bytes_per_token=int(payload.get("bytes_per_token", 1) or 1),
+                selected_experts_available=bool(payload.get("selected_experts_available", True)),
+                routing_weights_available=bool(payload.get("routing_weights_available", False)),
             )
         )
     return tuple(rows)

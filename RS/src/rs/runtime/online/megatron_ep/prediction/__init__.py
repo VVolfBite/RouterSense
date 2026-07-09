@@ -9,6 +9,7 @@ from .contracts import PredictionAuditRecord, PredictionInput, PredictedTrafficM
 from .expert_evaluation import ExpertPredictionMetrics, evaluate_expert_prediction
 from .expert_to_traffic import ExpertToTrafficAudit, compare_reconstructed_traffic, source_expert_counts_to_traffic_matrix
 from .expert_trace import ExpertRouteRecord, SourceExpertCountMatrix, aggregate_route_records
+from .expert_trace_capture import maybe_capture_expert_route_trace
 from .gate_replay_predictor import GateReplayPredictionResult, MockGateReplayPredictor
 from .simple_predictors import CopyCurrentDispatchPredictor, ZeroHintPredictor
 from .traffic_calibration import TrafficCalibrationAudit, calibrate_traffic_matrix
@@ -31,5 +32,6 @@ __all__ = [
     "compare_predicted_to_actual",
     "compare_reconstructed_traffic",
     "evaluate_expert_prediction",
+    "maybe_capture_expert_route_trace",
     "source_expert_counts_to_traffic_matrix",
 ]

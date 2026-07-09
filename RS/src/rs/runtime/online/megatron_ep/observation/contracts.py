@@ -89,6 +89,7 @@ class RuntimeObservationSnapshot:
     expert_route_traces: tuple[dict[str, Any], ...] = ()
     source_expert_counts: tuple[dict[str, Any], ...] = ()
     expert_to_traffic_audits: tuple[dict[str, Any], ...] = ()
+    expert_trace_warnings: tuple[dict[str, Any], ...] = ()
     heartbeats: tuple[dict[str, Any], ...] = ()
     failures: tuple[dict[str, Any], ...] = ()
     captured_phase_tensors: tuple[dict[str, Any], ...] = ()
@@ -108,6 +109,7 @@ class RuntimeObservationRecorder:
         self._expert_route_traces: list[dict[str, Any]] = []
         self._source_expert_counts: list[dict[str, Any]] = []
         self._expert_to_traffic_audits: list[dict[str, Any]] = []
+        self._expert_trace_warnings: list[dict[str, Any]] = []
         self._heartbeats: list[dict[str, Any]] = []
         self._failures: list[dict[str, Any]] = []
         self._captured_phase_tensors: list[dict[str, Any]] = []
@@ -120,6 +122,7 @@ class RuntimeObservationRecorder:
             "expert_route_trace_count": 0,
             "source_expert_count_count": 0,
             "expert_to_traffic_audit_count": 0,
+            "expert_trace_warning_count": 0,
             "heartbeat_count": 0,
             "failure_count": 0,
             "fallback_count": 0,
@@ -177,6 +180,11 @@ class RuntimeObservationRecorder:
         if self._emitter.includes_debug() and self.config.capture_expert_trace:
             self._expert_to_traffic_audits.append(dict(payload))
 
+    def record_expert_trace_warning(self, payload: dict[str, Any]) -> None:
+        self._counters["expert_trace_warning_count"] = int(self._counters["expert_trace_warning_count"]) + 1
+        if self._emitter.includes_debug() and self.config.capture_expert_trace:
+            self._expert_trace_warnings.append(dict(payload))
+
     def record_heartbeat(self, payload: dict[str, Any]) -> None:
         self._counters["heartbeat_count"] = int(self._counters["heartbeat_count"]) + 1
         if self._emitter.includes_debug() and self.config.heartbeat_enabled:
@@ -222,6 +230,9 @@ class RuntimeObservationRecorder:
     def export_expert_to_traffic_audits(self) -> list[dict[str, Any]]:
         return list(self._expert_to_traffic_audits)
 
+    def export_expert_trace_warnings(self) -> list[dict[str, Any]]:
+        return list(self._expert_trace_warnings)
+
     def export_heartbeats(self) -> list[dict[str, Any]]:
         return list(self._heartbeats)
 
@@ -245,6 +256,7 @@ class RuntimeObservationRecorder:
             expert_route_traces=tuple(self._expert_route_traces),
             source_expert_counts=tuple(self._source_expert_counts),
             expert_to_traffic_audits=tuple(self._expert_to_traffic_audits),
+            expert_trace_warnings=tuple(self._expert_trace_warnings),
             heartbeats=tuple(self._heartbeats),
             failures=tuple(self._failures),
             captured_phase_tensors=tuple(self._captured_phase_tensors),

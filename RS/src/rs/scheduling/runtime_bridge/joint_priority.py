@@ -6,6 +6,12 @@ from typing import Any
 
 from rs.scheduling.contracts import LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
 from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext, PlanWave
+from rs.scheduling.traffic_matrix import (
+    canonicalize_remote_matrix,
+    matrix_diagonal_report,
+    matrix_row_sums_remote,
+    matrix_col_sums_remote,
+)
 
 from ..capabilities import PolicyCapabilities
 from ..phase_local.common import (
@@ -18,14 +24,11 @@ from ..phase_local.common import (
 
 
 def _row_sums(matrix: tuple[tuple[int, ...], ...]) -> list[int]:
-    return [int(sum(int(value) for value in row)) for row in matrix]
+    return [int(value) for value in matrix_row_sums_remote(matrix)]
 
 
 def _col_sums(matrix: tuple[tuple[int, ...], ...]) -> list[int]:
-    if not matrix:
-        return []
-    width = len(matrix[0])
-    return [int(sum(int(matrix[src][dst]) for src in range(len(matrix)))) for dst in range(width)]
+    return [int(value) for value in matrix_col_sums_remote(matrix)]
 
 
 def _joint_rank_pressure(
@@ -53,12 +56,15 @@ def _priority_metadata(
     p1_matrix: tuple[tuple[int, ...], ...],
     p2_matrix: tuple[tuple[int, ...], ...],
 ) -> dict[str, Any]:
+    p1_diag = matrix_diagonal_report(p1_matrix)
+    p2_diag = matrix_diagonal_report(p2_matrix)
     return {
         "p1_row_sums": _row_sums(p1_matrix),
         "p1_col_sums": _col_sums(p1_matrix),
         "p2_row_sums": _row_sums(p2_matrix),
         "p2_col_sums": _col_sums(p2_matrix),
         "joint_rank_pressure": _joint_rank_pressure(p1_matrix=p1_matrix, p2_matrix=p2_matrix),
+        "self_bytes_ignored": int(p1_diag["self_bytes"]) + int(p2_diag["self_bytes"]),
     }
 
 
@@ -110,8 +116,9 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
         return (score, float(rank_pressure.get(src_rank, 0)), src_rank, dst_rank)
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
-        p2_matrix = problem.p2_next_dispatch_forecast_matrix
-        meta = _priority_metadata(p1_matrix=problem.p1_return_matrix, p2_matrix=p2_matrix)
+        p1_matrix = canonicalize_remote_matrix(problem.p1_return_matrix)
+        p2_matrix = canonicalize_remote_matrix(problem.p2_next_dispatch_forecast_matrix)
+        meta = _priority_metadata(p1_matrix=p1_matrix, p2_matrix=p2_matrix)
         ordered_p0 = sorted(
             flows_from_matrix(problem.p0_dispatch_matrix, phase="p0_dispatch", release_state="ready", executable=True),
             key=lambda flow: (
@@ -181,6 +188,8 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
                 "p1_reservation_weight": self.p1_reservation_weight,
                 "p2_hint_weight": self.p2_hint_weight,
                 "joint_rank_pressure": {str(k): int(v) for k, v in meta["joint_rank_pressure"].items()},
+                "remote_only_matrix_invariant": True,
+                "self_bytes_ignored": int(meta["self_bytes_ignored"]),
             },
             p0_waves=p0_waves,
             p1_waves=p1_waves,
@@ -306,6 +315,8 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
                 "p1_reservation_weight": self.p1_reservation_weight,
                 "p2_hint_weight": self.p2_hint_weight,
                 "joint_rank_pressure": {str(rank): int(p1_rows[rank] + p1_cols[rank] + predicted_pressure(rank)) for rank in sorted(set(p1_rows) | set(p1_cols) | set(range(len(predicted_row_sums))))},
+                "remote_only_matrix_invariant": True,
+                "self_bytes_ignored": int(metadata.get("predicted_self_bytes", 0) or 0),
             },
             "tie_break_rule": "prepared_priority -> joint score -> byte_count -> src_rank,dst_rank,bucket_ordinal",
             "fallback_reason": "",
@@ -320,6 +331,8 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
             "predictor_name": str(metadata.get("predictor_name", "")),
             "prepared_plan_consumed_prediction_digest": str(metadata.get("prediction_digest", "")),
             "prepared_plan_p2_source": str(metadata.get("p2_matrix_source", local_context.p2_hint.hint_source)),
+            "remote_only_matrix_invariant": True,
+            "self_bytes_ignored": int(metadata.get("predicted_self_bytes", 0) or 0),
         }
         return finalize_execution_plan(
             local_context=local_context,

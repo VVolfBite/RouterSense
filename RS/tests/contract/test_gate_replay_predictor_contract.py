@@ -25,8 +25,13 @@ def test_gate_replay_predictor_contract_is_expert_first() -> None:
         bytes_per_token=8,
         actual_next_expert_counts=actual,
     )
+    assert result.predictor_name == "MockGateReplayPredictor"
     assert result.predictor_family == "fate_style_gate_replay"
+    assert result.predictor_version == "mock_v1"
+    assert result.faithful_fate_style is False
+    assert result.requires_next_layer_router is True
     assert result.requires_router_input is True
+    assert result.requires_gpu_trace is True
     assert result.gpu_collection_required is True
     assert result.expert_metrics is not None
     assert result.predicted_source_expert_counts.counts == actual.counts

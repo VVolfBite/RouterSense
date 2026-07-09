@@ -45,6 +45,25 @@ class AsyncReleaseExecutionPlan:
 
 
 @dataclass(frozen=True)
+class AsyncReleasePreparedPlan:
+    plan_id: str
+    compiled_schedule_digest: str
+    compiled_schedule_task_count: int
+    global_order_agreement_required: bool
+    global_order_agreement_passed: bool
+    dependency_validation_passed: bool
+    fallback_to_phase_sync: bool
+    fallback_reason: str
+    ready_task_count: int
+    blocked_task_count: int
+    dependency_violation_count: int
+    debug_replay_only: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class AsyncReleaseWindowKey:
     run_id_digest: str
     layer_id: str

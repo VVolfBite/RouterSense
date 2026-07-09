@@ -73,6 +73,7 @@ from rs.runtime.online.megatron_ep.prediction import (
     CopyCurrentDispatchPredictor,
     PredictionInput,
     compare_predicted_to_actual,
+    maybe_capture_expert_route_trace,
 )
 from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
 from rs.scheduling.validation import stable_hash
@@ -1166,6 +1167,26 @@ class RouterSenseInjectionRuntime:
             remote_rows=int(observation.remote_rows),
             remote_bytes=int(sum(int(v) for v in observation.per_peer_bytes)),
         )
+        if self.observation_recorder is not None and bool(getattr(self.config, "capture_expert_trace", False)):
+            bytes_per_token = 1
+            if isinstance(packed_hidden_states, torch.Tensor) and packed_hidden_states.ndim >= 1:
+                bytes_per_token = int(packed_hidden_states.shape[-1]) * int(packed_hidden_states.element_size())
+            maybe_capture_expert_route_trace(
+                recorder=self.observation_recorder,
+                layer_id=int(parse_layer_id(layer_name)) if str(parse_layer_id(layer_name)).isdigit() else 0,
+                rank=int(self.rank),
+                source_rank=int(self.rank),
+                dispatcher=dispatcher,
+                selected_experts=getattr(getattr(dispatcher, "_comm_manager", None), "token_indices", None),
+                routing_weights=getattr(getattr(dispatcher, "_comm_manager", None), "token_probs", None),
+                top_k=int(getattr(dispatcher, "router_topk", getattr(getattr(dispatcher, "_comm_manager", None), "router_topk", 1)) or 1),
+                token_count=int(packed_hidden_states.shape[0]) if isinstance(packed_hidden_states, torch.Tensor) and packed_hidden_states.ndim >= 1 else 0,
+                hidden_shape=tuple(int(v) for v in packed_hidden_states.shape) if isinstance(packed_hidden_states, torch.Tensor) else None,
+                bytes_per_token=bytes_per_token,
+                per_peer_bytes=tuple(int(v) for v in observation.per_peer_bytes),
+                ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
+                enabled=True,
+            )
         if self.config.p2_hint_mode == "calibrated_artifact":
             self._record_prediction_for_dispatch(
                 layer_name=layer_name,

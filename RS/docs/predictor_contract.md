@@ -104,7 +104,8 @@ traffic-matrix predictor 可以作为 baseline，但它不应取代 expert-first
 
 - `gate_replay`
   - faithful FATE-style predictor family 的接口名
-  - 当前只有 mock / contract / CPU skeleton
+  - 当前只有 `MockGateReplayPredictor` / contract / CPU skeleton
+  - `faithful_fate_style=false`
   - 真实实现需要 GPU 采集 router input 和 next-layer gate
 
 - `perfect_trace`
@@ -195,6 +196,11 @@ traffic-matrix predictor 可以作为 baseline，但它不应取代 expert-first
 1. `run_expert_to_traffic_reconstruction.py`
    - 检查 expert trace 是否存在
    - 若存在，验证 expert->traffic 映射误差
+   - 对比：
+     - O1 actual source-expert -> actual traffic
+     - O2 global expert counts -> traffic
+     - O3 current source-expert copy -> next traffic
+     - O4 current traffic copy -> next traffic
 2. `train_fate_style_predictor.py`
    - 当前仍只训练 traffic-matrix baseline
 3. `evaluate_fate_style_predictor.py`
@@ -202,6 +208,8 @@ traffic-matrix predictor 可以作为 baseline，但它不应取代 expert-first
 4. `run_prediction_replay_suite.py`
    - 把 predicted traffic 真正灌入下一层 replay problem
    - 但必须标明 expert trace 是否存在
+   - 现在也必须对 `zero_hint` / `copy_current_dispatch` / `perfect_trace` / `actual_trace`
+     统一输出真实 prediction error，而不是默认 0
 5. `estimate_planning_hiding_window.py`
    - 粗估 prediction / planning / artifact build 是否可能被 layer interval 隐藏
 

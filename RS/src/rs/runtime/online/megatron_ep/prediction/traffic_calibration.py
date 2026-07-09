@@ -33,18 +33,23 @@ def calibrate_traffic_matrix(
     *,
     actual_matrix: Matrix | None = None,
     current_dispatch_matrix: Matrix | None = None,
+    historical_reference_matrix: Matrix | None = None,
     mode: str = "none",
     historical_scale: float | None = None,
 ) -> tuple[Matrix, TrafficCalibrationAudit]:
     predicted = canonicalize_remote_matrix(predicted_matrix)
     before = _compare(predicted, actual_matrix or predicted)
     calibrated = predicted
-    if mode == "total" and actual_matrix is not None:
+    if mode in {"total", "oracle_total"} and actual_matrix is not None:
         calibrated = _scale_total(predicted, target_total=matrix_remote_bytes(actual_matrix))
-    elif mode == "layer_scale" and historical_scale is not None:
+    elif mode == "current_total" and current_dispatch_matrix is not None:
+        calibrated = _scale_total(predicted, target_total=matrix_remote_bytes(current_dispatch_matrix))
+    elif mode in {"layer_scale", "history_layer_scale"} and historical_scale is not None:
         calibrated = _scale_total(predicted, scale=float(historical_scale))
-    elif mode == "row_col" and current_dispatch_matrix is not None:
+    elif mode in {"row_col", "row_col_current"} and current_dispatch_matrix is not None:
         calibrated = _row_col_rescale(predicted, current_dispatch_matrix)
+    elif mode == "row_col_history" and historical_reference_matrix is not None:
+        calibrated = _row_col_rescale(predicted, historical_reference_matrix)
     after = _compare(calibrated, actual_matrix or calibrated)
     return calibrated, TrafficCalibrationAudit(
         before_relative_l1=before["relative_l1_error"],

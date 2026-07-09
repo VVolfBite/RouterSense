@@ -51,7 +51,7 @@ TABLE_D_PHASE_SYNC_POLICIES = (
     "routersense_joint_priority_phase_sync",
 )
 
-TABLE_D_UPPER_BOUND_POLICIES = (
+TABLE_D_JOINT_REPLAY_POLICIES = (
     "U_gated_maxweight_matching",
     "U_barrier_criticality_global_matching",
 )
@@ -530,14 +530,14 @@ def run_bridge_suite(
         baseline_policy="birkhoff_phase_local",
         relative_key="relative_to_birkhoff_phase_local",
     )
-    upper = run_policy_suite(
+    joint_replay = run_policy_suite(
         fixture_dir=fixture_dir,
-        policies=TABLE_D_UPPER_BOUND_POLICIES,
+        policies=TABLE_D_JOINT_REPLAY_POLICIES,
         mode="execution_window",
         p2_source="actual_trace",
         expert_compute_delay=expert_compute_delay,
         baseline_policy="U_gated_maxweight_matching",
-        relative_key="relative_to_u_joint_upper_bound",
+        relative_key="relative_to_best_joint_replay",
     )
     predictor_records = rolling_predictor_records(fixture_dir=fixture_dir, predictor_name="fate_style_linear")
     predicted_by_layer = {str(record.layer_id): record.predicted_matrix for record in predictor_records}
@@ -577,7 +577,7 @@ def run_bridge_suite(
     baseline_map = {row["policy_name"]: row for row in phase_sync["summary"]}
     birkhoff_mean = float(baseline_map["birkhoff_phase_local"]["mean_makespan"] or 0.0)
     current_mean = float(baseline_map["routersense_multiphase_lookahead:p0_p1_p2"]["mean_makespan"] or 0.0)
-    upper_best = min((float(row["mean_makespan"]) for row in upper["summary"] if row["mean_makespan"] is not None), default=0.0)
+    upper_best = min((float(row["mean_makespan"]) for row in joint_replay["summary"] if row["mean_makespan"] is not None), default=0.0)
     async_mean = statistics.mean([float(row["completion_time"]) for row in async_rows]) if async_rows else None
     summary = []
     for row in phase_sync["summary"]:
@@ -617,7 +617,7 @@ def run_bridge_suite(
             "evaluation_mode": "async_release_sim",
         }
     )
-    for row in upper["summary"]:
+    for row in joint_replay["summary"]:
         summary.append(
             {
                 **row,
@@ -630,7 +630,7 @@ def run_bridge_suite(
                 "evaluation_mode": "execution_window",
             }
         )
-    return {"phase_sync": phase_sync, "upper_bound": upper, "async_rows": async_rows, "summary": summary}
+    return {"phase_sync": phase_sync, "joint_replay": joint_replay, "async_rows": async_rows, "summary": summary}
 
 
 def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
