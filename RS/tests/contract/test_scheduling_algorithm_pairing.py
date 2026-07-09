@@ -21,11 +21,15 @@ def test_main_u_algorithms_have_paired_b_or_explicit_pending_catalog() -> None:
 
 
 def test_b_birkhoff_is_phase_local_oracle_like_reference() -> None:
+    local = get_algorithm_metadata("O_local_phase_oracle")
     meta = get_algorithm_metadata("B_birkhoff")
-    assert meta["role"] == "o_local_phase_oracle"
+    assert local["role"] == "o_local_phase_oracle"
+    assert local["notes"].startswith("Formal local oracle reference")
+    assert meta["role"] == "b_phase_local"
     assert meta["oracle_like"] is True
     assert meta["deterministic_solver"] is True
-    assert is_phase_local_oracle("B_birkhoff") is True
+    assert is_phase_local_oracle("O_local_phase_oracle") is True
+    assert is_phase_local_oracle("B_birkhoff") is False
 
 
 def test_u_algorithms_are_not_marked_as_oracles() -> None:
@@ -37,6 +41,7 @@ def test_u_algorithms_are_not_marked_as_oracles() -> None:
 def test_joint_oracle_and_legacy_granularity_are_classified_explicitly() -> None:
     assert is_joint_oracle("O_joint_cp_sat_oracle") is True
     assert get_algorithm_metadata("O_joint_cp_sat_oracle")["heavy_solver"] is True
+    assert get_algorithm_metadata("O_local_phase_oracle")["granularity_mode"] == "legacy_fluid_reference"
     assert is_legacy_granularity_variant("U_gated_maxweight_matching_atomic") is True
     assert is_legacy_granularity_variant("B_birkhoff_wave") is True
 

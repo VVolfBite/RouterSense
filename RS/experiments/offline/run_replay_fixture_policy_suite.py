@@ -18,6 +18,7 @@ from rs.runtime.offline.prediction import rolling_predictor_records, summarize_p
 from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
 from rs.scheduling.algorithm_catalog import get_algorithm_metadata, is_paired_comparison_ready, joint_oracle_reference, local_oracle_reference, pair_status_summary
+from rs.scheduling.online_adapters import build_priority_artifact_from_plan
 from rs.scheduling import resolve_policy
 from rs.scheduling.validation import validate_logical_plan
 
@@ -64,6 +65,15 @@ PAIRED_FAMILY_ROWS = (
     ("lagrangian_cross_phase", "B_lagrangian_phase_local", "U_lagrangian"),
 )
 
+SAFE_POLICY_BY_FAMILY = {
+    "birkhoff_bvn": "RS_safe_ibbr",
+    "gated_greedy": "RS_safe_gated_greedy",
+    "gated_maxweight_matching": "RS_safe_gated_maxweight",
+    "barrier_criticality_matching": "RS_safe_barrier_criticality",
+    "barrier_price_adaptive_matching": "RS_safe_barrier_price",
+    "lagrangian_cross_phase": "RS_safe_lagrangian",
+}
+
 PREDICTION_SOURCE_LABELS = {
     "zero_hint": "zero_hint",
     "copy_current_dispatch": "copy_current_dispatch",
@@ -74,8 +84,12 @@ PREDICTION_SOURCE_LABELS = {
 }
 
 PREDICTION_U_POLICIES = (
-    "U_gated_maxweight_matching",
+    "U_gated_greedy_maximal",
+    "RS_safe_gated_greedy",
     "U_barrier_criticality_global_matching",
+    "RS_safe_barrier_criticality",
+    "U_gated_maxweight_matching",
+    "RS_safe_gated_maxweight",
 )
 
 
@@ -141,6 +155,8 @@ def run_policy_suite(
                     "tail_completion": float(tail.get("wave_duration_max", 0.0) or 0.0),
                     "p0_completion": float(tail.get("p0_inbound_completion_max", 0.0) or 0.0),
                     "p1_completion": float(tail.get("p1_inbound_completion_max", 0.0) or 0.0),
+                    "fallback_to_paired_b": bool(plan.diagnostics.get("fallback_to_paired_b", False)),
+                    "selected_policy": str(plan.diagnostics.get("selected_policy", plan.policy_name)),
                 }
             )
     summary_rows: list[dict[str, Any]] = []
@@ -193,7 +209,15 @@ def run_paired_suite(
     fixture_dir: Path,
     expert_compute_delay: float,
 ) -> dict[str, Any]:
-    policies = tuple(sorted({name for _family, b_name, u_name in PAIRED_FAMILY_ROWS for name in (b_name, u_name)}))
+    policies = tuple(
+        sorted(
+            {
+                name
+                for family, b_name, u_name in PAIRED_FAMILY_ROWS
+                for name in (b_name, u_name, SAFE_POLICY_BY_FAMILY[family])
+            }
+        )
+    )
     phase_sync = run_policy_suite(
         fixture_dir=fixture_dir,
         policies=policies,
@@ -206,35 +230,61 @@ def run_paired_suite(
     summary_by_policy = {row["policy_name"]: row for row in phase_sync["summary"]}
     rows: list[dict[str, Any]] = []
     for family, b_name, u_name in PAIRED_FAMILY_ROWS:
+        safe_name = SAFE_POLICY_BY_FAMILY[family]
         b_row = summary_by_policy.get(b_name)
         u_row = summary_by_policy.get(u_name)
+        safe_row = summary_by_policy.get(safe_name)
         b_meta = get_algorithm_metadata(b_name)
         u_meta = get_algorithm_metadata(u_name)
+        safe_meta = get_algorithm_metadata(safe_name)
         b_mean = None if b_row is None else b_row.get("mean_makespan")
         u_mean = None if u_row is None else u_row.get("mean_makespan")
-        improvement = None
+        safe_mean = None if safe_row is None else safe_row.get("mean_makespan")
+        raw_improvement = None
+        safe_improvement = None
         if b_mean not in (None, 0.0) and u_mean is not None:
-            improvement = float((float(u_mean) - float(b_mean)) / float(b_mean))
+            raw_improvement = float((float(u_mean) - float(b_mean)) / float(b_mean))
+        if b_mean not in (None, 0.0) and safe_mean is not None:
+            safe_improvement = float((float(safe_mean) - float(b_mean)) / float(b_mean))
         rows.append(
             {
                 "heuristic_family": family,
                 "B_algorithm": b_name,
-                "U_algorithm": u_name,
+                "raw_U_algorithm": u_name,
+                "safe_U_algorithm": safe_name,
                 "B_display_name": b_meta["display_name"],
-                "U_display_name": u_meta["display_name"],
+                "raw_U_display_name": u_meta["display_name"],
+                "safe_U_display_name": safe_meta["display_name"],
                 "B_granularity_mode": b_meta["granularity_mode"],
-                "U_granularity_mode": u_meta["granularity_mode"],
+                "raw_U_granularity_mode": u_meta["granularity_mode"],
+                "safe_U_granularity_mode": safe_meta["granularity_mode"],
                 "B_mean_makespan": b_mean,
-                "U_mean_makespan": u_mean,
-                "U_vs_B_improvement_pct": None if improvement is None else float(-100.0 * improvement),
+                "raw_U_mean_makespan": u_mean,
+                "safe_U_mean_makespan": safe_mean,
+                "raw_U_vs_B_improvement_pct": None if raw_improvement is None else float(-100.0 * raw_improvement),
+                "safe_U_vs_B_improvement_pct": None if safe_improvement is None else float(-100.0 * safe_improvement),
                 "B_valid_layer_count": 0 if b_row is None else int(b_row["valid_layer_count"]),
-                "U_valid_layer_count": 0 if u_row is None else int(u_row["valid_layer_count"]),
+                "raw_U_valid_layer_count": 0 if u_row is None else int(u_row["valid_layer_count"]),
+                "safe_U_valid_layer_count": 0 if safe_row is None else int(safe_row["valid_layer_count"]),
                 "B_segment_count": None if b_row is None else b_row.get("mean_segment_count"),
-                "U_segment_count": None if u_row is None else u_row.get("mean_segment_count"),
+                "raw_U_segment_count": None if u_row is None else u_row.get("mean_segment_count"),
+                "safe_U_segment_count": None if safe_row is None else safe_row.get("mean_segment_count"),
                 "uses_p2_forecast": bool(u_meta["planning_scope"] in {"multiphase_joint", "execution_window"}),
                 "uses_dependency": True,
                 "paired_comparison_ready": bool(is_paired_comparison_ready(family)),
-                "evaluation_eligible": bool((u_row or {}).get("evaluation_eligible", False)),
+                "evaluation_eligible": bool((safe_row or u_row or {}).get("evaluation_eligible", False)),
+                "safe_selected_U_ratio": 0.0
+                if safe_row is None or int(safe_row["valid_layer_count"]) <= 0
+                else float(
+                    sum(1 for item in phase_sync["rows"] if item["policy_name"] == safe_name and not bool(item.get("fallback_to_paired_b", False)))
+                    / max(1, sum(1 for item in phase_sync["rows"] if item["policy_name"] == safe_name))
+                ),
+                "safe_fallback_to_B_ratio": 0.0
+                if safe_row is None or int(safe_row["valid_layer_count"]) <= 0
+                else float(
+                    sum(1 for item in phase_sync["rows"] if item["policy_name"] == safe_name and bool(item.get("fallback_to_paired_b", False)))
+                    / max(1, sum(1 for item in phase_sync["rows"] if item["policy_name"] == safe_name))
+                ),
                 "notes": str(u_meta.get("notes", "")),
             }
         )
@@ -252,7 +302,7 @@ def build_oracle_table() -> dict[str, Any]:
         {
             "oracle_name": local_ref["algorithm_id"],
             "oracle_type": "phase_local",
-            "implementation": "B_birkhoff / legacy fast_schedule_birkhoff",
+            "implementation": "birkhoff_von_neumann_fluid",
             "objective": "single_phase_fluid_makespan",
             "deterministic_solver": bool(local_ref["deterministic_solver"]),
             "heavy_solver": bool(local_ref["heavy_solver"]),
@@ -290,19 +340,19 @@ def build_oracle_table() -> dict[str, Any]:
 
 
 def summarize_best_pair(paired_summary: dict[str, Any]) -> dict[str, Any]:
-    rows = [row for row in paired_summary.get("summary", []) if row.get("U_vs_B_improvement_pct") is not None]
+    rows = [row for row in paired_summary.get("summary", []) if row.get("safe_U_vs_B_improvement_pct") is not None]
     if not rows:
         return {
             "best_family": "",
             "best_improvement_pct": None,
             "u_beats_birkhoff_phase_oracle": False,
         }
-    best = max(rows, key=lambda row: float(row["U_vs_B_improvement_pct"]))
+    best = max(rows, key=lambda row: float(row["safe_U_vs_B_improvement_pct"]))
     return {
         "best_family": str(best["heuristic_family"]),
         "best_B_algorithm": str(best["B_algorithm"]),
-        "best_U_algorithm": str(best["U_algorithm"]),
-        "best_improvement_pct": float(best["U_vs_B_improvement_pct"]),
+        "best_U_algorithm": str(best["safe_U_algorithm"]),
+        "best_improvement_pct": float(best["safe_U_vs_B_improvement_pct"]),
         "u_beats_birkhoff_phase_oracle": False,
     }
 
@@ -312,13 +362,13 @@ def summarize_best_u_frontier(
     paired_summary: dict[str, Any],
     execution_window_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    paired_rows = [row for row in paired_summary.get("summary", []) if row.get("U_mean_makespan") is not None]
+    paired_rows = [row for row in paired_summary.get("summary", []) if row.get("safe_U_mean_makespan") is not None]
     exec_rows = [
         row
         for row in execution_window_summary.get("summary", [])
         if str(row.get("policy_name", "")).startswith("U_") and row.get("mean_makespan") is not None
     ]
-    best_phase_sync = min(paired_rows, key=lambda row: float(row["U_mean_makespan"])) if paired_rows else None
+    best_phase_sync = min(paired_rows, key=lambda row: float(row["safe_U_mean_makespan"])) if paired_rows else None
     best_exec = min(exec_rows, key=lambda row: float(row["mean_makespan"])) if exec_rows else None
     birkhoff_wave_row = next(
         (row for row in execution_window_summary.get("summary", []) if row.get("policy_name") == "B_birkhoff_wave"),
@@ -326,8 +376,8 @@ def summarize_best_u_frontier(
     )
     return {
         "best_phase_sync_u_family": None if best_phase_sync is None else str(best_phase_sync["heuristic_family"]),
-        "best_phase_sync_u_algorithm": None if best_phase_sync is None else str(best_phase_sync["U_algorithm"]),
-        "best_phase_sync_u_makespan": None if best_phase_sync is None else float(best_phase_sync["U_mean_makespan"]),
+        "best_phase_sync_u_algorithm": None if best_phase_sync is None else str(best_phase_sync["safe_U_algorithm"]),
+        "best_phase_sync_u_makespan": None if best_phase_sync is None else float(best_phase_sync["safe_U_mean_makespan"]),
         "best_execution_window_u_algorithm": None if best_exec is None else str(best_exec["policy_name"]),
         "best_execution_window_u_makespan": None if best_exec is None else float(best_exec["mean_makespan"]),
         "best_execution_window_gap_to_B_birkhoff_wave_pct": (
@@ -384,6 +434,9 @@ def run_prediction_suite(
                         "makespan": float(plan.diagnostics.get("makespan", audit.get("makespan", 0.0))),
                         "forecast_matrix_total_bytes": int(problem.forecast.matrix_total_bytes),
                         "predictor_name": p2_source if p2_source.startswith("fate_style_") else "",
+                        "safe_policy": bool(policy_name.startswith("RS_safe_")),
+                        "fallback_to_paired_b": bool(plan.diagnostics.get("fallback_to_paired_b", False)),
+                        "selected_policy": str(plan.diagnostics.get("selected_policy", plan.policy_name)),
                     }
                 )
     summary_rows: list[dict[str, Any]] = []
@@ -412,6 +465,7 @@ def run_prediction_suite(
                     "heuristic_family": "" if meta is None else str(meta["heuristic_family"]),
                     "U_algorithm": policy_name,
                     "policy_name": policy_name,
+                    "safe_policy": bool(policy_name.startswith("RS_safe_")),
                     "p2_source": str(PREDICTION_SOURCE_LABELS.get(p2_source, p2_source)),
                     "mean_makespan": mean_makespan,
                     "relative_to_zero_hint": relative_zero,
@@ -422,6 +476,14 @@ def run_prediction_suite(
                     "future_information_mode": str(seed_row["future_information_mode"]) if seed_row else "",
                     "evaluation_eligible": bool(seed_row["evaluation_eligible"]) if seed_row else False,
                     "predictor_name": str(seed_row["predictor_name"]) if seed_row else "",
+                    "fallback_to_B_ratio": 0.0
+                    if not current_rows or not policy_name.startswith("RS_safe_")
+                    else float(sum(1 for row in current_rows if bool(row["fallback_to_paired_b"])) / max(1, len(current_rows))),
+                    "selected_U_ratio": 0.0
+                    if not current_rows or not policy_name.startswith("RS_safe_")
+                    else float(sum(1 for row in current_rows if not bool(row["fallback_to_paired_b"])) / max(1, len(current_rows))),
+                    "online_adapter_ready": bool(policy_name.startswith("RS_safe_")),
+                    "priority_artifact_ready": bool(policy_name.startswith("RS_safe_")),
                     "planning_time_ms": None,
                 }
             )
@@ -484,6 +546,21 @@ def run_bridge_suite(
     for fixture_path in fixture_paths:
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         layer_id = str(fixture.get("metadata", {}).get("layer_id", ""))
+        problem = _build_problem(
+            fixture,
+            mode="runtime_lookahead",
+            p2_source="fate_style_linear" if layer_id in predicted_by_layer else "copy_current_dispatch",
+            expert_compute_delay=expert_compute_delay,
+            predicted_p2_matrix=predicted_by_layer.get(layer_id),
+        )
+        safe_plan = resolve_policy(policy_name="RS_safe_barrier_criticality", bucket_rows=0).build_logical_plan(problem)
+        artifact = build_priority_artifact_from_plan(
+            problem=problem,
+            plan=safe_plan,
+            heuristic_family="barrier_criticality_matching",
+            predictor_name="fate_style_linear",
+            p2_source="fate_style_linear" if layer_id in predicted_by_layer else "copy_current_dispatch",
+        )
         sim = simulate_async_release(
             p0_dispatch_matrix=fixture["p0_dispatch_matrix"],
             p1_return_matrix=fixture["p1_return_matrix"],
@@ -494,6 +571,7 @@ def run_bridge_suite(
             control_delay_us=0.0,
             prediction_lead_time_us=0.0,
             policy_name="routersense_joint_async_release",
+            priority_artifact=artifact,
         )
         async_rows.append({"fixture_name": fixture_path.name, "layer_id": layer_id, **sim})
     baseline_map = {row["policy_name"]: row for row in phase_sync["summary"]}
@@ -508,7 +586,7 @@ def run_bridge_suite(
             {
                 **row,
                 "relative_to_current_routersense": None if mean is None or current_mean == 0.0 else float((float(mean) - current_mean) / current_mean),
-                "gap_to_best_U_upper_bound": None if mean is None or upper_best == 0.0 else float((float(mean) - upper_best) / upper_best),
+                "gap_to_best_joint_raw_u": None if mean is None or upper_best == 0.0 else float((float(mean) - upper_best) / upper_best),
                 "p2_source": "copy_current_dispatch",
                 "predictor_name": "",
                 "online_eligible": row["policy_name"] != "routersense_joint_async_release_sim",
@@ -531,7 +609,7 @@ def run_bridge_suite(
             "mean_p1_completion": async_mean,
             "relative_to_birkhoff_phase_local": None if async_mean is None or birkhoff_mean == 0.0 else float((float(async_mean) - birkhoff_mean) / birkhoff_mean),
             "relative_to_current_routersense": None if async_mean is None or current_mean == 0.0 else float((float(async_mean) - current_mean) / current_mean),
-            "gap_to_best_U_upper_bound": None if async_mean is None or upper_best == 0.0 else float((float(async_mean) - upper_best) / upper_best),
+            "gap_to_best_joint_raw_u": None if async_mean is None or upper_best == 0.0 else float((float(async_mean) - upper_best) / upper_best),
             "p2_source": "fate_style_linear",
             "predictor_name": "fate_style_linear",
             "online_eligible": False,
@@ -544,7 +622,7 @@ def run_bridge_suite(
             {
                 **row,
                 "relative_to_current_routersense": None if row["mean_makespan"] is None or current_mean == 0.0 else float((float(row["mean_makespan"]) - current_mean) / current_mean),
-                "gap_to_best_U_upper_bound": None if row["mean_makespan"] is None or upper_best == 0.0 else float((float(row["mean_makespan"]) - upper_best) / upper_best),
+                "gap_to_best_joint_raw_u": None if row["mean_makespan"] is None or upper_best == 0.0 else float((float(row["mean_makespan"]) - upper_best) / upper_best),
                 "p2_source": "actual_trace_oracle",
                 "predictor_name": "oracle",
                 "online_eligible": False,
@@ -645,10 +723,13 @@ def main() -> None:
         baseline_policy="B_birkhoff_wave",
         relative_key="relative_to_B_birkhoff_wave",
     )
-    table_c = run_prediction_suite(
+    table_c = run_prediction_u_suite(
         fixture_dir=fixture_dir,
-        policies=TABLE_C_POLICIES,
         p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history", "fate_style_linear", "perfect_trace", "actual_trace"),
+        expert_compute_delay=0.0,
+    )
+    paired = run_paired_suite(
+        fixture_dir=fixture_dir,
         expert_compute_delay=0.0,
     )
     table_d = run_bridge_suite(
@@ -662,6 +743,7 @@ def main() -> None:
         "table_b": table_b,
         "table_c": table_c,
         "table_d": table_d,
+        "paired_b_vs_u": paired,
     }
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(_render_md(payload, audit_summary), encoding="utf-8")

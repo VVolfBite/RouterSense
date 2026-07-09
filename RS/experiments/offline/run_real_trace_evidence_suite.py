@@ -86,16 +86,16 @@ def _render_md(payload: dict[str, Any]) -> str:
         "",
         "## Paired B-vs-U result",
         "",
-        "| Family | B | U | B Mean | U Mean | U vs B | Ready |",
+        "| Family | B | Safe U | B Mean | Safe U Mean | Safe U vs B | Ready |",
         "|---|---|---|---:|---:|---:|---|",
     ]
     for row in payload["paired_b_vs_u"]["summary"]:
-        improvement = row["U_vs_B_improvement_pct"]
+        improvement = row["safe_U_vs_B_improvement_pct"]
         b_mean = "-" if row["B_mean_makespan"] is None else f"{float(row['B_mean_makespan']):.0f}"
-        u_mean = "-" if row["U_mean_makespan"] is None else f"{float(row['U_mean_makespan']):.0f}"
+        u_mean = "-" if row["safe_U_mean_makespan"] is None else f"{float(row['safe_U_mean_makespan']):.0f}"
         improvement_text = "-" if improvement is None else f"{float(improvement):.2f}%"
         lines.append(
-            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['U_algorithm']} | "
+            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['safe_U_algorithm']} | "
             f"{b_mean} | "
             f"{u_mean} | "
             f"{improvement_text} | "
@@ -126,7 +126,7 @@ def _render_md(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "这张表只对应 offline execution-window / joint upper-bound 语义，不能被解读为当前 online RouterSense 已实现收益。",
+            "这张表只对应 offline execution-window / oracle-information joint scheduling study，不能被解读为当前 online RouterSense 已实现收益。",
             f"- best_execution_window_u_algorithm: `{payload['best_u_frontier']['best_execution_window_u_algorithm']}`",
             f"- best_execution_window_gap_to_B_birkhoff_wave_pct: {payload['best_u_frontier']['best_execution_window_gap_to_B_birkhoff_wave_pct']}",
             "",
@@ -174,7 +174,7 @@ def _render_md(payload: dict[str, Any]) -> str:
     for row in payload["bridge_candidates"]["summary"]:
         rel_b = row.get("relative_to_birkhoff_phase_local")
         rel_r = row.get("relative_to_current_routersense")
-        gap_u = row.get("gap_to_best_U_upper_bound")
+        gap_u = row.get("gap_to_best_joint_raw_u")
         mean = row.get("mean_makespan")
         lines.append(
             f"| {row['policy_name']} | {('-' if mean is None else f'{float(mean):.0f}')} | "

@@ -93,4 +93,4 @@ def test_transport_stress_replay_cli(tmp_path: Path) -> None:
     markdown = (output_dir / "transport_stress_replay_summary.md").read_text(encoding="utf-8")
     assert "communication-only" in markdown
     assert "Paired B-vs-U transport replay" in markdown
-    assert "Joint upper-bound transport replay" in markdown
+    assert "Execution-window joint transport replay" in markdown

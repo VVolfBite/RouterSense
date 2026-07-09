@@ -11,6 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from rs.scheduling.traffic_matrix import (
+    canonicalize_remote_matrix,
+    matrix_col_sums_remote,
+    matrix_diagonal_report,
+    matrix_remote_bytes,
+    matrix_row_sums_remote,
+)
+
+from rs.scheduling.online_adapters.priority_artifact import PairedUPriorityArtifact
 
 Matrix = tuple[tuple[int, ...], ...]
 
@@ -27,16 +36,13 @@ class SimTask:
 
 
 def _matrix(matrix: Any) -> Matrix:
-    return tuple(tuple(int(value) for value in row) for row in matrix)
+    return canonicalize_remote_matrix(matrix)
 
 
 def _rank_pressure(matrix: Matrix) -> dict[int, int]:
-    pressure: dict[int, int] = {}
-    for src_rank, row in enumerate(matrix):
-        pressure[src_rank] = pressure.get(src_rank, 0) + int(sum(int(value) for value in row))
-        for dst_rank, value in enumerate(row):
-            pressure[dst_rank] = pressure.get(dst_rank, 0) + int(value)
-    return pressure
+    rows = matrix_row_sums_remote(matrix)
+    cols = matrix_col_sums_remote(matrix)
+    return {rank: int((rows[rank] if rank < len(rows) else 0) + (cols[rank] if rank < len(cols) else 0)) for rank in range(max(len(rows), len(cols), 0))}
 
 
 def _pack_ready_wave(tasks: list[SimTask]) -> list[SimTask]:
@@ -63,12 +69,20 @@ def simulate_async_release(
     control_delay_us: float = 0.0,
     prediction_lead_time_us: float = 0.0,
     policy_name: str = "routersense_joint_async_release",
+    priority_artifact: PairedUPriorityArtifact | None = None,
 ) -> dict[str, Any]:
-    p0 = _matrix(p0_dispatch_matrix)
-    p1 = _matrix(p1_return_matrix)
-    p2 = _matrix(predicted_p2_matrix)
+    raw_p0 = tuple(tuple(int(value) for value in row) for row in p0_dispatch_matrix)
+    raw_p1 = tuple(tuple(int(value) for value in row) for row in p1_return_matrix)
+    raw_p2 = tuple(tuple(int(value) for value in row) for row in predicted_p2_matrix)
+    p0 = _matrix(raw_p0)
+    p1 = _matrix(raw_p1)
+    p2 = _matrix(raw_p2)
     p1_pressure = _rank_pressure(p1)
     p2_pressure = _rank_pressure(p2)
+    priority_lookup: dict[tuple[str, int, int], tuple[float, int]] = {}
+    if priority_artifact is not None:
+        for entry in priority_artifact.priority_entries:
+            priority_lookup[(str(entry.phase), int(entry.src_rank), int(entry.dst_rank))] = (float(entry.priority_score), int(entry.wave_id))
     p0_inbound_remaining: dict[int, int] = {}
     for src_rank, row in enumerate(p0):
         for dst_rank, byte_count in enumerate(row):
@@ -82,7 +96,9 @@ def simulate_async_release(
         for dst_rank, byte_count in enumerate(row):
             if src_rank == dst_rank or int(byte_count) <= 0:
                 continue
-            score = float(byte_count + p1_pressure.get(dst_rank, 0) + p2_pressure.get(dst_rank, 0))
+            key = ("p0_dispatch", src_rank, dst_rank)
+            artifact_score = priority_lookup.get(key, (0.0, 0))[0]
+            score = float(max(artifact_score, float(byte_count + p1_pressure.get(dst_rank, 0) + p2_pressure.get(dst_rank, 0))))
             p0_tasks.append(SimTask(f"P0:{src_rank}->{dst_rank}", "P0", src_rank, dst_rank, int(byte_count), 0.0, score))
     for src_rank, row in enumerate(p1):
         for dst_rank, byte_count in enumerate(row):
@@ -109,7 +125,9 @@ def simulate_async_release(
             if task_id not in released_p1_ids:
                 early_release_task_count += 1
                 released_p1_ids.add(task_id)
-            score = float(byte_count + p2_pressure.get(src_rank, 0) + p2_pressure.get(dst_rank, 0))
+            key = ("p1_return", src_rank, dst_rank)
+            artifact_score = priority_lookup.get(key, (0.0, 0))[0]
+            score = float(max(artifact_score, float(byte_count + p2_pressure.get(src_rank, 0) + p2_pressure.get(dst_rank, 0))))
             ready_tasks.append(SimTask(task_id, "P1", src_rank, dst_rank, byte_count, ready_at + float(compute_delay), score))
         ready_tasks = [task for task in ready_tasks if task.task_id not in done]
         if not ready_tasks:
@@ -161,6 +179,9 @@ def simulate_async_release(
     hidden_planning_us = min(planning_total_us, max(0.0, float(prediction_lead_time_us)))
     exposed_planning_us = max(0.0, planning_total_us - hidden_planning_us)
     hidden_fraction = 1.0 if planning_total_us <= 0.0 else hidden_planning_us / planning_total_us
+    p0_diag = matrix_diagonal_report(raw_p0)
+    p1_diag = matrix_diagonal_report(raw_p1)
+    p2_diag = matrix_diagonal_report(raw_p2)
     return {
         "policy_name": policy_name,
         "simulator_mode": "async_release_joint_priority",
@@ -178,9 +199,18 @@ def simulate_async_release(
         "early_release_task_count": int(early_release_task_count),
         "blocked_task_count": int(blocked_task_count),
         "dependency_violations": int(dependency_violations),
-        "predicted_p2_total_bytes": int(sum(sum(row) for row in p2)),
+        "predicted_p2_total_bytes": int(matrix_remote_bytes(p2)),
+        "p0_self_bytes_ignored": int(p0_diag["self_bytes"]),
+        "p1_self_bytes_ignored": int(p1_diag["self_bytes"]),
+        "predicted_p2_self_bytes_ignored": int(p2_diag["self_bytes"]),
+        "remote_only_matrix_invariant": True,
         "p0_inbound_completion_max": float(p0_completion),
         "online_eligible": False,
         "async_release_required": True,
         "evaluation_mode": "async_release_sim",
+        "used_priority_artifact": priority_artifact is not None,
+        "priority_artifact_digest": None if priority_artifact is None else priority_artifact.priority_digest,
+        "source_safe_policy": "" if priority_artifact is None else str(priority_artifact.source_safe_policy),
+        "selected_policy": "" if priority_artifact is None else str(priority_artifact.selected_policy),
+        "fallback_to_paired_b": False if priority_artifact is None else bool(priority_artifact.fallback_to_paired_b),
     }

@@ -107,10 +107,10 @@ def _render_md(payload: dict[str, Any]) -> str:
     ]
     for row in payload["paired_b_vs_u"]["summary"]:
         b_mean = "-" if row["B_mean_makespan"] is None else f"{float(row['B_mean_makespan']):.0f}"
-        u_mean = "-" if row["U_mean_makespan"] is None else f"{float(row['U_mean_makespan']):.0f}"
-        improvement = "-" if row["U_vs_B_improvement_pct"] is None else f"{float(row['U_vs_B_improvement_pct']):.2f}%"
+        u_mean = "-" if row["safe_U_mean_makespan"] is None else f"{float(row['safe_U_mean_makespan']):.0f}"
+        improvement = "-" if row["safe_U_vs_B_improvement_pct"] is None else f"{float(row['safe_U_vs_B_improvement_pct']):.2f}%"
         lines.append(
-            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['U_algorithm']} | "
+            f"| {row['heuristic_family']} | {row['B_algorithm']} | {row['safe_U_algorithm']} | "
             f"{b_mean} | "
             f"{u_mean} | "
             f"{improvement} |"
@@ -134,7 +134,7 @@ def _render_md(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Joint upper-bound transport replay",
+            "## Execution-window joint transport replay",
             "",
             "| Policy | Mean Comm Makespan | Mean Waves | Relative to B_birkhoff_wave | Throughput(bytes/unit) |",
             "|---|---:|---:|---:|---:|",
@@ -154,8 +154,8 @@ def _render_md(payload: dict[str, Any]) -> str:
             "",
             "- 这是 communication-only logical replay，不是 GPU runtime latency。",
             "- phase-sync-compatible 表对应当前 online 保守语义。",
-            "- joint upper-bound 表对应 offline execution-window 语义。",
-            "- 如果 joint upper-bound 明显优于 phase-local baseline，说明通信段本身仍有可挖掘空间。",
+            "- execution-window joint 表对应 offline execution-window 语义。",
+            "- 如果 execution-window joint 表明显优于 phase-local baseline，说明通信段本身仍有可挖掘空间。",
         ]
     )
     return "\n".join(lines) + "\n"

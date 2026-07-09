@@ -23,7 +23,7 @@
   - `B_gated_greedy_maximal` vs `U_gated_greedy_maximal`
   - `B_gated_maxweight_matching` vs `U_gated_maxweight_matching`
   - `B_barrier_criticality_matching` vs `U_barrier_criticality_global_matching`
-- 已能在 offline execution-window 语义下比较 `B_birkhoff_wave` 与 `U_*`。
+- 已能在 offline execution-window 语义下比较 `B_birkhoff_wave` 与 raw/safe `U_*`。
 - 已能把真实 fixture 进一步压成 communication-only transport-stress replay 报告。
 - 已新增 `routersense_joint_priority_phase_sync` 与 `routersense_joint_async_release_sim` 作为 bridge candidate，用来把 `U_*` 空间往 online 语义推进。
 - 这条证据链当前是 offline 可验证，不等于 online 已实现。

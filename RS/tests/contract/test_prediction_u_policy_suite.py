@@ -50,13 +50,13 @@ def test_prediction_suite_is_keyed_by_u_algorithm(tmp_path) -> None:
     )
     summary = run_prediction_suite(
         fixture_dir=fixture_dir,
-        policies=("U_gated_maxweight_matching", "U_barrier_criticality_global_matching"),
+        policies=("U_gated_maxweight_matching", "RS_safe_gated_maxweight"),
         p2_sources=("zero_hint", "copy_current_dispatch", "perfect_trace"),
         expert_compute_delay=0.0,
     )
     assert {row["U_algorithm"] for row in summary["summary"]} == {
         "U_gated_maxweight_matching",
-        "U_barrier_criticality_global_matching",
+        "RS_safe_gated_maxweight",
     }
     assert {row["p2_source"] for row in summary["summary"]} == {
         "zero_hint",
@@ -64,4 +64,5 @@ def test_prediction_suite_is_keyed_by_u_algorithm(tmp_path) -> None:
         "perfect_trace_oracle",
     }
     assert any(row["heuristic_family"] == "gated_maxweight_matching" for row in summary["summary"])
+    assert any(row["safe_policy"] is True for row in summary["summary"])
     assert all(row["predictor_name"] != "final_predictor" for row in summary["summary"])

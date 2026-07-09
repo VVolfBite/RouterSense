@@ -23,7 +23,9 @@ phase-local oracle-like deterministic reference:
 - objective focused on phase-local communication makespan
 - no kernel launch, setup, or wave-count overhead in the objective
 
-This is why RouterSense uses `B_birkhoff` as the local phase reference rather than
+This is why RouterSense uses the fluid `birkhoff_von_neumann_fluid` reference as
+the formal `O_local_phase_oracle`, while `B_birkhoff` remains the strong
+engineering phase-local baseline rather than the oracle object itself.
 as a generic baseline heuristic.
 
 ### Caveat

@@ -99,6 +99,7 @@ def test_replay_fixture_policy_suite_cli(tmp_path: Path) -> None:
     assert payload["table_b"]["mode"] == "execution_window"
     assert any(row["policy_name"] == "birkhoff_phase_local" for row in payload["table_a"]["summary"])
     assert any(row["policy_name"] == "B_birkhoff_wave" for row in payload["table_b"]["summary"])
+    assert any(row["safe_U_algorithm"] == "RS_safe_barrier_criticality" for row in payload["paired_b_vs_u"]["summary"])
     markdown = summary_md_path.read_text(encoding="utf-8")
     assert "Phase-sync-compatible result" in markdown
     assert "Execution-window joint result" in markdown
