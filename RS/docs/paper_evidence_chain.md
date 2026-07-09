@@ -10,6 +10,7 @@
 
 - `experiments/offline/build_replay_fixture_from_control_trace.py`
 - `experiments/offline/run_real_trace_evidence_suite.py`
+- `experiments/offline/run_transport_stress_replay.py`
 - `src/rs/scheduling/`
   - `B_birkhoff_wave`
   - `U_gated_maxweight_matching`
@@ -19,6 +20,7 @@
 
 - 已能把真实 online trace 转成 replay fixture。
 - 已能在 offline execution-window 语义下比较 `B_birkhoff_wave` 与 `U_*`。
+- 已能把真实 fixture 进一步压成 communication-only transport-stress replay 报告。
 - 这条证据链当前是 offline 可验证，不等于 online 已实现。
 
 ## Claim 2

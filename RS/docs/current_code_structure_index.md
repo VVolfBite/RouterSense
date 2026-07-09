@@ -90,6 +90,13 @@
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
+### `experiments/offline/run_transport_stress_replay.py`
+
+- 负责什么：把真实 replay fixture 重放成 communication-only transport-stress 报告
+- 不负责什么：真实 GPU benchmark、online runtime 执行
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
 ## Experiments
 
 ### `experiments/online/run_strategy_comparison.py`

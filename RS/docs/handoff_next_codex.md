@@ -27,6 +27,7 @@
 - control replay trace skeleton
 - natural 4GPU `256x128` workload主线
 - async_release shadow-only skeleton
+- transport-stress / EP replay offline 入口
 
 当前明确不要做：
 
@@ -50,6 +51,7 @@
 - `experiments/offline/replay_online_control_trace.py`
 - `experiments/offline/build_replay_fixture_from_control_trace.py`
 - `experiments/offline/run_real_trace_evidence_suite.py`
+- `experiments/offline/run_transport_stress_replay.py`
 
 当前能力：
 
@@ -60,6 +62,7 @@
   - phase-sync-compatible
   - execution-window joint upper bound
   - prediction / oracle-predict
+- 把真实 fixture 进一步压成 communication-only transport-stress replay
 
 当前限制：
 
@@ -117,6 +120,7 @@ Offline / replay：
 - `experiments/offline/build_replay_fixture_from_control_trace.py`
 - `experiments/offline/run_replay_fixture_policy_suite.py`
 - `experiments/offline/run_real_trace_evidence_suite.py`
+- `experiments/offline/run_transport_stress_replay.py`
 
 ## 6. 推荐下一步顺序
 
@@ -124,7 +128,7 @@ Offline / replay：
    - 当前 phase_sync-compatible 结果
    - execution-window joint upper bound
    - prediction / oracle-predict 空间
-2. 做 transport-stress / EP replay
+2. 基于 transport-stress / EP replay 评估 communication-only 空间
 3. 修 global P2 matrix
 4. 再决定是否推进 async_release executor integration
 
