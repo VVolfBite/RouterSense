@@ -28,7 +28,7 @@
 - natural 4GPU `256x128` workload主线
 - async_release shadow-only skeleton
 - transport-stress / EP replay offline 入口
-- prepared-plan global P2 matrix gather for phase_sync when EP group is available
+- tensorized global dispatch-matrix gather for phase_sync prediction/prepared-plan bookkeeping
 
 当前明确不要做：
 
@@ -43,7 +43,8 @@
 - 当前 online RouterSense 仍然是 prediction-aware phase-local runtime policy
 - 它不是 full online multiphase live pending queue executor
 - `async_release` 当前只有 shadow-only skeleton，还没有 executor integration
-- 当前 prepared-plan 的 `p2_matrix_source` 在真实分布式 phase_sync 下应优先是 `gathered_global_matrix`；无分布式环境才 fallback 到 `replicated_local_row`
+- 当前 online prepared-plan 应优先消费 `predicted_next_dispatch`；
+  dispatch matrix 的全局构造方式必须是 tensorized gather，不能再走 Python object collective
 
 ## 2. Offline / replay mainline
 
@@ -131,7 +132,7 @@ Offline / replay：
    - execution-window joint upper bound
    - prediction / oracle-predict 空间
 2. 基于 transport-stress / EP replay 评估 communication-only 空间
-3. 接真实 online predictor，而不是只靠 gathered previous-layer matrix
+3. 接真实 online predictor，而不是只靠 copy-current / gathered current-dispatch heuristic
 4. 再决定是否推进 async_release executor integration
 
 ## 7. Repository rule

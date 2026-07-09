@@ -87,6 +87,7 @@
 - 当前 online RouterSense 仍然是 prediction-aware phase-local runtime policy
 - 它不是完整的 online multiphase live pending queue executor
 - fast path 仍然保留 root-authoritative agreement 和 wave-level plan
+- dispatch matrix 的全局构造必须走 tensorized gather，不能在 predictor / prepared-plan 路径里使用 Python object collective
 
 ## 与论文证据链的关系
 

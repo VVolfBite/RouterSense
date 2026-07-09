@@ -41,10 +41,12 @@
   - `copy_current_dispatch`
   - `perfect_trace`
   - `actual_trace`
-- online prepared-plan 侧现在在 phase_sync / EP group 可用时，会从各 rank `per_peer_bytes` 汇总出 `gathered_global_matrix`，不再强制使用 `replicated_local_row`
-- 这允许先建立 oracle-predict 与 cheap heuristic predictor 的对照。
+- online 侧现在已经有 tensorized dispatch-matrix gather 和 lightweight predictor contract：
+  - `ZeroHintPredictor`
+  - `CopyCurrentDispatchPredictor`
+- prepared-plan 应消费 `predicted_next_dispatch`，而不是把 gathered current matrix 本身写成 predictor。
 - online 端当前只有 phase_sync 下的 prediction-aware policy。
-- 但这还不等于真实 next-layer predictor：当前只是把上一层已观测到的全局矩阵汇总得更真实，真实 online predictor 仍未接入。
+- 但这还不等于真实 next-layer predictor：当前只有 zero/copy-current 级别的轻量 predictor，真实 predictor 仍未接入。
 
 ## Claim 3
 

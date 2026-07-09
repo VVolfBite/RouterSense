@@ -110,14 +110,14 @@ def _render_md(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "zero_hint 表示没有跨层预测；copy_current_dispatch 是廉价启发式；perfect_trace / actual_trace 仅代表 oracle predict 上界，不是实时 predictor。",
+            "zero_hint 表示没有跨层预测；copy_current_dispatch 是廉价启发式；perfect_trace_oracle / actual_trace_oracle 仅代表 oracle predict 上界，不是实时 predictor。",
             "",
             "## Online runtime interpretation",
             "",
             "- 当前 phase_sync online 是真实可执行的保守线。",
             "- current RouterSense hint policy 不是 full joint execution-window scheduler。",
             "- async_release 目前只有 shadow-only skeleton，还没有 executor integration。",
-            "- prepared-plan 的 P2 矩阵在真实分布式 EP group 可用时已经可以来自 gathered_global_matrix；但这只是修正全局矩阵来源，不等于真实 next-layer predictor 已经接入。",
+            "- gathered_global_matrix 只是 traffic matrix construction，不是 predictor；真实 next-layer predictor 仍未接入。",
             "- 下一步需要 transport-stress / EP replay 或 async_release executor integration，才能把 offline joint 空间转换成在线系统收益。",
         ]
     )

@@ -29,7 +29,7 @@ from rs.runtime.online.megatron_ep.contracts import (
     RuntimeObservation,
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
-from rs.runtime.online.megatron_ep.control.p2_matrix import build_prepared_plan_matrices
+from rs.runtime.online.megatron_ep.control.p2_matrix import TrafficMatrixBundle, build_traffic_matrix_bundle
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
 from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
@@ -69,6 +69,11 @@ from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, Unsupported
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
+from rs.runtime.online.megatron_ep.prediction import (
+    CopyCurrentDispatchPredictor,
+    PredictionInput,
+    compare_predicted_to_actual,
+)
 from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
 from rs.scheduling.validation import stable_hash
 
@@ -96,6 +101,8 @@ class RouterSenseInjectionRuntime:
             "prepared_plan": None,
             "plan_created_at_us": 0,
             "plan_source_layer": "",
+            "predicted_dispatch_by_layer": {},
+            "actual_dispatch_by_layer": {},
         }
     )
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
@@ -107,6 +114,7 @@ class RouterSenseInjectionRuntime:
     pending_window_driver_records: list[dict[str, Any]] = field(default_factory=list)
     planning_timing_records: list[dict[str, Any]] = field(default_factory=list)
     control_replay_traces: list[dict[str, Any]] = field(default_factory=list)
+    prediction_audits: list[dict[str, Any]] = field(default_factory=list)
     control_timeline: list[dict[str, Any]] = field(default_factory=list)
     control_commands: list[dict[str, Any]] = field(default_factory=list)
     assertion_state: dict[str, Any] = field(default_factory=dict)
@@ -381,6 +389,123 @@ class RouterSenseInjectionRuntime:
             start_ns=start_ns,
             end_ns=end_ns,
             **detail,
+        )
+
+    def _matrix_device(self, candidate: Any) -> torch.device:
+        if isinstance(candidate, torch.Tensor):
+            return candidate.device
+        return torch.device("cpu")
+
+    def _next_layer_id(self, layer_name: str) -> str:
+        layer_id = parse_layer_id(layer_name)
+        try:
+            return str(int(layer_id) + 1)
+        except ValueError:
+            return layer_id
+
+    def _record_prediction_for_dispatch(
+        self,
+        *,
+        layer_name: str,
+        observation: RuntimeObservation,
+        device: torch.device,
+    ) -> None:
+        stage_start_ns = time.monotonic_ns()
+        layer_id = parse_layer_id(layer_name)
+        next_layer_id = self._next_layer_id(layer_name)
+        world_size = int(len(self.ep_group_ranks) or len(observation.per_peer_bytes) or 1)
+        matrix_bundle = build_traffic_matrix_bundle(
+            per_peer_bytes=tuple(int(value) for value in observation.per_peer_bytes),
+            world_size=world_size,
+            device=device,
+            group=self.ep_process_group,
+        )
+        actual_dispatch_by_layer = dict(self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {})
+        actual_dispatch_by_layer[str(layer_id)] = {
+            "matrix": [list(row) for row in matrix_bundle.matrix],
+            "matrix_digest": matrix_bundle.matrix_digest,
+            "matrix_source": matrix_bundle.matrix_source,
+            "row_sums": list(matrix_bundle.row_sums),
+            "col_sums": list(matrix_bundle.col_sums),
+            "total_bytes": int(matrix_bundle.total_bytes),
+            "nonzero_edge_count": int(matrix_bundle.nonzero_edge_count),
+        }
+        self._prepared_plan_state["actual_dispatch_by_layer"] = actual_dispatch_by_layer
+
+        predicted_dispatch_by_layer = dict(self._prepared_plan_state.get("predicted_dispatch_by_layer", {}) or {})
+        existing_prediction = predicted_dispatch_by_layer.get(str(layer_id))
+        audit_start_ns = time.monotonic_ns()
+        if isinstance(existing_prediction, dict) and existing_prediction:
+            from rs.runtime.online.megatron_ep.prediction.contracts import PredictedTrafficMatrix
+
+            predicted = PredictedTrafficMatrix(
+                predictor_name=str(existing_prediction.get("predictor_name", "")),
+                predictor_version=str(existing_prediction.get("predictor_version", "")),
+                source_layer_id=str(existing_prediction.get("source_layer_id", "")),
+                predicted_layer_id=str(existing_prediction.get("predicted_layer_id", "")),
+                matrix=tuple(tuple(int(value) for value in row) for row in existing_prediction.get("matrix", [])),
+                matrix_digest=str(existing_prediction.get("matrix_digest", "")),
+                total_bytes=int(existing_prediction.get("total_bytes", 0) or 0),
+                nonzero_edge_count=int(existing_prediction.get("nonzero_edge_count", 0) or 0),
+                confidence=float(existing_prediction.get("confidence", 0.0) or 0.0),
+                is_oracle=bool(existing_prediction.get("is_oracle", False)),
+                evaluation_eligible=bool(existing_prediction.get("evaluation_eligible", False)),
+                created_at_phase=str(existing_prediction.get("created_at_phase", "")),
+            )
+            audit = compare_predicted_to_actual(predicted, matrix_bundle.matrix)
+            self.prediction_audits.append(
+                {
+                    "ts_us": int(time.time() * 1e6),
+                    "layer_name": layer_name,
+                    "layer_id": layer_id,
+                    "actual_matrix_source": matrix_bundle.matrix_source,
+                    **audit.to_dict(),
+                }
+            )
+            predicted_dispatch_by_layer.pop(str(layer_id), None)
+        audit_end_ns = time.monotonic_ns()
+
+        predictor = CopyCurrentDispatchPredictor()
+        prediction_input = PredictionInput(
+            run_id_digest=digest_text(self.run_id),
+            layer_id=str(layer_id),
+            next_layer_id=str(next_layer_id),
+            rank=int(self.rank),
+            world_size=world_size,
+            current_dispatch_matrix_digest=str(matrix_bundle.matrix_digest),
+            current_dispatch_total_bytes=int(matrix_bundle.total_bytes),
+            current_dispatch_nonzero_edges=int(matrix_bundle.nonzero_edge_count),
+            metadata={
+                "matrix_source": matrix_bundle.matrix_source,
+                "is_global": bool(matrix_bundle.is_global),
+            },
+        )
+        prediction_start_ns = time.monotonic_ns()
+        predicted = predictor.predict(prediction_input=prediction_input, current_dispatch_matrix=matrix_bundle.matrix)
+        prediction_end_ns = time.monotonic_ns()
+        predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
+        self._prepared_plan_state["predicted_dispatch_by_layer"] = predicted_dispatch_by_layer
+        self._prepared_plan_state["latest_predictor_name"] = predicted.predictor_name
+        self._prepared_plan_state["latest_prediction_digest"] = predicted.matrix_digest
+        self._prepared_plan_state["latest_prediction_target_layer_id"] = str(next_layer_id)
+        self._prepared_plan_state["latest_prediction_matrix_source"] = matrix_bundle.matrix_source
+        stage_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="predict_next_dispatch",
+            start_ns=stage_start_ns,
+            end_ns=stage_end_ns,
+            matrix_source=str(matrix_bundle.matrix_source),
+            matrix_total_bytes=int(matrix_bundle.total_bytes),
+            matrix_nonzero_edge_count=int(matrix_bundle.nonzero_edge_count),
+            p2_matrix_gather_time_us=float(matrix_bundle.gather_time_us),
+            p2_matrix_gather_call_count=int(matrix_bundle.gather_call_count),
+            predictor_name=str(predicted.predictor_name),
+            predicted_layer_id=str(next_layer_id),
+            prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
+            audit_time_us=max(0.0, float(audit_end_ns - audit_start_ns) / 1000.0),
+            prediction_audit_emitted=bool(existing_prediction is not None),
         )
 
     # Hint, shadow, and pending-window state
@@ -679,26 +804,69 @@ class RouterSenseInjectionRuntime:
         num_peers = len(per_peer)
         if num_peers <= 0:
             return
-        p0_obs = self._pending_p0.get(layer_name)
-        matrix_bundle = build_prepared_plan_matrices(
-            rank=self.rank,
-            ep_group_ranks=self.ep_group_ranks,
-            ep_process_group=self.ep_process_group,
-            layer_name=layer_name,
-            observation_p1=observation_p1,
-            observation_p0=p0_obs,
+        p1_bundle = build_traffic_matrix_bundle(
+            per_peer_bytes=per_peer,
+            world_size=max(int(len(self.ep_group_ranks) or 0), num_peers),
+            device=torch.device(str(getattr(observation_p1, "device", "cpu"))),
+            group=self.ep_process_group,
         )
-        dispatch_matrix = matrix_bundle.dispatch_matrix
-        forecast_matrix = matrix_bundle.forecast_matrix
-        p1_return_matrix = matrix_bundle.p1_return_matrix
-        p2_matrix_source = matrix_bundle.p2_matrix_source
-        row_sums = list(matrix_bundle.row_sums)
-        col_sums = list(matrix_bundle.col_sums)
+        layer_id = parse_layer_id(layer_name)
+        next_layer_id = self._next_layer_id(layer_name)
+        actual_dispatch_by_layer = dict(self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {})
+        dispatch_entry = actual_dispatch_by_layer.get(str(layer_id), {})
+        dispatch_matrix = tuple(
+            tuple(int(value) for value in row)
+            for row in dispatch_entry.get("matrix", p1_bundle.matrix)
+        )
+        predicted_dispatch_by_layer = dict(self._prepared_plan_state.get("predicted_dispatch_by_layer", {}) or {})
+        prediction_entry = predicted_dispatch_by_layer.get(str(next_layer_id))
+        predictor_name = ""
+        prediction_digest = ""
+        prediction_evaluation_eligible = True
+        prediction_is_oracle = False
+        if isinstance(prediction_entry, dict) and prediction_entry:
+            forecast_matrix = tuple(
+                tuple(int(value) for value in row)
+                for row in prediction_entry.get("matrix", [])
+            )
+            p2_matrix_source = "predicted_next_dispatch"
+            predictor_name = str(prediction_entry.get("predictor_name", ""))
+            prediction_digest = str(prediction_entry.get("matrix_digest", ""))
+            prediction_evaluation_eligible = bool(prediction_entry.get("evaluation_eligible", True))
+            prediction_is_oracle = bool(prediction_entry.get("is_oracle", False))
+        else:
+            fallback = CopyCurrentDispatchPredictor().predict(
+                prediction_input=PredictionInput(
+                    run_id_digest=digest_text(self.run_id),
+                    layer_id=str(layer_id),
+                    next_layer_id=str(next_layer_id),
+                    rank=int(self.rank),
+                    world_size=num_peers,
+                    current_dispatch_matrix_digest=str(dispatch_entry.get("matrix_digest", "")),
+                    current_dispatch_total_bytes=int(dispatch_entry.get("total_bytes", 0) or 0),
+                    current_dispatch_nonzero_edges=int(dispatch_entry.get("nonzero_edge_count", 0) or 0),
+                    metadata={"fallback": True},
+                ),
+                current_dispatch_matrix=dispatch_matrix,
+            )
+            forecast_matrix = fallback.matrix
+            p2_matrix_source = "copy_current_dispatch_fallback"
+            predictor_name = fallback.predictor_name
+            prediction_digest = fallback.matrix_digest
+            prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
+            prediction_is_oracle = bool(fallback.is_oracle)
+        row_sums = [int(sum(row)) for row in forecast_matrix]
+        col_sums = [
+            int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))
+            for col_idx in range(len(forecast_matrix[0]) if forecast_matrix else 0)
+        ]
         forecast_digest = stable_hash(
             {
                 "forecast_matrix": [list(row) for row in forecast_matrix],
                 "layer": layer_name,
                 "source": p2_matrix_source,
+                "predictor_name": predictor_name,
+                "prediction_digest": prediction_digest,
             }
         )
         problem = MultiPhaseSchedulingProblem(
@@ -713,17 +881,19 @@ class RouterSenseInjectionRuntime:
             forecast=ForecastPressure(
                 source=p2_matrix_source,
                 digest=forecast_digest,
-                oracle=False,
-                evaluation_eligible=True,
+                oracle=prediction_is_oracle,
+                evaluation_eligible=prediction_evaluation_eligible,
                 matrix_shape=(num_peers, num_peers),
-                matrix_total_bytes=matrix_bundle.total_bytes,
+                matrix_total_bytes=int(sum(row_sums)),
                 matrix=forecast_matrix,
                 metadata={
                     "p2_matrix_source": p2_matrix_source,
-                    "p2_matrix_is_replicated_local_row": matrix_bundle.p2_matrix_is_replicated_local_row,
+                    "predictor_name": predictor_name,
+                    "prediction_digest": prediction_digest,
+                    "p2_matrix_is_replicated_local_row": False,
                     "p2_matrix_row_sums": row_sums,
                     "p2_matrix_col_sums": col_sums,
-                    "p2_matrix_total_bytes": matrix_bundle.total_bytes,
+                    "p2_matrix_total_bytes": int(sum(row_sums)),
                 },
             ),
             options=GlobalReadySetOptions(
@@ -736,7 +906,7 @@ class RouterSenseInjectionRuntime:
                 max_waves=256,
             ),
             p0_dispatch_matrix=dispatch_matrix,
-            p1_return_matrix=p1_return_matrix,
+            p1_return_matrix=p1_bundle.matrix,
             p2_next_dispatch_forecast_matrix=forecast_matrix,
         )
         policy = RouterSenseMultiphaseLookaheadPolicy(
@@ -745,7 +915,6 @@ class RouterSenseInjectionRuntime:
             p1_reservation_weight=self.config.p1_reservation_weight,
             p2_hint_weight=self.config.p2_hint_weight,
         )
-        layer_id = parse_layer_id(layer_name)
         try:
             applies_from_layer_id = str(int(layer_id) + 1)
         except ValueError:
@@ -761,16 +930,16 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
         self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
-        self._prepared_plan_state["p2_matrix_total_bytes"] = int(matrix_bundle.total_bytes)
+        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(row_sums))
         self._prepared_plan_state["p2_matrix_row_sums"] = row_sums
         self._prepared_plan_state["p2_matrix_col_sums"] = col_sums
-        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = bool(
-            matrix_bundle.p2_matrix_is_replicated_local_row
-        )
-        self._prepared_plan_state["p2_matrix_shape"] = list(matrix_bundle.shape)
-        self._prepared_plan_state["p2_matrix_gather_time_us"] = float(matrix_bundle.gather_time_us)
-        self._prepared_plan_state["p2_matrix_gather_status"] = str(matrix_bundle.gather_status)
-        self._prepared_plan_state["p2_matrix_gather_call_count"] = int(matrix_bundle.gather_call_count)
+        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = False
+        self._prepared_plan_state["p2_matrix_shape"] = [num_peers, num_peers]
+        self._prepared_plan_state["p2_matrix_gather_time_us"] = float(p1_bundle.gather_time_us)
+        self._prepared_plan_state["p2_matrix_gather_status"] = str(p1_bundle.matrix_source)
+        self._prepared_plan_state["p2_matrix_gather_call_count"] = int(p1_bundle.gather_call_count)
+        self._prepared_plan_state["predictor_name"] = predictor_name
+        self._prepared_plan_state["prediction_digest"] = prediction_digest
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         cache_build_start_ns = time.monotonic_ns()
         _, _, cache_build_time_us = get_or_build_prepared_priority_cache(
@@ -799,9 +968,11 @@ class RouterSenseInjectionRuntime:
             logical_build_time_us=max(0.0, float(build_end_ns - build_start_ns) / 1000.0),
             prepared_priority_cache_build_time_us=float(cache_build_time_us),
             prepared_priority_cache_total_time_us=(cache_build_end_ns - cache_build_start_ns) / 1000.0,
-            p2_matrix_gather_time_us=float(matrix_bundle.gather_time_us),
-            p2_matrix_gather_status=str(matrix_bundle.gather_status),
-            p2_matrix_gather_call_count=int(matrix_bundle.gather_call_count),
+            p2_matrix_gather_time_us=float(p1_bundle.gather_time_us),
+            p2_matrix_gather_status=str(p1_bundle.matrix_source),
+            p2_matrix_gather_call_count=int(p1_bundle.gather_call_count),
+            predictor_name=predictor_name,
+            prediction_digest=prediction_digest,
         )
 
     def _record_pending_window_driver(
@@ -836,6 +1007,8 @@ class RouterSenseInjectionRuntime:
             "p2_matrix_row_sums": list(self._prepared_plan_state.get("p2_matrix_row_sums", []) or []),
             "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
             "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
+            "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
+            "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
             "prepared_window_key": str(metrics.get("prepared_window_key", "")),
             "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
             "wave_count": len(plan.waves),
@@ -981,6 +1154,12 @@ class RouterSenseInjectionRuntime:
             remote_rows=int(observation.remote_rows),
             remote_bytes=int(sum(int(v) for v in observation.per_peer_bytes)),
         )
+        if self.config.p2_hint_mode == "calibrated_artifact":
+            self._record_prediction_for_dispatch(
+                layer_name=layer_name,
+                observation=observation,
+                device=self._matrix_device(packed_hidden_states),
+            )
         self._record_plan_arrival(layer_name=layer_name, phase="P0")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
@@ -1531,8 +1710,9 @@ class RouterSenseInjectionRuntime:
                 end_ns=clear_end_ns,
             )
             observation_p1 = self._pending_p1.pop(layer_name, None)
-            if observation_p1 is not None:
+            if observation_p1 is not None and self.config.p2_hint_mode == "calibrated_artifact":
                 self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
+            if observation_p1 is not None:
                 self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
@@ -1708,6 +1888,11 @@ class RouterSenseInjectionRuntime:
             return []
         return self._export_list(self.control_replay_traces)
 
+    def export_prediction_audits(self) -> list[dict[str, Any]]:
+        if self._is_perf_profile():
+            return []
+        return self._export_list(self.prediction_audits)
+
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)
 
@@ -1725,6 +1910,8 @@ class RouterSenseInjectionRuntime:
             "p2_matrix_gather_time_us": float(self._prepared_plan_state.get("p2_matrix_gather_time_us", 0.0) or 0.0),
             "p2_matrix_gather_status": str(self._prepared_plan_state.get("p2_matrix_gather_status", "")),
             "p2_matrix_gather_call_count": int(self._prepared_plan_state.get("p2_matrix_gather_call_count", 0) or 0),
+            "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
+            "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

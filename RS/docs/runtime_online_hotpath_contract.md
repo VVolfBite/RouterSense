@@ -14,6 +14,7 @@
 - executor 按统一 wave 顺序执行
 - 最小 timing / audit counters
 - 轻量 control replay trace
+- tensorized traffic-matrix gather for dispatch/prediction bookkeeping
 
 这些步骤必须保持：
 
@@ -21,6 +22,7 @@
 - wave-level plan
 - 不修改 payload layout / offsets / tensor roles
 - 不提前执行未 ready 的 phase
+- 不在 P2 / prediction / prepared-plan matrix 路径中使用 Python object collectives
 
 ## perf hot path 默认不允许做的事
 
@@ -35,6 +37,7 @@
 - full bucket order / full wave edges
 - 大型 debug artifact dump
 - plotting / 离线报告生成
+- `dist.all_gather_object` / `dist.gather_object` / `dist.broadcast_object_list` 用于 P2 / prediction / prepared-plan matrix
 
 原则是：
 
@@ -77,3 +80,17 @@ offline 负责：
 - 理论对比和报告
 
 如果某项分析不需要真实 GPU 执行，就不应该继续堆进 online hot path。
+
+## Prediction / P2 Matrix Rule
+
+online runtime 里的 traffic matrix gathering 必须是 tensorized / NCCL-friendly：
+
+- 允许：
+  - `all_gather_into_tensor`
+  - tensor `all_gather`
+
+- 不允许：
+  - Python object collective 来构建 P2 / prediction / prepared-plan matrix
+
+`gathered_global_matrix` 也不能被误写成 predictor。
+它只是“当前已观测流量矩阵的全局构造方式”，不是 next-layer prediction。

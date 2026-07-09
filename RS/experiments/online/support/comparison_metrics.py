@@ -439,6 +439,8 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
         "p2_matrix_is_replicated_local_row": bool(prepared_plan_summary.get("p2_matrix_is_replicated_local_row", False)),
         "p2_matrix_row_sums": list(prepared_plan_summary.get("p2_matrix_row_sums", []) or []),
         "p2_matrix_col_sums": list(prepared_plan_summary.get("p2_matrix_col_sums", []) or []),
+        "predictor_name": str(prepared_plan_summary.get("predictor_name", "")),
+        "prediction_digest": str(prepared_plan_summary.get("prediction_digest", "")),
     }
     metrics.update(plan_timing_from_timeline(timeline))
     metrics.update(scheduled_plan_metrics(plans))

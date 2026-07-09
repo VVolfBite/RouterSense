@@ -55,10 +55,17 @@
 
 ### `src/rs/runtime/online/megatron_ep/control/p2_matrix.py`
 
-- 负责什么：把 rank-local `per_peer_bytes` 汇总成 prepared-plan 使用的全局矩阵
+- 负责什么：tensorized traffic-matrix gather，把 rank-local `per_peer_bytes` 汇总成全局 dispatch matrix
 - 不负责什么：真实预测器、executor、phase plan 执行
 - 是否属于 perf hot path：否
 - 是否可以慢：可以有少量控制面代价，但不能重到替代 planner 本体
+
+### `src/rs/runtime/online/megatron_ep/prediction/`
+
+- 负责什么：轻量 predictor contract、simple predictor、prediction audit
+- 不负责什么：真实复杂 predictor 训练、executor、offline oracle
+- 是否属于 perf hot path：部分 lightweight heuristic 路径属于
+- 是否可以慢：不可以重到替代 planner 本体
 
 ### `src/rs/runtime/online/megatron_ep/async_release/`
 
@@ -145,7 +152,7 @@
   - 表 B：`B_birkhoff_wave` vs `U_*`
 - Claim 2：cross-layer prediction value
   - `experiments/offline/run_real_trace_evidence_suite.py`
-  - 表 C：`zero_hint` / `copy_current_dispatch` / `perfect_trace` / `actual_trace`
+  - 表 C：`zero_hint` / `copy_current_dispatch` / `perfect_trace_oracle` / `actual_trace_oracle`
 - Claim 3：real reproducible online runtime
   - `runtime.line=phase_sync`
   - replay trace + audit

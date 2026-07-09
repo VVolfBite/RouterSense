@@ -67,6 +67,19 @@
 
 后续如果要做“同一 trace 下换策略重排”，应当复用这个 schema，而不是把完整 debug artifact 强行塞进热路径。
 
+## 与 Prediction Audit 的关系
+
+`ControlReplayTrace` 只记录控制面和计划规模，不承担 prediction audit 本身。
+
+prediction / actual dispatch 的误差分析应单独写到：
+
+- `rank*_prediction_audit.jsonl`
+
+这样可以保证：
+
+- `control_replay_trace` 继续轻量
+- prediction 误差分析可离线单独聚合
+
 ## 最小使用示例
 
 用 public 配置面时：

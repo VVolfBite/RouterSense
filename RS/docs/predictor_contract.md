@@ -138,4 +138,5 @@ predictor 的职责不是：
 
 - 贡献 3：
   - 在真实 online runtime 中，把 predictor 输出接成 prepared / shadow plan 输入
-  - 但当前 mainline 还没有真实 predictor，只完成了 gathered global matrix 和 prepared-plan 接线
+  - 当前 mainline 已有 tensorized dispatch gather 和 lightweight `zero_hint` / `copy_current_dispatch` predictor
+  - 但真实学习式或更强 predictor 仍未接入

@@ -80,6 +80,8 @@ class CalibratedArtifactP2HintProvider:
                 "applies_from_layer_id": str(getattr(prepared_plan, "applies_from_layer_id", "")),
                 "p2_matrix_source": str(self._shared_state.get("p2_matrix_source", "")),
                 "p2_matrix_is_replicated_local_row": bool(self._shared_state.get("p2_matrix_is_replicated_local_row", False)),
+                "predictor_name": str(self._shared_state.get("predictor_name", "")),
+                "prediction_digest": str(self._shared_state.get("prediction_digest", "")),
                 **plan_priority,
             },
         )

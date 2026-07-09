@@ -9,7 +9,7 @@ import torch
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
-from rs.runtime.online.megatron_ep.control.p2_matrix import build_prepared_plan_matrices
+from rs.runtime.online.megatron_ep.control.p2_matrix import build_traffic_matrix_bundle, gather_global_peer_bytes_matrix
 from rs.runtime.online.megatron_ep.pending_window import MultiphasePendingWindowAdapter, build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import digest_text
 from rs.runtime.online.megatron_ep.observation.views import scheduled_plan_artifact
@@ -232,6 +232,24 @@ def test_plan_arrival_status_recording() -> None:
     assert records[-1]["has_prepared_plan"] is True
 
 
+def test_prediction_audit_exports_after_next_dispatch_arrives() -> None:
+    runtime = _runtime(observation_profile="debug")
+    runtime._record_prediction_for_dispatch(
+        layer_name="model.layers.0.mlp",
+        observation=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+        device=torch.device("cpu"),
+    )
+    runtime._record_prediction_for_dispatch(
+        layer_name="model.layers.1.mlp",
+        observation=_observation(layer_name="model.layers.1.mlp", phase="P0", per_peer_bytes=(0, 12)),
+        device=torch.device("cpu"),
+    )
+    rows = runtime.export_prediction_audits()
+    assert rows
+    assert rows[-1]["predictor_name"] == "copy_current_dispatch"
+    assert "relative_l1_error" in rows[-1]
+
+
 def test_perf_profile_suppresses_window_shadow_exports() -> None:
     runtime = _runtime(observation_profile="perf")
     runtime.window_state_records.append({"window": "x"})
@@ -267,107 +285,112 @@ def test_prepared_plan_summary_exposes_p2_matrix_source() -> None:
             "prepared_plan": _prepared_plan(),
             "plan_created_at_us": 123,
             "plan_source_layer": "model.layers.0.mlp",
-            "p2_matrix_source": "replicated_local_row",
+            "p2_matrix_source": "predicted_next_dispatch",
             "p2_matrix_total_bytes": 64,
             "p2_matrix_row_sums": [32, 32],
             "p2_matrix_col_sums": [16, 48],
-            "p2_matrix_is_replicated_local_row": True,
+            "p2_matrix_is_replicated_local_row": False,
             "p2_matrix_shape": [2, 2],
             "p2_matrix_gather_time_us": 12.5,
-            "p2_matrix_gather_status": "fallback_after_gather_failure",
+            "p2_matrix_gather_status": "tensor_all_gather",
             "p2_matrix_gather_call_count": 2,
+            "predictor_name": "copy_current_dispatch",
+            "prediction_digest": "pred-digest",
         }
     )
     summary = runtime.export_prepared_plan_summary()
     assert summary["has_prepared_plan"] is True
-    assert summary["p2_matrix_source"] == "replicated_local_row"
+    assert summary["p2_matrix_source"] == "predicted_next_dispatch"
     assert summary["p2_matrix_total_bytes"] == 64
-    assert summary["p2_matrix_is_replicated_local_row"] is True
+    assert summary["p2_matrix_is_replicated_local_row"] is False
     assert summary["p2_matrix_shape"] == [2, 2]
     assert summary["p2_matrix_gather_time_us"] == 12.5
-    assert summary["p2_matrix_gather_status"] == "fallback_after_gather_failure"
+    assert summary["p2_matrix_gather_status"] == "tensor_all_gather"
     assert summary["p2_matrix_gather_call_count"] == 2
+    assert summary["predictor_name"] == "copy_current_dispatch"
+    assert summary["prediction_digest"] == "pred-digest"
 
 
-def test_build_prepared_plan_matrices_falls_back_to_replicated_local_row(monkeypatch) -> None:
+def test_gather_global_peer_bytes_matrix_falls_back_without_dist(monkeypatch) -> None:
     from rs.runtime.online.megatron_ep.control import p2_matrix as mod
 
     monkeypatch.setattr(mod.dist, "is_available", lambda: True)
     monkeypatch.setattr(mod.dist, "is_initialized", lambda: False)
-    bundle = build_prepared_plan_matrices(
-        rank=0,
-        ep_group_ranks=(0, 1),
-        ep_process_group=None,
-        layer_name="model.layers.0.mlp",
-        observation_p1=_observation(layer_name="model.layers.0.mlp", phase="P1", per_peer_bytes=(0, 24)),
-        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
-    )
-    assert bundle.p2_matrix_source == "replicated_local_row"
-    assert bundle.p2_matrix_is_replicated_local_row is True
-    assert bundle.forecast_matrix == ((0, 24), (0, 0))
-    assert bundle.gather_status == "skipped_dist_uninitialized"
-    assert bundle.gather_call_count == 2
+    local = mod.build_local_peer_bytes_tensor((0, 24), 2, "cpu")
+    matrix, metadata = gather_global_peer_bytes_matrix(local)
+    assert tuple(tuple(int(value) for value in row) for row in matrix.tolist()) == ((0, 24), (0, 0))
+    assert metadata["matrix_source"] == "replicated_local_row_fallback"
+    assert metadata["gather_call_count"] == 0
 
 
-def test_build_prepared_plan_matrices_gathers_global_rows(monkeypatch) -> None:
+def test_build_traffic_matrix_bundle_uses_tensor_collective(monkeypatch) -> None:
     from rs.runtime.online.megatron_ep.control import p2_matrix as mod
 
     monkeypatch.setattr(mod.dist, "is_available", lambda: True)
     monkeypatch.setattr(mod.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(mod.dist, "all_gather_object", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("object collective forbidden")))
 
-    def all_gather_object(output, payload, group=None):
-        if payload["row"] == [0, 24]:
-            output[0] = {"ep_rank": 0, "row": [0, 24]}
-            output[1] = {"ep_rank": 1, "row": [12, 0]}
-        else:
-            output[0] = {"ep_rank": 0, "row": [0, 16]}
-            output[1] = {"ep_rank": 1, "row": [8, 0]}
+    def all_gather_into_tensor(output, input_tensor, group=None):
+        values = torch.tensor([0, 24, 12, 0], dtype=input_tensor.dtype, device=input_tensor.device)
+        output.copy_(values)
 
-    monkeypatch.setattr(mod.dist, "all_gather_object", all_gather_object)
-    bundle = build_prepared_plan_matrices(
-        rank=0,
-        ep_group_ranks=(0, 1),
-        ep_process_group=None,
-        layer_name="model.layers.0.mlp",
-        observation_p1=_observation(layer_name="model.layers.0.mlp", phase="P1", per_peer_bytes=(0, 24)),
-        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
-    )
-    assert bundle.p2_matrix_source == "gathered_global_matrix"
-    assert bundle.p2_matrix_is_replicated_local_row is False
-    assert bundle.forecast_matrix == ((0, 24), (12, 0))
-    assert bundle.dispatch_matrix == ((0, 16), (8, 0))
+    monkeypatch.setattr(mod.dist, "all_gather_into_tensor", all_gather_into_tensor)
+    bundle = build_traffic_matrix_bundle(per_peer_bytes=(0, 24), world_size=2, device="cpu", group=None)
+    assert bundle.matrix_source == "tensor_all_gather"
+    assert bundle.is_global is True
+    assert bundle.matrix == ((0, 24), (12, 0))
     assert bundle.total_bytes == 36
-    assert bundle.gather_status == "ok"
-    assert bundle.gather_call_count == 2
+    assert bundle.gather_call_count == 1
 
 
-def test_store_prepared_plan_uses_gathered_global_matrix_when_available(monkeypatch) -> None:
+def test_store_prepared_plan_prefers_predicted_next_dispatch(monkeypatch) -> None:
     runtime = _runtime(observation_profile="perf")
     from rs.runtime.online.megatron_ep.control import p2_matrix as mod
 
     monkeypatch.setattr(mod.dist, "is_available", lambda: True)
     monkeypatch.setattr(mod.dist, "is_initialized", lambda: True)
 
-    def all_gather_object(output, payload, group=None):
-        if payload["row"] == [0, 24]:
-            output[0] = {"ep_rank": 0, "row": [0, 24]}
-            output[1] = {"ep_rank": 1, "row": [12, 0]}
+    def all_gather_into_tensor(output, input_tensor, group=None):
+        if input_tensor.tolist() == [0, 24]:
+            output.copy_(torch.tensor([0, 24, 12, 0], dtype=input_tensor.dtype, device=input_tensor.device))
         else:
-            output[0] = {"ep_rank": 0, "row": [0, 16]}
-            output[1] = {"ep_rank": 1, "row": [8, 0]}
+            output.copy_(torch.tensor([0, 16, 8, 0], dtype=input_tensor.dtype, device=input_tensor.device))
 
-    monkeypatch.setattr(mod.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(mod.dist, "all_gather_into_tensor", all_gather_into_tensor)
     layer0 = "model.layers.0.mlp"
-    runtime._pending_p0[layer0] = _observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16))
+    runtime._record_prediction_for_dispatch(
+        layer_name=layer0,
+        observation=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+        device=torch.device("cpu"),
+    )
     runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
     summary = runtime.export_prepared_plan_summary()
-    assert summary["p2_matrix_source"] == "gathered_global_matrix"
+    assert summary["p2_matrix_source"] == "predicted_next_dispatch"
     assert summary["p2_matrix_is_replicated_local_row"] is False
-    assert summary["p2_matrix_row_sums"] == [24, 12]
-    assert summary["p2_matrix_col_sums"] == [12, 24]
-    assert summary["p2_matrix_gather_status"] == "ok"
-    assert summary["p2_matrix_gather_call_count"] == 2
+    assert summary["p2_matrix_row_sums"] == [16, 8]
+    assert summary["p2_matrix_col_sums"] == [8, 16]
+    assert summary["p2_matrix_gather_status"] == "tensor_all_gather"
+    assert summary["p2_matrix_gather_call_count"] == 1
     assert summary["p2_matrix_gather_time_us"] >= 0.0
+    assert summary["predictor_name"] == "copy_current_dispatch"
+
+
+def test_store_prepared_plan_legacy_fallback_is_not_marked_as_predictor_matrix() -> None:
+    runtime = _runtime(observation_profile="perf")
+    layer0 = "model.layers.0.mlp"
+    runtime._prepared_plan_state["actual_dispatch_by_layer"] = {
+        "0": {
+            "matrix": [[0, 16], [8, 0]],
+            "matrix_digest": "dispatch-0",
+            "matrix_source": "replicated_local_row_fallback",
+            "total_bytes": 24,
+            "nonzero_edge_count": 2,
+        }
+    }
+    runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["p2_matrix_source"] == "copy_current_dispatch_fallback"
+    assert summary["predictor_name"] == "copy_current_dispatch"
 
 
 def test_perf_scheduled_plan_artifact_keeps_task_ids_only() -> None:

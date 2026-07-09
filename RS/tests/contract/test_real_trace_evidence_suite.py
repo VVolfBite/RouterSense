@@ -105,8 +105,8 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
     assert {row["p2_source"] for row in prediction["summary"]} == {
         "zero_hint",
         "copy_current_dispatch",
-        "perfect_trace",
-        "actual_trace",
+        "perfect_trace_oracle",
+        "actual_trace_oracle",
     }
     markdown = (output_dir / "real_trace_evidence_summary.md").read_text(encoding="utf-8")
     assert "Joint scheduling space" in markdown

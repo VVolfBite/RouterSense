@@ -182,6 +182,9 @@ def write_rank_artifacts(
         replay_trace_rows = runtime.export_control_replay_traces()
         if replay_trace_rows:
             write_jsonl(run_dir / f"rank{rank}_control_replay_trace.jsonl", replay_trace_rows)
+        prediction_audit_rows = runtime.export_prediction_audits()
+        if prediction_audit_rows:
+            write_jsonl(run_dir / f"rank{rank}_prediction_audit.jsonl", prediction_audit_rows)
         write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
