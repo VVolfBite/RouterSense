@@ -179,6 +179,9 @@ def write_rank_artifacts(
         write_jsonl(run_dir / f"rank{rank}_prepared_phase_plan_shadow.jsonl", runtime.export_prepared_phase_plan_shadows())
         write_jsonl(run_dir / f"rank{rank}_pending_window_driver.jsonl", runtime.export_pending_window_driver_records())
         write_jsonl(run_dir / f"rank{rank}_planning_timing.jsonl", runtime.export_planning_timing_records())
+        replay_trace_rows = runtime.export_control_replay_traces()
+        if replay_trace_rows:
+            write_jsonl(run_dir / f"rank{rank}_control_replay_trace.jsonl", replay_trace_rows)
         write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()

@@ -351,6 +351,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
             "capture_phase_selector",
             "heartbeat_enabled",
             "per_wave_timing_enabled",
+            "replay_trace_enabled",
         },
         "validation": {"save_logits", "stop_after_selected_layer", "allow_debug_capture"},
         "artifact": {"output_root", "artifact_root"},
@@ -486,6 +487,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             capture_phase_selector=str(observation.get("capture_phase_selector", "")),
             heartbeat_enabled=bool(observation.get("heartbeat_enabled", False)),
             per_wave_timing_enabled=bool(observation.get("per_wave_timing_enabled", False)),
+            replay_trace_enabled=bool(observation.get("replay_trace_enabled", False)),
         ),
         validation=ValidationConfig(
             save_logits=bool(validation.get("save_logits", False)),

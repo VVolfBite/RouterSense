@@ -37,9 +37,13 @@ from rs.runtime.online.megatron_ep.observation import (
     RouterSenseObserver,
     RuntimeObservationRecorder,
     build_runtime_observation,
+    control_replay_trace_row,
     digest_text,
     extract_int_tuple,
     parse_layer_id,
+    phase_context_artifact,
+    scheduled_plan_artifact,
+    transport_bundle_artifact,
 )
 from rs.runtime.online.megatron_ep.pending_window import (
     MultiphasePendingWindowAdapter,
@@ -101,6 +105,7 @@ class RouterSenseInjectionRuntime:
     prepared_phase_plan_shadows: list[dict[str, Any]] = field(default_factory=list)
     pending_window_driver_records: list[dict[str, Any]] = field(default_factory=list)
     planning_timing_records: list[dict[str, Any]] = field(default_factory=list)
+    control_replay_traces: list[dict[str, Any]] = field(default_factory=list)
     control_timeline: list[dict[str, Any]] = field(default_factory=list)
     control_commands: list[dict[str, Any]] = field(default_factory=list)
     assertion_state: dict[str, Any] = field(default_factory=dict)
@@ -124,6 +129,7 @@ class RouterSenseInjectionRuntime:
                     capture_phase_selector=str(getattr(self.config, "capture_phase_selector", "")),
                     heartbeat_enabled=bool(getattr(self.config, "heartbeat_enabled", False)),
                     per_wave_timing_enabled=bool(getattr(self.config, "per_wave_timing_enabled", False)),
+                    replay_trace_enabled=bool(getattr(self.config, "replay_trace_enabled", False)),
                 )
             )
         if self.config.p2_hint_mode == "calibrated_artifact":
@@ -144,87 +150,21 @@ class RouterSenseInjectionRuntime:
     def _allow_shadow_artifacts(self) -> bool:
         return not self._is_perf_profile()
 
-    def _phase_context_artifact(self, context: PhaseReadyContext) -> dict[str, Any]:
-        if not self._is_perf_profile():
-            return context.to_dict()
-        remote_segments = [segment for segment in context.outgoing_segments if not bool(segment.is_local) and int(segment.row_count) > 0]
-        return {
-            "plan_key": dict(context.plan_key),
-            "phase": str(context.phase),
-            "layer_id": str(context.layer_id),
-            "layer_name": str(context.layer_name),
-            "global_rank": int(context.global_rank),
-            "local_rank": int(context.local_rank),
-            "control_mode": str(context.control_mode),
-            "release_state": str(context.release_state),
-            "demand_known_at": str(context.demand_known_at),
-            "payload_exists": bool(context.payload_exists),
-            "atomic_submit": bool(context.atomic_submit),
-            "per_peer_rows": [int(v) for v in context.per_peer_rows],
-            "per_peer_bytes": [int(v) for v in context.per_peer_bytes],
-            "nonzero_edge_count": int(len(remote_segments)),
-            "remote_row_count": int(sum(int(segment.row_count) for segment in remote_segments)),
-            "remote_byte_count": int(sum(int(segment.byte_count) for segment in remote_segments)),
-            "transport_bundle_count": int(len(context.transport_bundles)),
-            "payload_roles": [str(spec.tensor_role) for spec in context.payload_specs],
-            "p2_hint": {
-                "hint_mode": str(context.p2_hint.hint_mode),
-                "hint_digest": str(context.p2_hint.hint_digest),
-                "hint_source": str(context.p2_hint.hint_source),
-                "preferred_edge_count": int(context.p2_hint.metadata.get("preferred_edge_count", 0) or 0),
-                "preferred_wave_count": int(context.p2_hint.metadata.get("preferred_wave_count", 0) or 0),
-            },
-        }
+    def _replay_trace_enabled(self) -> bool:
+        return bool(getattr(self.config, "replay_trace_enabled", False))
 
-    def _transport_bundle_artifact(self, bundle: Any) -> dict[str, Any]:
-        if not self._is_perf_profile():
-            return bundle.to_dict()
-        segment = bundle.outgoing_segment
-        return {
-            "bundle_id": str(bundle.bundle_id),
-            "phase": str(bundle.phase),
-            "atomic_submit": bool(bundle.atomic_submit),
-            "src_rank": int(segment.src_rank),
-            "dst_rank": int(segment.dst_rank),
-            "segment_ordinal": int(segment.segment_ordinal),
-            "row_count": int(segment.row_count),
-            "byte_count": int(segment.byte_count),
-            "is_local": bool(segment.is_local),
-            "payload_roles": [str(payload.tensor_role) for payload in bundle.payloads],
-            "payload_count": int(len(bundle.payloads)),
-        }
-
-    def _scheduled_plan_artifact(self, plan: PhaseExecutionPlan) -> dict[str, Any]:
-        if not self._is_perf_profile():
-            return plan.to_dict()
-        metrics = dict(plan.metrics)
-        return {
-            "plan_key": dict(plan.plan_key),
-            "phase": str(plan.phase),
-            "policy_name": str(plan.policy_name),
-            "policy_version": str(plan.policy_version),
-            "control_mode": str(plan.control_mode),
-            "execution_mode": str(plan.execution_mode),
-            "transport_mutation": bool(plan.transport_mutation),
-            "future_hint_mode": str(plan.future_hint_mode),
-            "root_rank": int(plan.root_rank),
-            "observation_digest": str(plan.observation_digest),
-            "plan_hash": str(plan.plan_hash),
-            "wave_count": int(len(plan.waves)),
-            "waves": [
-                {
-                    "wave_id": int(wave.wave_id),
-                    "task_count": int(len(wave.bucket_tasks)),
-                    "task_ids": [str(task.task_id) for task in wave.bucket_tasks],
-                }
-                for wave in plan.waves
-            ],
-            "metrics": {
-                key: value
-                for key, value in metrics.items()
-                if key not in {"transfer_layouts", "policy_diagnostics", "bucket_order", "wave_edges"}
-            },
-        }
+    def _record_control_replay_trace(self, *, phase_ctx: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
+        if not self._replay_trace_enabled():
+            return
+        self.control_replay_traces.append(
+            control_replay_trace_row(
+                run_id=self.run_id,
+                ep_group_size=int(len(self.ep_group_ranks) or 1),
+                bucket_rows=int(self.config.bucket_rows),
+                phase_ctx=phase_ctx,
+                plan=plan,
+            )
+        )
 
     def _effective_phase_policy_name(self) -> str:
         if self.config.policy:
@@ -1079,9 +1019,13 @@ class RouterSenseInjectionRuntime:
             hint_mode=str(p2_hint.hint_mode),
         )
         if self.observation_recorder is not None:
-            self.observation_recorder.record_phase_context(self._phase_context_artifact(phase_ctx))
+            self.observation_recorder.record_phase_context(
+                phase_context_artifact(context=phase_ctx, perf_profile=self._is_perf_profile())
+            )
             for bundle in phase_ctx.transport_bundles:
-                self.observation_recorder.record_transport_bundle(self._transport_bundle_artifact(bundle))
+                self.observation_recorder.record_transport_bundle(
+                    transport_bundle_artifact(bundle=bundle, perf_profile=self._is_perf_profile())
+                )
         self._record_prepared_phase_plan_shadow(
             layer_name=layer_name,
             phase="P0",
@@ -1127,7 +1071,10 @@ class RouterSenseInjectionRuntime:
                 verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
             )
             if self.observation_recorder is not None:
-                self.observation_recorder.record_scheduled_plan(self._scheduled_plan_artifact(plan))
+                self.observation_recorder.record_scheduled_plan(
+                    scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
+                )
+            self._record_control_replay_trace(phase_ctx=phase_ctx, plan=plan)
             self._record_pending_window_driver(layer_name=layer_name, phase="P0", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
             self._timeline(
@@ -1446,9 +1393,13 @@ class RouterSenseInjectionRuntime:
             hint_mode=str(p2_hint.hint_mode),
         )
         if self.observation_recorder is not None:
-            self.observation_recorder.record_phase_context(self._phase_context_artifact(phase_ctx))
+            self.observation_recorder.record_phase_context(
+                phase_context_artifact(context=phase_ctx, perf_profile=self._is_perf_profile())
+            )
             for bundle in phase_ctx.transport_bundles:
-                self.observation_recorder.record_transport_bundle(self._transport_bundle_artifact(bundle))
+                self.observation_recorder.record_transport_bundle(
+                    transport_bundle_artifact(bundle=bundle, perf_profile=self._is_perf_profile())
+                )
         self._record_prepared_phase_plan_shadow(
             layer_name=layer_name,
             phase="P1",
@@ -1486,7 +1437,10 @@ class RouterSenseInjectionRuntime:
                 verify_time_us=float(plan.metrics.get("verify_time_us", 0.0) or 0.0),
             )
             if self.observation_recorder is not None:
-                self.observation_recorder.record_scheduled_plan(self._scheduled_plan_artifact(plan))
+                self.observation_recorder.record_scheduled_plan(
+                    scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
+                )
+            self._record_control_replay_trace(phase_ctx=phase_ctx, plan=plan)
             self._record_pending_window_driver(layer_name=layer_name, phase="P1", plan=plan)
             self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
             self._timeline(
@@ -1734,6 +1688,11 @@ class RouterSenseInjectionRuntime:
 
     def export_planning_timing_records(self) -> list[dict[str, Any]]:
         return self._export_list(self.planning_timing_records)
+
+    def export_control_replay_traces(self) -> list[dict[str, Any]]:
+        if not self._replay_trace_enabled():
+            return []
+        return self._export_list(self.control_replay_traces)
 
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)

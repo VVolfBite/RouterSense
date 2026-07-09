@@ -17,7 +17,13 @@ def test_strategy_comparison_dry_run_generates_commands_and_report(tmp_path: Pat
                 "topology": {"ep_size": 2, "launcher": {"kind": "torchrun"}},
                 "runtime": {"precision": "fp16", "dispatcher": "alltoall"},
                 "workload": {"prompts": "configs/workload/smoke_prompts.json"},
-                "observation": {"profile": "debug", "capture_enabled": True, "capture_layer_selector": "1", "capture_phase_selector": "P0"},
+                "observation": {
+                    "profile": "debug",
+                    "capture_enabled": True,
+                    "capture_layer_selector": "1",
+                    "capture_phase_selector": "P0",
+                    "replay_trace_enabled": True,
+                },
                 "validation": {"save_logits": True, "stop_after_selected_layer": True},
                 "strategies": [
                     {
@@ -89,6 +95,7 @@ def test_strategy_comparison_dry_run_generates_commands_and_report(tmp_path: Pat
     assert generated["execution"]["schedule"]["layer_selector"] == "1"
     assert generated["observation"]["profile"] == "debug"
     assert generated["observation"]["capture_enabled"] is True
+    assert generated["observation"]["replay_trace_enabled"] is True
     assert generated["validation"]["save_logits"] is True
     assert generated["validation"]["stop_after_selected_layer"] is True
     disabled_cfg = yaml.safe_load((output_dir / "generated_configs" / "disabled_rep0.yaml").read_text(encoding="utf-8"))

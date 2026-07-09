@@ -108,6 +108,7 @@ class RouterSenseInjectionConfig:
     capture_phase_selector: str = ""
     heartbeat_enabled: bool = False
     per_wave_timing_enabled: bool = False
+    replay_trace_enabled: bool = False
     stop_after_selected_layer: bool = False
     executor_heartbeat_path: str = ""
     executor_phase_timeout_sec: int = 0

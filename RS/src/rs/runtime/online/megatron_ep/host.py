@@ -681,6 +681,7 @@ def attach_formal_online_runtime(
         capture_phase_selector=str(runtime_config.observation.get("capture_phase_selector", "")),
         heartbeat_enabled=bool(runtime_config.observation.get("heartbeat_enabled", False)),
         per_wave_timing_enabled=bool(runtime_config.observation.get("per_wave_timing_enabled", False)),
+        replay_trace_enabled=bool(runtime_config.observation.get("replay_trace_enabled", False)),
     )
     return attach_dispatch_facade(
         model=model,

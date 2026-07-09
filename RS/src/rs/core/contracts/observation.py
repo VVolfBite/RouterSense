@@ -17,6 +17,7 @@ class RuntimeObservationConfig:
     capture_phase_selector: str = ""
     heartbeat_enabled: bool = False
     per_wave_timing_enabled: bool = False
+    replay_trace_enabled: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

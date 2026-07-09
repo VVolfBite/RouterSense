@@ -136,6 +136,7 @@ def _single_strategy_config(
             "capture_phase_selector": str(observation.get("capture_phase_selector", "")),
             "heartbeat_enabled": bool(observation.get("heartbeat_enabled", False)),
             "per_wave_timing_enabled": bool(observation.get("per_wave_timing_enabled", False)),
+            "replay_trace_enabled": bool(observation.get("replay_trace_enabled", False)),
         },
         "validation": {
             "save_logits": bool(validation.get("save_logits", False)),
