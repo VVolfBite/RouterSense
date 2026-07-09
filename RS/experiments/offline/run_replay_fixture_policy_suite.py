@@ -17,7 +17,7 @@ from experiments.offline.replay_fixture_policy_study import _build_problem, _exp
 from rs.runtime.offline.prediction import rolling_predictor_records, summarize_prediction_records
 from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
-from rs.scheduling.algorithm_catalog import get_algorithm_metadata, is_joint_oracle, is_paired_comparison_ready, local_oracle_reference, joint_oracle_reference, list_heuristic_families
+from rs.scheduling.algorithm_catalog import get_algorithm_metadata, is_paired_comparison_ready, joint_oracle_reference, local_oracle_reference, pair_status_summary
 from rs.scheduling import resolve_policy
 from rs.scheduling.validation import validate_logical_plan
 
@@ -59,6 +59,8 @@ PAIRED_FAMILY_ROWS = (
     ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
     ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
     ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),
+    ("barrier_price_adaptive_matching", "B_barrier_price_adaptive_matching", "U_barrier_price_adaptive_matching"),
+    ("lagrangian_cross_phase", "B_lagrangian_phase_local", "U_lagrangian"),
 )
 
 PREDICTION_SOURCE_LABELS = {
@@ -284,6 +286,55 @@ def build_oracle_table() -> dict[str, Any]:
         },
     ]
     return {"summary": rows}
+
+
+def summarize_best_pair(paired_summary: dict[str, Any]) -> dict[str, Any]:
+    rows = [row for row in paired_summary.get("summary", []) if row.get("U_vs_B_improvement_pct") is not None]
+    if not rows:
+        return {
+            "best_family": "",
+            "best_improvement_pct": None,
+            "u_beats_birkhoff_phase_oracle": False,
+        }
+    best = max(rows, key=lambda row: float(row["U_vs_B_improvement_pct"]))
+    return {
+        "best_family": str(best["heuristic_family"]),
+        "best_B_algorithm": str(best["B_algorithm"]),
+        "best_U_algorithm": str(best["U_algorithm"]),
+        "best_improvement_pct": float(best["U_vs_B_improvement_pct"]),
+        "u_beats_birkhoff_phase_oracle": False,
+    }
+
+
+def summarize_best_u_frontier(
+    *,
+    paired_summary: dict[str, Any],
+    execution_window_summary: dict[str, Any],
+) -> dict[str, Any]:
+    paired_rows = [row for row in paired_summary.get("summary", []) if row.get("U_mean_makespan") is not None]
+    exec_rows = [
+        row
+        for row in execution_window_summary.get("summary", [])
+        if str(row.get("policy_name", "")).startswith("U_") and row.get("mean_makespan") is not None
+    ]
+    best_phase_sync = min(paired_rows, key=lambda row: float(row["U_mean_makespan"])) if paired_rows else None
+    best_exec = min(exec_rows, key=lambda row: float(row["mean_makespan"])) if exec_rows else None
+    birkhoff_wave_row = next(
+        (row for row in execution_window_summary.get("summary", []) if row.get("policy_name") == "B_birkhoff_wave"),
+        None,
+    )
+    return {
+        "best_phase_sync_u_family": None if best_phase_sync is None else str(best_phase_sync["heuristic_family"]),
+        "best_phase_sync_u_algorithm": None if best_phase_sync is None else str(best_phase_sync["U_algorithm"]),
+        "best_phase_sync_u_makespan": None if best_phase_sync is None else float(best_phase_sync["U_mean_makespan"]),
+        "best_execution_window_u_algorithm": None if best_exec is None else str(best_exec["policy_name"]),
+        "best_execution_window_u_makespan": None if best_exec is None else float(best_exec["mean_makespan"]),
+        "best_execution_window_gap_to_B_birkhoff_wave_pct": (
+            None
+            if best_exec is None or birkhoff_wave_row is None or birkhoff_wave_row.get("mean_makespan") in (None, 0.0)
+            else float(-100.0 * float(best_exec["relative_to_B_birkhoff_wave"]))
+        ),
+    }
 
 
 def run_prediction_suite(

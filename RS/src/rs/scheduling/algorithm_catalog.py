@@ -132,7 +132,7 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
         joint_oracle_reference_id="O_joint_cp_sat_oracle",
         granularity_mode="legacy_coarse_wave",
         planning_scope="phase_serial",
-        source="legacy_poc1_pending",
+        source="derived_phase_local_from_u",
         online_eligible=False,
         offline_eligible=True,
         heavy_solver=False,
@@ -330,13 +330,13 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
         joint_oracle_reference_id="O_joint_cp_sat_oracle",
         granularity_mode="dynamic_bucket_current",
         planning_scope="phase_serial",
-        source="legacy_poc1_pending",
+        source="derived_phase_local_from_u",
         online_eligible=False,
         offline_eligible=True,
         heavy_solver=False,
         deterministic_solver=True,
         oracle_like=False,
-        recommended_role="pending_phase_local_family",
+        recommended_role="paired_b_reference",
     ),
     "U_barrier_price_adaptive_matching": AlgorithmMetadata(
         algorithm_id="U_barrier_price_adaptive_matching",
@@ -384,13 +384,13 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
         joint_oracle_reference_id="O_joint_cp_sat_oracle",
         granularity_mode="dynamic_bucket_current",
         planning_scope="phase_serial",
-        source="legacy_poc1_pending",
+        source="derived_phase_local_from_u",
         online_eligible=False,
         offline_eligible=True,
         heavy_solver=False,
         deterministic_solver=False,
         oracle_like=False,
-        recommended_role="pending_phase_local_family",
+        recommended_role="paired_b_reference",
     ),
     "U_lagrangian": AlgorithmMetadata(
         algorithm_id="U_lagrangian",
@@ -506,8 +506,58 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
 }
 
 
+_PAIR_FAMILIES: tuple[tuple[str, str | None, str | None], ...] = (
+    ("birkhoff_bvn", "B_birkhoff", "U_ibbr"),
+    ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
+    ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
+    ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),
+    ("barrier_price_adaptive_matching", "B_barrier_price_adaptive_matching", "U_barrier_price_adaptive_matching"),
+    ("lagrangian_cross_phase", "B_lagrangian_phase_local", "U_lagrangian"),
+    ("cp_lpt", None, None),
+)
+
+_PAIR_PENDING_REASONS: dict[str, str] = {
+    "birkhoff_bvn": "U_ibbr has historical evidence but is not yet promoted into current paired mainline.",
+    "cp_lpt": "Historical U_cp_lpt exists, but no formal paired B-side is promoted yet.",
+}
+
+
 def list_heuristic_families() -> tuple[str, ...]:
     return tuple(sorted({metadata.heuristic_family for metadata in _ALGORITHMS.values()}))
+
+
+def list_pair_families() -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for family, b_id, u_id in _PAIR_FAMILIES:
+        b_meta = _ALGORITHMS.get(b_id) if b_id else None
+        u_meta = _ALGORITHMS.get(u_id) if u_id else None
+        ready = is_paired_comparison_ready(family)
+        status = "ready" if ready else "pending"
+        rows.append(
+            {
+                "heuristic_family": family,
+                "B_algorithm": b_id,
+                "U_algorithm": u_id,
+                "B_source": None if b_meta is None else b_meta.source,
+                "U_source": None if u_meta is None else u_meta.source,
+                "status": status,
+                "paired_comparison_ready": ready,
+                "pending_reason": "" if ready else _PAIR_PENDING_REASONS.get(family, "pair not yet promoted"),
+            }
+        )
+    return tuple(rows)
+
+
+def pair_status_summary() -> dict[str, Any]:
+    rows = list_pair_families()
+    ready_rows = [row for row in rows if row["paired_comparison_ready"]]
+    pending_rows = [row for row in rows if not row["paired_comparison_ready"]]
+    return {
+        "ready_pair_count": len(ready_rows),
+        "pending_pair_count": len(pending_rows),
+        "ready_pairs": ready_rows,
+        "pending_pairs": pending_rows,
+    }
 
 
 def list_algorithms(role: str | None = None) -> tuple[dict[str, Any], ...]:
@@ -578,7 +628,9 @@ __all__ = [
     "is_phase_local_oracle",
     "joint_oracle_reference",
     "list_algorithms",
+    "list_pair_families",
     "list_heuristic_families",
     "local_oracle_reference",
+    "pair_status_summary",
     "paired_algorithm_for",
 ]

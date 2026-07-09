@@ -20,7 +20,11 @@ from experiments.offline.run_replay_fixture_policy_suite import (
     run_bridge_suite,
     run_policy_suite,
     run_prediction_u_suite,
+    summarize_best_pair,
+    summarize_best_u_frontier,
 )
+from rs.scheduling.algorithm_catalog import pair_status_summary
+from rs.scheduling.algorithm_catalog import pair_status_summary
 
 
 def _parse_args() -> argparse.Namespace:
@@ -76,6 +80,8 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- total_p0_bytes: {audit['total_p0_bytes']}",
         f"- total_p1_bytes: {audit['total_p1_bytes']}",
         f"- total_p2_bytes: {audit['total_p2_bytes']}",
+        f"- ready_pair_count: {payload['pair_status']['ready_pair_count']}",
+        f"- pending_pair_count: {payload['pair_status']['pending_pair_count']}",
         "- P2 uses next-layer actual P0 when available; the last layer uses a zero matrix.",
         "",
         "## Paired B-vs-U result",
@@ -99,13 +105,18 @@ def _render_md(payload: dict[str, Any]) -> str:
         [
             "",
             "多个 pair 中如果 U 系统性优于 B，说明收益来自联合调度建模，而不是来自换了完全不同的启发式。",
-            "",
-            "## Joint scheduling space",
-            "",
-            "| Policy | Valid | Mean Makespan | Relative to B_birkhoff_wave |",
-            "|---|---:|---:|---:|",
+            f"- best_pair_family: `{payload['best_pair']['best_family']}`",
+            f"- best_pair_improvement_pct: {payload['best_pair']['best_improvement_pct']}",
+            "Pending pair reasons:",
         ]
     )
+    for row in payload["pair_status"]["pending_pairs"]:
+        lines.append(f"- `{row['heuristic_family']}`: {row['pending_reason']}")
+    lines.append("")
+    lines.append("## Joint scheduling space")
+    lines.append("")
+    lines.append("| Policy | Valid | Mean Makespan | Relative to B_birkhoff_wave |")
+    lines.append("|---|---:|---:|---:|")
     for row in payload["execution_window_joint"]["summary"]:
         rel = row["relative_to_B_birkhoff_wave"]
         lines.append(
@@ -116,6 +127,8 @@ def _render_md(payload: dict[str, Any]) -> str:
         [
             "",
             "这张表只对应 offline execution-window / joint upper-bound 语义，不能被解读为当前 online RouterSense 已实现收益。",
+            f"- best_execution_window_u_algorithm: `{payload['best_u_frontier']['best_execution_window_u_algorithm']}`",
+            f"- best_execution_window_gap_to_B_birkhoff_wave_pct: {payload['best_u_frontier']['best_execution_window_gap_to_B_birkhoff_wave_pct']}",
             "",
             "## Cross-layer prediction value",
             "",
@@ -224,6 +237,12 @@ def main() -> None:
         expert_compute_delay=float(args.expert_compute_delay),
     )
     oracle_table = build_oracle_table()
+    pair_status = pair_status_summary()
+    best_pair = summarize_best_pair(paired)
+    best_u_frontier = summarize_best_u_frontier(
+        paired_summary=paired,
+        execution_window_summary=execution_window,
+    )
     bridge = run_bridge_suite(
         fixture_dir=suite_fixture_dir,
         expert_compute_delay=float(args.expert_compute_delay),
@@ -236,6 +255,9 @@ def main() -> None:
         "prediction_oracle": prediction,
         "paired_b_vs_u": paired,
         "oracle_table": oracle_table,
+        "pair_status": pair_status,
+        "best_pair": best_pair,
+        "best_u_frontier": best_u_frontier,
         "bridge_candidates": bridge,
     }
     (output_dir / "phase_sync_compatible_summary.json").write_text(

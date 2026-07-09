@@ -153,3 +153,33 @@ class BBarrierCriticalityMatchingPolicy(_DerivedPhaseLocalPolicy):
         cols = _col_sums(matrix)
         barrier_pressure = int((rows[dst_rank] if dst_rank < len(rows) else 0) + (cols[dst_rank] if dst_rank < len(cols) else 0))
         return (float(byte_count + 2 * barrier_pressure), float(barrier_pressure), src_rank, dst_rank)
+
+
+class BBarrierPriceAdaptiveMatchingPolicy(_DerivedPhaseLocalPolicy):
+    policy_name = "B_barrier_price_adaptive_matching"
+    information_mode = "phase_local_barrier_price"
+    service_model = "phase_local_barrier_price"
+    family_note = "derived from U_barrier_price_adaptive_matching using only local phase pressure"
+
+    def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
+        rows = _row_sums(matrix)
+        cols = _col_sums(matrix)
+        row_pressure = float(rows[src_rank] if src_rank < len(rows) else 0)
+        col_pressure = float(cols[dst_rank] if dst_rank < len(cols) else 0)
+        adaptive_price = 0.5 * row_pressure + 0.5 * col_pressure
+        return (float(byte_count) + adaptive_price, adaptive_price, src_rank, dst_rank)
+
+
+class BLagrangianPhaseLocalPolicy(_DerivedPhaseLocalPolicy):
+    policy_name = "B_lagrangian_phase_local"
+    information_mode = "phase_local_lagrangian"
+    service_model = "phase_local_lagrangian"
+    family_note = "derived from U_lagrangian using local row/column dual-style pressure only"
+
+    def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
+        rows = _row_sums(matrix)
+        cols = _col_sums(matrix)
+        src_dual = float((rows[src_rank] if src_rank < len(rows) else 0) - (cols[src_rank] if src_rank < len(cols) else 0))
+        dst_dual = float((cols[dst_rank] if dst_rank < len(cols) else 0) - (rows[dst_rank] if dst_rank < len(rows) else 0))
+        dual_term = src_dual + dst_dual
+        return (float(byte_count) + dual_term, dual_term, src_rank, dst_rank)

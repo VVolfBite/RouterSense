@@ -103,6 +103,7 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
     paired = json.loads((output_dir / "paired_b_vs_u_summary.json").read_text(encoding="utf-8"))
     oracle_table = json.loads((output_dir / "oracle_table_summary.json").read_text(encoding="utf-8"))
     bridge = json.loads((output_dir / "bridge_candidates_summary.json").read_text(encoding="utf-8"))
+    full = json.loads((output_dir / "real_trace_evidence_summary.json").read_text(encoding="utf-8"))
     assert phase_sync["baseline_policy"] == "birkhoff_phase_local"
     assert execution_window["baseline_policy"] == "B_birkhoff_wave"
     assert {row["p2_source"] for row in prediction["summary"]} == {
@@ -118,6 +119,8 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
     assert any(row["heuristic_family"] == "gated_maxweight_matching" for row in paired["summary"])
     assert oracle_table["summary"][0]["oracle_name"] == "O_local_phase_oracle"
     assert oracle_table["summary"][1]["oracle_name"] == "O_joint_cp_sat_oracle"
+    assert full["pair_status"]["ready_pair_count"] >= 3
+    assert full["best_pair"]["best_family"] in {"gated_greedy", "gated_maxweight_matching", "barrier_criticality_matching"}
     markdown = (output_dir / "real_trace_evidence_summary.md").read_text(encoding="utf-8")
     assert "Paired B-vs-U result" in markdown
     assert "Joint scheduling space" in markdown

@@ -8,7 +8,7 @@ from .phase_local.fast_bvn_fixed import FastBVNSingleTierPolicy
 from .phase_local.fifo import BucketedFIFOPolicy, PhaseBarrierFIFOPolicy
 from .phase_local.greedy_ready_set import GreedyReadySetPolicy
 from .phase_local.islip_round_robin import ISLIPRoundRobinPolicy
-from .phase_local.paired_family import BBarrierCriticalityMatchingPolicy, BGatedGreedyMaximalPolicy, BGatedMaxweightMatchingPolicy
+from .phase_local.paired_family import BBarrierCriticalityMatchingPolicy, BBarrierPriceAdaptiveMatchingPolicy, BGatedGreedyMaximalPolicy, BGatedMaxweightMatchingPolicy, BLagrangianPhaseLocalPolicy
 from .phase_local.power_of_two_choices import PowerOfTwoChoicesPolicy
 from .phase_local.p0p1_reservation_order import RouterSenseP0P1ReservationPolicy
 from .phase_local.p0p1p2_hint_order import RouterSenseP0P1P2HintPolicy
@@ -81,6 +81,10 @@ def resolve_policy(
         return BGatedMaxweightMatchingPolicy(bucket_rows=bucket_rows)
     if base_name == "B_barrier_criticality_matching":
         return BBarrierCriticalityMatchingPolicy(bucket_rows=bucket_rows)
+    if base_name == "B_barrier_price_adaptive_matching":
+        return BBarrierPriceAdaptiveMatchingPolicy(bucket_rows=bucket_rows)
+    if base_name == "B_lagrangian_phase_local":
+        return BLagrangianPhaseLocalPolicy(bucket_rows=bucket_rows)
     if base_name == "birkhoff_von_neumann_fluid":
         return BirkhoffVonNeumannFluidReference(bucket_rows=bucket_rows)
     if base_name == "exact_small_instance_reference":
@@ -174,6 +178,8 @@ def supported_policies() -> tuple[str, ...]:
         "B_gated_greedy_maximal",
         "B_gated_maxweight_matching",
         "B_barrier_criticality_matching",
+        "B_barrier_price_adaptive_matching",
+        "B_lagrangian_phase_local",
         "birkhoff_von_neumann_fluid",
         "exact_small_instance_reference",
         "trivial_reverse_bucket",

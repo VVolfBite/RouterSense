@@ -13,7 +13,8 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
-from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_bridge_suite, run_paired_suite, run_policy_suite
+from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_bridge_suite, run_paired_suite, run_policy_suite, summarize_best_pair, summarize_best_u_frontier
+from rs.scheduling.algorithm_catalog import pair_status_summary
 
 
 def _parse_args() -> argparse.Namespace:
@@ -95,6 +96,9 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- total_p0_bytes: {audit['total_p0_bytes']}",
         f"- total_p1_bytes: {audit['total_p1_bytes']}",
         f"- total_p2_bytes: {audit['total_p2_bytes']}",
+        f"- ready_pair_count: {payload['pair_status']['ready_pair_count']}",
+        f"- pending_pair_count: {payload['pair_status']['pending_pair_count']}",
+        f"- best_pair_family: {payload['best_pair']['best_family']}",
         "",
         "## Paired B-vs-U transport replay",
         "",
@@ -205,6 +209,12 @@ def main() -> None:
         fixture_dir=suite_fixture_dir,
         expert_compute_delay=float(args.expert_compute_delay),
     )
+    pair_status = pair_status_summary()
+    best_pair = summarize_best_pair(paired)
+    best_u_frontier = summarize_best_u_frontier(
+        paired_summary=paired,
+        execution_window_summary=joint,
+    )
     payload = {
         "fixture_dir": str(suite_fixture_dir),
         "fixture_audit": audit,
@@ -219,6 +229,9 @@ def main() -> None:
             "mean_transport_makespan": statistics.mean([row["mean_makespan"] for row in joint_rows if row["mean_makespan"] is not None]),
         },
         "paired_b_vs_u": paired,
+        "pair_status": pair_status,
+        "best_pair": best_pair,
+        "best_u_frontier": best_u_frontier,
         "bridge_candidates": bridge,
     }
     (output_dir / "transport_stress_phase_sync_summary.json").write_text(

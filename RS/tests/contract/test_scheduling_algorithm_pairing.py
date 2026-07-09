@@ -7,6 +7,7 @@ from rs.scheduling.algorithm_catalog import (
     is_paired_comparison_ready,
     is_phase_local_oracle,
     list_heuristic_families,
+    pair_status_summary,
     paired_algorithm_for,
 )
 
@@ -51,3 +52,11 @@ def test_ready_paired_families_are_explicit() -> None:
     assert is_paired_comparison_ready("gated_maxweight_matching") is True
     assert is_paired_comparison_ready("barrier_criticality_matching") is True
     assert is_paired_comparison_ready("birkhoff_bvn") is False
+
+
+def test_pair_status_summary_reports_ready_and_pending() -> None:
+    summary = pair_status_summary()
+    assert summary["ready_pair_count"] >= 3
+    assert summary["pending_pair_count"] >= 1
+    assert any(row["heuristic_family"] == "gated_maxweight_matching" for row in summary["ready_pairs"])
+    assert any(row["heuristic_family"] == "birkhoff_bvn" for row in summary["pending_pairs"])
