@@ -136,6 +136,8 @@ def control_replay_trace_row(
         "layer_id": str(phase_ctx.layer_id),
         "layer_name": str(phase_ctx.layer_name),
         "phase": str(phase_ctx.phase),
+        "global_rank": int(phase_ctx.global_rank),
+        "local_rank": int(phase_ctx.local_rank),
         "ep_group_size": int(ep_group_size),
         "policy_name": str(plan.policy_name),
         "bucket_rows": int(bucket_rows),

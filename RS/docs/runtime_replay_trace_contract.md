@@ -28,6 +28,8 @@
 - `layer_id`
 - `layer_name`
 - `phase`
+- `global_rank`
+- `local_rank`
 - `ep_group_size`
 - `policy_name`
 - `bucket_rows`
@@ -104,3 +106,23 @@ PYTHONPATH=src python -m experiments.offline.replay_online_control_trace \
 - wave / bucket / nonzero_edge / total_byte 的平均值与最大值
 - per_policy breakdown
 - per_phase breakdown
+
+## 当前还能做的最小桥接
+
+现在可以把一组 `rank*_control_replay_trace.jsonl` 直接桥接成 offline scheduling fixture：
+
+```bash
+PYTHONPATH=src python -m experiments.offline.build_replay_fixture_from_control_trace \
+  --trace-dir outputs/.../per_strategy/disabled/rep0 \
+  --policy disabled \
+  --output-dir outputs/.../replay_fixture_bundle
+```
+
+输出：
+
+- `replay_fixture_bundle_summary.json`
+- `replay_fixture_bundle.json`
+- `fixtures/replay_layer_<id>.json`
+
+这些 fixture 可以直接接到现有 offline scheduling / validation 工具，
+用于下一轮 trace-driven replay，而不需要重新采集 tensor payload。

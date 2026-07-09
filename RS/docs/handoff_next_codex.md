@@ -120,6 +120,7 @@ Replay trace:
   - `experiments/online/support/phase_executor_artifacts.py`
 - parser:
   - `experiments/offline/replay_online_control_trace.py`
+  - `experiments/offline/build_replay_fixture_from_control_trace.py`
 - tests:
   - `tests/contract/test_control_replay_trace.py`
 
@@ -142,9 +143,10 @@ Do not do these by default next:
    - wave count
    - bucket count
    - task-ref count
-2. Add transport-stress / EP replay
-3. Fix global P2 matrix
-4. Then continue RouterSense vs Birkhoff tuning
+2. Bridge real rank traces into offline scheduling fixtures
+3. Add transport-stress / EP replay
+4. Fix global P2 matrix
+5. Then continue RouterSense vs Birkhoff tuning
 
 ## 9. Repository rule
 

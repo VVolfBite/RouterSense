@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Build offline scheduling fixtures from lightweight online control replay traces."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+from experiments._bootstrap import ensure_src_on_path
+
+ROOT = ensure_src_on_path()
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rows.append(json.loads(line))
+    return rows
+
+
+def _find_trace_paths(trace_dir: Path) -> list[Path]:
+    return sorted(path for path in trace_dir.glob("rank*_control_replay_trace.jsonl") if path.is_file())
+
+
+def _infer_source_rank(row: dict[str, Any]) -> int:
+    if "global_rank" in row:
+        return int(row["global_rank"])
+    if "local_rank" in row:
+        return int(row["local_rank"])
+    nonzero_edges = row.get("nonzero_edges", []) or []
+    src_ranks = {int(edge.get("src_rank", -1)) for edge in nonzero_edges}
+    src_ranks.discard(-1)
+    if len(src_ranks) == 1:
+        return next(iter(src_ranks))
+    raise ValueError(f"cannot infer source rank from replay trace row: {row}")
+
+
+def _group_rows(rows: list[dict[str, Any]], *, policy_name: str | None) -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        current_policy = str(row.get("policy_name", ""))
+        if policy_name and current_policy != policy_name:
+            continue
+        key = (
+            str(row.get("run_id_digest", "")),
+            current_policy,
+            str(row.get("layer_id", "")),
+            str(row.get("phase", "")),
+        )
+        grouped[key].append(row)
+    return grouped
+
+
+def _matrix_from_group(group_rows: list[dict[str, Any]]) -> tuple[list[list[int]], dict[str, Any]]:
+    if not group_rows:
+        raise ValueError("group_rows must not be empty")
+    num_gpus = int(group_rows[0].get("ep_group_size", 0))
+    matrix = [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
+    seen_ranks: set[int] = set()
+    for row in group_rows:
+        src_rank = _infer_source_rank(row)
+        per_peer = [int(value) for value in row.get("per_rank_peer_bytes", []) or []]
+        if len(per_peer) != num_gpus:
+            raise ValueError(f"rank {src_rank} has per_rank_peer_bytes len {len(per_peer)} != ep_group_size {num_gpus}")
+        matrix[src_rank] = per_peer
+        seen_ranks.add(src_rank)
+    total_bytes = sum(sum(row) for row in matrix)
+    return matrix, {
+        "num_gpus": num_gpus,
+        "seen_ranks": sorted(seen_ranks),
+        "missing_ranks": [rank for rank in range(num_gpus) if rank not in seen_ranks],
+        "total_bytes": total_bytes,
+    }
+
+
+def _zero_matrix(num_gpus: int) -> list[list[int]]:
+    return [[0 for _ in range(num_gpus)] for _ in range(num_gpus)]
+
+
+def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str | None = None) -> dict[str, Any]:
+    grouped = _group_rows(rows, policy_name=policy_name)
+    phases_by_layer: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    run_id_digest = ""
+    selected_policy = policy_name or ""
+    for (run_digest, current_policy, layer_id, phase), group_rows in grouped.items():
+        if not run_id_digest:
+            run_id_digest = run_digest
+        if not selected_policy:
+            selected_policy = current_policy
+        matrix, stats = _matrix_from_group(group_rows)
+        layer_name = str(group_rows[0].get("layer_name", layer_id))
+        phases_by_layer[layer_id][phase] = {
+            "layer_name": layer_name,
+            "matrix": matrix,
+            "stats": stats,
+        }
+    ordered_layers = sorted(phases_by_layer.keys(), key=lambda value: int(value) if str(value).isdigit() else str(value))
+    fixtures: list[dict[str, Any]] = []
+    for index, layer_id in enumerate(ordered_layers):
+        phase_map = phases_by_layer[layer_id]
+        if "P0" not in phase_map or "P1" not in phase_map:
+            continue
+        p0_entry = phase_map["P0"]
+        p1_entry = phase_map["P1"]
+        num_gpus = int(p0_entry["stats"]["num_gpus"])
+        next_p0 = _zero_matrix(num_gpus)
+        next_layer_id = ""
+        if index + 1 < len(ordered_layers):
+            next_layer_id = ordered_layers[index + 1]
+            next_phase_map = phases_by_layer[next_layer_id]
+            if "P0" in next_phase_map:
+                next_p0 = [[int(value) for value in row] for row in next_phase_map["P0"]["matrix"]]
+        fixtures.append(
+            {
+                "fixture_name": f"replay_layer_{layer_id}",
+                "num_gpus": num_gpus,
+                "p0_dispatch_matrix": p0_entry["matrix"],
+                "p1_return_matrix": p1_entry["matrix"],
+                "p2_next_dispatch_forecast_matrix": next_p0,
+                "p2_next_dispatch_matrix": next_p0,
+                "metadata": {
+                    "source": "control_replay_trace",
+                    "run_id_digest": run_id_digest,
+                    "policy_name": selected_policy,
+                    "layer_id": str(layer_id),
+                    "layer_name": str(p0_entry["layer_name"]),
+                    "next_layer_id": str(next_layer_id),
+                    "p0_seen_ranks": p0_entry["stats"]["seen_ranks"],
+                    "p1_seen_ranks": p1_entry["stats"]["seen_ranks"],
+                    "p0_missing_ranks": p0_entry["stats"]["missing_ranks"],
+                    "p1_missing_ranks": p1_entry["stats"]["missing_ranks"],
+                    "p0_total_bytes": int(p0_entry["stats"]["total_bytes"]),
+                    "p1_total_bytes": int(p1_entry["stats"]["total_bytes"]),
+                },
+            }
+        )
+    return {
+        "run_id_digest": run_id_digest,
+        "policy_name": selected_policy,
+        "layer_count": len(ordered_layers),
+        "fixture_count": len(fixtures),
+        "fixtures": fixtures,
+    }
+
+
+def _write_bundle(bundle: dict[str, Any], output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "run_id_digest": bundle.get("run_id_digest", ""),
+        "policy_name": bundle.get("policy_name", ""),
+        "layer_count": int(bundle.get("layer_count", 0)),
+        "fixture_count": int(bundle.get("fixture_count", 0)),
+        "fixture_names": [str(item.get("fixture_name", "")) for item in bundle.get("fixtures", [])],
+    }
+    (output_dir / "replay_fixture_bundle_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "replay_fixture_bundle.json").write_text(
+        json.dumps(bundle, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    fixture_dir = output_dir / "fixtures"
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    for fixture in bundle.get("fixtures", []):
+        payload = {
+            "num_gpus": int(fixture["num_gpus"]),
+            "p0_dispatch_matrix": fixture["p0_dispatch_matrix"],
+            "p1_return_matrix": fixture["p1_return_matrix"],
+            "p2_next_dispatch_forecast_matrix": fixture["p2_next_dispatch_forecast_matrix"],
+            "p2_next_dispatch_matrix": fixture["p2_next_dispatch_matrix"],
+            "metadata": fixture["metadata"],
+        }
+        (fixture_dir / f"{fixture['fixture_name']}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--trace-dir", required=True, help="Directory containing rank*_control_replay_trace.jsonl files")
+    parser.add_argument("--policy", default="", help="Optional policy filter")
+    parser.add_argument("--output-dir", required=True, help="Directory to write generated fixtures")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    trace_dir = Path(args.trace_dir)
+    trace_paths = _find_trace_paths(trace_dir)
+    if not trace_paths:
+        raise SystemExit(f"no rank*_control_replay_trace.jsonl files found under {trace_dir}")
+    rows: list[dict[str, Any]] = []
+    for path in trace_paths:
+        rows.extend(_read_jsonl(path))
+    bundle = build_replay_fixture_bundle(rows, policy_name=(args.policy or None))
+    _write_bundle(bundle, Path(args.output_dir))
+    print(json.dumps({
+        "trace_dir": str(trace_dir),
+        "trace_file_count": len(trace_paths),
+        "fixture_count": bundle["fixture_count"],
+        "policy_name": bundle["policy_name"],
+        "output_dir": str(Path(args.output_dir)),
+    }, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

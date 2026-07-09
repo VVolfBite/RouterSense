@@ -83,6 +83,13 @@
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
+### `experiments/offline/build_replay_fixture_from_control_trace.py`
+
+- 负责什么：把一组 `rank*_control_replay_trace.jsonl` 聚合成 offline scheduling fixture
+- 不负责什么：真实 GPU 执行、NCCL 等待模拟
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
 ## Experiments
 
 ### `experiments/online/run_strategy_comparison.py`
