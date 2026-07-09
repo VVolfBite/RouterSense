@@ -165,6 +165,11 @@ def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str 
                     "p1_missing_ranks": p1_entry["stats"]["missing_ranks"],
                     "p0_total_bytes": int(p0_entry["stats"]["total_bytes"]),
                     "p1_total_bytes": int(p1_entry["stats"]["total_bytes"]),
+                    "p2_total_bytes": int(sum(sum(row) for row in next_p0)),
+                    "p2_source": "zero_for_last_layer" if not next_layer_id else "next_layer_p0_actual",
+                    "p0_nonzero_edge_count": int(sum(1 for src, row in enumerate(p0_entry["matrix"]) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
+                    "p1_nonzero_edge_count": int(sum(1 for src, row in enumerate(p1_entry["matrix"]) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
+                    "p2_nonzero_edge_count": int(sum(1 for src, row in enumerate(next_p0) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
                 },
             }
         )
@@ -175,6 +180,128 @@ def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str 
         "fixture_count": len(fixtures),
         "fixtures": fixtures,
     }
+
+
+def build_replay_fixture_audit_summary(
+    bundle: dict[str, Any],
+    *,
+    source_kind: str,
+    trace_file_count: int,
+) -> dict[str, Any]:
+    fixtures = list(bundle.get("fixtures", []))
+    expected_rank_count = int(fixtures[0]["num_gpus"]) if fixtures else 0
+    per_layer = []
+    total_p0_bytes = 0
+    total_p1_bytes = 0
+    total_p2_bytes = 0
+    layer_count_with_complete_p0p1 = 0
+    layer_count_with_missing_rank = 0
+    max_p0 = ("", 0)
+    max_p1 = ("", 0)
+    max_p2 = ("", 0)
+    for fixture in fixtures:
+        meta = dict(fixture.get("metadata", {}))
+        p0_missing = list(meta.get("p0_missing_ranks", []))
+        p1_missing = list(meta.get("p1_missing_ranks", []))
+        p0_bytes = int(meta.get("p0_total_bytes", 0))
+        p1_bytes = int(meta.get("p1_total_bytes", 0))
+        p2_bytes = int(meta.get("p2_total_bytes", 0))
+        total_p0_bytes += p0_bytes
+        total_p1_bytes += p1_bytes
+        total_p2_bytes += p2_bytes
+        if not p0_missing and not p1_missing:
+            layer_count_with_complete_p0p1 += 1
+        else:
+            layer_count_with_missing_rank += 1
+        if p0_bytes > max_p0[1]:
+            max_p0 = (str(fixture["fixture_name"]), p0_bytes)
+        if p1_bytes > max_p1[1]:
+            max_p1 = (str(fixture["fixture_name"]), p1_bytes)
+        if p2_bytes > max_p2[1]:
+            max_p2 = (str(fixture["fixture_name"]), p2_bytes)
+        per_layer.append(
+            {
+                "fixture_name": str(fixture["fixture_name"]),
+                "layer_id": str(meta.get("layer_id", "")),
+                "next_layer_id": str(meta.get("next_layer_id", "")),
+                "p0_seen_ranks": list(meta.get("p0_seen_ranks", [])),
+                "p1_seen_ranks": list(meta.get("p1_seen_ranks", [])),
+                "p0_missing_ranks": p0_missing,
+                "p1_missing_ranks": p1_missing,
+                "p0_total_bytes": p0_bytes,
+                "p1_total_bytes": p1_bytes,
+                "p2_total_bytes": p2_bytes,
+                "p2_source": str(meta.get("p2_source", "")),
+                "p0_nonzero_edge_count": int(meta.get("p0_nonzero_edge_count", 0)),
+                "p1_nonzero_edge_count": int(meta.get("p1_nonzero_edge_count", 0)),
+                "p2_nonzero_edge_count": int(meta.get("p2_nonzero_edge_count", 0)),
+            }
+        )
+    layer_count = len(per_layer)
+    return {
+        "source_kind": source_kind,
+        "trace_file_count": int(trace_file_count),
+        "policy_name": str(bundle.get("policy_name", "")),
+        "run_id_digest": str(bundle.get("run_id_digest", "")),
+        "layer_count": int(bundle.get("layer_count", 0)),
+        "fixture_count": int(bundle.get("fixture_count", 0)),
+        "num_gpus": expected_rank_count,
+        "expected_rank_count": expected_rank_count,
+        "layers": per_layer,
+        "layer_count_with_complete_p0p1": layer_count_with_complete_p0p1,
+        "layer_count_with_missing_rank": layer_count_with_missing_rank,
+        "total_p0_bytes": total_p0_bytes,
+        "total_p1_bytes": total_p1_bytes,
+        "total_p2_bytes": total_p2_bytes,
+        "avg_p0_bytes_per_layer": (total_p0_bytes / layer_count) if layer_count else 0.0,
+        "avg_p1_bytes_per_layer": (total_p1_bytes / layer_count) if layer_count else 0.0,
+        "avg_p2_bytes_per_layer": (total_p2_bytes / layer_count) if layer_count else 0.0,
+        "max_p0_bytes_layer": {"fixture_name": max_p0[0], "bytes": max_p0[1]},
+        "max_p1_bytes_layer": {"fixture_name": max_p1[0], "bytes": max_p1[1]},
+        "max_p2_bytes_layer": {"fixture_name": max_p2[0], "bytes": max_p2[1]},
+    }
+
+
+def _render_audit_summary_md(summary: dict[str, Any]) -> str:
+    lines = ["# Replay Fixture Audit Summary", ""]
+    if summary["source_kind"] == "phase_context_fallback":
+        lines.extend(
+            [
+                "This fixture was derived from phase contexts rather than control replay trace.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Global",
+            f"- source_kind: `{summary['source_kind']}`",
+            f"- trace_file_count: {summary['trace_file_count']}",
+            f"- policy_name: `{summary['policy_name']}`",
+            f"- run_id_digest: `{summary['run_id_digest']}`",
+            f"- layer_count: {summary['layer_count']}",
+            f"- fixture_count: {summary['fixture_count']}",
+            f"- num_gpus: {summary['num_gpus']}",
+            f"- expected_rank_count: {summary['expected_rank_count']}",
+            "",
+            "## Totals",
+            f"- layer_count_with_complete_p0p1: {summary['layer_count_with_complete_p0p1']}",
+            f"- layer_count_with_missing_rank: {summary['layer_count_with_missing_rank']}",
+            f"- total_p0_bytes: {summary['total_p0_bytes']}",
+            f"- total_p1_bytes: {summary['total_p1_bytes']}",
+            f"- total_p2_bytes: {summary['total_p2_bytes']}",
+            "",
+            "## Layers",
+            "| Fixture | Layer | Next | P0 Missing | P1 Missing | P0 Bytes | P1 Bytes | P2 Bytes | P2 Source |",
+            "|---|---:|---:|---|---|---:|---:|---:|---|",
+        ]
+    )
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['fixture_name']} | {row['layer_id']} | {row['next_layer_id'] or '-'} | "
+            f"{row['p0_missing_ranks']} | {row['p1_missing_ranks']} | {row['p0_total_bytes']} | "
+            f"{row['p1_total_bytes']} | {row['p2_total_bytes']} | {row['p2_source']} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _write_bundle(bundle: dict[str, Any], output_dir: Path) -> None:
@@ -238,7 +365,21 @@ def main() -> None:
         for path in phase_context_paths:
             rows.extend(_phase_context_to_trace_rows(_read_jsonl(path)))
     bundle = build_replay_fixture_bundle(rows, policy_name=(args.policy or None))
-    _write_bundle(bundle, Path(args.output_dir))
+    output_dir = Path(args.output_dir)
+    _write_bundle(bundle, output_dir)
+    audit_summary = build_replay_fixture_audit_summary(
+        bundle,
+        source_kind=source_kind,
+        trace_file_count=len(trace_paths),
+    )
+    (output_dir / "replay_fixture_audit_summary.json").write_text(
+        json.dumps(audit_summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "replay_fixture_audit_summary.md").write_text(
+        _render_audit_summary_md(audit_summary),
+        encoding="utf-8",
+    )
     print(json.dumps({
         "trace_dir": str(trace_dir),
         "trace_file_count": len(trace_paths),

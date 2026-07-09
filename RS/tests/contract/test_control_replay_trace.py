@@ -5,7 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from experiments.offline.build_replay_fixture_from_control_trace import build_replay_fixture_bundle
+from experiments.offline.build_replay_fixture_from_control_trace import (
+    build_replay_fixture_audit_summary,
+    build_replay_fixture_bundle,
+)
 from experiments.offline.replay_online_control_trace import read_jsonl, summarize_control_replay_trace
 
 
@@ -184,6 +187,12 @@ def test_build_replay_fixture_bundle_from_rank_rows() -> None:
     assert fixture["p2_next_dispatch_forecast_matrix"] == [[0, 256], [0, 0]]
     assert fixture["metadata"]["p0_missing_ranks"] == []
     assert fixture["metadata"]["p1_missing_ranks"] == []
+    audit = build_replay_fixture_audit_summary(bundle, source_kind="control_replay_trace", trace_file_count=2)
+    assert audit["fixture_count"] == 1
+    assert audit["layer_count_with_missing_rank"] == 0
+    assert audit["total_p0_bytes"] == 192
+    assert audit["total_p1_bytes"] == 128
+    assert audit["total_p2_bytes"] == 256
 
 
 def test_build_replay_fixture_cli(tmp_path: Path) -> None:
