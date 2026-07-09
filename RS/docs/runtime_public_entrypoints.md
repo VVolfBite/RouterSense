@@ -8,14 +8,15 @@
 
 - `phase_sync`
   - 当前唯一已实现、已验证的 online 主线
-  - 语义上代表 phase barrier 下的计划生成、计划下发和 wave 执行
+  - 表示 phase barrier 下的计划生成、计划下发和 wave 执行
   - 当前 `birkhoff_phase_local` 和 `routersense_p0p1p2_hint` 都运行在这条线上
 
 - `async_release`
   - 论文目标里的未来主线
-  - 代表不依赖全局强 barrier、允许 rank 提前 release 的版本
-  - 当前尚未实现
-  - 如果用户配置 `runtime.line=async_release`，入口必须直接报错
+  - 表示不依赖强 barrier、允许 rank 提前 release 的版本
+  - 当前只有 shadow-only skeleton
+  - 如果用户配置 `runtime.line=async_release`，入口必须直接报错：
+    `async_release runtime_line has a shadow-only skeleton but no online executor integration yet`
   - 不能偷偷 fallback 到 `phase_sync`
 
 ## Online Output Modes
@@ -30,7 +31,6 @@
 
 - `debug_replay`
   - 面向 debug 和 offline replay
-  - 允许保留更多 lightweight artifact
   - 默认打开 replay trace
   - capture 仍然默认关闭；如果需要 tensor capture，必须额外显式给 selector
   - 内部映射到当前 debug profile
@@ -46,7 +46,7 @@
 - output mode
 - 要对比的策略
 
-而不是直接描述 runtime 内部细节。
+而不是直接描述 runtime 内部行为细节。
 
 不应再在推荐配置里直接暴露这些 legacy internal knobs：
 
@@ -59,8 +59,6 @@
 - `per_wave_timing_enabled`
 - `replay_trace_enabled`
 - `capture_enabled`
-
-这些仍然可以存在于 legacy / ablation 配置里，但不是当前 mainline public surface。
 
 ## 当前 phase_sync 的内部映射
 
@@ -90,12 +88,21 @@
 - 它不是完整的 online multiphase live pending queue executor
 - fast path 仍然保留 root-authoritative agreement 和 wave-level plan
 
-## Offline 为什么可以更复杂
+## 与论文证据链的关系
 
-`runtime/offline/` 和 `experiments/offline/` 可以保留更多 replay/debug/analysis 入口，因为：
+- `phase_sync`
+  - 当前真实可执行的 online 保守线
+  - 用于证明 runtime 可复现、可审计、可 replay
+- `async_release`
+  - 当前只表达未来联合 release 语义
+  - 还不能拿来声称 full joint online 已经实现
 
-- offline 不在热路径
-- offline 可以慢
-- offline 可以承接理论分析、oracle、trace replay 和 wire-size study
+离线证据入口：
 
-online 入口则必须收窄，避免历史实验开关继续污染主线。
+- `experiments/offline/build_replay_fixture_from_control_trace.py`
+- `experiments/offline/run_real_trace_evidence_suite.py`
+
+它们用于说明：
+
+- 多 phase joint scheduling 是否有空间
+- oracle / heuristic cross-layer prediction 是否有潜在收益

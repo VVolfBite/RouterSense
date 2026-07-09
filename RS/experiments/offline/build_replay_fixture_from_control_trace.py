@@ -271,6 +271,13 @@ def _render_audit_summary_md(summary: dict[str, Any]) -> str:
                 "",
             ]
         )
+    if int(summary.get("layer_count_with_missing_rank", 0)) > 0:
+        lines.extend(
+            [
+                f"Warning: {summary['layer_count_with_missing_rank']} layer(s) are missing one or more ranks in P0/P1 observations.",
+                "",
+            ]
+        )
     lines.extend(
         [
             "## Global",

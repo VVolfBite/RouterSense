@@ -34,6 +34,13 @@ TABLE_B_POLICIES = (
     "U_barrier_criticality_global_matching",
 )
 
+TABLE_C_POLICIES = (
+    "birkhoff_phase_local",
+    "routersense_multiphase_lookahead:p0_p1_p2",
+    "U_gated_maxweight_matching",
+    "U_barrier_criticality_global_matching",
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -43,7 +50,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_suite(
+def run_policy_suite(
     *,
     fixture_dir: Path,
     policies: tuple[str, ...],
@@ -133,6 +140,91 @@ def _run_suite(
     }
 
 
+def run_prediction_suite(
+    *,
+    fixture_dir: Path,
+    policies: tuple[str, ...],
+    p2_sources: tuple[str, ...],
+    expert_compute_delay: float,
+) -> dict[str, Any]:
+    fixture_paths = sorted(fixture_dir.glob("replay_layer_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
+    rows: list[dict[str, Any]] = []
+    for fixture_path in fixture_paths:
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for p2_source in p2_sources:
+            mode = "runtime_lookahead"
+            if p2_source == "actual_trace":
+                mode = "runtime_lookahead"
+            problem = _build_problem(
+                fixture,
+                mode=mode,
+                p2_source=p2_source,
+                expert_compute_delay=expert_compute_delay,
+            )
+            expected = _expected_flows(problem)
+            for policy_name in policies:
+                policy = resolve_policy(policy_name=policy_name, bucket_rows=0)
+                plan = policy.build_logical_plan(problem)
+                validation = validate_logical_plan(
+                    plan,
+                    expected_flows=expected,
+                    mode=mode,
+                    expert_compute_delay=expert_compute_delay,
+                )
+                audit = replay_and_audit_logical_plan(problem, plan)
+                rows.append(
+                    {
+                        "fixture_name": fixture_path.name,
+                        "layer_id": str(fixture.get("metadata", {}).get("layer_id", "")),
+                        "policy_name": policy_name,
+                        "p2_source": p2_source,
+                        "future_information_mode": str(plan.diagnostics.get("future_information_mode", "")),
+                        "evaluation_eligible": bool(plan.diagnostics.get("evaluation_eligible", True)),
+                        "valid": bool(validation["valid"]) and bool(audit.get("valid", False)),
+                        "makespan": float(plan.diagnostics.get("makespan", audit.get("makespan", 0.0))),
+                        "forecast_matrix_total_bytes": int(problem.forecast.matrix_total_bytes),
+                    }
+                )
+    summary_rows: list[dict[str, Any]] = []
+    for policy_name in policies:
+        policy_rows = [row for row in rows if row["policy_name"] == policy_name]
+        by_source = {source: [row for row in policy_rows if row["p2_source"] == source and row["valid"]] for source in p2_sources}
+        zero_mean = statistics.mean([row["makespan"] for row in by_source["zero_hint"]]) if by_source["zero_hint"] else None
+        perfect_mean = statistics.mean([row["makespan"] for row in by_source["perfect_trace"]]) if by_source["perfect_trace"] else None
+        for p2_source in p2_sources:
+            current_rows = by_source[p2_source]
+            makespans = [row["makespan"] for row in current_rows]
+            mean_makespan = statistics.mean(makespans) if makespans else None
+            relative_zero = None
+            relative_perfect = None
+            if mean_makespan is not None and zero_mean not in (None, 0.0):
+                relative_zero = float((mean_makespan - zero_mean) / zero_mean)
+            if mean_makespan is not None and perfect_mean not in (None, 0.0):
+                relative_perfect = float((mean_makespan - perfect_mean) / perfect_mean)
+            seed_row = next((row for row in policy_rows if row["p2_source"] == p2_source), None)
+            summary_rows.append(
+                {
+                    "policy_name": policy_name,
+                    "p2_source": p2_source,
+                    "mean_makespan": mean_makespan,
+                    "relative_to_zero_hint": relative_zero,
+                    "relative_to_perfect_trace": relative_perfect,
+                    "forecast_matrix_total_bytes": (
+                        statistics.mean([row["forecast_matrix_total_bytes"] for row in current_rows]) if current_rows else 0.0
+                    ),
+                    "future_information_mode": str(seed_row["future_information_mode"]) if seed_row else "",
+                    "evaluation_eligible": bool(seed_row["evaluation_eligible"]) if seed_row else False,
+                }
+            )
+    return {
+        "mode": "runtime_lookahead",
+        "expert_compute_delay": expert_compute_delay,
+        "p2_sources": list(p2_sources),
+        "rows": rows,
+        "summary": summary_rows,
+    }
+
+
 def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
     lines = ["# Real Trace Replay Summary", "", "## Data source and fixture audit", ""]
     lines.extend(
@@ -205,7 +297,7 @@ def main() -> None:
     if not audit_path.exists():
         raise SystemExit(f"missing fixture audit summary: {audit_path}")
     audit_summary = json.loads(audit_path.read_text(encoding="utf-8"))
-    table_a = _run_suite(
+    table_a = run_policy_suite(
         fixture_dir=fixture_dir,
         policies=TABLE_A_POLICIES,
         mode="runtime_lookahead",
@@ -214,7 +306,7 @@ def main() -> None:
         baseline_policy="birkhoff_phase_local",
         relative_key="relative_to_birkhoff_phase_local",
     )
-    table_b = _run_suite(
+    table_b = run_policy_suite(
         fixture_dir=fixture_dir,
         policies=TABLE_B_POLICIES,
         mode="execution_window",

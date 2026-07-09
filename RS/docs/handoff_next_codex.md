@@ -3,108 +3,105 @@
 ## Current Mainline
 
 - branch: `main`
-- current commit should always be checked with `git rev-parse HEAD`
+- current commit: always check with `git rev-parse HEAD`
 
-This handoff intentionally describes only the current mainline.
-Older distributed-EP bringup phases are no longer the active source of truth here.
+这个 handoff 只描述当前 mainline，不再保留旧 distributed-EP bringup 叙事。
 
 ## 1. Online runtime mainline
 
-Current real runtime mainline:
+当前真实 online 主线：
 
 - `src/rs/runtime/online/megatron_ep/`
 - `experiments/online/run_strategy_comparison.py`
 
-Already completed on this line:
+已经完成：
 
 - execution audit hotfix
 - perf artifact slimming
 - routersense fast path
-- natural 4GPU `256x128` workload result
+- public runtime surface：
+  - `runtime.line=phase_sync`
+  - `runtime.line=async_release`
+  - `runtime.output_mode=paper`
+  - `runtime.output_mode=debug_replay`
 - control replay trace skeleton
-- public runtime entry narrowing:
-  - `runtime.line`
-  - `runtime.output_mode`
+- natural 4GPU `256x128` workload主线
+- async_release shadow-only skeleton
 
-Current constraints:
+当前明确不要做：
 
-- do not put heavy debug artifact back into perf hot path
-- do not large-scale split `lifecycle.py`
-- do not bypass root agreement
-- do not turn fast path into local greedy
+- 不要把重 debug artifact 塞回 perf hot path
+- 不要大拆 `lifecycle.py`
+- 不要绕过 root agreement
+- 不要把 fast path 写成本地 greedy
+- 不要把 `async_release` 偷偷 fallback 到 `phase_sync`
 
-Important interpretation:
+重要解释：
 
-- current online RouterSense is still a prediction-aware phase-local runtime policy
-- it is not a full online multiphase live pending queue executor
-- current public runtime lines:
-  - `phase_sync` (implemented)
-  - `async_release` (declared, not implemented)
-- current public output modes:
-  - `paper`
-  - `debug_replay`
+- 当前 online RouterSense 仍然是 prediction-aware phase-local runtime policy
+- 它不是 full online multiphase live pending queue executor
+- `async_release` 当前只有 shadow-only skeleton，还没有 executor integration
 
 ## 2. Offline / replay mainline
 
-Current offline analysis mainline:
+当前 offline 分析主线：
 
 - `src/rs/runtime/offline/`
 - `experiments/offline/replay_online_control_trace.py`
+- `experiments/offline/build_replay_fixture_from_control_trace.py`
+- `experiments/offline/run_real_trace_evidence_suite.py`
 
-What it does now:
+当前能力：
 
-- reads lightweight control replay traces
-- summarizes control-plane object scale
-- reports wave / bucket / task-ref / wire-size statistics
+- 读取 lightweight control replay trace
+- 汇总 control-plane object scale
+- 从 replay trace 构建 offline fixture + audit summary
+- 跑三类证据表：
+  - phase-sync-compatible
+  - execution-window joint upper bound
+  - prediction / oracle-predict
 
-What it does not do:
+当前限制：
 
-- it does not replace real GPU benchmark
-- it does not simulate NCCL waiting precisely
-- it does not perform full strategy re-planning yet
+- 不替代真实 GPU benchmark
+- 不精确模拟 NCCL 等待
+- 不应把 execution-window upper bound 表述成当前 online 已实现收益
 
 ## 3. Scheduling mainline
 
-Current runtime-facing strategy mainline:
+当前 runtime-facing 策略主线：
 
 - `src/rs/scheduling/`
 
-This is the real policy contract entry used by current online/offline code.
+解释：
 
-Interpretation:
+- `birkhoff_phase_local` 是当前 online 可执行的强 phase-local baseline
+- `routersense_p0p1p2_hint` 是当前 prediction-aware runtime policy
+- `B_birkhoff_wave` / `U_*` 属于 offline joint scheduling evidence，不应塞回 online perf hot path
 
-- `birkhoff_phase_local` is the current online-executable strong phase-local baseline
-- `routersense_p0p1p2_hint` is the current prediction-aware runtime policy
-- oracle / heavy joint schedulers belong to offline or theoretical upper-bound analysis
-- they should not be moved into online perf hot path
+## 4. 当前推荐配置与入口
 
-## 4. Current recommended config path
-
-Natural workload mainline:
+Natural workload mainline：
 
 - `configs/comparison/natural_256x128_4gpu.yaml`
 - workload:
   - `configs/workload/comparison_256x128_prompts.json`
 
-Legacy references still kept:
+Public runtime 说明：
 
-- `configs/comparison/tmp_comm_ramp_256x128_disabled.yaml`
-- `configs/comparison/tmp_comm_ramp_selected_bucket1024_4gpu.yaml`
-
-See:
-
-- `configs/comparison/README.md`
 - `docs/runtime_public_entrypoints.md`
 
-## 5. Key documents
+当前代码结构索引：
 
-- `docs/runtime_online_hotpath_contract.md`
-- `docs/runtime_replay_trace_contract.md`
 - `docs/current_code_structure_index.md`
 
-## 6. Key implementation files
+论文证据链：
 
-Online runtime:
+- `docs/paper_evidence_chain.md`
+
+## 5. 关键实现文件
+
+Online runtime：
 
 - `src/rs/runtime/online/megatron_ep/host.py`
 - `src/rs/runtime/online/megatron_ep/lifecycle.py`
@@ -112,46 +109,27 @@ Online runtime:
 - `src/rs/runtime/online/megatron_ep/pending_window/adapter.py`
 - `src/rs/runtime/online/megatron_ep/pending_window/policy_adapter.py`
 - `src/rs/runtime/online/megatron_ep/observation/views.py`
+- `src/rs/runtime/online/megatron_ep/async_release/`
 
-Replay trace:
+Offline / replay：
 
-- writer path:
-  - `src/rs/runtime/online/megatron_ep/lifecycle.py`
-  - `experiments/online/support/phase_executor_artifacts.py`
-- parser:
-  - `experiments/offline/replay_online_control_trace.py`
-  - `experiments/offline/build_replay_fixture_from_control_trace.py`
-- tests:
-  - `tests/contract/test_control_replay_trace.py`
+- `experiments/offline/replay_online_control_trace.py`
+- `experiments/offline/build_replay_fixture_from_control_trace.py`
+- `experiments/offline/run_replay_fixture_policy_suite.py`
+- `experiments/offline/run_real_trace_evidence_suite.py`
 
-## 7. Explicit do-not-do list
+## 6. 推荐下一步顺序
 
-Do not do these by default next:
+1. 基于 real trace evidence suite 先区分：
+   - 当前 phase_sync-compatible 结果
+   - execution-window joint upper bound
+   - prediction / oracle-predict 空间
+2. 做 transport-stress / EP replay
+3. 修 global P2 matrix
+4. 再决定是否推进 async_release executor integration
 
-- do not large-scale split `lifecycle.py`
-- do not re-inflate perf hot path artifact volume
-- do not run full GPU benchmark sweeps first
-- do not keep blindly increasing natural batch sizes beyond the current 256x128 line
-- do not re-expose low-level runtime knobs in recommended configs
-- do not silently map `async_release` back to `phase_sync`
+## 7. Repository rule
 
-## 8. Recommended next order
+GitHub `main` 是外部审查 source of truth。
 
-1. Analyze replay trace:
-   - all_gather scale
-   - broadcast scale
-   - wave count
-   - bucket count
-   - task-ref count
-2. Bridge real rank traces into offline scheduling fixtures
-3. Add transport-stress / EP replay
-4. Fix global P2 matrix
-5. Then continue RouterSense vs Birkhoff tuning
-
-## 9. Repository rule
-
-GitHub `main` is the external review source of truth.
-
-Do not assume local deliverables will be available.
-If a new contract, replay schema, config cleanup, or handoff note matters for review,
-it must be committed and pushed.
+不要假设本地 deliverables 一定会存在。只要某个 contract、入口、handoff、evidence 脚本对审查重要，就必须提交并 push。

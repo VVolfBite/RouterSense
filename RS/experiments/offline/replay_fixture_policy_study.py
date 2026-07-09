@@ -78,9 +78,9 @@ def _build_problem(
         forecast_oracle = False
         forecast_eligible = True
         information_mode = "p0_p1_p2"
-    elif p2_source == "perfect_trace":
+    elif p2_source in {"perfect_trace", "actual_trace"}:
         p2 = p2_actual
-        forecast_source = "perfect_trace"
+        forecast_source = str(p2_source)
         forecast_oracle = True
         forecast_eligible = False
         information_mode = "p0_p1_p2"

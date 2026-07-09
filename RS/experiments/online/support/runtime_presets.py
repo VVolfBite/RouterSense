@@ -30,7 +30,7 @@ def validate_public_runtime_surface(comparison: dict[str, Any]) -> None:
     if output_mode not in PUBLIC_OUTPUT_MODES:
         raise ValueError(f"unsupported runtime.output_mode {output_mode!r}")
     if line == "async_release":
-        raise ValueError("async_release runtime_line is declared but not implemented yet")
+        raise ValueError("async_release runtime_line has a shadow-only skeleton but no online executor integration yet")
     execution = dict(comparison.get("execution", {}) or {})
     forbidden_execution = {"bucket_rows"}
     forbidden_runtime = {
@@ -98,7 +98,7 @@ def public_runtime_defaults(*, output_mode: str) -> dict[str, Any]:
 
 def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[str, Any]:
     if runtime_line == "async_release":
-        raise ValueError("async_release runtime_line is declared but not implemented yet")
+        raise ValueError("async_release runtime_line has a shadow-only skeleton but no online executor integration yet")
     if strategy_name == "disabled":
         return {
             "policy": "",

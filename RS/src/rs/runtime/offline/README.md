@@ -21,3 +21,8 @@
 - 可以重
 - 可以慢
 - 但输入 trace 和流量矩阵必须真实可审计
+
+当前与论文证据链直接相关的入口：
+
+- `experiments/offline/build_replay_fixture_from_control_trace.py`
+- `experiments/offline/run_real_trace_evidence_suite.py`

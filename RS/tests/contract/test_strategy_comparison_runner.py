@@ -244,7 +244,9 @@ def test_async_release_public_runtime_line_fails_cleanly(tmp_path: Path) -> None
         check=False,
     )
     assert proc.returncode != 0
-    assert "async_release runtime_line is declared but not implemented yet" in (proc.stderr + proc.stdout)
+    assert "async_release runtime_line has a shadow-only skeleton but no online executor integration yet" in (
+        proc.stderr + proc.stdout
+    )
 
 
 def test_recommended_config_does_not_expose_legacy_low_level_fields() -> None:

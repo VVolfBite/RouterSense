@@ -24,3 +24,4 @@
 - `lifecycle.py`：P0/P1 生命周期主线
 - `control/plan_agreement.py`：phase 协商
 - `pending_window/adapter.py`：prepared-window / fast path 接口
+- `async_release/`：future async-release 的 shadow-only skeleton，不接真实 executor
