@@ -29,6 +29,13 @@ from experiments.online.support.comparison_metrics import (
     render_markdown_report,
 )
 from experiments.online.support.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
+from experiments.online.support.runtime_presets import (
+    normalize_strategy_entry,
+    public_runtime_defaults,
+    resolve_strategy_runtime,
+    uses_public_runtime_surface,
+    validate_public_runtime_surface,
+)
 from rs.runtime.online.megatron_ep.observation import write_json
 
 
@@ -88,28 +95,58 @@ def _single_strategy_config(
     model_config_path: str,
     topology_config_path: str,
 ) -> Path:
+    strategy = normalize_strategy_entry(strategy)
     execution = comparison.get("execution", {}) or {}
     runtime = comparison.get("runtime", {}) or {}
     workload = comparison.get("workload", {}) or {}
     observation = comparison.get("observation", {}) or {}
     validation = comparison.get("validation", {}) or {}
     run_name = f"rep{repetition}"
-    policy_name = str(strategy.get("policy", ""))
-    is_native_baseline = not policy_name
-    p2_mode = str(strategy.get("p2_hint_mode", "none"))
-    calibrated_p2 = bool(strategy.get("calibrated_p2", False))
+    public_surface = uses_public_runtime_surface(comparison)
+    if public_surface:
+        line = str(runtime.get("line", "phase_sync"))
+        output_mode = str(runtime.get("output_mode", "paper"))
+        runtime_defaults = public_runtime_defaults(output_mode=output_mode)
+        strategy_runtime = resolve_strategy_runtime(strategy_name=str(strategy.get("name", "")), runtime_line=line)
+        policy_name = str(strategy_runtime["policy"])
+        is_native_baseline = not policy_name
+        p2_mode = str(strategy_runtime["p2_hint_mode"])
+        calibrated_p2 = bool(strategy_runtime["calibrated_p2"])
+        control_mode = str(strategy_runtime["control_mode"])
+        execution_mode = str(strategy_runtime["execution_mode"])
+        run_kind = str(strategy_runtime["run_kind"])
+        effective_observation = dict(runtime_defaults["observation"])
+        effective_execution_bucket_rows = int(runtime_defaults["execution"]["bucket_rows"])
+    else:
+        policy_name = str(strategy.get("policy", ""))
+        is_native_baseline = not policy_name
+        p2_mode = str(strategy.get("p2_hint_mode", "none"))
+        calibrated_p2 = bool(strategy.get("calibrated_p2", False))
+        control_mode = "none" if is_native_baseline else str(strategy.get("control_mode", "sync_before_phase"))
+        execution_mode = "native_passthrough" if is_native_baseline else str(strategy.get("execution_mode", "phase_sync_wave"))
+        run_kind = "online_observe" if is_native_baseline else "online_policy_correctness"
+        effective_observation = {
+            "profile": str(observation.get("profile", "perf")),
+            "capture_enabled": bool(observation.get("capture_enabled", False)),
+            "capture_layer_selector": str(observation.get("capture_layer_selector", "")),
+            "capture_phase_selector": str(observation.get("capture_phase_selector", "")),
+            "heartbeat_enabled": bool(observation.get("heartbeat_enabled", False)),
+            "per_wave_timing_enabled": bool(observation.get("per_wave_timing_enabled", False)),
+            "replay_trace_enabled": bool(observation.get("replay_trace_enabled", False)),
+        }
+        effective_execution_bucket_rows = 0 if is_native_baseline else int(execution.get("bucket_rows", 0))
     p2_hint_weight = float(execution.get("p2_hint_weight", 1.0))
     if p2_mode in {"none", "deterministic_stub"} and not calibrated_p2:
         p2_hint_weight = 0.0
     config = {
-        "run": {"kind": "online_observe" if is_native_baseline else "online_policy_correctness", "name": run_name},
+        "run": {"kind": run_kind, "name": run_name},
         "model": {"config": model_config_path},
         "topology": {"config": topology_config_path},
         "workload": {"prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json"))},
         "runtime": {
             "precision": str(runtime.get("precision", "fp16")),
             "dispatcher": str(runtime.get("dispatcher", "alltoall")),
-            "control_mode": "none" if is_native_baseline else str(strategy.get("control_mode", "sync_before_phase")),
+            "control_mode": control_mode,
         },
         "online_policy": {
             "name": "disabled" if is_native_baseline else policy_name,
@@ -122,22 +159,14 @@ def _single_strategy_config(
         },
         "offline_study": {"policies": []},
         "execution": {
-            "mode": "native_passthrough" if is_native_baseline else str(strategy.get("execution_mode", "phase_sync_wave")),
-            "bucket_rows": 0 if is_native_baseline else int(execution.get("bucket_rows", 0)),
+            "mode": execution_mode,
+            "bucket_rows": effective_execution_bucket_rows,
             "schedule": {
                 "layer_selector": str(execution.get("schedule_layer_selector", "all")),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),
             },
         },
-        "observation": {
-            "profile": str(observation.get("profile", "perf")),
-            "capture_enabled": bool(observation.get("capture_enabled", False)),
-            "capture_layer_selector": str(observation.get("capture_layer_selector", "")),
-            "capture_phase_selector": str(observation.get("capture_phase_selector", "")),
-            "heartbeat_enabled": bool(observation.get("heartbeat_enabled", False)),
-            "per_wave_timing_enabled": bool(observation.get("per_wave_timing_enabled", False)),
-            "replay_trace_enabled": bool(observation.get("replay_trace_enabled", False)),
-        },
+        "observation": effective_observation,
         "validation": {
             "save_logits": bool(validation.get("save_logits", False)),
             "stop_after_selected_layer": bool(validation.get("stop_after_selected_layer", False)),
@@ -151,20 +180,34 @@ def _single_strategy_config(
     return target
 
 
-def _entrypoint_module(*, strategy: dict[str, Any]) -> str:
+def _strategy_run_kind(*, comparison: dict[str, Any], strategy: dict[str, Any]) -> str:
+    strategy = normalize_strategy_entry(strategy)
+    if uses_public_runtime_surface(comparison):
+        runtime = comparison.get("runtime", {}) or {}
+        strategy_runtime = resolve_strategy_runtime(
+            strategy_name=str(strategy.get("name", "")),
+            runtime_line=str(runtime.get("line", "phase_sync")),
+        )
+        return str(strategy_runtime["run_kind"])
     policy_name = str(strategy.get("policy", ""))
     if not policy_name:
+        return "online_observe"
+    return "online_policy_correctness"
+
+
+def _entrypoint_module(*, run_kind: str) -> str:
+    if run_kind == "online_observe":
         return "experiments.online.collect_native_ep_trace"
     return "experiments.online.run_policy_correctness"
 
 
-def _torchrun_command(*, ep_size: int, config_path: Path, run_id: str, strategy_dir: Path, strategy: dict[str, Any]) -> list[str]:
+def _torchrun_command(*, ep_size: int, config_path: Path, run_id: str, strategy_dir: Path, run_kind: str) -> list[str]:
     return [
         "torchrun",
         "--standalone",
         f"--nproc_per_node={ep_size}",
         "-m",
-        _entrypoint_module(strategy=strategy),
+        _entrypoint_module(run_kind=run_kind),
         "--config",
         str(config_path),
         "--run-id",
@@ -236,10 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config)
     output_dir = Path(args.output_dir)
     comparison = _load_yaml(config_path)
+    if uses_public_runtime_surface(comparison):
+        validate_public_runtime_surface(comparison)
     _copy_config(config_path, output_dir)
     model_config_path = _model_config(comparison.get("model", {}) or {}, output_dir)
     topology_config_path = _topology_config(comparison.get("topology", {}) or {}, output_dir)
-    strategies = list(comparison.get("strategies", []) or [])
+    strategies = [normalize_strategy_entry(item) for item in list(comparison.get("strategies", []) or [])]
     repetitions = int((comparison.get("execution", {}) or {}).get("repetitions", 1))
     ep_size = int((comparison.get("topology", {}) or {}).get("ep_size", 1))
     baseline = str((comparison.get("comparison", {}) or {}).get("baseline_strategy", strategies[0]["name"] if strategies else ""))
@@ -253,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         for repetition in range(repetitions):
             run_id = f"rep{repetition}"
             run_dir = strategy_dir / run_id
+            run_kind = _strategy_run_kind(comparison=comparison, strategy=strategy)
             generated = _single_strategy_config(
                 comparison=comparison,
                 strategy=strategy,
@@ -261,7 +307,13 @@ def main(argv: list[str] | None = None) -> int:
                 model_config_path=model_config_path,
                 topology_config_path=topology_config_path,
             )
-            cmd = _torchrun_command(ep_size=ep_size, config_path=generated, run_id=run_id, strategy_dir=strategy_dir, strategy=strategy)
+            cmd = _torchrun_command(
+                ep_size=ep_size,
+                config_path=generated,
+                run_id=run_id,
+                strategy_dir=strategy_dir,
+                run_kind=run_kind,
+            )
             timing_start = time.monotonic_ns()
             if args.dry_run:
                 run_dir.mkdir(parents=True, exist_ok=True)

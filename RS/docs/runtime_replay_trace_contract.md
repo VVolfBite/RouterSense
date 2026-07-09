@@ -51,6 +51,9 @@
 - 默认关闭
 - 只有显式打开 `observation.replay_trace_enabled=true` 才落盘
 - `perf` profile 允许开启，因为它仍是轻量结构
+- 当前 public 配置面下：
+  - `runtime.output_mode=paper` 默认关闭
+  - `runtime.output_mode=debug_replay` 默认开启
 
 ## 当前使用方式
 
@@ -64,7 +67,12 @@
 
 ## 最小使用示例
 
-打开 replay trace：
+用 public 配置面时：
+
+- `runtime.output_mode=paper` 不写 replay trace
+- `runtime.output_mode=debug_replay` 会写 replay trace
+
+如果使用 legacy/internal 配置，也可以手动打开：
 
 ```yaml
 observation:

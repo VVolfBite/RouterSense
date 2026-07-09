@@ -87,18 +87,22 @@
 
 ### `experiments/online/run_strategy_comparison.py`
 
-- 负责什么：在线多策略对比入口、子配置生成、结果聚合
+- 负责什么：在线多策略对比入口、public runtime surface 到内部开关的映射、子配置生成、结果聚合
 - 不负责什么：runtime 逻辑本体
 
-### `configs/comparison/tmp_comm_ramp_selected_4gpu.yaml`
+### `experiments/online/support/runtime_presets.py`
 
-- 当前自然场景主线配置
+- 负责什么：把 `runtime.line` / `runtime.output_mode` / public strategy name 映射成现有内部字段
+- 不负责什么：真实调度执行和 runtime 行为逻辑
+
+### `configs/comparison/natural_256x128_4gpu.yaml`
+
+- 当前推荐 public 主线配置
 - workload 为 `configs/workload/comparison_256x128_prompts.json`
 
 ### `configs/comparison/README.md`
 
-- 当前 comparison config 的入口说明
-- 说明哪些是推荐主线、哪些是保留配置
+- 当前 comparison config 的 public/legacy 入口说明
 
 ## Scheduling
 
@@ -119,7 +123,12 @@
 
 ## Replay trace 如何打开
 
-配置中显式开启：
+推荐 public 模式下：
+
+- `runtime.output_mode=paper` 默认关闭 replay trace
+- `runtime.output_mode=debug_replay` 默认开启 replay trace
+
+legacy/internal 配置下，也可以显式开启：
 
 ```yaml
 observation:

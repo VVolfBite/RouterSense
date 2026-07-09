@@ -22,6 +22,9 @@ Already completed on this line:
 - routersense fast path
 - natural 4GPU `256x128` workload result
 - control replay trace skeleton
+- public runtime entry narrowing:
+  - `runtime.line`
+  - `runtime.output_mode`
 
 Current constraints:
 
@@ -34,6 +37,12 @@ Important interpretation:
 
 - current online RouterSense is still a prediction-aware phase-local runtime policy
 - it is not a full online multiphase live pending queue executor
+- current public runtime lines:
+  - `phase_sync` (implemented)
+  - `async_release` (declared, not implemented)
+- current public output modes:
+  - `paper`
+  - `debug_replay`
 
 ## 2. Offline / replay mainline
 
@@ -73,21 +82,19 @@ Interpretation:
 
 Natural workload mainline:
 
-- `configs/comparison/tmp_comm_ramp_selected_4gpu.yaml`
+- `configs/comparison/natural_256x128_4gpu.yaml`
 - workload:
   - `configs/workload/comparison_256x128_prompts.json`
 
-Native-only reference:
+Legacy references still kept:
 
 - `configs/comparison/tmp_comm_ramp_256x128_disabled.yaml`
-
-Bucket comparison:
-
 - `configs/comparison/tmp_comm_ramp_selected_bucket1024_4gpu.yaml`
 
 See:
 
 - `configs/comparison/README.md`
+- `docs/runtime_public_entrypoints.md`
 
 ## 5. Key documents
 
@@ -124,6 +131,8 @@ Do not do these by default next:
 - do not re-inflate perf hot path artifact volume
 - do not run full GPU benchmark sweeps first
 - do not keep blindly increasing natural batch sizes beyond the current 256x128 line
+- do not re-expose low-level runtime knobs in recommended configs
+- do not silently map `async_release` back to `phase_sync`
 
 ## 8. Recommended next order
 
