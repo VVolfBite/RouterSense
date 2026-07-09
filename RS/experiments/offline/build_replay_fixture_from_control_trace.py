@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build offline scheduling fixtures from lightweight online control replay traces."""
+"""Build offline scheduling fixtures from replay traces or phase-context artifacts."""
 
 from __future__ import annotations
 
@@ -28,6 +28,32 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _find_trace_paths(trace_dir: Path) -> list[Path]:
     return sorted(path for path in trace_dir.glob("rank*_control_replay_trace.jsonl") if path.is_file())
+
+
+def _find_phase_context_paths(trace_dir: Path) -> list[Path]:
+    return sorted(path for path in trace_dir.glob("rank*_phase_contexts.jsonl") if path.is_file())
+
+
+def _phase_context_to_trace_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        payload.append(
+            {
+                "run_id_digest": str((row.get("plan_key", {}) or {}).get("run_id_digest", "")),
+                "layer_id": str(row.get("layer_id", "")),
+                "layer_name": str(row.get("layer_name", "")),
+                "phase": str(row.get("phase", "")),
+                "global_rank": int(row.get("global_rank", 0)),
+                "local_rank": int(row.get("local_rank", 0)),
+                "ep_group_size": int(len(row.get("per_peer_bytes", []) or [])),
+                "policy_name": str(row.get("policy_name", row.get("control_mode", "phase_context_fallback"))),
+                "bucket_rows": 0,
+                "per_rank_peer_bytes": [int(value) for value in row.get("per_peer_bytes", []) or []],
+                "nonzero_edges": [],
+                "nonzero_edge_count": int(row.get("nonzero_edge_count", 0) or 0),
+            }
+        )
+    return payload
 
 
 def _infer_source_rank(row: dict[str, Any]) -> int:
@@ -197,16 +223,26 @@ def main() -> None:
     args = _parse_args()
     trace_dir = Path(args.trace_dir)
     trace_paths = _find_trace_paths(trace_dir)
-    if not trace_paths:
-        raise SystemExit(f"no rank*_control_replay_trace.jsonl files found under {trace_dir}")
     rows: list[dict[str, Any]] = []
-    for path in trace_paths:
-        rows.extend(_read_jsonl(path))
+    source_kind = "control_replay_trace"
+    if trace_paths:
+        for path in trace_paths:
+            rows.extend(_read_jsonl(path))
+    else:
+        phase_context_paths = _find_phase_context_paths(trace_dir)
+        if not phase_context_paths:
+            raise SystemExit(
+                f"no rank*_control_replay_trace.jsonl or rank*_phase_contexts.jsonl files found under {trace_dir}"
+            )
+        source_kind = "phase_context_fallback"
+        for path in phase_context_paths:
+            rows.extend(_phase_context_to_trace_rows(_read_jsonl(path)))
     bundle = build_replay_fixture_bundle(rows, policy_name=(args.policy or None))
     _write_bundle(bundle, Path(args.output_dir))
     print(json.dumps({
         "trace_dir": str(trace_dir),
         "trace_file_count": len(trace_paths),
+        "source_kind": source_kind,
         "fixture_count": bundle["fixture_count"],
         "policy_name": bundle["policy_name"],
         "output_dir": str(Path(args.output_dir)),

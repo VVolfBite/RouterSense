@@ -271,3 +271,82 @@ def test_build_replay_fixture_cli(tmp_path: Path) -> None:
     fixture = json.loads((output_dir / "fixtures" / "replay_layer_0.json").read_text(encoding="utf-8"))
     assert fixture["p0_dispatch_matrix"] == [[0, 128], [64, 0]]
     assert fixture["p1_return_matrix"] == [[0, 32], [96, 0]]
+
+
+def test_build_replay_fixture_cli_from_phase_context_fallback(tmp_path: Path) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    rank0 = trace_dir / "rank0_phase_contexts.jsonl"
+    rank1 = trace_dir / "rank1_phase_contexts.jsonl"
+    rank0_rows = [
+        {
+            "plan_key": {"run_id_digest": "abc123"},
+            "layer_id": "0",
+            "layer_name": "layer_0",
+            "phase": "P0",
+            "global_rank": 0,
+            "local_rank": 0,
+            "per_peer_bytes": [0, 128],
+            "nonzero_edge_count": 1,
+            "control_mode": "none",
+        },
+        {
+            "plan_key": {"run_id_digest": "abc123"},
+            "layer_id": "0",
+            "layer_name": "layer_0",
+            "phase": "P1",
+            "global_rank": 0,
+            "local_rank": 0,
+            "per_peer_bytes": [0, 32],
+            "nonzero_edge_count": 1,
+            "control_mode": "none",
+        },
+    ]
+    rank1_rows = [
+        {
+            "plan_key": {"run_id_digest": "abc123"},
+            "layer_id": "0",
+            "layer_name": "layer_0",
+            "phase": "P0",
+            "global_rank": 1,
+            "local_rank": 1,
+            "per_peer_bytes": [64, 0],
+            "nonzero_edge_count": 1,
+            "control_mode": "none",
+        },
+        {
+            "plan_key": {"run_id_digest": "abc123"},
+            "layer_id": "0",
+            "layer_name": "layer_0",
+            "phase": "P1",
+            "global_rank": 1,
+            "local_rank": 1,
+            "per_peer_bytes": [96, 0],
+            "nonzero_edge_count": 1,
+            "control_mode": "none",
+        },
+    ]
+    rank0.write_text("\n".join(json.dumps(row) for row in rank0_rows), encoding="utf-8")
+    rank1.write_text("\n".join(json.dumps(row) for row in rank1_rows), encoding="utf-8")
+    output_dir = tmp_path / "out"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "experiments.offline.build_replay_fixture_from_control_trace",
+            "--trace-dir",
+            str(trace_dir),
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd="/root/autodl-tmp/RouterSense/RS",
+        env={"PYTHONPATH": "src"},
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["source_kind"] == "phase_context_fallback"
+    fixture = json.loads((output_dir / "fixtures" / "replay_layer_0.json").read_text(encoding="utf-8"))
+    assert fixture["p0_dispatch_matrix"] == [[0, 128], [64, 0]]
+    assert fixture["p1_return_matrix"] == [[0, 32], [96, 0]]
