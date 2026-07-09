@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from rs.scheduling.capabilities import PolicyCapabilities
 from rs.scheduling.contracts import MultiPhaseSchedulingProblem
 from rs.scheduling.multiphase.scheduler_state import run_global_matching_scheduler
 
-from .tier1 import _raw_schedule_to_plan
+from .tier1 import _audit_raw_schedule, _birkhoff_phase_orders, _raw_schedule_to_plan, _real_matrices, _schedule_ordered_chunks
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,16 @@ class RecoveredCandidateSpec:
 
 
 RECOVERED_CANDIDATE_SPECS: dict[str, RecoveredCandidateSpec] = {
+    "U_ibbr": RecoveredCandidateSpec(
+        algorithm_id="U_ibbr",
+        exact_matching=True,
+        atomic=False,
+        residual_weight=0.25,
+        barrier_weight=0.0,
+        age_weight=0.05,
+        prediction_weight=0.0,
+        service_model="fluid_wave",
+    ),
     "U_gated_greedy_maximal": RecoveredCandidateSpec(
         algorithm_id="U_gated_greedy_maximal",
         exact_matching=False,
@@ -104,6 +115,8 @@ class RecoveredMultiphaseCandidatePolicy:
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem):  # type: ignore[no-untyped-def]
         spec = RECOVERED_CANDIDATE_SPECS[self.algorithm_id]
+        if spec.algorithm_id == "U_ibbr":
+            return _build_u_ibbr(problem)
         started = time.perf_counter()
         result = run_global_matching_scheduler(
             [list(row) for row in problem.p0_dispatch_matrix],
@@ -159,3 +172,85 @@ def is_recovered_candidate(policy_name: str) -> bool:
 
 def resolve_recovered_candidate(policy_name: str) -> RecoveredMultiphaseCandidatePolicy:
     return RecoveredMultiphaseCandidatePolicy(policy_name)
+
+
+def _build_u_ibbr(problem: MultiPhaseSchedulingProblem):  # type: ignore[no-untyped-def]
+    started = time.perf_counter()
+    phase_orders = _birkhoff_phase_orders(_real_matrices(problem))
+    best_orders = _clone_phase_orders(phase_orders)
+    best_schedule = _schedule_ordered_chunks(best_orders, float(problem.release_model.expert_compute_delay))
+    best_makespan = max((float(entry["end"]) for entry in best_schedule), default=0.0)
+    no_improve_count = 0
+    prev_best = best_makespan
+    deadline = started + 0.003
+    for _ in range(4):
+        if time.perf_counter() > deadline:
+            break
+        g_star = max(_gpu_completion(best_orders, float(problem.release_model.expert_compute_delay)).items(), key=lambda item: item[1])[0]
+        improved = False
+        for phase in range(len(best_orders)):
+            indices = [
+                idx
+                for idx, chunk in enumerate(best_orders[phase])
+                if int(chunk["src_gpu"]) == g_star or int(chunk["dst_gpu"]) == g_star
+            ]
+            for left, right in zip(indices, indices[1:]):
+                candidate = _clone_phase_orders(best_orders)
+                candidate[phase][left], candidate[phase][right] = candidate[phase][right], candidate[phase][left]
+                candidate_schedule = _schedule_ordered_chunks(candidate, float(problem.release_model.expert_compute_delay))
+                candidate_makespan = max((float(entry["end"]) for entry in candidate_schedule), default=0.0)
+                if candidate_makespan < best_makespan:
+                    relative = (prev_best - candidate_makespan) / max(prev_best, 1e-9)
+                    no_improve_count = 0 if relative >= 1e-4 else no_improve_count + 1
+                    prev_best = candidate_makespan
+                    best_orders = candidate
+                    best_schedule = candidate_schedule
+                    best_makespan = candidate_makespan
+                    improved = True
+                    break
+            if improved:
+                break
+        if not improved:
+            no_improve_count += 1
+        if not improved or no_improve_count >= 2:
+            break
+    planning_time_ms = (time.perf_counter() - started) * 1000.0
+    audit = _audit_raw_schedule(problem, best_schedule, "U_ibbr", best_makespan, planning_time_ms)
+    return _raw_schedule_to_plan(
+        problem=problem,
+        algorithm_id="U_ibbr",
+        service_model="fluid_wave",
+        raw_schedule=best_schedule,
+        audit=audit,
+        makespan=best_makespan,
+        planning_time_ms=planning_time_ms,
+        solver_status="valid" if audit.get("valid", False) else "invalid",
+        selection_model="iterated_birkhoff_barrier_repair",
+        extra_diagnostics={
+            "historical_parameters": {
+                "seed_from_birkhoff": True,
+                "local_swap_repair": True,
+                "prediction_aware": False,
+            }
+        },
+    )
+
+
+def _clone_phase_orders(phase_orders: list[list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
+    return [list(chunks) for chunks in phase_orders]
+
+
+def _gpu_completion(phase_orders: list[list[dict[str, Any]]], expert_compute_delay: float) -> dict[int, float]:
+    schedule = _schedule_ordered_chunks(phase_orders, expert_compute_delay)
+    num_gpus = 0
+    for phase_chunks in phase_orders:
+        for chunk in phase_chunks:
+            num_gpus = max(num_gpus, int(chunk["src_gpu"]) + 1, int(chunk["dst_gpu"]) + 1)
+    completion = {gpu: 0.0 for gpu in range(num_gpus)}
+    for entry in schedule:
+        src = int(entry["src_gpu"])
+        dst = int(entry["dst_gpu"])
+        end = float(entry["end"])
+        completion[src] = max(completion[src], end)
+        completion[dst] = max(completion[dst], end)
+    return completion

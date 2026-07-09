@@ -150,13 +150,13 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
         joint_oracle_reference_id="O_joint_cp_sat_oracle",
         granularity_mode="legacy_atomic_token",
         planning_scope="multiphase_joint",
-        source="legacy_poc1_pending",
+        source="legacy_poc1_recovered",
         online_eligible=False,
         offline_eligible=True,
         heavy_solver=False,
-        deterministic_solver=False,
+        deterministic_solver=True,
         oracle_like=False,
-        recommended_role="pending_joint_family_candidate",
+        recommended_role="paired_joint_family_candidate",
     ),
     "B_gated_greedy_maximal": AlgorithmMetadata(
         algorithm_id="B_gated_greedy_maximal",
@@ -517,7 +517,6 @@ _PAIR_FAMILIES: tuple[tuple[str, str | None, str | None], ...] = (
 )
 
 _PAIR_PENDING_REASONS: dict[str, str] = {
-    "birkhoff_bvn": "U_ibbr has historical evidence but is not yet promoted into current paired mainline.",
     "cp_lpt": "Historical U_cp_lpt exists, but no formal paired B-side is promoted yet.",
 }
 
@@ -587,17 +586,23 @@ def joint_oracle_reference() -> dict[str, Any]:
 
 
 def is_paired_comparison_ready(heuristic_family: str) -> bool:
-    family_entries = [entry for entry in _ALGORITHMS.values() if entry.heuristic_family == heuristic_family]
-    roles = {entry.role for entry in family_entries}
-    if "b_phase_local" not in roles or "u_routersense_joint" not in roles:
+    pair_rows = [pair for pair in _PAIR_FAMILIES if pair[0] == heuristic_family]
+    if not pair_rows:
         return False
-    if any(entry.source in {"legacy_poc1_pending", "pending"} for entry in family_entries if entry.role in {"b_phase_local", "u_routersense_joint"}):
-        return False
-    family_ids = {entry.algorithm_id for entry in family_entries}
-    for entry in family_entries:
-        if entry.role == "u_routersense_joint" and (entry.paired_algorithm_id not in family_ids):
+    for _family, b_id, u_id in pair_rows:
+        if not b_id or not u_id:
             return False
-        if entry.role == "b_phase_local" and (entry.paired_algorithm_id not in family_ids):
+        if b_id not in _ALGORITHMS or u_id not in _ALGORITHMS:
+            return False
+        b_meta = _ALGORITHMS[b_id]
+        u_meta = _ALGORITHMS[u_id]
+        if b_meta.source in {"legacy_poc1_pending", "pending"} or u_meta.source in {"legacy_poc1_pending", "pending"}:
+            return False
+        if b_meta.role not in {"b_phase_local", "o_local_phase_oracle"}:
+            return False
+        if u_meta.role != "u_routersense_joint":
+            return False
+        if b_meta.paired_algorithm_id != u_id or u_meta.paired_algorithm_id != b_id:
             return False
     return True
 

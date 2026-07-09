@@ -101,8 +101,15 @@ def test_transport_stress_replay_cli(tmp_path: Path) -> None:
     assert "phase_sync_transport" in summary
     assert "joint_transport" in summary
     assert "paired_b_vs_u" in summary
-    assert summary["pair_status"]["ready_pair_count"] >= 3
-    assert summary["best_pair"]["best_family"] in {"gated_greedy", "gated_maxweight_matching", "barrier_criticality_matching"}
+    assert summary["pair_status"]["ready_pair_count"] >= 6
+    assert summary["best_pair"]["best_family"] in {
+        "birkhoff_bvn",
+        "gated_greedy",
+        "gated_maxweight_matching",
+        "barrier_criticality_matching",
+        "barrier_price_adaptive_matching",
+        "lagrangian_cross_phase",
+    }
     assert "bridge_candidates" in summary
     assert summary["phase_sync_transport"]["baseline_policy"] == "birkhoff_phase_local"
     assert summary["joint_transport"]["baseline_policy"] == "B_birkhoff_wave"

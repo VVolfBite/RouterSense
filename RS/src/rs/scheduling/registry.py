@@ -193,6 +193,7 @@ def supported_policies() -> tuple[str, ...]:
         "routersense_multiphase_lookahead:p0_p1_p2",
         "U_gated_greedy_maximal",
         "U_gated_greedy_maximal_atomic",
+        "U_ibbr",
         "U_barrier_price_adaptive_matching",
         "U_barrier_price_adaptive_matching_atomic",
         *TIER1_ALGORITHM_IDS,

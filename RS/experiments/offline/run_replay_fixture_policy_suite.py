@@ -56,6 +56,7 @@ TABLE_D_UPPER_BOUND_POLICIES = (
 )
 
 PAIRED_FAMILY_ROWS = (
+    ("birkhoff_bvn", "B_birkhoff", "U_ibbr"),
     ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
     ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
     ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),

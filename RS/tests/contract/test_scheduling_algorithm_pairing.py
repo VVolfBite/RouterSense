@@ -48,15 +48,16 @@ def test_p0p1p2_hint_is_classified_as_online_adapter() -> None:
 
 
 def test_ready_paired_families_are_explicit() -> None:
+    assert is_paired_comparison_ready("birkhoff_bvn") is True
     assert is_paired_comparison_ready("gated_greedy") is True
     assert is_paired_comparison_ready("gated_maxweight_matching") is True
     assert is_paired_comparison_ready("barrier_criticality_matching") is True
-    assert is_paired_comparison_ready("birkhoff_bvn") is False
 
 
 def test_pair_status_summary_reports_ready_and_pending() -> None:
     summary = pair_status_summary()
-    assert summary["ready_pair_count"] >= 3
+    assert summary["ready_pair_count"] >= 6
     assert summary["pending_pair_count"] >= 1
+    assert any(row["heuristic_family"] == "birkhoff_bvn" for row in summary["ready_pairs"])
     assert any(row["heuristic_family"] == "gated_maxweight_matching" for row in summary["ready_pairs"])
-    assert any(row["heuristic_family"] == "birkhoff_bvn" for row in summary["pending_pairs"])
+    assert any(row["heuristic_family"] == "cp_lpt" for row in summary["pending_pairs"])
