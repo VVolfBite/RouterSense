@@ -273,6 +273,9 @@ def test_prepared_plan_summary_exposes_p2_matrix_source() -> None:
             "p2_matrix_col_sums": [16, 48],
             "p2_matrix_is_replicated_local_row": True,
             "p2_matrix_shape": [2, 2],
+            "p2_matrix_gather_time_us": 12.5,
+            "p2_matrix_gather_status": "fallback_after_gather_failure",
+            "p2_matrix_gather_call_count": 2,
         }
     )
     summary = runtime.export_prepared_plan_summary()
@@ -281,6 +284,9 @@ def test_prepared_plan_summary_exposes_p2_matrix_source() -> None:
     assert summary["p2_matrix_total_bytes"] == 64
     assert summary["p2_matrix_is_replicated_local_row"] is True
     assert summary["p2_matrix_shape"] == [2, 2]
+    assert summary["p2_matrix_gather_time_us"] == 12.5
+    assert summary["p2_matrix_gather_status"] == "fallback_after_gather_failure"
+    assert summary["p2_matrix_gather_call_count"] == 2
 
 
 def test_build_prepared_plan_matrices_falls_back_to_replicated_local_row(monkeypatch) -> None:
@@ -299,6 +305,8 @@ def test_build_prepared_plan_matrices_falls_back_to_replicated_local_row(monkeyp
     assert bundle.p2_matrix_source == "replicated_local_row"
     assert bundle.p2_matrix_is_replicated_local_row is True
     assert bundle.forecast_matrix == ((0, 24), (0, 0))
+    assert bundle.gather_status == "skipped_dist_uninitialized"
+    assert bundle.gather_call_count == 2
 
 
 def test_build_prepared_plan_matrices_gathers_global_rows(monkeypatch) -> None:
@@ -329,6 +337,8 @@ def test_build_prepared_plan_matrices_gathers_global_rows(monkeypatch) -> None:
     assert bundle.forecast_matrix == ((0, 24), (12, 0))
     assert bundle.dispatch_matrix == ((0, 16), (8, 0))
     assert bundle.total_bytes == 36
+    assert bundle.gather_status == "ok"
+    assert bundle.gather_call_count == 2
 
 
 def test_store_prepared_plan_uses_gathered_global_matrix_when_available(monkeypatch) -> None:
@@ -355,6 +365,9 @@ def test_store_prepared_plan_uses_gathered_global_matrix_when_available(monkeypa
     assert summary["p2_matrix_is_replicated_local_row"] is False
     assert summary["p2_matrix_row_sums"] == [24, 12]
     assert summary["p2_matrix_col_sums"] == [12, 24]
+    assert summary["p2_matrix_gather_status"] == "ok"
+    assert summary["p2_matrix_gather_call_count"] == 2
+    assert summary["p2_matrix_gather_time_us"] >= 0.0
 
 
 def test_perf_scheduled_plan_artifact_keeps_task_ids_only() -> None:

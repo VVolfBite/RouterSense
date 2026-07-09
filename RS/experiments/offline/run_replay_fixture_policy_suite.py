@@ -284,7 +284,7 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
             "- 当前 online RouterSense hint policy 还不是 full joint execution-window scheduler。",
             "- offline U_* 结果说明多 phase joint scheduling 仍有空间，但这不等于当前 online RouterSense 已经拿到了这部分收益。",
             "- 下一步需要 transport-stress / EP replay 或 async_release 风格执行语义，才能把 U_* 的空间转成在线系统收益。",
-            "- global P2 matrix 仍未修；当前 p2_matrix_source 问题仍然不能忽略。",
+            "- prepared-plan 的 P2 矩阵在真实分布式 EP group 可用时已经可以来自 gathered_global_matrix；但这只是修正全局矩阵来源，不等于真实 next-layer predictor 已经接入。",
         ]
     )
     return "\n".join(lines) + "\n"

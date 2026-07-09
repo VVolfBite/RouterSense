@@ -74,9 +74,11 @@ def register_shadow_plan(state: AsyncReleaseState, plan: AsyncShadowPlan) -> Asy
 
 def mark_task_released(state: AsyncReleaseState, task_id: str) -> AsyncReleaseState:
     task = state.tasks_by_id.get(task_id)
-    if task is None or task.release_state == "completed":
+    if task is None:
         return state
-    if task.release_state not in {"ready", "blocked"}:
+    if task.release_state != "ready":
+        return state
+    if task.dependency == "forecast_only":
         return state
     tasks = dict(state.tasks_by_id)
     tasks[task_id] = replace(task, release_state="released")
@@ -103,7 +105,7 @@ def ready_task_ids(state: AsyncReleaseState) -> tuple[str, ...]:
         sorted(
             task_id
             for task_id, task in state.tasks_by_id.items()
-            if task.release_state in {"ready", "released"} and task.dependency != "forecast_only"
+            if task.release_state == "ready" and task.dependency != "forecast_only"
         )
     )
 

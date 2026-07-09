@@ -7,6 +7,8 @@ from rs.runtime.online.megatron_ep.async_release import (
     apply_event,
     build_shadow_plan_from_matrices,
     decide_next_action,
+    mark_task_completed,
+    mark_task_released,
     ready_task_ids,
     register_shadow_plan,
     validate_async_release_state,
@@ -61,7 +63,51 @@ def test_async_release_ready_task_ids_only_return_ready_p0() -> None:
         ),
     )
     assert ready_task_ids(state) == ("P0:0->1",)
-    assert decide_next_action(state).action == "release_ready_tasks"
+    state = mark_task_released(state, "P0:0->1")
+    assert ready_task_ids(state) == ()
+    assert decide_next_action(state).action == "prepare_shadow_plan"
+
+
+def test_async_release_blocked_p1_cannot_release_directly() -> None:
+    state = AsyncReleaseState(window_key=_window_key())
+    state = register_shadow_plan(
+        state,
+        build_shadow_plan_from_matrices(
+            window_key=_window_key(),
+            policy_name="routersense_async_shadow",
+            created_at_event="evt0",
+            applies_to_layer_id="8",
+            p0_dispatch_matrix=((0, 32), (0, 0)),
+            p1_return_matrix=((0, 8), (0, 0)),
+            p2_next_dispatch_forecast_matrix=((0, 0), (0, 0)),
+            forecast_digest="fd0",
+        ),
+    )
+    state_after = mark_task_released(state, "P1:0->1")
+    assert state_after.tasks_by_id["P1:0->1"].release_state == "blocked"
+
+
+def test_async_release_normal_ready_release_complete_path_validates() -> None:
+    state = AsyncReleaseState(window_key=_window_key())
+    state = register_shadow_plan(
+        state,
+        build_shadow_plan_from_matrices(
+            window_key=_window_key(),
+            policy_name="routersense_async_shadow",
+            created_at_event="evt0",
+            applies_to_layer_id="8",
+            p0_dispatch_matrix=((0, 32), (0, 0)),
+            p1_return_matrix=((0, 0), (0, 0)),
+            p2_next_dispatch_forecast_matrix=((0, 0), (0, 0)),
+            forecast_digest="fd0",
+        ),
+    )
+    state = mark_task_released(state, "P0:0->1")
+    assert state.tasks_by_id["P0:0->1"].release_state == "released"
+    state = mark_task_completed(state, "P0:0->1")
+    assert state.tasks_by_id["P0:0->1"].release_state == "completed"
+    result = validate_async_release_state(state)
+    assert result["valid"] is True
 
 
 def test_async_release_validation_rejects_p1_complete_before_p0_complete() -> None:

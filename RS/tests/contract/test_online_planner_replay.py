@@ -12,6 +12,8 @@ from rs.scheduling.phase_execution_utils import materialize_local_execution_plan
 from rs.scheduling.registry import resolve_phase_policy
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_phase_ready_context_roundtrip_from_agreement_payload() -> None:
     ctx = make_contexts_from_matrix(
@@ -148,8 +150,8 @@ def test_replay_online_planner_runs_from_phase_context_artifacts(tmp_path: Path)
             str(output_path),
         ],
         check=True,
-        cwd="/root/autodl-tmp/RouterSense/RS",
-        env={**os.environ, "PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))

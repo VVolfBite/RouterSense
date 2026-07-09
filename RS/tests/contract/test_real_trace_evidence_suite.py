@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = "/root/autodl-tmp/RouterSense/RS"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
@@ -94,8 +94,8 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
             str(output_dir),
         ],
         check=True,
-        cwd=REPO_ROOT,
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     phase_sync = json.loads((output_dir / "phase_sync_compatible_summary.json").read_text(encoding="utf-8"))
     execution_window = json.loads((output_dir / "execution_window_joint_summary.json").read_text(encoding="utf-8"))

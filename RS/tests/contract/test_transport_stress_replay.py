@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = "/root/autodl-tmp/RouterSense/RS"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_transport_stress_replay_cli(tmp_path: Path) -> None:
@@ -94,8 +94,8 @@ def test_transport_stress_replay_cli(tmp_path: Path) -> None:
             str(output_dir),
         ],
         check=True,
-        cwd=REPO_ROOT,
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     summary = json.loads((output_dir / "transport_stress_replay_summary.json").read_text(encoding="utf-8"))
     assert "phase_sync_transport" in summary

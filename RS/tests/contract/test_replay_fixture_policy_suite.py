@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = "/root/autodl-tmp/RouterSense/RS"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_replay_fixture_policy_suite_cli(tmp_path: Path) -> None:
@@ -91,8 +91,8 @@ def test_replay_fixture_policy_suite_cli(tmp_path: Path) -> None:
             str(summary_md_path),
         ],
         check=True,
-        cwd=REPO_ROOT,
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["table_a"]["mode"] == "runtime_lookahead"

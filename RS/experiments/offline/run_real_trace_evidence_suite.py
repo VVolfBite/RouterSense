@@ -117,7 +117,7 @@ def _render_md(payload: dict[str, Any]) -> str:
             "- 当前 phase_sync online 是真实可执行的保守线。",
             "- current RouterSense hint policy 不是 full joint execution-window scheduler。",
             "- async_release 目前只有 shadow-only skeleton，还没有 executor integration。",
-            "- global P2 matrix 仍未修；当前 p2_matrix_source 问题依旧存在。",
+            "- prepared-plan 的 P2 矩阵在真实分布式 EP group 可用时已经可以来自 gathered_global_matrix；但这只是修正全局矩阵来源，不等于真实 next-layer predictor 已经接入。",
             "- 下一步需要 transport-stress / EP replay 或 async_release executor integration，才能把 offline joint 空间转换成在线系统收益。",
         ]
     )

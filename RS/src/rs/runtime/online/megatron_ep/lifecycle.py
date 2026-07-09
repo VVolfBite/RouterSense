@@ -768,6 +768,9 @@ class RouterSenseInjectionRuntime:
             matrix_bundle.p2_matrix_is_replicated_local_row
         )
         self._prepared_plan_state["p2_matrix_shape"] = list(matrix_bundle.shape)
+        self._prepared_plan_state["p2_matrix_gather_time_us"] = float(matrix_bundle.gather_time_us)
+        self._prepared_plan_state["p2_matrix_gather_status"] = str(matrix_bundle.gather_status)
+        self._prepared_plan_state["p2_matrix_gather_call_count"] = int(matrix_bundle.gather_call_count)
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         cache_build_start_ns = time.monotonic_ns()
         _, _, cache_build_time_us = get_or_build_prepared_priority_cache(
@@ -796,6 +799,9 @@ class RouterSenseInjectionRuntime:
             logical_build_time_us=max(0.0, float(build_end_ns - build_start_ns) / 1000.0),
             prepared_priority_cache_build_time_us=float(cache_build_time_us),
             prepared_priority_cache_total_time_us=(cache_build_end_ns - cache_build_start_ns) / 1000.0,
+            p2_matrix_gather_time_us=float(matrix_bundle.gather_time_us),
+            p2_matrix_gather_status=str(matrix_bundle.gather_status),
+            p2_matrix_gather_call_count=int(matrix_bundle.gather_call_count),
         )
 
     def _record_pending_window_driver(
@@ -1716,6 +1722,9 @@ class RouterSenseInjectionRuntime:
             "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
             "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
             "p2_matrix_shape": list(self._prepared_plan_state.get("p2_matrix_shape", []) or []),
+            "p2_matrix_gather_time_us": float(self._prepared_plan_state.get("p2_matrix_gather_time_us", 0.0) or 0.0),
+            "p2_matrix_gather_status": str(self._prepared_plan_state.get("p2_matrix_gather_status", "")),
+            "p2_matrix_gather_call_count": int(self._prepared_plan_state.get("p2_matrix_gather_call_count", 0) or 0),
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

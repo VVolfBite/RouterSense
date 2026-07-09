@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import torch.distributed as dist
@@ -21,6 +22,9 @@ class PreparedPlanMatrixBundle:
     col_sums: tuple[int, ...]
     total_bytes: int
     shape: tuple[int, int]
+    gather_time_us: float
+    gather_status: str
+    gather_call_count: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +37,9 @@ class PreparedPlanMatrixBundle:
             "col_sums": list(self.col_sums),
             "total_bytes": self.total_bytes,
             "shape": list(self.shape),
+            "gather_time_us": self.gather_time_us,
+            "gather_status": self.gather_status,
+            "gather_call_count": self.gather_call_count,
         }
 
 
@@ -54,6 +61,7 @@ def build_prepared_plan_matrices(
         if observation_p0 is not None
         else local_p1
     )
+    gather_start_ns = time.monotonic_ns()
     gathered_p1 = _gather_rows(
         local_row=local_p1,
         rank=rank,
@@ -66,18 +74,30 @@ def build_prepared_plan_matrices(
         ep_group_ranks=ep_group_ranks,
         ep_process_group=ep_process_group,
     )
+    gather_end_ns = time.monotonic_ns()
+    gather_time_us = max(0.0, float(gather_end_ns - gather_start_ns) / 1000.0)
+    gather_call_count = 2
     if gathered_p1 is not None and gathered_p0 is not None:
         forecast_matrix = gathered_p1
         dispatch_matrix = gathered_p0
         p1_return_matrix = gathered_p1
         source = "gathered_global_matrix"
         replicated = False
+        gather_status = "ok"
     else:
         forecast_matrix = _replicate_local_row(local_p1)
         dispatch_matrix = _replicate_local_row(local_p0)
         p1_return_matrix = forecast_matrix
         source = "replicated_local_row"
         replicated = True
+        if not ep_group_ranks or len(ep_group_ranks) != len(local_p1):
+            gather_status = "skipped_ep_group_size_mismatch"
+        elif not dist.is_available():
+            gather_status = "skipped_dist_unavailable"
+        elif not dist.is_initialized():
+            gather_status = "skipped_dist_uninitialized"
+        else:
+            gather_status = "fallback_after_gather_failure"
     row_sums = tuple(int(sum(row)) for row in forecast_matrix)
     col_sums = tuple(
         int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(num_peers)))
@@ -94,6 +114,9 @@ def build_prepared_plan_matrices(
         col_sums=col_sums,
         total_bytes=total_bytes,
         shape=(num_peers, num_peers),
+        gather_time_us=gather_time_us,
+        gather_status=gather_status,
+        gather_call_count=gather_call_count,
     )
 
 

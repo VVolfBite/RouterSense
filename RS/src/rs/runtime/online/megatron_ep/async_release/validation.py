@@ -34,11 +34,6 @@ def validate_async_release_state(
     errors: list[str] = []
     warnings: list[str] = []
     seen_task_ids: set[str] = set()
-    release_events = {
-        (int(event.rank), str(event.phase))
-        for event in state.seen_events
-        if str(event.event_type).endswith("_released")
-    }
     for task_id, task in state.tasks_by_id.items():
         if task_id in seen_task_ids:
             errors.append(f"duplicate task_id in state: {task_id}")
@@ -47,12 +42,12 @@ def validate_async_release_state(
             errors.append(f"non-forecast task must have positive byte_count: {task_id}")
         if task.release_state == "completed" and task.dependency == "forecast_only":
             errors.append(f"forecast_only task cannot complete: {task_id}")
-        if task.release_state == "completed" and state.seen_events and (int(task.src_rank), str(task.phase)) not in release_events:
-            errors.append(f"task completed without matching release event: {task_id}")
         if task.release_state == "completed" and task.phase == "P1":
             completed_p0_ranks = set(state.completed_ranks_by_phase.get("P0", ()))
             if int(task.src_rank) not in completed_p0_ranks:
                 errors.append(f"P1 task completed before P0 completion: {task_id}")
+        if task.release_state == "released" and task.dependency == "forecast_only":
+            errors.append(f"forecast_only task cannot be released: {task_id}")
     for plan in state.shadow_plans:
         result = validate_shadow_plan(plan)
         errors.extend(result["errors"])

@@ -11,6 +11,8 @@ from experiments.offline.build_replay_fixture_from_control_trace import (
 )
 from experiments.offline.replay_online_control_trace import read_jsonl, summarize_control_replay_trace
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_summarize_control_replay_trace() -> None:
     rows = [
@@ -68,6 +70,8 @@ def test_summarize_control_replay_trace() -> None:
     assert summary["max_total_byte_count"] == 2048
     assert summary["per_policy"]["routersense_p0p1p2_hint"]["phase_count"] == 2
     assert summary["per_phase"]["P0"]["wave_count"] == 3
+    assert summary["trace_file_count"] == 1
+    assert summary["rank_count"] == 1
 
 
 def test_replay_online_control_trace_cli(tmp_path: Path) -> None:
@@ -95,12 +99,87 @@ def test_replay_online_control_trace_cli(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
-        cwd="/root/autodl-tmp/RouterSense/RS",
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     payload = json.loads(completed.stdout)
     assert payload["total_phase_count"] == 1
     assert payload["per_policy"]["birkhoff_phase_local"]["summary_elements"] == 4
+    assert payload["trace_file_count"] == 1
+    assert payload["rank_count"] == 1
+
+
+def test_replay_online_control_trace_cli_supports_trace_dir_and_output(tmp_path: Path) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    rank0 = trace_dir / "rank0_control_replay_trace.jsonl"
+    rank1 = trace_dir / "rank1_control_replay_trace.jsonl"
+    rank0.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "global_rank": 0,
+                        "layer_id": "0",
+                        "phase": "P0",
+                        "policy_name": "birkhoff_phase_local",
+                        "abstract_plan_summary": {"wave_count": 1, "task_ref_count": 2},
+                        "transport_summary": {
+                            "planning_summary_tensor_len": 4,
+                            "abstract_plan_tensor_len": 5,
+                            "bucket_count": 2,
+                            "total_byte_count": 128,
+                        },
+                    }
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rank1.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "global_rank": 1,
+                        "layer_id": "0",
+                        "phase": "P1",
+                        "policy_name": "birkhoff_phase_local",
+                        "abstract_plan_summary": {"wave_count": 2, "task_ref_count": 4},
+                        "transport_summary": {
+                            "planning_summary_tensor_len": 6,
+                            "abstract_plan_tensor_len": 7,
+                            "bucket_count": 3,
+                            "total_byte_count": 256,
+                        },
+                    }
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "summary.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "experiments.offline.replay_online_control_trace",
+            "--trace-dir",
+            str(trace_dir),
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+    )
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["trace_file_count"] == 2
+    assert payload["rank_count"] == 2
+    assert payload["rows_per_rank"] == {"0": 1, "1": 1}
+    assert payload["unique_layer_phase_count"] == 2
+    assert payload["per_rank"]["0"]["summary_elements"] == 4
+    assert payload["per_rank"]["1"]["summary_elements"] == 6
 
 
 def test_build_replay_fixture_bundle_from_rank_rows() -> None:
@@ -270,8 +349,8 @@ def test_build_replay_fixture_cli(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
-        cwd="/root/autodl-tmp/RouterSense/RS",
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     payload = json.loads(completed.stdout)
     assert payload["fixture_count"] == 1
@@ -351,8 +430,8 @@ def test_build_replay_fixture_cli_from_phase_context_fallback(tmp_path: Path) ->
         check=True,
         capture_output=True,
         text=True,
-        cwd="/root/autodl-tmp/RouterSense/RS",
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
     payload = json.loads(completed.stdout)
     assert payload["source_kind"] == "phase_context_fallback"

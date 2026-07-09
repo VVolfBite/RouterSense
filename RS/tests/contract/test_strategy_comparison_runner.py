@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 
-REPO_ROOT = "/root/autodl-tmp/RouterSense/RS"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_dry(config_path: Path, output_dir: Path) -> None:
@@ -25,8 +25,8 @@ def _run_dry(config_path: Path, output_dir: Path) -> None:
             "--dry-run",
         ],
         check=True,
-        cwd=REPO_ROOT,
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
     )
 
 
@@ -237,8 +237,8 @@ def test_async_release_public_runtime_line_fails_cleanly(tmp_path: Path) -> None
             str(output_dir),
             "--dry-run",
         ],
-        cwd=REPO_ROOT,
-        env={"PYTHONPATH": "src"},
+        cwd=str(REPO_ROOT),
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
         capture_output=True,
         text=True,
         check=False,
