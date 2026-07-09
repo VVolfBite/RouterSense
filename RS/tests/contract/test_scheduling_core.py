@@ -222,6 +222,15 @@ def test_routersense_forecast_is_advisory_only() -> None:
     assert plan.diagnostics["p2_forecast_used"] is True
 
 
+def test_routersense_fluid_segments_use_unique_schedule_ids() -> None:
+    problem = _load_problem("p2_lookahead_sensitive_4rank")
+    plan = resolve_policy(policy_name="routersense_multiphase_lookahead:p0_p1_p2", bucket_rows=16).build_logical_plan(problem)
+    flow_ids = [flow.flow_id for wave in plan.waves for flow in wave.flows]
+    assert len(flow_ids) == len(set(flow_ids))
+    origins = [flow.dependency_metadata.get("origin_flow_id") for wave in plan.waves for flow in wave.flows]
+    assert any(origins.count(origin) > 1 for origin in origins if origin is not None)
+
+
 def test_native_passthrough_has_no_logical_plan() -> None:
     problem = _load_problem("phase_barrier_4rank")
     policy = resolve_policy(policy_name="native_passthrough", bucket_rows=16)

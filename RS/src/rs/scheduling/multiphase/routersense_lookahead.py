@@ -43,13 +43,22 @@ def _scheduler_result_to_logical_plan(
         for item in rows:
             phase_id = int(item["phase"])
             phase = "p0_dispatch" if phase_id == 0 else "p1_return" if phase_id == 1 else "p2_next_dispatch_forecast"
+            origin_flow_id = str(item.get("flow_id", f"phase{phase_id}_src{item['src_gpu']}_dst{item['dst_gpu']}"))
+            segment_id = str(item.get("chunk_id", f"{origin_flow_id}_wave{wave_id}"))
             flows.append(
                 {
-                    "flow_id": str(item["flow_id"]),
+                    "flow_id": segment_id,
+                    "origin_flow_id": origin_flow_id,
                     "phase": phase,
                     "src_rank": int(item["src_gpu"]),
                     "dst_rank": int(item["dst_gpu"]),
                     "byte_count": int(round(float(item["served_volume"]))),
+                    "served_volume": float(item.get("served_volume", 0.0)),
+                    "residual_before": float(item.get("residual_before", item.get("served_volume", 0.0))),
+                    "residual_after": float(item.get("residual_after", 0.0)),
+                    "start": float(item.get("start", 0.0)),
+                    "end": float(item.get("end", 0.0)),
+                    "wave_id": int(item.get("wave_id", wave_id)),
                 }
             )
         logical_flows = tuple(
@@ -61,6 +70,17 @@ def _scheduler_result_to_logical_plan(
                 byte_count=row["byte_count"],
                 release_state="ready",
                 is_executable=row["phase"] != "p2_next_dispatch_forecast",
+                dependency_metadata={
+                    "origin_flow_id": row["origin_flow_id"],
+                    "segment_id": row["flow_id"],
+                    "service_model": "fluid_wave",
+                    "served_volume": row["served_volume"],
+                    "residual_before": row["residual_before"],
+                    "residual_after": row["residual_after"],
+                    "start": row["start"],
+                    "end": row["end"],
+                    "wave_id": row["wave_id"],
+                },
             )
             for row in flows
         )
@@ -76,6 +96,8 @@ def _scheduler_result_to_logical_plan(
                         "src_rank": row["src_rank"],
                         "dst_rank": row["dst_rank"],
                         "byte_count": row["byte_count"],
+                        "origin_flow_id": row["origin_flow_id"],
+                        "segment_id": row["flow_id"],
                     }
                     for row in flows
                 ),
@@ -123,6 +145,32 @@ def _scheduler_result_to_logical_plan(
             "solve_time_ms": result["solve_time_ms"],
             "audit": result["audit"],
             "raw_schedule": result["schedule"],
+            "service_model": "fluid_wave",
+            "future_information_mode": (
+                "oracle_execution_window"
+                if problem.options.scheduling_mode == "execution_window"
+                else "heuristic_runtime_lookahead"
+                if information_mode == "p0_p1_p2"
+                and problem.forecast is not None
+                and problem.forecast.source == "copy_current_dispatch"
+                and problem.options.prediction_confidence > 0.0
+                else "oracle_predicted_runtime_lookahead"
+                if information_mode == "p0_p1_p2"
+                and problem.forecast is not None
+                and bool(problem.forecast.oracle)
+                and problem.options.prediction_confidence > 0.0
+                else "none"
+            ),
+            "evaluation_eligible": (
+                False
+                if problem.options.scheduling_mode == "execution_window"
+                else False
+                if information_mode == "p0_p1_p2"
+                and problem.forecast is not None
+                and bool(problem.forecast.oracle)
+                and problem.options.prediction_confidence > 0.0
+                else bool(capabilities.evaluation_eligible)
+            ),
         },
     )
 
