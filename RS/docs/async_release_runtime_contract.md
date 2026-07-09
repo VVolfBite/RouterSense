@@ -11,6 +11,8 @@
   - shadow-only contract / state machine
   - validation
   - CPU executable simulator
+  - `AsyncReleaseExecutionPlan`
+  - `AsyncReleasePlanBuilder`
 
 ## 当前可表达的语义
 
@@ -41,6 +43,13 @@
 - CPU simulation:
   - `simulator.py`
   - `experiments/offline/run_async_release_simulation.py`
+- CPU/runtime skeleton:
+  - `plan_builder.py`
+  - debug artifact fields:
+    - `priority_artifact_digest`
+    - `fallback_to_phase_sync`
+    - `online_executor_eligible`
+    - `debug_replay_only`
 
 ## 与论文三条贡献的关系
 
@@ -51,3 +60,15 @@
 - Claim 3：
   - 当前 phase_sync 已是真实可执行 runtime；
   - async_release simulator 是下一步 executor integration 前的必要中间层，不应夸大为已完成 GPU runtime。
+
+## 当前 GPU 前检查项
+
+下一轮如果要开卡验证 async-release 相关路径，至少要先收集：
+
+- `rank*_priority_artifact.json`
+- `rank*_async_release_plan.json`
+- `rank*_async_release_validation.json`
+- 是否 `fallback_to_phase_sync=true`
+- 是否 `online_executor_eligible=false`
+
+只有当这些 debug artifact 稳定后，才值得继续做真实 executor integration。

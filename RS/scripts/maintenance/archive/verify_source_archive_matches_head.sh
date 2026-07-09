@@ -30,4 +30,15 @@ if grep -Eq 'deploy/inventory/.*\.(local|current)\.yaml$' <<<"$listing"; then
   exit 1
 fi
 
+required_paths=(
+  "RS/src/rs/scheduling/multiphase/safe_joint.py"
+  "RS/src/rs/scheduling/online_adapters/priority_artifact.py"
+)
+for required_path in "${required_paths[@]}"; do
+  if ! grep -Fxq "$required_path" <<<"$listing"; then
+    echo "archive missing required tracked file: $required_path" >&2
+    exit 1
+  fi
+done
+
 echo "VERIFY_OK scope=$scope commit=$expected_commit"

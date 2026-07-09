@@ -31,6 +31,9 @@ These policies are recovered offline logical schedulers. They are not online pha
 | `U_gated_maxweight_matching_atomic` | atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
 | `U_barrier_criticality_global_matching_atomic` | atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
 | `U_lagrangian` | Lagrangian atomic chunk | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no | depends on mode/source |
+| `RS_safe_gated_greedy` | safe joint meta-policy | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no (offline/shadow only) | yes |
+| `RS_safe_barrier_criticality` | safe joint meta-policy | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no (offline/shadow only) | yes |
+| `RS_safe_gated_maxweight` | safe joint meta-policy | `none`, `heuristic_runtime_lookahead`, `oracle_execution_window`, `oracle_predicted_runtime_lookahead` | no (offline/shadow only) | yes |
 
 Tier 1 comparisons must be separated by service model:
 
@@ -40,11 +43,14 @@ Tier 1 comparisons must be separated by service model:
 
 Current pre-evaluation mainline recommendation:
 
-- Default Tier 1 CPU comparison uses wave/fluid-track policies only:
-  - `B_birkhoff_wave`
-  - `U_gated_maxweight_matching`
+- Default Tier 1 CPU comparison should focus on:
+  - `B_barrier_criticality_matching`
   - `U_barrier_criticality_global_matching`
-  - `U_lagrangian`
+  - `RS_safe_barrier_criticality`
+  - `B_gated_greedy_maximal`
+  - `U_gated_greedy_maximal`
+  - `RS_safe_gated_greedy`
+- `U_gated_maxweight_matching`, `U_barrier_price_adaptive_matching`, `U_lagrangian` remain important diagnostics, but are not current primary paper mainline.
 - Atomic policies remain available for diagnostics and historical recovery checks, but are not part of the default main comparison.
 
 `runtime_lookahead` suppresses real P2 transport. P2 can only influence forecast pressure and diagnostics. `zero_hint` maps to `future_information_mode=none`; `copy_current_dispatch` maps to `heuristic_runtime_lookahead`; `perfect_trace` maps to `oracle_predicted_runtime_lookahead`.
@@ -61,6 +67,14 @@ Current pre-evaluation mainline recommendation:
 | `perfect_trace` | yes | no | runtime-lookahead oracle predicted pressure, or compatibility name for execution-window actual P2 |
 | `actual_trace` | yes | no | execution-window actual P2 traffic only |
 | `calibrated_artifact` | no for online PreparedWindowPlan hints; n/a for offline predictor artifacts | yes for online PreparedWindowPlan hints; no for unsupported offline predictor artifact | Online runtime consumes prior-layer PreparedWindowPlan hints. Offline calibrated predictor artifact remains fail-closed. |
+
+## Current interpretation
+
+- `routersense_p0p1p2_hint` is a legacy/early online adapter, not the final RouterSense theory line.
+- `U_*` are raw joint heuristics.
+- `RS_safe_*` are the current RouterSense mainline candidates because they guard raw U against paired-B regression.
+- `birkhoff_von_neumann_fluid` is the formal `O_local_phase_oracle`.
+- `B_birkhoff` / `birkhoff_phase_local` are strong engineering baselines, not the formal fluid oracle object itself.
 
 ## Online correctness suite
 

@@ -29,6 +29,11 @@
 - async_release shadow-only skeleton
 - async_release CPU executable simulator
 - transport-stress / EP replay offline 入口
+- safe-U closure:
+  - `RS_safe_barrier_criticality`
+  - `RS_safe_gated_greedy`
+  - `RS_safe_gated_maxweight`
+  - `RS_safe_barrier_price`
 - tensorized global dispatch-matrix gather for phase_sync prediction/prepared-plan bookkeeping
 - runtime bridge candidates:
   - `routersense_joint_priority_phase_sync`
@@ -52,6 +57,10 @@
 - `async_release` 当前只有 shadow-only skeleton，还没有 executor integration
 - 当前 online prepared-plan 应优先消费 `predicted_next_dispatch`；
   dispatch matrix 的全局构造方式必须是 tensorized gather，不能再走 Python object collective
+- 当前真实 fixture CPU 主线结论应先看：
+  - `outputs/offline/m6h_safe_u_closure/replay_suite_summary.json`
+  - `outputs/offline/m6k_cpu_closure/prediction_replay_summary.json`
+  - `outputs/offline/m6k_cpu_closure/oracle_gap_summary.json`
 
 ## 2. Offline / replay mainline
 
@@ -69,9 +78,9 @@
 - 汇总 control-plane object scale
 - 从 replay trace 构建 offline fixture + audit summary
 - 跑三类证据表：
-  - phase-sync-compatible
-  - execution-window joint upper bound
-  - prediction / oracle-predict
+  - runtime-lookahead paired B / raw U / safe U
+  - execution-window paired B / raw U / safe U
+  - prediction replay / oracle-predict
 - 把真实 fixture 进一步压成 communication-only transport-stress replay
 
 当前限制：
@@ -89,7 +98,10 @@
 解释：
 
 - `birkhoff_phase_local` 是当前 online 可执行的强 phase-local baseline
-- `routersense_p0p1p2_hint` 是当前 prediction-aware runtime policy
+- `routersense_p0p1p2_hint` 是早期 runtime adapter，不再代表最终 RouterSense 主线
+- 当前 offline 主线 safe-U：
+  - `RS_safe_barrier_criticality`
+  - `RS_safe_gated_greedy`
 - `B_birkhoff_wave` / `U_*` 属于 offline joint scheduling evidence，不应塞回 online perf hot path
 
 ## 4. 当前推荐配置与入口
@@ -135,13 +147,14 @@ Offline / replay：
 ## 6. 推荐下一步顺序
 
 1. 基于 real trace evidence suite 先区分：
-   - 当前 phase_sync-compatible 结果
-   - execution-window joint upper bound
-   - prediction / oracle-predict 空间
-2. 基于 transport-stress / EP replay 评估 communication-only 空间
-3. 接真实 online predictor，而不是只靠 copy-current / gathered current-dispatch heuristic
-4. 用 real trace / transport-stress 验证 bridge candidate 是否开始逼近或超过 `birkhoff_phase_local`
-5. 再决定是否推进 async_release executor integration
+   - 当前 runtime-lookahead paired safe-U 结果
+   - execution-window paired safe-U / raw U 结果
+   - prediction replay 是否真能让 safe-U 受益
+2. 基于 transport-stress / EP replay 评估 communication-only 空间，但不要把 stress 当主论文结论
+3. 开 GPU 时优先验证：
+   - `RS_safe_barrier_criticality` vs `birkhoff_phase_local`
+   - prediction timing / layer interval / prepared-plan overlap
+4. 如果 GPU 结果显示 phase_sync safe-U 仍弱，再推进 async_release executor integration
 
 ## 7. Repository rule
 

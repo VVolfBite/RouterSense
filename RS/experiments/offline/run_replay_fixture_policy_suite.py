@@ -664,6 +664,13 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Paired safe-U mainline",
+            "",
+            f"- main_safe_u_family: `{payload.get('main_safe_u_family')}`",
+            f"- main_safe_u_policy: `{payload.get('main_safe_u_policy')}`",
+            f"- main_safe_u_improvement_pct: {payload.get('main_safe_u_improvement_pct')}",
+            f"- main_raw_u_policy: `{payload.get('main_raw_u_policy')}`",
+            "",
             "当前 `birkhoff_phase_local` 仍然是这组真实自然 trace 上的强 baseline。",
             "当前 `routersense_multiphase_lookahead:p0_p1_p2` 在这组 runtime_lookahead replay 上没有赢过 `birkhoff_phase_local`。",
             "",
@@ -686,6 +693,8 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
             "",
             "在 execution_window 语义下，`U_gated_maxweight_matching` 和 `U_barrier_criticality_global_matching` 都优于 `B_birkhoff_wave`。",
             "这说明多 phase joint scheduling 的空间在真实 trace 上仍然存在。",
+            f"当前 execution-window best U: `{payload.get('execution_window_best_u')}` "
+            f"({payload.get('execution_window_u_vs_b_birkhoff_wave_pct')}% vs `B_birkhoff_wave`).",
             "",
             "## Interpretation for paper",
             "",
@@ -736,14 +745,37 @@ def main() -> None:
         fixture_dir=fixture_dir,
         expert_compute_delay=0.0,
     )
+    paired_rows = list(paired.get("summary", []))
+    safe_ready_rows = [row for row in paired_rows if row.get("safe_U_vs_B_improvement_pct") is not None]
+    best_safe = max(safe_ready_rows, key=lambda row: float(row["safe_U_vs_B_improvement_pct"])) if safe_ready_rows else None
+    raw_ready_rows = [row for row in paired_rows if row.get("raw_U_vs_B_improvement_pct") is not None]
+    best_raw = max(raw_ready_rows, key=lambda row: float(row["raw_U_vs_B_improvement_pct"])) if raw_ready_rows else None
+    execution_window_rows = [row for row in table_b.get("summary", []) if row.get("relative_to_B_birkhoff_wave") is not None]
+    best_exec_u = min(execution_window_rows, key=lambda row: float(row["relative_to_B_birkhoff_wave"])) if execution_window_rows else None
+    oracle_table = build_oracle_table()
     payload = {
         "fixture_dir": str(fixture_dir),
         "audit_summary_path": str(audit_path),
+        "main_safe_u_family": None if best_safe is None else best_safe["heuristic_family"],
+        "main_safe_u_policy": None if best_safe is None else best_safe["safe_U_algorithm"],
+        "main_safe_u_improvement_pct": None if best_safe is None else best_safe["safe_U_vs_B_improvement_pct"],
+        "main_raw_u_policy": None if best_raw is None else best_raw["raw_U_algorithm"],
+        "execution_window_best_u": None if best_exec_u is None else best_exec_u["policy_name"],
+        "execution_window_u_vs_b_birkhoff_wave_pct": None if best_exec_u is None else float(-100.0 * float(best_exec_u["relative_to_B_birkhoff_wave"])),
+        "O_local_definition": "birkhoff_von_neumann_fluid",
+        "O_joint_definition": "exact_small_instance_reference_small_fixture + legacy pairwise_oracle reference",
+        "O_joint_real_fixture_status": "proxy_only",
+        "oracle_gap_small_fixture_summary": {
+            "available_via": "experiments.offline.run_oracle_gap_replay",
+            "formal_O_local": "birkhoff_von_neumann_fluid",
+            "formal_O_joint_small": "exact_small_instance_reference",
+        },
         "table_a": table_a,
         "table_b": table_b,
         "table_c": table_c,
         "table_d": table_d,
         "paired_b_vs_u": paired,
+        "oracle_table": oracle_table,
     }
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(_render_md(payload, audit_summary), encoding="utf-8")

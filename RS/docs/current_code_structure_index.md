@@ -111,6 +111,27 @@
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
+### `experiments/offline/run_prediction_replay_suite.py`
+
+- 负责什么：把预测矩阵真正灌入下一层 replay，比较 `zero/copy/fate/oracle` 对 safe-U 的影响
+- 不负责什么：真实 online predictor 部署、GPU timing
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
+### `experiments/offline/run_oracle_gap_replay.py`
+
+- 负责什么：在 small fixture 上给出 `O_local` / `O_joint` / B / raw U / safe U 的 gap 参考
+- 不负责什么：真实大 fixture exact oracle
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
+### `experiments/offline/estimate_planning_hiding_window.py`
+
+- 负责什么：基于 offline summary 估算 prediction/planning 是否可能被 layer interval 隐藏
+- 不负责什么：真实 GPU per-layer timing 证明
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
 ### `experiments/offline/run_transport_stress_replay.py`
 
 - 负责什么：把真实 replay fixture 重放成 communication-only transport-stress 报告
@@ -158,17 +179,20 @@
 - `routersense_p0p1p2_hint` 是当前 prediction-aware runtime policy
 - `routersense_joint_priority_phase_sync` 是把 offline joint idea 压成 phase_sync 可执行顺序的 bridge candidate
 - `B_birkhoff_wave` / `U_*` 属于 offline 或 theoretical upper bound
+- 当前 safe-U 主线是：
+  - `RS_safe_barrier_criticality`
+  - `RS_safe_gated_greedy`
 - 不应该把 offline oracle / heavy joint scheduler 塞回 online perf hot path
 
 ## 当前论文证据入口
 
 - Claim 1：multi-phase joint scheduling space
   - `experiments/offline/run_real_trace_evidence_suite.py`
-  - 表 B：`B_birkhoff_wave` vs `U_*`
+  - 表 B：paired `B` / raw `U` / safe `U`
 - Claim 2：cross-layer prediction value
-  - `experiments/offline/run_real_trace_evidence_suite.py`
-  - 表 C：`zero_hint` / `copy_current_dispatch` / `perfect_trace_oracle` / `actual_trace_oracle`
+  - `experiments/offline/run_prediction_replay_suite.py`
+  - 表 C：`zero_hint` / `copy_current_dispatch` / `fate_style_*` / `perfect_trace` / `actual_trace`
 - Claim 3：real reproducible online runtime
   - `runtime.line=phase_sync`
   - replay trace + audit
-  - `async_release` 当前只有 skeleton
+  - `async_release` 当前有 simulator + plan builder，但还没有真实 GPU executor

@@ -29,6 +29,22 @@ AsyncDecisionAction = Literal["hold", "release_ready_tasks", "prepare_shadow_pla
 
 
 @dataclass(frozen=True)
+class AsyncReleaseExecutionPlan:
+    plan_id: str
+    source_safe_policy: str
+    priority_artifact_digest: str
+    phase_tasks: tuple[dict[str, Any], ...]
+    dependency_edges: tuple[tuple[str, str], ...]
+    release_conditions: dict[str, dict[str, Any]]
+    fallback_to_phase_sync: bool
+    online_executor_eligible: bool
+    debug_replay_only: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class AsyncReleaseWindowKey:
     run_id_digest: str
     layer_id: str

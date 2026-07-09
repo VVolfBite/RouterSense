@@ -145,13 +145,36 @@ predictor 的职责不是：
 
 - 贡献 2：
   - 用 `zero_hint` / `copy_current_dispatch` / `fate_style_*` / `perfect_trace` 比较预测价值
-  - 当前代码入口：
+- 当前代码入口：
     - `src/rs/runtime/offline/prediction/`
     - `experiments/offline/train_fate_style_predictor.py`
     - `experiments/offline/evaluate_fate_style_predictor.py`
     - `experiments/offline/analyze_prediction_audit.py`
+    - `experiments/offline/run_prediction_replay_suite.py`
 
 - 贡献 3：
   - 在真实 online runtime 中，把 predictor 输出接成 prepared / shadow plan 输入
   - 当前 mainline 已有 tensorized dispatch gather 和 lightweight `zero_hint` / `copy_current_dispatch` predictor
   - 但真实学习式或更强 predictor 仍未接入
+
+## 当前 CPU/offline 闭环
+
+本轮之后，贡献 2 的 CPU/offline 主线应当是：
+
+1. `train_fate_style_predictor.py`
+   - 训练或拟合 `fate_style_history` / `fate_style_linear`
+2. `evaluate_fate_style_predictor.py`
+   - 输出预测误差指标
+3. `run_prediction_replay_suite.py`
+   - 把 `D_hat_{l+1}` 真正灌入下一层 replay problem
+   - 比较 safe-U 在不同 `p2_source` 下的 makespan
+4. `estimate_planning_hiding_window.py`
+   - 粗估 prediction / planning / artifact build 是否可能被 layer interval 隐藏
+
+如果这些脚本显示：
+
+- predictor 误差下降；
+- predicted replay 比 `zero_hint` 更接近 `perfect_trace`；
+- planning cost 相对 layer interval 很小；
+
+才可以说贡献 2 开始接近成立。
