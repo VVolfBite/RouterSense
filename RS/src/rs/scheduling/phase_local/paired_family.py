@@ -5,20 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from rs.scheduling.contracts import LogicalWave, MultiPhaseSchedulingProblem
+from rs.scheduling.traffic_matrix import matrix_col_sums_remote, matrix_row_sums_remote
 
 from ..capabilities import PolicyCapabilities
 from .common import build_phase_serial_release_aware_plan, flows_from_matrix, include_real_p2_phase
-
-
-def _row_sums(matrix: tuple[tuple[int, ...], ...]) -> list[int]:
-    return [int(sum(int(value) for value in row)) for row in matrix]
-
-
-def _col_sums(matrix: tuple[tuple[int, ...], ...]) -> list[int]:
-    if not matrix:
-        return []
-    width = len(matrix[0])
-    return [int(sum(int(matrix[src][dst]) for src in range(len(matrix)))) for dst in range(width)]
 
 
 class _DerivedPhaseLocalPolicy:
@@ -136,8 +126,8 @@ class BGatedMaxweightMatchingPolicy(_DerivedPhaseLocalPolicy):
     family_note = "derived from U_gated_maxweight_matching without downstream pressure"
 
     def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
-        rows = _row_sums(matrix)
-        cols = _col_sums(matrix)
+        rows = matrix_row_sums_remote(matrix)
+        cols = matrix_col_sums_remote(matrix)
         local_weight = int((rows[src_rank] if src_rank < len(rows) else 0) + (cols[dst_rank] if dst_rank < len(cols) else 0))
         return (float(byte_count + local_weight), float(local_weight), src_rank, dst_rank)
 
@@ -149,8 +139,8 @@ class BBarrierCriticalityMatchingPolicy(_DerivedPhaseLocalPolicy):
     family_note = "derived from U_barrier_criticality_global_matching without cross-phase dependency"
 
     def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
-        rows = _row_sums(matrix)
-        cols = _col_sums(matrix)
+        rows = matrix_row_sums_remote(matrix)
+        cols = matrix_col_sums_remote(matrix)
         barrier_pressure = int((rows[dst_rank] if dst_rank < len(rows) else 0) + (cols[dst_rank] if dst_rank < len(cols) else 0))
         return (float(byte_count + 2 * barrier_pressure), float(barrier_pressure), src_rank, dst_rank)
 
@@ -162,8 +152,8 @@ class BBarrierPriceAdaptiveMatchingPolicy(_DerivedPhaseLocalPolicy):
     family_note = "derived from U_barrier_price_adaptive_matching using only local phase pressure"
 
     def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
-        rows = _row_sums(matrix)
-        cols = _col_sums(matrix)
+        rows = matrix_row_sums_remote(matrix)
+        cols = matrix_col_sums_remote(matrix)
         row_pressure = float(rows[src_rank] if src_rank < len(rows) else 0)
         col_pressure = float(cols[dst_rank] if dst_rank < len(cols) else 0)
         adaptive_price = 0.5 * row_pressure + 0.5 * col_pressure
@@ -177,8 +167,8 @@ class BLagrangianPhaseLocalPolicy(_DerivedPhaseLocalPolicy):
     family_note = "derived from U_lagrangian using local row/column dual-style pressure only"
 
     def _score(self, *, phase: str, src_rank: int, dst_rank: int, byte_count: int, matrix: tuple[tuple[int, ...], ...]) -> tuple[float, float, int, int]:
-        rows = _row_sums(matrix)
-        cols = _col_sums(matrix)
+        rows = matrix_row_sums_remote(matrix)
+        cols = matrix_col_sums_remote(matrix)
         src_dual = float((rows[src_rank] if src_rank < len(rows) else 0) - (cols[src_rank] if src_rank < len(cols) else 0))
         dst_dual = float((cols[dst_rank] if dst_rank < len(cols) else 0) - (rows[dst_rank] if dst_rank < len(rows) else 0))
         dual_term = src_dual + dst_dual

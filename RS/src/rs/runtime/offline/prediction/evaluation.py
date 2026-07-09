@@ -4,6 +4,8 @@ import math
 import statistics
 from typing import Any
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_row_sums_remote
+
 from .contracts import Matrix, PredictorEvaluationRecord, PredictorSample
 from .feature_builder import load_fixture_samples
 from .history_predictor import FATEStyleHistoryPredictor
@@ -15,16 +17,15 @@ def _flatten(matrix: Matrix) -> list[float]:
 
 
 def _row_sums(matrix: Matrix) -> list[float]:
-    return [float(sum(int(value) for value in row)) for row in matrix]
+    return [float(value) for value in matrix_row_sums_remote(matrix)]
 
 
 def _col_sums(matrix: Matrix) -> list[float]:
-    if not matrix:
-        return []
-    return [float(sum(int(matrix[src][dst]) for src in range(len(matrix)))) for dst in range(len(matrix[0]))]
+    return [float(value) for value in matrix_col_sums_remote(matrix)]
 
 
 def compare_prediction(*, predictor_name: str, predictor_version: str, sample: PredictorSample, predicted: Matrix, confidence: float) -> PredictorEvaluationRecord:
+    predicted = canonicalize_remote_matrix(predicted)
     predicted_flat = _flatten(predicted)
     actual_flat = _flatten(sample.target_next_dispatch_matrix)
     abs_l1 = float(sum(abs(left - right) for left, right in zip(predicted_flat, actual_flat, strict=False)))

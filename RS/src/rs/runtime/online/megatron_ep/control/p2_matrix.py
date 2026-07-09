@@ -7,12 +7,13 @@ It must not use Python object collectives in the online hot/control path.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import time
 from typing import Any
 
 import torch
 import torch.distributed as dist
+
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_digest_remote, matrix_nonzero_remote_edge_count, matrix_remote_bytes, matrix_row_sums_remote
 
 
 @dataclass(frozen=True)
@@ -89,11 +90,17 @@ def gather_global_peer_bytes_matrix(
         is_global = True
         gather_call_count = 1
 
+    if matrix.numel() > 0:
+        diag = torch.arange(min(int(matrix.shape[0]), int(matrix.shape[1])), device=matrix.device)
+        matrix = matrix.clone()
+        matrix[diag, diag] = 0
+
     gather_end_ns = time.monotonic_ns()
-    row_sums = tuple(int(value) for value in matrix.sum(dim=1).detach().cpu().tolist())
-    col_sums = tuple(int(value) for value in matrix.sum(dim=0).detach().cpu().tolist())
-    total_bytes = int(sum(row_sums))
-    nonzero_edge_count = int(((matrix > 0) & ~torch.eye(matrix.shape[0], matrix.shape[1], device=matrix.device, dtype=torch.bool)).sum().item())
+    canonical = canonicalize_remote_matrix(matrix.detach().cpu().tolist())
+    row_sums = matrix_row_sums_remote(canonical)
+    col_sums = matrix_col_sums_remote(canonical)
+    total_bytes = matrix_remote_bytes(canonical)
+    nonzero_edge_count = matrix_nonzero_remote_edge_count(canonical)
     metadata = {
         "matrix_source": source,
         "is_global": is_global,
@@ -119,10 +126,7 @@ def build_traffic_matrix_bundle(
 ) -> TrafficMatrixBundle:
     local_tensor = build_local_peer_bytes_tensor(per_peer_bytes, world_size, device)
     matrix_tensor, metadata = gather_global_peer_bytes_matrix(local_tensor, group=group)
-    matrix = tuple(
-        tuple(int(value) for value in row)
-        for row in matrix_tensor.detach().cpu().tolist()
-    )
+    matrix = canonicalize_remote_matrix(matrix_tensor.detach().cpu().tolist())
     return TrafficMatrixBundle(
         matrix=matrix,
         matrix_source=str(metadata["matrix_source"]),
@@ -137,7 +141,7 @@ def build_traffic_matrix_bundle(
         total_bytes=int(metadata["total_bytes"]),
         nonzero_edge_count=int(metadata["nonzero_edge_count"]),
         shape=(int(matrix_tensor.shape[0]), int(matrix_tensor.shape[1])),
-        matrix_digest=_matrix_digest(matrix),
+        matrix_digest=matrix_digest_remote(matrix),
     )
 
 
@@ -162,8 +166,3 @@ def _replicated_local_row(local_peer_bytes: torch.Tensor) -> torch.Tensor:
     diag = torch.arange(world_size, device=local_peer_bytes.device)
     matrix[diag, diag] = 0
     return matrix
-
-
-def _matrix_digest(matrix: tuple[tuple[int, ...], ...]) -> str:
-    payload = "|".join(",".join(str(int(value)) for value in row) for row in matrix)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

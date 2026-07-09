@@ -70,6 +70,10 @@ def summarize_prediction_audits(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_topk_edge_overlap": _mean([float(row.get("topk_edge_overlap", 0.0) or 0.0) for row in rows]),
         "mean_nonzero_precision": _mean([float(row.get("nonzero_edge_precision", 0.0) or 0.0) for row in rows]),
         "mean_nonzero_recall": _mean([float(row.get("nonzero_edge_recall", 0.0) or 0.0) for row in rows]),
+        "mean_predicted_remote_bytes": _mean([float(row.get("predicted_remote_bytes", 0.0) or 0.0) for row in rows]),
+        "mean_actual_remote_bytes": _mean([float(row.get("actual_remote_bytes", 0.0) or 0.0) for row in rows]),
+        "mean_predicted_self_bytes": _mean([float(row.get("predicted_self_bytes", 0.0) or 0.0) for row in rows]),
+        "mean_actual_self_bytes": _mean([float(row.get("actual_self_bytes", 0.0) or 0.0) for row in rows]),
         "per_predictor": {},
         "per_layer": {},
     }

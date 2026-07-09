@@ -13,6 +13,8 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_diagonal_report, matrix_nonzero_remote_edge_count, matrix_remote_bytes
+
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -85,7 +87,7 @@ def _group_rows(rows: list[dict[str, Any]], *, policy_name: str | None) -> dict[
     return grouped
 
 
-def _matrix_from_group(group_rows: list[dict[str, Any]]) -> tuple[list[list[int]], dict[str, Any]]:
+def _matrix_from_group(group_rows: list[dict[str, Any]]) -> tuple[list[list[int]], list[list[int]], dict[str, Any]]:
     if not group_rows:
         raise ValueError("group_rows must not be empty")
     num_gpus = int(group_rows[0].get("ep_group_size", 0))
@@ -98,12 +100,17 @@ def _matrix_from_group(group_rows: list[dict[str, Any]]) -> tuple[list[list[int]
             raise ValueError(f"rank {src_rank} has per_rank_peer_bytes len {len(per_peer)} != ep_group_size {num_gpus}")
         matrix[src_rank] = per_peer
         seen_ranks.add(src_rank)
-    total_bytes = sum(sum(row) for row in matrix)
-    return matrix, {
+    remote_matrix = [list(row) for row in canonicalize_remote_matrix(matrix)]
+    diag = matrix_diagonal_report(matrix)
+    return matrix, remote_matrix, {
         "num_gpus": num_gpus,
         "seen_ranks": sorted(seen_ranks),
         "missing_ranks": [rank for rank in range(num_gpus) if rank not in seen_ranks],
-        "total_bytes": total_bytes,
+        "raw_total_bytes": int(diag["total_bytes"]),
+        "remote_total_bytes": int(diag["remote_bytes"]),
+        "self_bytes": int(diag["self_bytes"]),
+        "self_byte_ratio": float(diag["self_byte_ratio"]),
+        "diagonal_nonzero_count": int(diag["diagonal_nonzero_count"]),
     }
 
 
@@ -121,11 +128,12 @@ def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str 
             run_id_digest = run_digest
         if not selected_policy:
             selected_policy = current_policy
-        matrix, stats = _matrix_from_group(group_rows)
+        raw_matrix, matrix, stats = _matrix_from_group(group_rows)
         layer_name = str(group_rows[0].get("layer_name", layer_id))
         phases_by_layer[layer_id][phase] = {
             "layer_name": layer_name,
             "matrix": matrix,
+            "raw_matrix": raw_matrix,
             "stats": stats,
         }
     ordered_layers = sorted(phases_by_layer.keys(), key=lambda value: int(value) if str(value).isdigit() else str(value))
@@ -144,6 +152,11 @@ def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str 
             next_phase_map = phases_by_layer[next_layer_id]
             if "P0" in next_phase_map:
                 next_p0 = [[int(value) for value in row] for row in next_phase_map["P0"]["matrix"]]
+                next_p0_raw = [[int(value) for value in row] for row in next_phase_map["P0"]["raw_matrix"]]
+            else:
+                next_p0_raw = _zero_matrix(num_gpus)
+        else:
+            next_p0_raw = _zero_matrix(num_gpus)
         fixtures.append(
             {
                 "fixture_name": f"replay_layer_{layer_id}",
@@ -163,13 +176,25 @@ def build_replay_fixture_bundle(rows: list[dict[str, Any]], *, policy_name: str 
                     "p1_seen_ranks": p1_entry["stats"]["seen_ranks"],
                     "p0_missing_ranks": p0_entry["stats"]["missing_ranks"],
                     "p1_missing_ranks": p1_entry["stats"]["missing_ranks"],
-                    "p0_total_bytes": int(p0_entry["stats"]["total_bytes"]),
-                    "p1_total_bytes": int(p1_entry["stats"]["total_bytes"]),
-                    "p2_total_bytes": int(sum(sum(row) for row in next_p0)),
+                    "p0_total_bytes": int(p0_entry["stats"]["remote_total_bytes"]),
+                    "p1_total_bytes": int(p1_entry["stats"]["remote_total_bytes"]),
+                    "p2_total_bytes": int(matrix_remote_bytes(next_p0)),
+                    "p0_raw_total_bytes": int(p0_entry["stats"]["raw_total_bytes"]),
+                    "p1_raw_total_bytes": int(p1_entry["stats"]["raw_total_bytes"]),
+                    "p2_raw_total_bytes": int(sum(sum(row) for row in next_p0_raw)),
+                    "p0_self_bytes": int(p0_entry["stats"]["self_bytes"]),
+                    "p1_self_bytes": int(p1_entry["stats"]["self_bytes"]),
+                    "p2_self_bytes": int(matrix_diagonal_report(next_p0_raw)["self_bytes"]),
+                    "p0_self_byte_ratio": float(p0_entry["stats"]["self_byte_ratio"]),
+                    "p1_self_byte_ratio": float(p1_entry["stats"]["self_byte_ratio"]),
+                    "p2_self_byte_ratio": float(matrix_diagonal_report(next_p0_raw)["self_byte_ratio"]),
+                    "p0_diagonal_nonzero_count": int(p0_entry["stats"]["diagonal_nonzero_count"]),
+                    "p1_diagonal_nonzero_count": int(p1_entry["stats"]["diagonal_nonzero_count"]),
+                    "p2_diagonal_nonzero_count": int(matrix_diagonal_report(next_p0_raw)["diagonal_nonzero_count"]),
                     "p2_source": "zero_for_last_layer" if not next_layer_id else "next_layer_p0_actual",
-                    "p0_nonzero_edge_count": int(sum(1 for src, row in enumerate(p0_entry["matrix"]) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
-                    "p1_nonzero_edge_count": int(sum(1 for src, row in enumerate(p1_entry["matrix"]) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
-                    "p2_nonzero_edge_count": int(sum(1 for src, row in enumerate(next_p0) for dst, value in enumerate(row) if src != dst and int(value) > 0)),
+                    "p0_nonzero_edge_count": int(matrix_nonzero_remote_edge_count(p0_entry["matrix"])),
+                    "p1_nonzero_edge_count": int(matrix_nonzero_remote_edge_count(p1_entry["matrix"])),
+                    "p2_nonzero_edge_count": int(matrix_nonzero_remote_edge_count(next_p0)),
                 },
             }
         )
@@ -194,6 +219,12 @@ def build_replay_fixture_audit_summary(
     total_p0_bytes = 0
     total_p1_bytes = 0
     total_p2_bytes = 0
+    total_p0_raw_bytes = 0
+    total_p1_raw_bytes = 0
+    total_p2_raw_bytes = 0
+    total_p0_self_bytes = 0
+    total_p1_self_bytes = 0
+    total_p2_self_bytes = 0
     layer_count_with_complete_p0p1 = 0
     layer_count_with_missing_rank = 0
     max_p0 = ("", 0)
@@ -206,9 +237,21 @@ def build_replay_fixture_audit_summary(
         p0_bytes = int(meta.get("p0_total_bytes", 0))
         p1_bytes = int(meta.get("p1_total_bytes", 0))
         p2_bytes = int(meta.get("p2_total_bytes", 0))
+        p0_self_bytes = int(meta.get("p0_self_bytes", 0))
+        p1_self_bytes = int(meta.get("p1_self_bytes", 0))
+        p2_self_bytes = int(meta.get("p2_self_bytes", 0))
+        p0_raw_bytes = int(meta.get("p0_raw_total_bytes", p0_bytes + p0_self_bytes))
+        p1_raw_bytes = int(meta.get("p1_raw_total_bytes", p1_bytes + p1_self_bytes))
+        p2_raw_bytes = int(meta.get("p2_raw_total_bytes", p2_bytes + p2_self_bytes))
         total_p0_bytes += p0_bytes
         total_p1_bytes += p1_bytes
         total_p2_bytes += p2_bytes
+        total_p0_raw_bytes += p0_raw_bytes
+        total_p1_raw_bytes += p1_raw_bytes
+        total_p2_raw_bytes += p2_raw_bytes
+        total_p0_self_bytes += p0_self_bytes
+        total_p1_self_bytes += p1_self_bytes
+        total_p2_self_bytes += p2_self_bytes
         if not p0_missing and not p1_missing:
             layer_count_with_complete_p0p1 += 1
         else:
@@ -231,6 +274,18 @@ def build_replay_fixture_audit_summary(
                 "p0_total_bytes": p0_bytes,
                 "p1_total_bytes": p1_bytes,
                 "p2_total_bytes": p2_bytes,
+                "p0_self_bytes": p0_self_bytes,
+                "p1_self_bytes": p1_self_bytes,
+                "p2_self_bytes": p2_self_bytes,
+                "p0_raw_total_bytes": p0_raw_bytes,
+                "p1_raw_total_bytes": p1_raw_bytes,
+                "p2_raw_total_bytes": p2_raw_bytes,
+                "p0_self_byte_ratio": float(meta.get("p0_self_byte_ratio", 0.0)),
+                "p1_self_byte_ratio": float(meta.get("p1_self_byte_ratio", 0.0)),
+                "p2_self_byte_ratio": float(meta.get("p2_self_byte_ratio", 0.0)),
+                "p0_diagonal_nonzero_count": int(meta.get("p0_diagonal_nonzero_count", 0)),
+                "p1_diagonal_nonzero_count": int(meta.get("p1_diagonal_nonzero_count", 0)),
+                "p2_diagonal_nonzero_count": int(meta.get("p2_diagonal_nonzero_count", 0)),
                 "p2_source": str(meta.get("p2_source", "")),
                 "p0_nonzero_edge_count": int(meta.get("p0_nonzero_edge_count", 0)),
                 "p1_nonzero_edge_count": int(meta.get("p1_nonzero_edge_count", 0)),
@@ -253,6 +308,12 @@ def build_replay_fixture_audit_summary(
         "total_p0_bytes": total_p0_bytes,
         "total_p1_bytes": total_p1_bytes,
         "total_p2_bytes": total_p2_bytes,
+        "total_p0_raw_bytes": total_p0_raw_bytes,
+        "total_p1_raw_bytes": total_p1_raw_bytes,
+        "total_p2_raw_bytes": total_p2_raw_bytes,
+        "total_p0_self_bytes": total_p0_self_bytes,
+        "total_p1_self_bytes": total_p1_self_bytes,
+        "total_p2_self_bytes": total_p2_self_bytes,
         "avg_p0_bytes_per_layer": (total_p0_bytes / layer_count) if layer_count else 0.0,
         "avg_p1_bytes_per_layer": (total_p1_bytes / layer_count) if layer_count else 0.0,
         "avg_p2_bytes_per_layer": (total_p2_bytes / layer_count) if layer_count else 0.0,
@@ -296,6 +357,9 @@ def _render_audit_summary_md(summary: dict[str, Any]) -> str:
             f"- total_p0_bytes: {summary['total_p0_bytes']}",
             f"- total_p1_bytes: {summary['total_p1_bytes']}",
             f"- total_p2_bytes: {summary['total_p2_bytes']}",
+            f"- total_p0_self_bytes: {summary.get('total_p0_self_bytes', 0)}",
+            f"- total_p1_self_bytes: {summary.get('total_p1_self_bytes', 0)}",
+            f"- total_p2_self_bytes: {summary.get('total_p2_self_bytes', 0)}",
             "",
             "## Layers",
             "| Fixture | Layer | Next | P0 Missing | P1 Missing | P0 Bytes | P1 Bytes | P2 Bytes | P2 Source |",

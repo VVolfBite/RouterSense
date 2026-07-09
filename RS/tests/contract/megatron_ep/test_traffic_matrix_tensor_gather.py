@@ -18,12 +18,12 @@ def test_build_local_peer_bytes_tensor_shapes_and_dtype() -> None:
 
 def test_gather_global_peer_bytes_matrix_single_rank_fallback() -> None:
     matrix, metadata = gather_global_peer_bytes_matrix(build_local_peer_bytes_tensor((7,), 1, "cpu"))
-    assert matrix.tolist() == [[7]]
+    assert matrix.tolist() == [[0]]
     assert metadata["matrix_source"] == "single_rank_fallback"
     assert metadata["is_global"] is False
-    assert metadata["total_bytes"] == 7
-    assert metadata["row_sums"] == (7,)
-    assert metadata["col_sums"] == (7,)
+    assert metadata["total_bytes"] == 0
+    assert metadata["row_sums"] == (0,)
+    assert metadata["col_sums"] == (0,)
     assert metadata["nonzero_edge_count"] == 0
 
 
@@ -40,4 +40,3 @@ def test_build_traffic_matrix_bundle_reports_replicated_local_row_fallback(monke
     assert bundle.total_bytes == 9
     assert bundle.row_sums == (9, 0)
     assert bundle.col_sums == (0, 9)
-

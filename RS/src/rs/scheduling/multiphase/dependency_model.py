@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_row_sums_remote
+
 from .flow_model import EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE, ResidualFlowState
 
 
@@ -50,8 +52,9 @@ def outbound_loads(
         scale = 1.0
         if phase == 2 and mode == RUNTIME_LOOKAHEAD_MODE:
             scale = max(0.0, min(1.0, prediction_confidence))
-        for gpu, row in enumerate(matrix):
-            loads[(phase, gpu)] = scale * float(sum(max(int(value), 0) for value in row))
+        remote_rows = matrix_row_sums_remote(canonicalize_remote_matrix(matrix))
+        for gpu, row_sum in enumerate(remote_rows):
+            loads[(phase, gpu)] = scale * float(row_sum)
     return loads
 
 

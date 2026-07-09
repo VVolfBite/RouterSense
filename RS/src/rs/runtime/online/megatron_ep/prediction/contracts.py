@@ -56,6 +56,10 @@ class PredictionAuditRecord:
     actual_digest: str
     predicted_total_bytes: int
     actual_total_bytes: int
+    predicted_remote_bytes: int
+    actual_remote_bytes: int
+    predicted_self_bytes: int
+    actual_self_bytes: int
     relative_l1_error: float
     absolute_l1_error: float
     cosine_similarity: float
@@ -63,6 +67,7 @@ class PredictionAuditRecord:
     nonzero_edge_precision: float
     nonzero_edge_recall: float
     evaluation_eligible: bool
+    self_bytes_ignored_for_scheduling: bool = True
     valid: bool = True
     error: str = ""
 

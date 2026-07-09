@@ -13,6 +13,7 @@ from experiments._bootstrap import ensure_src_on_path
 ROOT = ensure_src_on_path()
 
 from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_remote_bytes
 from rs.scheduling import (
     FlowDemand,
     FlowWindow,
@@ -27,7 +28,7 @@ from rs.scheduling.validation import stable_hash, validate_logical_plan
 
 
 def _matrix(value: Any) -> tuple[tuple[int, ...], ...]:
-    return tuple(tuple(int(item) for item in row) for row in value)
+    return canonicalize_remote_matrix(value)
 
 
 def _flows(
@@ -88,7 +89,7 @@ def _build_problem(
     elif p2_source in {"fate_style_history", "fate_style_linear"}:
         if predicted_p2_matrix is None:
             raise ValueError(f"predicted_p2_matrix required for {p2_source}")
-        p2 = tuple(tuple(int(value) for value in row) for row in predicted_p2_matrix)
+        p2 = canonicalize_remote_matrix(predicted_p2_matrix)
         forecast_source = str(p2_source)
         forecast_oracle = False
         forecast_eligible = True
@@ -118,7 +119,7 @@ def _build_problem(
             oracle=forecast_oracle,
             evaluation_eligible=forecast_eligible,
             matrix_shape=(len(p2), len(p2[0]) if p2 else 0),
-            matrix_total_bytes=sum(sum(row) for row in p2),
+            matrix_total_bytes=matrix_remote_bytes(p2),
             matrix=p2,
         ),
         options=GlobalReadySetOptions(

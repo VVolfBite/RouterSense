@@ -9,6 +9,7 @@ from rs.scheduling.capabilities import PolicyCapabilities
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
 from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
 from rs.scheduling.matching import maximum_weight_bipartite_matching
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_diagonal_report, matrix_nonzero_remote_edge_count, matrix_remote_bytes, matrix_row_sums_remote
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,9 @@ class FluidBVNCertificate:
     coverage_verified: bool
     matching_constraints_verified: bool
     certificate_verified: bool
+    self_bytes_ignored: int
+    remote_bytes: int
+    matrix_diagonal_nonzero_count: int
     waves: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +41,9 @@ class FluidBVNCertificate:
             "coverage_verified": self.coverage_verified,
             "matching_constraints_verified": self.matching_constraints_verified,
             "certificate_verified": self.certificate_verified,
+            "self_bytes_ignored": self.self_bytes_ignored,
+            "remote_bytes": self.remote_bytes,
+            "matrix_diagonal_nonzero_count": self.matrix_diagonal_nonzero_count,
             "waves": list(self.waves),
         }
 
@@ -100,8 +107,8 @@ class BirkhoffVonNeumannFluidReference:
             tie_break_rule="maximum real residual support, lexicographic matching",
             wave_count=len(waves),
             logical_flow_count=sum(len(wave.flows) for wave in waves),
-            ready_flow_count=sum(1 for row in problem.p0_dispatch_matrix for value in row if int(value) > 0),
-            blocked_flow_count=sum(1 for row in problem.p1_return_matrix for value in row if int(value) > 0),
+            ready_flow_count=matrix_nonzero_remote_edge_count(problem.p0_dispatch_matrix),
+            blocked_flow_count=matrix_nonzero_remote_edge_count(problem.p1_return_matrix),
             forecast_flow_count=len(problem.flow_window.forecast_pressure),
             p1_dependency_used=False,
             p2_forecast_used=False,
@@ -130,6 +137,9 @@ def decompose_fluid_matrix(
     phase: str,
     start_wave_id: int = 0,
 ) -> tuple[list[LogicalWave], FluidBVNCertificate]:
+    raw_matrix = matrix
+    diag = matrix_diagonal_report(raw_matrix)
+    matrix = canonicalize_remote_matrix(raw_matrix)
     n = len(matrix)
     residual = {
         (src, dst): int(value)
@@ -137,8 +147,8 @@ def decompose_fluid_matrix(
         for dst, value in enumerate(row)
         if src != dst and int(value) > 0
     }
-    row_loads = [sum(int(value) for dst, value in enumerate(row) if src != dst) for src, row in enumerate(matrix)]
-    col_loads = [sum(int(matrix[src][dst]) for src in range(n) if src != dst) for dst in range(n)]
+    row_loads = list(matrix_row_sums_remote(matrix))
+    col_loads = list(matrix_col_sums_remote(matrix))
     horizon = max(max(row_loads, default=0), max(col_loads, default=0))
     waves: list[LogicalWave] = []
     wave_records: list[dict[str, Any]] = []
@@ -198,6 +208,9 @@ def decompose_fluid_matrix(
         coverage_verified=_coverage_verified(matrix, waves),
         matching_constraints_verified=_matching_verified(waves),
         certificate_verified=False,
+        self_bytes_ignored=int(diag["self_bytes"]),
+        remote_bytes=matrix_remote_bytes(matrix),
+        matrix_diagonal_nonzero_count=int(diag["diagonal_nonzero_count"]),
         waves=tuple(wave_records),
     )
     certificate = FluidBVNCertificate(

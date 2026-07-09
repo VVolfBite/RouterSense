@@ -59,3 +59,18 @@ def test_prediction_audit_metrics_are_computed() -> None:
     assert 0.0 <= audit.nonzero_edge_precision <= 1.0
     assert 0.0 <= audit.nonzero_edge_recall <= 1.0
 
+
+def test_prediction_audit_ignores_diagonal_bytes_for_remote_metrics() -> None:
+    predicted = CopyCurrentDispatchPredictor().predict(
+        prediction_input=_prediction_input(),
+        current_dispatch_matrix=((99, 8), (4, 77)),
+    )
+    audit = compare_predicted_to_actual(predicted, ((123, 8), (4, 55)), topk=2)
+    assert audit.valid is True
+    assert audit.absolute_l1_error == 0.0
+    assert audit.relative_l1_error == 0.0
+    assert audit.predicted_remote_bytes == 12
+    assert audit.actual_remote_bytes == 12
+    assert audit.predicted_self_bytes == 0
+    assert audit.actual_self_bytes == 178
+    assert audit.self_bytes_ignored_for_scheduling is True

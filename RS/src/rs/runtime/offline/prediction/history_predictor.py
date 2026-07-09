@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix
+
 from .contracts import Matrix, PredictorArtifact, PredictorSample
 
 
 def _zeros_like(matrix: Matrix) -> Matrix:
-    return tuple(tuple(0 for _ in row) for row in matrix)
+    return canonicalize_remote_matrix(tuple(tuple(0 for _ in row) for row in matrix))
 
 
 def _blend(left: Matrix, right: Matrix, alpha: float) -> Matrix:
-    return tuple(
-        tuple(max(0, int(round(alpha * float(lv) + (1.0 - alpha) * float(rv)))) for lv, rv in zip(lrow, rrow, strict=False))
-        for lrow, rrow in zip(left, right, strict=False)
+    return canonicalize_remote_matrix(
+        tuple(
+            tuple(max(0, int(round(alpha * float(lv) + (1.0 - alpha) * float(rv)))) for lv, rv in zip(lrow, rrow, strict=False))
+            for lrow, rrow in zip(left, right, strict=False)
+        )
     )
 
 
@@ -32,7 +36,7 @@ class FATEStyleHistoryPredictor:
                 for dst, value in enumerate(row):
                     accum[src][dst] += float(value)
         count = float(len(samples))
-        self._historical_mean = tuple(tuple(int(round(value / count)) for value in row) for row in accum)
+        self._historical_mean = canonicalize_remote_matrix(tuple(tuple(int(round(value / count)) for value in row) for row in accum))
         return self
 
     def predict_matrix(self, sample: PredictorSample) -> Matrix:
@@ -55,5 +59,5 @@ class FATEStyleHistoryPredictor:
     @classmethod
     def from_artifact(cls, artifact: PredictorArtifact) -> "FATEStyleHistoryPredictor":
         predictor = cls(alpha=float(artifact.metadata.get("alpha", 0.7)))
-        predictor._historical_mean = tuple(tuple(int(value) for value in row) for row in artifact.payload["historical_mean"])
+        predictor._historical_mean = canonicalize_remote_matrix(artifact.payload["historical_mean"])
         return predictor

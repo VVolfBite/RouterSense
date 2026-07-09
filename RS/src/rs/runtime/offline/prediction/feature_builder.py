@@ -3,21 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_row_sums_remote
+
 from .contracts import Matrix, PredictorSample
 
 
 def normalize_matrix(matrix: Any) -> Matrix:
-    return tuple(tuple(int(value) for value in row) for row in matrix)
+    return canonicalize_remote_matrix(matrix)
 
 
 def row_sums(matrix: Matrix) -> tuple[int, ...]:
-    return tuple(int(sum(int(value) for value in row)) for row in matrix)
+    return matrix_row_sums_remote(matrix)
 
 
 def col_sums(matrix: Matrix) -> tuple[int, ...]:
-    if not matrix:
-        return ()
-    return tuple(int(sum(int(matrix[src][dst]) for src in range(len(matrix)))) for dst in range(len(matrix[0])))
+    return matrix_col_sums_remote(matrix)
 
 
 def flatten_matrix(matrix: Matrix) -> list[float]:

@@ -9,6 +9,7 @@ from typing import Any
 from rs.scheduling.capabilities import PolicyCapabilities
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
 from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix
 from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE
 from rs.scheduling.multiphase.matching import linear_sum_assignment
 from rs.scheduling.multiphase.replay import replay_and_audit_schedule
@@ -367,11 +368,11 @@ def _unsupported_exact_backend_plan(problem: MultiPhaseSchedulingProblem, spec: 
 
 def _real_matrices(problem: MultiPhaseSchedulingProblem) -> list[list[list[int]]]:
     matrices = [
-        [list(row) for row in problem.p0_dispatch_matrix],
-        [list(row) for row in problem.p1_return_matrix],
+        [list(row) for row in canonicalize_remote_matrix(problem.p0_dispatch_matrix)],
+        [list(row) for row in canonicalize_remote_matrix(problem.p1_return_matrix)],
     ]
     if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
-        matrices.append([list(row) for row in problem.p2_next_dispatch_forecast_matrix])
+        matrices.append([list(row) for row in canonicalize_remote_matrix(problem.p2_next_dispatch_forecast_matrix)])
     elif problem.options.scheduling_mode != RUNTIME_LOOKAHEAD_MODE:
         raise ValueError(f"unsupported scheduling_mode {problem.options.scheduling_mode!r}")
     return matrices

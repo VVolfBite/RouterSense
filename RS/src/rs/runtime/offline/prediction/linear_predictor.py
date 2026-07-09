@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix
+
 from .contracts import Matrix, PredictorArtifact, PredictorSample
 from .feature_builder import build_feature_vector, flatten_matrix
 
@@ -15,7 +17,7 @@ def _matrix_shape(sample: PredictorSample) -> tuple[int, int]:
 
 def _reshape(values: list[float], *, rows: int, cols: int) -> Matrix:
     clipped = [max(0, int(round(value))) for value in values]
-    return tuple(tuple(clipped[row * cols + col] for col in range(cols)) for row in range(rows))
+    return canonicalize_remote_matrix(tuple(tuple(clipped[row * cols + col] for col in range(cols)) for row in range(rows)))
 
 
 @dataclass
