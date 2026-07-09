@@ -13,6 +13,7 @@ def test_summarize_control_replay_trace() -> None:
         {
             "policy_name": "routersense_p0p1p2_hint",
             "phase": "P0",
+            "nonzero_edge_count": 3,
             "abstract_plan_summary": {"wave_count": 3, "task_ref_count": 6},
             "timing_summary": {
                 "all_gather_time_us": 10.0,
@@ -23,11 +24,13 @@ def test_summarize_control_replay_trace() -> None:
                 "planning_summary_tensor_len": 32,
                 "abstract_plan_tensor_len": 64,
                 "bucket_count": 6,
+                "total_byte_count": 1024,
             },
         },
         {
             "policy_name": "routersense_p0p1p2_hint",
             "phase": "P1",
+            "nonzero_edge_count": 2,
             "abstract_plan_summary": {"wave_count": 2, "task_ref_count": 4},
             "timing_summary": {
                 "all_gather_time_us": 11.0,
@@ -38,6 +41,7 @@ def test_summarize_control_replay_trace() -> None:
                 "planning_summary_tensor_len": 33,
                 "abstract_plan_tensor_len": 65,
                 "bucket_count": 4,
+                "total_byte_count": 2048,
             },
         },
     ]
@@ -48,8 +52,16 @@ def test_summarize_control_replay_trace() -> None:
     assert summary["total_summary_elements"] == 65
     assert summary["total_plan_elements"] == 129
     assert summary["total_task_refs"] == 10
+    assert summary["avg_summary_elements_per_phase"] == 32.5
+    assert summary["avg_plan_elements_per_phase"] == 64.5
+    assert summary["avg_task_refs_per_phase"] == 5.0
     assert summary["avg_wave_count"] == 2.5
     assert summary["max_wave_count"] == 3
+    assert summary["avg_bucket_count"] == 5.0
+    assert summary["avg_nonzero_edge_count"] == 2.5
+    assert summary["max_nonzero_edge_count"] == 3
+    assert summary["avg_total_byte_count"] == 1536.0
+    assert summary["max_total_byte_count"] == 2048
     assert summary["per_policy"]["routersense_p0p1p2_hint"]["phase_count"] == 2
     assert summary["per_phase"]["P0"]["wave_count"] == 3
 
@@ -60,9 +72,10 @@ def test_replay_online_control_trace_cli(tmp_path: Path) -> None:
         {
             "policy_name": "birkhoff_phase_local",
             "phase": "P0",
+            "nonzero_edge_count": 1,
             "abstract_plan_summary": {"wave_count": 1, "task_ref_count": 2},
             "timing_summary": {"all_gather_time_us": 1.0, "build_plan_time_us": 2.0, "broadcast_time_us": 3.0},
-            "transport_summary": {"planning_summary_tensor_len": 4, "abstract_plan_tensor_len": 5, "bucket_count": 2},
+            "transport_summary": {"planning_summary_tensor_len": 4, "abstract_plan_tensor_len": 5, "bucket_count": 2, "total_byte_count": 128},
         }
     ]
     trace_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")

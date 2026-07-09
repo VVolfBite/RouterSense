@@ -61,3 +61,38 @@
 3. 聚合控制面规模、wave 数、task_ref 数、wire size
 
 后续如果要做“同一 trace 下换策略重排”，应当复用这个 schema，而不是把完整 debug artifact 强行塞进热路径。
+
+## 最小使用示例
+
+打开 replay trace：
+
+```yaml
+observation:
+  profile: perf
+  replay_trace_enabled: true
+```
+
+在线运行后，输出文件位于每个 rank 的 artifact 目录下：
+
+```text
+rank0_control_replay_trace.jsonl
+rank1_control_replay_trace.jsonl
+...
+```
+
+离线解析：
+
+```bash
+PYTHONPATH=src python -m experiments.offline.replay_online_control_trace \
+  --trace outputs/.../rank0_control_replay_trace.jsonl
+```
+
+当前 parser 会输出：
+
+- total phase 数
+- all_gather / broadcast 调用数
+- summary / plan element 总量
+- task_ref 总量
+- wave / bucket / nonzero_edge / total_byte 的平均值与最大值
+- per_policy breakdown
+- per_phase breakdown
