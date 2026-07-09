@@ -21,6 +21,7 @@
 - 已能把真实 online trace 转成 replay fixture。
 - 已能在 offline execution-window 语义下比较 `B_birkhoff_wave` 与 `U_*`。
 - 已能把真实 fixture 进一步压成 communication-only transport-stress replay 报告。
+- 已新增 `routersense_joint_priority_phase_sync` 与 `routersense_joint_async_release_sim` 作为 bridge candidate，用来把 `U_*` 空间往 online 语义推进。
 - 这条证据链当前是 offline 可验证，不等于 online 已实现。
 
 ## Claim 2
@@ -44,9 +45,19 @@
 - online 侧现在已经有 tensorized dispatch-matrix gather 和 lightweight predictor contract：
   - `ZeroHintPredictor`
   - `CopyCurrentDispatchPredictor`
+- offline 侧已新增第一版 FATE-style predictor：
+  - `FATEStyleHistoryPredictor`
+  - `FATEStyleLinearTrafficPredictor`
+- 当前 `prediction` 证据链可以比较：
+  - `zero_hint`
+  - `copy_current_dispatch`
+  - `fate_style_history`
+  - `fate_style_linear`
+  - `perfect_trace_oracle`
+  - `actual_trace_oracle`
 - prepared-plan 应消费 `predicted_next_dispatch`，而不是把 gathered current matrix 本身写成 predictor。
 - online 端当前只有 phase_sync 下的 prediction-aware policy。
-- 但这还不等于真实 next-layer predictor：当前只有 zero/copy-current 级别的轻量 predictor，真实 predictor 仍未接入。
+- 但这还不等于真实 online predictor 已完成部署：当前 FATE-style predictor 主要服务 offline artifact、预测误差分析和 future async-release 设计。
 
 ## Claim 3
 
@@ -63,9 +74,10 @@
 
 - `phase_sync` 是当前真实可执行、可审计、可 replay 的 online 主线。
 - replay trace、execution audit 和 public runtime surface 已经打通。
-- `async_release` 当前只有 shadow-only skeleton，还没有 executor integration。
+- `async_release` 现在已经从纯 dataclass skeleton 推进到 CPU executable simulator，但还没有 GPU executor integration。
 
 因此当前论文口径必须保持诚实：
 
 - online reproducible runtime 已成立；
-- full async joint execution 仍是下一阶段工作。
+- full async joint execution 仍是下一阶段工作；
+- `async_release simulator` 只能证明语义路径和潜在 hidden-cost 机制，不能替代真实 online executor 结果。

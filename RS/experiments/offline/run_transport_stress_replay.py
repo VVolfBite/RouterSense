@@ -13,7 +13,7 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
-from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_policy_suite
+from experiments.offline.run_replay_fixture_policy_suite import TABLE_A_POLICIES, TABLE_B_POLICIES, run_bridge_suite, run_policy_suite
 
 
 def _parse_args() -> argparse.Namespace:
@@ -178,6 +178,10 @@ def main() -> None:
         total_bytes=int(audit.get("total_p0_bytes", 0)) + int(audit.get("total_p1_bytes", 0)) + int(audit.get("total_p2_bytes", 0)),
         relative_key="relative_to_B_birkhoff_wave",
     )
+    bridge = run_bridge_suite(
+        fixture_dir=suite_fixture_dir,
+        expert_compute_delay=float(args.expert_compute_delay),
+    )
     payload = {
         "fixture_dir": str(suite_fixture_dir),
         "fixture_audit": audit,
@@ -191,6 +195,7 @@ def main() -> None:
             "summary": joint_rows,
             "mean_transport_makespan": statistics.mean([row["mean_makespan"] for row in joint_rows if row["mean_makespan"] is not None]),
         },
+        "bridge_candidates": bridge,
     }
     (output_dir / "transport_stress_phase_sync_summary.json").write_text(
         json.dumps(payload["phase_sync_transport"], ensure_ascii=False, indent=2),
@@ -202,6 +207,10 @@ def main() -> None:
     )
     (output_dir / "transport_stress_replay_summary.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "transport_stress_bridge_summary.json").write_text(
+        json.dumps(bridge, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (output_dir / "transport_stress_replay_summary.md").write_text(

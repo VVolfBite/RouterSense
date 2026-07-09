@@ -12,6 +12,7 @@ from .phase_local.power_of_two_choices import PowerOfTwoChoicesPolicy
 from .phase_local.p0p1_reservation_order import RouterSenseP0P1ReservationPolicy
 from .phase_local.p0p1p2_hint_order import RouterSenseP0P1P2HintPolicy
 from .phase_local.trivial_reverse_bucket import TrivialReverseBucketPolicy
+from .runtime_bridge.joint_priority import RouterSenseJointPriorityPhaseSyncPolicy
 from .multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy, UnsupportedOnlineMultiPhaseExecution
 from .multiphase.tier1 import TIER1_ALGORITHM_IDS, is_tier1_algorithm, resolve_tier1_policy
 from .reference.birkhoff_von_neumann_fluid import BirkhoffVonNeumannFluidReference
@@ -93,6 +94,13 @@ def resolve_policy(
             p1_reservation_weight=p1_reservation_weight,
             p2_hint_weight=p2_hint_weight,
         )
+    if base_name == "routersense_joint_priority_phase_sync":
+        return RouterSenseJointPriorityPhaseSyncPolicy(
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+            p2_hint_weight=p2_hint_weight,
+        )
     if base_name == "routersense_multiphase_lookahead":
         return RouterSenseMultiphaseLookaheadPolicy(
             information_mode=mode or "p0_p1_p2",
@@ -140,6 +148,7 @@ def supported_phase_policies() -> tuple[str, ...]:
         "fast_bvn_single_tier",
         "routersense_p0p1_reservation",
         "routersense_p0p1p2_hint",
+        "routersense_joint_priority_phase_sync",
     )
 
 
@@ -159,6 +168,7 @@ def supported_policies() -> tuple[str, ...]:
         "fast_bvn_single_tier",
         "routersense_p0p1_reservation",
         "routersense_p0p1p2_hint",
+        "routersense_joint_priority_phase_sync",
         "routersense_multiphase_lookahead:p0_only",
         "routersense_multiphase_lookahead:p0_p1",
         "routersense_multiphase_lookahead:p0_p1_p2",

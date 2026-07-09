@@ -100,6 +100,7 @@ def test_transport_stress_replay_cli(tmp_path: Path) -> None:
     summary = json.loads((output_dir / "transport_stress_replay_summary.json").read_text(encoding="utf-8"))
     assert "phase_sync_transport" in summary
     assert "joint_transport" in summary
+    assert "bridge_candidates" in summary
     assert summary["phase_sync_transport"]["baseline_policy"] == "birkhoff_phase_local"
     assert summary["joint_transport"]["baseline_policy"] == "B_birkhoff_wave"
     markdown = (output_dir / "transport_stress_replay_summary.md").read_text(encoding="utf-8")

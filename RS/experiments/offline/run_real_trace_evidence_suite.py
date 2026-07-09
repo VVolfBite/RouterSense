@@ -16,6 +16,7 @@ from experiments.offline.run_replay_fixture_policy_suite import (
     TABLE_A_POLICIES,
     TABLE_B_POLICIES,
     TABLE_C_POLICIES,
+    run_bridge_suite,
     run_policy_suite,
     run_prediction_suite,
 )
@@ -112,13 +113,34 @@ def _render_md(payload: dict[str, Any]) -> str:
             "",
             "zero_hint 表示没有跨层预测；copy_current_dispatch 是廉价启发式；perfect_trace_oracle / actual_trace_oracle 仅代表 oracle predict 上界，不是实时 predictor。",
             "",
+            "## RouterSense bridge candidates",
+            "",
+            "| Policy | Mean Makespan | Rel to Birkhoff | Rel to Current RouterSense | Gap to Best U | Eval Mode |",
+            "|---|---:|---:|---:|---:|---|",
+        ]
+    )
+    for row in payload["bridge_candidates"]["summary"]:
+        rel_b = row.get("relative_to_birkhoff_phase_local")
+        rel_r = row.get("relative_to_current_routersense")
+        gap_u = row.get("gap_to_best_U_upper_bound")
+        mean = row.get("mean_makespan")
+        lines.append(
+            f"| {row['policy_name']} | {('-' if mean is None else f'{float(mean):.0f}')} | "
+            f"{('-' if rel_b is None else f'{float(rel_b) * 100:.2f}%')} | "
+            f"{('-' if rel_r is None else f'{float(rel_r) * 100:.2f}%')} | "
+            f"{('-' if gap_u is None else f'{float(gap_u) * 100:.2f}%')} | "
+            f"{row.get('evaluation_mode', '')} |"
+        )
+    lines.extend(
+        [
+            "",
             "## Online runtime interpretation",
             "",
             "- 当前 phase_sync online 是真实可执行的保守线。",
             "- current RouterSense hint policy 不是 full joint execution-window scheduler。",
             "- async_release 目前只有 shadow-only skeleton，还没有 executor integration。",
-            "- gathered_global_matrix 只是 traffic matrix construction，不是 predictor；真实 next-layer predictor 仍未接入。",
-            "- 下一步需要 transport-stress / EP replay 或 async_release executor integration，才能把 offline joint 空间转换成在线系统收益。",
+            "- prepared-plan 的 P2 矩阵在真实分布式 EP group 可用时可以来自 gathered_global_matrix；但这只是修正全局矩阵来源，不等于真实 next-layer predictor 已接入。",
+            "- 下一步需要 bridge policy + async_release executor integration，才能把 offline joint 空间转换成在线系统收益。",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -156,7 +178,11 @@ def main() -> None:
     prediction = run_prediction_suite(
         fixture_dir=suite_fixture_dir,
         policies=TABLE_C_POLICIES,
-        p2_sources=("zero_hint", "copy_current_dispatch", "perfect_trace", "actual_trace"),
+        p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history", "fate_style_linear", "perfect_trace", "actual_trace"),
+        expert_compute_delay=float(args.expert_compute_delay),
+    )
+    bridge = run_bridge_suite(
+        fixture_dir=suite_fixture_dir,
         expert_compute_delay=float(args.expert_compute_delay),
     )
     payload = {
@@ -165,6 +191,7 @@ def main() -> None:
         "phase_sync_compatible": phase_sync,
         "execution_window_joint": execution_window,
         "prediction_oracle": prediction,
+        "bridge_candidates": bridge,
     }
     (output_dir / "phase_sync_compatible_summary.json").write_text(
         json.dumps(phase_sync, ensure_ascii=False, indent=2),
@@ -176,6 +203,10 @@ def main() -> None:
     )
     (output_dir / "prediction_oracle_summary.json").write_text(
         json.dumps(prediction, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "bridge_candidates_summary.json").write_text(
+        json.dumps(bridge, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (output_dir / "real_trace_evidence_summary.json").write_text(

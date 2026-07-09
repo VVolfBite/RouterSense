@@ -100,15 +100,21 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
     phase_sync = json.loads((output_dir / "phase_sync_compatible_summary.json").read_text(encoding="utf-8"))
     execution_window = json.loads((output_dir / "execution_window_joint_summary.json").read_text(encoding="utf-8"))
     prediction = json.loads((output_dir / "prediction_oracle_summary.json").read_text(encoding="utf-8"))
+    bridge = json.loads((output_dir / "bridge_candidates_summary.json").read_text(encoding="utf-8"))
     assert phase_sync["baseline_policy"] == "birkhoff_phase_local"
     assert execution_window["baseline_policy"] == "B_birkhoff_wave"
     assert {row["p2_source"] for row in prediction["summary"]} == {
         "zero_hint",
         "copy_current_dispatch",
+        "fate_style_history",
+        "fate_style_linear",
         "perfect_trace_oracle",
         "actual_trace_oracle",
     }
+    assert any(row["policy_name"] == "routersense_joint_priority_phase_sync" for row in bridge["summary"])
+    assert any(row["policy_name"] == "routersense_joint_async_release_sim" for row in bridge["summary"])
     markdown = (output_dir / "real_trace_evidence_summary.md").read_text(encoding="utf-8")
     assert "Joint scheduling space" in markdown
     assert "Cross-layer prediction value" in markdown
+    assert "RouterSense bridge candidates" in markdown
     assert "current RouterSense hint policy 不是 full joint execution-window scheduler" in markdown

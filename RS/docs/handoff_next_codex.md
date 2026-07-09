@@ -27,8 +27,15 @@
 - control replay trace skeleton
 - natural 4GPU `256x128` workload主线
 - async_release shadow-only skeleton
+- async_release CPU executable simulator
 - transport-stress / EP replay offline 入口
 - tensorized global dispatch-matrix gather for phase_sync prediction/prepared-plan bookkeeping
+- runtime bridge candidates:
+  - `routersense_joint_priority_phase_sync`
+  - `routersense_joint_async_release_sim`
+- offline FATE-style predictor:
+  - `fate_style_history`
+  - `fate_style_linear`
 
 当前明确不要做：
 
@@ -133,7 +140,8 @@ Offline / replay：
    - prediction / oracle-predict 空间
 2. 基于 transport-stress / EP replay 评估 communication-only 空间
 3. 接真实 online predictor，而不是只靠 copy-current / gathered current-dispatch heuristic
-4. 再决定是否推进 async_release executor integration
+4. 用 real trace / transport-stress 验证 bridge candidate 是否开始逼近或超过 `birkhoff_phase_local`
+5. 再决定是否推进 async_release executor integration
 
 ## 7. Repository rule
 

@@ -14,7 +14,9 @@ from experiments._bootstrap import ensure_src_on_path
 ROOT = ensure_src_on_path()
 
 from experiments.offline.replay_fixture_policy_study import _build_problem, _expected_flows
+from rs.runtime.offline.prediction import rolling_predictor_records, summarize_prediction_records
 from rs.runtime.offline.runner import replay_and_audit_logical_plan, summarize_schedule_tail_metrics
+from rs.runtime.online.megatron_ep.async_release import simulate_async_release
 from rs.scheduling import resolve_policy
 from rs.scheduling.validation import validate_logical_plan
 
@@ -41,12 +43,33 @@ TABLE_C_POLICIES = (
     "U_barrier_criticality_global_matching",
 )
 
+TABLE_D_PHASE_SYNC_POLICIES = (
+    "birkhoff_phase_local",
+    "routersense_multiphase_lookahead:p0_p1_p2",
+    "routersense_joint_priority_phase_sync",
+)
+
+TABLE_D_UPPER_BOUND_POLICIES = (
+    "U_gated_maxweight_matching",
+    "U_barrier_criticality_global_matching",
+)
+
 PREDICTION_SOURCE_LABELS = {
     "zero_hint": "zero_hint",
     "copy_current_dispatch": "copy_current_dispatch",
     "perfect_trace": "perfect_trace_oracle",
     "actual_trace": "actual_trace_oracle",
+    "fate_style_history": "fate_style_history",
+    "fate_style_linear": "fate_style_linear",
 }
+
+
+def _predicted_matrices_by_source(fixture_dir: Path) -> dict[str, dict[str, tuple[tuple[int, ...], ...]]]:
+    result: dict[str, dict[str, tuple[tuple[int, ...], ...]]] = {}
+    for predictor_name in ("fate_style_history", "fate_style_linear"):
+        rows = rolling_predictor_records(fixture_dir=fixture_dir, predictor_name=predictor_name)
+        result[predictor_name] = {str(row.layer_id): row.predicted_matrix for row in rows}
+    return result
 
 
 def _parse_args() -> argparse.Namespace:
@@ -155,6 +178,7 @@ def run_prediction_suite(
     expert_compute_delay: float,
 ) -> dict[str, Any]:
     fixture_paths = sorted(fixture_dir.glob("replay_layer_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
+    predicted_matrices = _predicted_matrices_by_source(fixture_dir)
     rows: list[dict[str, Any]] = []
     for fixture_path in fixture_paths:
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -167,6 +191,7 @@ def run_prediction_suite(
                 mode=mode,
                 p2_source=p2_source,
                 expert_compute_delay=expert_compute_delay,
+                predicted_p2_matrix=predicted_matrices.get(p2_source, {}).get(str(fixture.get("metadata", {}).get("layer_id", ""))),
             )
             expected = _expected_flows(problem)
             for policy_name in policies:
@@ -190,6 +215,7 @@ def run_prediction_suite(
                         "valid": bool(validation["valid"]) and bool(audit.get("valid", False)),
                         "makespan": float(plan.diagnostics.get("makespan", audit.get("makespan", 0.0))),
                         "forecast_matrix_total_bytes": int(problem.forecast.matrix_total_bytes),
+                        "predictor_name": p2_source if p2_source.startswith("fate_style_") else "",
                     }
                 )
     summary_rows: list[dict[str, Any]] = []
@@ -221,6 +247,7 @@ def run_prediction_suite(
                     ),
                     "future_information_mode": str(seed_row["future_information_mode"]) if seed_row else "",
                     "evaluation_eligible": bool(seed_row["evaluation_eligible"]) if seed_row else False,
+                    "predictor_name": str(seed_row["predictor_name"]) if seed_row else "",
                 }
             )
     return {
@@ -229,7 +256,112 @@ def run_prediction_suite(
         "p2_sources": list(p2_sources),
         "rows": rows,
         "summary": summary_rows,
+        "predictor_summaries": {
+            predictor_name: summarize_prediction_records(rolling_predictor_records(fixture_dir=fixture_dir, predictor_name=predictor_name))
+            for predictor_name in ("fate_style_history", "fate_style_linear")
+        },
     }
+
+
+def run_bridge_suite(
+    *,
+    fixture_dir: Path,
+    expert_compute_delay: float,
+) -> dict[str, Any]:
+    phase_sync = run_policy_suite(
+        fixture_dir=fixture_dir,
+        policies=TABLE_D_PHASE_SYNC_POLICIES,
+        mode="runtime_lookahead",
+        p2_source="copy_current_dispatch",
+        expert_compute_delay=expert_compute_delay,
+        baseline_policy="birkhoff_phase_local",
+        relative_key="relative_to_birkhoff_phase_local",
+    )
+    upper = run_policy_suite(
+        fixture_dir=fixture_dir,
+        policies=TABLE_D_UPPER_BOUND_POLICIES,
+        mode="execution_window",
+        p2_source="actual_trace",
+        expert_compute_delay=expert_compute_delay,
+        baseline_policy="U_gated_maxweight_matching",
+        relative_key="relative_to_u_joint_upper_bound",
+    )
+    predictor_records = rolling_predictor_records(fixture_dir=fixture_dir, predictor_name="fate_style_linear")
+    predicted_by_layer = {str(record.layer_id): record.predicted_matrix for record in predictor_records}
+    async_rows: list[dict[str, Any]] = []
+    fixture_paths = sorted(fixture_dir.glob("replay_layer_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
+    for fixture_path in fixture_paths:
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        layer_id = str(fixture.get("metadata", {}).get("layer_id", ""))
+        sim = simulate_async_release(
+            p0_dispatch_matrix=fixture["p0_dispatch_matrix"],
+            p1_return_matrix=fixture["p1_return_matrix"],
+            predicted_p2_matrix=predicted_by_layer.get(layer_id, tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])),
+            compute_delay=float(expert_compute_delay),
+            planning_time_us=0.0,
+            prediction_time_us=0.0,
+            control_delay_us=0.0,
+            prediction_lead_time_us=0.0,
+            policy_name="routersense_joint_async_release",
+        )
+        async_rows.append({"fixture_name": fixture_path.name, "layer_id": layer_id, **sim})
+    baseline_map = {row["policy_name"]: row for row in phase_sync["summary"]}
+    birkhoff_mean = float(baseline_map["birkhoff_phase_local"]["mean_makespan"] or 0.0)
+    current_mean = float(baseline_map["routersense_multiphase_lookahead:p0_p1_p2"]["mean_makespan"] or 0.0)
+    upper_best = min((float(row["mean_makespan"]) for row in upper["summary"] if row["mean_makespan"] is not None), default=0.0)
+    async_mean = statistics.mean([float(row["completion_time"]) for row in async_rows]) if async_rows else None
+    summary = []
+    for row in phase_sync["summary"]:
+        mean = row["mean_makespan"]
+        summary.append(
+            {
+                **row,
+                "relative_to_current_routersense": None if mean is None or current_mean == 0.0 else float((float(mean) - current_mean) / current_mean),
+                "gap_to_best_U_upper_bound": None if mean is None or upper_best == 0.0 else float((float(mean) - upper_best) / upper_best),
+                "p2_source": "copy_current_dispatch",
+                "predictor_name": "",
+                "online_eligible": row["policy_name"] != "routersense_joint_async_release_sim",
+                "async_release_required": False,
+                "evaluation_mode": "runtime_lookahead",
+            }
+        )
+    summary.append(
+        {
+            "policy_name": "routersense_joint_async_release_sim",
+            "valid_layer_count": len(async_rows),
+            "invalid_layer_count": sum(1 for row in async_rows if int(row["dependency_violations"]) > 0),
+            "mean_makespan": async_mean,
+            "median_makespan": statistics.median([float(row["completion_time"]) for row in async_rows]) if async_rows else None,
+            "min_makespan": min((float(row["completion_time"]) for row in async_rows), default=None),
+            "max_makespan": max((float(row["completion_time"]) for row in async_rows), default=None),
+            "mean_wave_count": statistics.mean([len(row["task_release_timeline"]) for row in async_rows]) if async_rows else None,
+            "mean_tail_completion": async_mean,
+            "mean_p0_completion": statistics.mean([float(row["p0_inbound_completion_max"]) for row in async_rows]) if async_rows else None,
+            "mean_p1_completion": async_mean,
+            "relative_to_birkhoff_phase_local": None if async_mean is None or birkhoff_mean == 0.0 else float((float(async_mean) - birkhoff_mean) / birkhoff_mean),
+            "relative_to_current_routersense": None if async_mean is None or current_mean == 0.0 else float((float(async_mean) - current_mean) / current_mean),
+            "gap_to_best_U_upper_bound": None if async_mean is None or upper_best == 0.0 else float((float(async_mean) - upper_best) / upper_best),
+            "p2_source": "fate_style_linear",
+            "predictor_name": "fate_style_linear",
+            "online_eligible": False,
+            "async_release_required": True,
+            "evaluation_mode": "async_release_sim",
+        }
+    )
+    for row in upper["summary"]:
+        summary.append(
+            {
+                **row,
+                "relative_to_current_routersense": None if row["mean_makespan"] is None or current_mean == 0.0 else float((float(row["mean_makespan"]) - current_mean) / current_mean),
+                "gap_to_best_U_upper_bound": None if row["mean_makespan"] is None or upper_best == 0.0 else float((float(row["mean_makespan"]) - upper_best) / upper_best),
+                "p2_source": "actual_trace_oracle",
+                "predictor_name": "oracle",
+                "online_eligible": False,
+                "async_release_required": False,
+                "evaluation_mode": "execution_window",
+            }
+        )
+    return {"phase_sync": phase_sync, "upper_bound": upper, "async_rows": async_rows, "summary": summary}
 
 
 def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
@@ -291,7 +423,7 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
             "- 当前 online RouterSense hint policy 还不是 full joint execution-window scheduler。",
             "- offline U_* 结果说明多 phase joint scheduling 仍有空间，但这不等于当前 online RouterSense 已经拿到了这部分收益。",
             "- 下一步需要 transport-stress / EP replay 或 async_release 风格执行语义，才能把 U_* 的空间转成在线系统收益。",
-            "- gathered_global_matrix 只是 traffic matrix construction，不是 predictor；真实 predictor 仍待接入。",
+            "- prepared-plan 的 gathered_global_matrix 只是 traffic matrix construction，不是 predictor；真实 predictor 仍待接入。",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -322,11 +454,23 @@ def main() -> None:
         baseline_policy="B_birkhoff_wave",
         relative_key="relative_to_B_birkhoff_wave",
     )
+    table_c = run_prediction_suite(
+        fixture_dir=fixture_dir,
+        policies=TABLE_C_POLICIES,
+        p2_sources=("zero_hint", "copy_current_dispatch", "fate_style_history", "fate_style_linear", "perfect_trace", "actual_trace"),
+        expert_compute_delay=0.0,
+    )
+    table_d = run_bridge_suite(
+        fixture_dir=fixture_dir,
+        expert_compute_delay=0.0,
+    )
     payload = {
         "fixture_dir": str(fixture_dir),
         "audit_summary_path": str(audit_path),
         "table_a": table_a,
         "table_b": table_b,
+        "table_c": table_c,
+        "table_d": table_d,
     }
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(_render_md(payload, audit_summary), encoding="utf-8")

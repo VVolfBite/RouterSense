@@ -82,6 +82,8 @@ class CalibratedArtifactP2HintProvider:
                 "p2_matrix_is_replicated_local_row": bool(self._shared_state.get("p2_matrix_is_replicated_local_row", False)),
                 "predictor_name": str(self._shared_state.get("predictor_name", "")),
                 "prediction_digest": str(self._shared_state.get("prediction_digest", "")),
+                "predicted_row_sums": list(self._shared_state.get("predicted_row_sums", ()) or ()),
+                "predicted_col_sums": list(self._shared_state.get("predicted_col_sums", ()) or ()),
                 **plan_priority,
             },
         )

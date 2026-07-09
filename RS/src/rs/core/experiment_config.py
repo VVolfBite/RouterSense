@@ -33,6 +33,7 @@ SUPPORTED_ONLINE_PHASE_POLICIES = {
     "fast_bvn_single_tier",
     "routersense_p0p1_reservation",
     "routersense_p0p1p2_hint",
+    "routersense_joint_priority_phase_sync",
 }
 
 

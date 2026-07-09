@@ -8,6 +8,7 @@ from .contracts import (
     AsyncShadowPlan,
 )
 from .shadow_controller import build_shadow_plan_from_matrices, decide_next_action
+from .simulator import simulate_async_release
 from .state import (
     AsyncReleaseState,
     apply_event,
@@ -34,6 +35,7 @@ __all__ = [
     "mark_task_released",
     "ready_task_ids",
     "register_shadow_plan",
+    "simulate_async_release",
     "validate_async_release_state",
     "validate_shadow_plan",
 ]

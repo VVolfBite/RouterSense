@@ -62,6 +62,7 @@ def _build_problem(
     mode: str,
     p2_source: str,
     expert_compute_delay: float,
+    predicted_p2_matrix: tuple[tuple[int, ...], ...] | None = None,
 ) -> MultiPhaseSchedulingProblem:
     p0 = _matrix(fixture["p0_dispatch_matrix"])
     p1 = _matrix(fixture["p1_return_matrix"])
@@ -83,6 +84,14 @@ def _build_problem(
         forecast_source = str(p2_source)
         forecast_oracle = True
         forecast_eligible = False
+        information_mode = "p0_p1_p2"
+    elif p2_source in {"fate_style_history", "fate_style_linear"}:
+        if predicted_p2_matrix is None:
+            raise ValueError(f"predicted_p2_matrix required for {p2_source}")
+        p2 = tuple(tuple(int(value) for value in row) for row in predicted_p2_matrix)
+        forecast_source = str(p2_source)
+        forecast_oracle = False
+        forecast_eligible = True
         information_mode = "p0_p1_p2"
     else:
         p2 = tuple(tuple(0 for _ in row) for row in p0)

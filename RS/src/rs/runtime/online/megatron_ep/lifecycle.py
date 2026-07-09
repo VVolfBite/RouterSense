@@ -489,6 +489,11 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["latest_prediction_digest"] = predicted.matrix_digest
         self._prepared_plan_state["latest_prediction_target_layer_id"] = str(next_layer_id)
         self._prepared_plan_state["latest_prediction_matrix_source"] = matrix_bundle.matrix_source
+        self._prepared_plan_state["latest_prediction_row_sums"] = [int(sum(row)) for row in predicted.matrix]
+        self._prepared_plan_state["latest_prediction_col_sums"] = [
+            int(sum(predicted.matrix[row_idx][col_idx] for row_idx in range(len(predicted.matrix))))
+            for col_idx in range(len(predicted.matrix[0]) if predicted.matrix else 0)
+        ]
         stage_end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -929,6 +934,12 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["prepared_plan"] = prepared
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
+        self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
+        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = False
+        self._prepared_plan_state["predictor_name"] = predictor_name
+        self._prepared_plan_state["prediction_digest"] = prediction_digest
+        self._prepared_plan_state["predicted_row_sums"] = row_sums
+        self._prepared_plan_state["predicted_col_sums"] = col_sums
         self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
         self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(row_sums))
         self._prepared_plan_state["p2_matrix_row_sums"] = row_sums

@@ -14,6 +14,8 @@
 predictor 的职责是：
 
 - 在当前 layer 执行期间，尽早给出“下一层 dispatch 流量”的预测矩阵
+- 在 `layer l` 的 dispatch 观测点启动预测 `D_hat_{l+1}`
+- 在 `layer l+1` 的真实 dispatch 到来时，对上一层预测做误差审计
 - 让 runtime 可以提前构建 shadow / prepared plan
 - 在不显著增加在线控制面成本的前提下，逼近 oracle prediction 的调度收益
 
@@ -82,6 +84,14 @@ predictor 的职责不是：
   - 极便宜 heuristic predictor
   - 用当前 dispatch 近似下一层 dispatch
 
+- `fate_style_history`
+  - 基于历史层统计 / EWMA 的 cheap learned baseline
+  - 仍是 offline predictor，不等于 online 部署完成
+
+- `fate_style_linear`
+  - 基于 `[D_{l-1}, D_l, R_l] -> D_{l+1}` 的轻量线性 predictor
+  - 当前用于 offline artifact、预测误差分析和 predicted-plan replay
+
 - `perfect_trace`
   - oracle predict upper bound
   - 来自真实下一层 trace
@@ -134,7 +144,12 @@ predictor 的职责不是：
   - 用 offline joint scheduling 证明 multi-phase space 存在
 
 - 贡献 2：
-  - 用 `zero_hint` / `copy_current_dispatch` / `perfect_trace` / future `real_predictor` 比较预测价值
+  - 用 `zero_hint` / `copy_current_dispatch` / `fate_style_*` / `perfect_trace` 比较预测价值
+  - 当前代码入口：
+    - `src/rs/runtime/offline/prediction/`
+    - `experiments/offline/train_fate_style_predictor.py`
+    - `experiments/offline/evaluate_fate_style_predictor.py`
+    - `experiments/offline/analyze_prediction_audit.py`
 
 - 贡献 3：
   - 在真实 online runtime 中，把 predictor 输出接成 prepared / shadow plan 输入

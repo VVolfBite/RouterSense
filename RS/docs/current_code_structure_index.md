@@ -83,6 +83,13 @@
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
+### `src/rs/runtime/offline/prediction/`
+
+- 负责什么：FATE-style predictor artifact、feature、训练/评估 helper
+- 不负责什么：真实 online runtime predictor launch
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
 ### `experiments/offline/replay_online_control_trace.py`
 
 - 负责什么：读取 lightweight control replay trace，统计 control-plane 规模
@@ -108,6 +115,13 @@
 
 - 负责什么：把真实 replay fixture 重放成 communication-only transport-stress 报告
 - 不负责什么：真实 GPU benchmark、online runtime 执行
+- 是否属于 perf hot path：否
+- 是否可以慢：可以
+
+### `experiments/offline/run_async_release_simulation.py`
+
+- 负责什么：把 replay fixture 跑成 async-release CPU simulation 报告
+- 不负责什么：真实 GPU executor integration
 - 是否属于 perf hot path：否
 - 是否可以慢：可以
 
@@ -142,6 +156,7 @@
 
 - `birkhoff_phase_local` 是当前 online 可执行的 phase-local 强 baseline
 - `routersense_p0p1p2_hint` 是当前 prediction-aware runtime policy
+- `routersense_joint_priority_phase_sync` 是把 offline joint idea 压成 phase_sync 可执行顺序的 bridge candidate
 - `B_birkhoff_wave` / `U_*` 属于 offline 或 theoretical upper bound
 - 不应该把 offline oracle / heavy joint scheduler 塞回 online perf hot path
 
