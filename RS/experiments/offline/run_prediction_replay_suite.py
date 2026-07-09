@@ -16,6 +16,7 @@ ROOT = ensure_src_on_path()
 from experiments.offline.replay_fixture_policy_study import _build_problem
 from rs.runtime.offline.prediction import rolling_predictor_records, summarize_prediction_records
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
+from rs.runtime.online.megatron_ep.prediction.traffic_calibration import calibrate_traffic_matrix
 from rs.scheduling import resolve_policy
 
 
@@ -49,6 +50,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-summary-md", required=True)
     parser.add_argument("--policies", nargs="*", default=None)
     parser.add_argument("--p2-sources", nargs="*", default=None)
+    parser.add_argument("--traffic-calibration", choices=("none", "total", "layer_scale", "row_col"), default="none")
     return parser.parse_args()
 
 
@@ -57,10 +59,13 @@ def run_prediction_replay_suite(
     fixture_dir: Path,
     policies: Iterable[str] | None = None,
     p2_sources: Iterable[str] | None = None,
+    traffic_calibration: str = "none",
 ) -> dict[str, Any]:
     fixture_paths = sorted(fixture_dir.glob("replay_layer_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
     selected_policies = tuple(policies or POLICIES)
     selected_sources = tuple(p2_sources or DEFAULT_SOURCES)
+    expert_trace_available = bool(list(fixture_dir.glob("*expert_route_trace*.jsonl")) or list(fixture_dir.glob("*source_expert_counts*.jsonl")))
+    expert_trace_reason = None if expert_trace_available else "expert_trace_unavailable_for_real_fixture"
     predictor_records = {
         "fate_style_history": {record.layer_id: record for record in rolling_predictor_records(fixture_dir=fixture_dir, predictor_name="fate_style_history")},
         "fate_style_linear": {record.layer_id: record for record in rolling_predictor_records(fixture_dir=fixture_dir, predictor_name="fate_style_linear")},
@@ -80,11 +85,28 @@ def run_prediction_replay_suite(
                 "actual_remote_bytes": 0,
                 "predictor_name": source,
                 "oracle_prediction": source in {"perfect_trace", "actual_trace"},
+                "expert_prediction_available": False,
+                "expert_count_relative_l1_error": None,
+                "expert_topk_overlap": None,
+                "expert_to_traffic_reconstruction_error": None,
+                "traffic_error_from_predicted_experts": None,
+                "traffic_error_after_calibration": None,
+                "gate_replay_available": False,
+                "expert_trace_available": expert_trace_available,
+                "expert_trace_unavailable_reason": expert_trace_reason,
             }
             if source in predictor_records:
                 record = predictor_records[source].get(source_layer_id)
                 if record is not None:
                     predicted_p2 = record.predicted_matrix
+                    calibration_audit = None
+                    if traffic_calibration != "none":
+                        predicted_p2, calibration_audit = calibrate_traffic_matrix(
+                            predicted_p2,
+                            actual_matrix=record.actual_matrix,
+                            current_dispatch_matrix=fixture["p0_dispatch_matrix"],
+                            mode=traffic_calibration,
+                        )
                     prediction_metrics = {
                         "prediction_remote_l1_error": float(record.absolute_l1_error),
                         "prediction_relative_l1_error": float(record.relative_l1_error),
@@ -93,7 +115,21 @@ def run_prediction_replay_suite(
                         "actual_remote_bytes": int(sum(sum(row) for row in record.actual_matrix)),
                         "predictor_name": str(record.predictor_name),
                         "oracle_prediction": False,
+                        "expert_prediction_available": False,
+                        "expert_count_relative_l1_error": None,
+                        "expert_topk_overlap": None,
+                        "expert_to_traffic_reconstruction_error": None,
+                        "traffic_error_from_predicted_experts": None,
+                        "traffic_error_after_calibration": None if calibration_audit is None else float(calibration_audit.after_relative_l1),
+                        "gate_replay_available": False,
+                        "expert_trace_available": expert_trace_available,
+                        "expert_trace_unavailable_reason": expert_trace_reason,
+                        "traffic_calibration_mode": traffic_calibration,
+                        "traffic_calibration_before_relative_l1": None if calibration_audit is None else float(calibration_audit.before_relative_l1),
+                        "traffic_calibration_after_relative_l1": None if calibration_audit is None else float(calibration_audit.after_relative_l1),
                     }
+            elif source in {"perfect_trace", "actual_trace"}:
+                predicted_p2 = tuple(tuple(int(v) for v in row) for row in fixture.get("p2_next_dispatch_matrix", fixture["p2_next_dispatch_forecast_matrix"]))
             problem = _build_problem(
                 fixture,
                 mode="runtime_lookahead",
@@ -122,6 +158,18 @@ def run_prediction_replay_suite(
                         "selected_policy": str(plan.diagnostics.get("selected_policy", plan.policy_name)),
                         "evaluation_eligible": bool(plan.diagnostics.get("evaluation_eligible", True)),
                         "oracle_prediction": bool(prediction_metrics["oracle_prediction"]),
+                        "expert_trace_available": prediction_metrics["expert_trace_available"],
+                        "expert_prediction_available": prediction_metrics["expert_prediction_available"],
+                        "expert_count_relative_l1_error": prediction_metrics["expert_count_relative_l1_error"],
+                        "expert_topk_overlap": prediction_metrics["expert_topk_overlap"],
+                        "expert_to_traffic_reconstruction_error": prediction_metrics["expert_to_traffic_reconstruction_error"],
+                        "traffic_error_from_predicted_experts": prediction_metrics["traffic_error_from_predicted_experts"],
+                        "traffic_error_after_calibration": prediction_metrics["traffic_error_after_calibration"],
+                        "gate_replay_available": prediction_metrics["gate_replay_available"],
+                        "expert_trace_unavailable_reason": prediction_metrics["expert_trace_unavailable_reason"],
+                        "traffic_calibration_mode": prediction_metrics.get("traffic_calibration_mode"),
+                        "traffic_calibration_before_relative_l1": prediction_metrics.get("traffic_calibration_before_relative_l1"),
+                        "traffic_calibration_after_relative_l1": prediction_metrics.get("traffic_calibration_after_relative_l1"),
                     }
                 )
             rows.extend(policy_results)
@@ -158,6 +206,16 @@ def run_prediction_replay_suite(
                     ),
                     "mean_prediction_relative_l1_error": statistics.mean([float(row["prediction_relative_l1_error"]) for row in source_rows]) if source_rows else 0.0,
                     "mean_prediction_cosine_similarity": statistics.mean([float(row["prediction_cosine_similarity"]) for row in source_rows]) if source_rows else 0.0,
+                    "expert_trace_available": bool(source_rows[0]["expert_trace_available"]) if source_rows else False,
+                    "expert_prediction_available": bool(source_rows[0]["expert_prediction_available"]) if source_rows else False,
+                    "expert_count_relative_l1_error": None if not source_rows else source_rows[0]["expert_count_relative_l1_error"],
+                    "expert_topk_overlap": None if not source_rows else source_rows[0]["expert_topk_overlap"],
+                    "expert_to_traffic_reconstruction_error": None if not source_rows else source_rows[0]["expert_to_traffic_reconstruction_error"],
+                    "traffic_error_from_predicted_experts": None if not source_rows else source_rows[0]["traffic_error_from_predicted_experts"],
+                    "traffic_error_after_calibration": None if not source_rows else source_rows[0]["traffic_error_after_calibration"],
+                    "gate_replay_available": bool(source_rows[0]["gate_replay_available"]) if source_rows else False,
+                    "expert_trace_unavailable_reason": None if not source_rows else source_rows[0]["expert_trace_unavailable_reason"],
+                    "traffic_calibration_mode": None if not source_rows else source_rows[0].get("traffic_calibration_mode"),
                     "evaluation_eligible": bool(source_rows[0]["evaluation_eligible"]) if source_rows else False,
                     "oracle_prediction": bool(source_rows[0]["oracle_prediction"]) if source_rows else False,
                 }
@@ -168,6 +226,9 @@ def run_prediction_replay_suite(
         "summary": summary_rows,
         "selected_policies": list(selected_policies),
         "selected_p2_sources": list(selected_sources),
+        "traffic_calibration": traffic_calibration,
+        "expert_trace_available": expert_trace_available,
+        "expert_trace_unavailable_reason": expert_trace_reason,
         "predictor_quality": {
             name: summarize_prediction_records(list(records.values()))
             for name, records in predictor_records.items()
@@ -207,6 +268,7 @@ def main() -> None:
         fixture_dir=Path(args.fixture_dir),
         policies=args.policies,
         p2_sources=args.p2_sources,
+        traffic_calibration=args.traffic_calibration,
     )
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(render_prediction_replay_markdown(payload), encoding="utf-8")

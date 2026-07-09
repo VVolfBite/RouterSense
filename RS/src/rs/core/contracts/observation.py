@@ -13,6 +13,7 @@ ObservationProfile = Literal["minimal", "perf", "execution", "debug"]
 class RuntimeObservationConfig:
     profile: ObservationProfile = "minimal"
     capture_enabled: bool = False
+    capture_expert_trace: bool = False
     capture_layer_selector: str = ""
     capture_phase_selector: str = ""
     heartbeat_enabled: bool = False

@@ -41,3 +41,5 @@ def test_prediction_replay_suite_cli(tmp_path: Path) -> None:
     assert payload["summary"]
     assert any(row["policy_name"] == "RS_safe_barrier_criticality" for row in payload["summary"])
     assert any(row["p2_source"] == "zero_hint" for row in payload["summary"])
+    assert payload["expert_trace_available"] is False
+    assert payload["expert_trace_unavailable_reason"] == "expert_trace_unavailable_for_real_fixture"

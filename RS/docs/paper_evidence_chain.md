@@ -51,12 +51,19 @@
   - `fate_style_linear`
   - `perfect_trace`
   - `actual_trace`
+- 但这些里只有前两类和 traffic-matrix baseline 已经实现；
+  faithful FATE-style gate replay predictor 还没有真实 router replay。
 - online 侧现在已经有 tensorized dispatch-matrix gather 和 lightweight predictor contract：
   - `ZeroHintPredictor`
   - `CopyCurrentDispatchPredictor`
-- offline 侧已新增第一版 FATE-style predictor：
+- offline 侧当前只有 traffic-matrix baseline：
   - `FATEStyleHistoryPredictor`
   - `FATEStyleLinearTrafficPredictor`
+- 已新增 expert foundation：
+  - `expert_trace.py`
+  - `expert_to_traffic.py`
+  - `expert_evaluation.py`
+  - `gate_replay_predictor.py`
 - 已有 `run_prediction_replay_suite.py`，可把预测矩阵真正灌入下一层 replay，并比较：
   - `zero_hint`
   - `copy_current_dispatch`
@@ -68,10 +75,18 @@
   - predictor 误差
   - predicted-P2 下 safe-U makespan
   - oracle P2 上限
+- 当前 expert trace 如果不存在，suite 必须明确输出：
+  - `expert_trace_available=false`
+  - `gpu_collection_required=true`
 - prepared-plan 应消费 `predicted_next_dispatch`，而不是把 gathered current matrix 本身写成 predictor。
 - online 端当前只有 phase_sync 下的 prediction-aware policy。
 - 但这还不等于真实 online predictor 已完成部署：当前 FATE-style predictor 主要服务 offline artifact、预测误差分析和 future async-release 设计。
 - 当前真实 fixture 上，prediction replay 可能仍不能稳定优于 `zero_hint`；这必须如实报告，不能把接口闭环写成已实现收益。
+
+当前最准确的结论应写成：
+
+> Current predictors can approximate rank-to-rank traffic shape, but do not yet validate expert-level FATE prediction.
+> The next evidence step is to collect expert route traces, predict source-rank x expert counts, and then reconstruct/calibrate expert-derived traffic matrices.
 
 ## Claim 3
 

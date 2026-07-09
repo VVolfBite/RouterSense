@@ -673,6 +673,7 @@ def attach_formal_online_runtime(
         schedule_layer_selector=runtime_config.execution_selection.layer_selector,
         schedule_phase_selector=runtime_config.execution_selection.phase_selector,
         capture_phase_tensors=bool(runtime_config.observation.get("capture_enabled", False)),
+        capture_expert_trace=bool(runtime_config.observation.get("capture_expert_trace", False)),
         stop_after_selected_layer=bool(runtime_config.validation.stop_after_selected_layer),
         executor_heartbeat_path=str(runtime_config.validation.executor_heartbeat_path),
         executor_phase_timeout_sec=int(runtime_config.validation.executor_phase_timeout_sec),

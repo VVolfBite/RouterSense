@@ -43,6 +43,12 @@ class RuntimeArtifactRecorder:
             write_jsonl(self.run_dir / "transport_execution.jsonl", list(snapshot.transport_execution))
         if snapshot.execution_audits:
             write_json(self.run_dir / "execution_audit.json", list(snapshot.execution_audits))
+        if snapshot.expert_route_traces:
+            write_jsonl(self.run_dir / "expert_route_trace.jsonl", list(snapshot.expert_route_traces))
+        if snapshot.source_expert_counts:
+            write_jsonl(self.run_dir / "source_expert_counts.jsonl", list(snapshot.source_expert_counts))
+        if snapshot.expert_to_traffic_audits:
+            write_jsonl(self.run_dir / "expert_to_traffic_audit.jsonl", list(snapshot.expert_to_traffic_audits))
         if snapshot.heartbeats:
             write_jsonl(self.run_dir / "heartbeats.jsonl", list(snapshot.heartbeats))
         if snapshot.failures:

@@ -86,6 +86,9 @@ class RuntimeObservationSnapshot:
     scheduled_phase_plans: tuple[dict[str, Any], ...] = ()
     transport_execution: tuple[dict[str, Any], ...] = ()
     execution_audits: tuple[dict[str, Any], ...] = ()
+    expert_route_traces: tuple[dict[str, Any], ...] = ()
+    source_expert_counts: tuple[dict[str, Any], ...] = ()
+    expert_to_traffic_audits: tuple[dict[str, Any], ...] = ()
     heartbeats: tuple[dict[str, Any], ...] = ()
     failures: tuple[dict[str, Any], ...] = ()
     captured_phase_tensors: tuple[dict[str, Any], ...] = ()
@@ -102,6 +105,9 @@ class RuntimeObservationRecorder:
         self._scheduled_phase_plans: list[dict[str, Any]] = []
         self._transport_execution: list[dict[str, Any]] = []
         self._execution_audits: list[dict[str, Any]] = []
+        self._expert_route_traces: list[dict[str, Any]] = []
+        self._source_expert_counts: list[dict[str, Any]] = []
+        self._expert_to_traffic_audits: list[dict[str, Any]] = []
         self._heartbeats: list[dict[str, Any]] = []
         self._failures: list[dict[str, Any]] = []
         self._captured_phase_tensors: list[dict[str, Any]] = []
@@ -111,6 +117,9 @@ class RuntimeObservationRecorder:
             "scheduled_plan_count": 0,
             "transport_execution_count": 0,
             "execution_audit_count": 0,
+            "expert_route_trace_count": 0,
+            "source_expert_count_count": 0,
+            "expert_to_traffic_audit_count": 0,
             "heartbeat_count": 0,
             "failure_count": 0,
             "fallback_count": 0,
@@ -153,6 +162,21 @@ class RuntimeObservationRecorder:
         if self._emitter.includes_execution():
             self._execution_audits.append(dict(payload))
 
+    def record_expert_route_trace(self, payload: dict[str, Any]) -> None:
+        self._counters["expert_route_trace_count"] = int(self._counters["expert_route_trace_count"]) + 1
+        if self._emitter.includes_debug() and self.config.capture_expert_trace:
+            self._expert_route_traces.append(dict(payload))
+
+    def record_source_expert_counts(self, payload: dict[str, Any]) -> None:
+        self._counters["source_expert_count_count"] = int(self._counters["source_expert_count_count"]) + 1
+        if self._emitter.includes_debug() and self.config.capture_expert_trace:
+            self._source_expert_counts.append(dict(payload))
+
+    def record_expert_to_traffic_audit(self, payload: dict[str, Any]) -> None:
+        self._counters["expert_to_traffic_audit_count"] = int(self._counters["expert_to_traffic_audit_count"]) + 1
+        if self._emitter.includes_debug() and self.config.capture_expert_trace:
+            self._expert_to_traffic_audits.append(dict(payload))
+
     def record_heartbeat(self, payload: dict[str, Any]) -> None:
         self._counters["heartbeat_count"] = int(self._counters["heartbeat_count"]) + 1
         if self._emitter.includes_debug() and self.config.heartbeat_enabled:
@@ -189,6 +213,15 @@ class RuntimeObservationRecorder:
     def export_execution_audits(self) -> list[dict[str, Any]]:
         return list(self._execution_audits)
 
+    def export_expert_route_traces(self) -> list[dict[str, Any]]:
+        return list(self._expert_route_traces)
+
+    def export_source_expert_counts(self) -> list[dict[str, Any]]:
+        return list(self._source_expert_counts)
+
+    def export_expert_to_traffic_audits(self) -> list[dict[str, Any]]:
+        return list(self._expert_to_traffic_audits)
+
     def export_heartbeats(self) -> list[dict[str, Any]]:
         return list(self._heartbeats)
 
@@ -209,6 +242,9 @@ class RuntimeObservationRecorder:
             scheduled_phase_plans=tuple(self._scheduled_phase_plans),
             transport_execution=tuple(self._transport_execution),
             execution_audits=tuple(self._execution_audits),
+            expert_route_traces=tuple(self._expert_route_traces),
+            source_expert_counts=tuple(self._source_expert_counts),
+            expert_to_traffic_audits=tuple(self._expert_to_traffic_audits),
             heartbeats=tuple(self._heartbeats),
             failures=tuple(self._failures),
             captured_phase_tensors=tuple(self._captured_phase_tensors),

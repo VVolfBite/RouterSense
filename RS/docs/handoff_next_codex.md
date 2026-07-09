@@ -39,8 +39,14 @@
   - `routersense_joint_priority_phase_sync`
   - `routersense_joint_async_release_sim`
 - offline FATE-style predictor:
-  - `fate_style_history`
-  - `fate_style_linear`
+  - `fate_style_history` (traffic baseline only)
+  - `fate_style_linear` (traffic baseline only)
+- expert prediction foundation:
+  - `src/rs/runtime/online/megatron_ep/prediction/expert_trace.py`
+  - `expert_to_traffic.py`
+  - `expert_evaluation.py`
+  - `gate_replay_predictor.py`
+  - `traffic_calibration.py`
 
 当前明确不要做：
 
@@ -57,6 +63,9 @@
 - `async_release` 当前只有 shadow-only skeleton，还没有 executor integration
 - 当前 online prepared-plan 应优先消费 `predicted_next_dispatch`；
   dispatch matrix 的全局构造方式必须是 tensorized gather，不能再走 Python object collective
+- 当前 `fate_style_history` / `fate_style_linear` 只是 traffic-matrix baseline，不要再把它们当 faithful FATE predictor
+- 当前真实 fixture 还没有 `expert_route_trace` / `source_expert_counts`；
+  contribution 2 现在是 “expert foundation ready, GPU collection still required”
 - 当前真实 fixture CPU 主线结论应先看：
   - `outputs/offline/m6h_safe_u_closure/replay_suite_summary.json`
   - `outputs/offline/m6k_cpu_closure/prediction_replay_summary.json`
@@ -81,6 +90,11 @@
   - runtime-lookahead paired B / raw U / safe U
   - execution-window paired B / raw U / safe U
   - prediction replay / oracle-predict
+- prediction replay 现在会显式报告：
+  - `expert_trace_available`
+  - `expert_prediction_available`
+  - `gate_replay_available`
+  - `traffic_calibration_mode`
 - 把真实 fixture 进一步压成 communication-only transport-stress replay
 
 当前限制：
@@ -154,6 +168,16 @@ Offline / replay：
 3. 开 GPU 时优先验证：
    - `RS_safe_barrier_criticality` vs `birkhoff_phase_local`
    - prediction timing / layer interval / prepared-plan overlap
+   - collect expert route trace:
+     - `selected_experts`
+     - `routing_weights`
+     - `source_rank`
+     - `layer_id`
+     - `expert_to_rank_map`
+   - dump:
+     - `rank*_expert_route_trace.jsonl`
+     - `rank*_source_expert_counts.jsonl`
+     - `rank*_expert_to_traffic_audit.jsonl`
 4. 如果 GPU 结果显示 phase_sync safe-U 仍弱，再推进 async_release executor integration
 
 ## 7. Repository rule

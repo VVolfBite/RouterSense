@@ -103,6 +103,7 @@ class RouterSenseInjectionConfig:
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
     capture_phase_tensors: bool = False
+    capture_expert_trace: bool = False
     observation_profile: str = "minimal"
     capture_layer_selector: str = ""
     capture_phase_selector: str = ""

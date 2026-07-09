@@ -134,6 +134,7 @@ class RouterSenseInjectionRuntime:
                 config=RuntimeObservationConfig(
                     profile=str(getattr(self.config, "observation_profile", "minimal")),
                     capture_enabled=bool(getattr(self.config, "capture_phase_tensors", False)),
+                    capture_expert_trace=bool(getattr(self.config, "capture_expert_trace", False)),
                     capture_layer_selector=str(getattr(self.config, "capture_layer_selector", "")),
                     capture_phase_selector=str(getattr(self.config, "capture_phase_selector", "")),
                     heartbeat_enabled=bool(getattr(self.config, "heartbeat_enabled", False)),
