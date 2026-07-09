@@ -53,6 +53,13 @@
 - 是否属于 perf hot path：轻量 recorder 路径属于
 - 是否可以慢：debug/execution 可以稍重，perf 不可重
 
+### `src/rs/runtime/online/megatron_ep/control/p2_matrix.py`
+
+- 负责什么：把 rank-local `per_peer_bytes` 汇总成 prepared-plan 使用的全局矩阵
+- 不负责什么：真实预测器、executor、phase plan 执行
+- 是否属于 perf hot path：否
+- 是否可以慢：可以有少量控制面代价，但不能重到替代 planner 本体
+
 ### `src/rs/runtime/online/megatron_ep/async_release/`
 
 - 负责什么：future async-release 的 shadow-only contract、state machine、validation skeleton

@@ -29,6 +29,7 @@ from rs.runtime.online.megatron_ep.contracts import (
     RuntimeObservation,
 )
 from rs.runtime.online.megatron_ep.control.agreement_wire import compute_ep_group_hash, run_policy_agreement
+from rs.runtime.online.megatron_ep.control.p2_matrix import build_prepared_plan_matrices
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
 from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
@@ -678,23 +679,28 @@ class RouterSenseInjectionRuntime:
         num_peers = len(per_peer)
         if num_peers <= 0:
             return
-        forecast_matrix = tuple(
-            tuple(int(per_peer[j]) if i != j else 0 for j in range(num_peers))
-            for i in range(num_peers)
-        )
         p0_obs = self._pending_p0.get(layer_name)
-        if p0_obs is not None:
-            p0_per_peer = tuple(int(value) for value in p0_obs.per_peer_bytes)
-            dispatch_matrix = tuple(
-                tuple(int(p0_per_peer[j]) if j < len(p0_per_peer) and i != j else 0 for j in range(num_peers))
-                for i in range(num_peers)
-            )
-        else:
-            dispatch_matrix = forecast_matrix
-        p2_matrix_source = "replicated_local_row"
-        row_sums = [int(sum(row)) for row in forecast_matrix]
-        col_sums = [int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(num_peers))) for col_idx in range(num_peers)]
-        forecast_digest = stable_hash({"per_peer_bytes": list(per_peer), "layer": layer_name, "source": p2_matrix_source})
+        matrix_bundle = build_prepared_plan_matrices(
+            rank=self.rank,
+            ep_group_ranks=self.ep_group_ranks,
+            ep_process_group=self.ep_process_group,
+            layer_name=layer_name,
+            observation_p1=observation_p1,
+            observation_p0=p0_obs,
+        )
+        dispatch_matrix = matrix_bundle.dispatch_matrix
+        forecast_matrix = matrix_bundle.forecast_matrix
+        p1_return_matrix = matrix_bundle.p1_return_matrix
+        p2_matrix_source = matrix_bundle.p2_matrix_source
+        row_sums = list(matrix_bundle.row_sums)
+        col_sums = list(matrix_bundle.col_sums)
+        forecast_digest = stable_hash(
+            {
+                "forecast_matrix": [list(row) for row in forecast_matrix],
+                "layer": layer_name,
+                "source": p2_matrix_source,
+            }
+        )
         problem = MultiPhaseSchedulingProblem(
             flow_window=FlowWindow(ready_flows=(), blocked_flows=(), forecast_pressure=()),
             topology=LogicalTopology(num_gpus=num_peers),
@@ -710,14 +716,14 @@ class RouterSenseInjectionRuntime:
                 oracle=False,
                 evaluation_eligible=True,
                 matrix_shape=(num_peers, num_peers),
-                matrix_total_bytes=sum(int(value) for value in per_peer),
+                matrix_total_bytes=matrix_bundle.total_bytes,
                 matrix=forecast_matrix,
                 metadata={
                     "p2_matrix_source": p2_matrix_source,
-                    "p2_matrix_is_replicated_local_row": True,
+                    "p2_matrix_is_replicated_local_row": matrix_bundle.p2_matrix_is_replicated_local_row,
                     "p2_matrix_row_sums": row_sums,
                     "p2_matrix_col_sums": col_sums,
-                    "p2_matrix_total_bytes": sum(int(value) for value in per_peer),
+                    "p2_matrix_total_bytes": matrix_bundle.total_bytes,
                 },
             ),
             options=GlobalReadySetOptions(
@@ -730,7 +736,7 @@ class RouterSenseInjectionRuntime:
                 max_waves=256,
             ),
             p0_dispatch_matrix=dispatch_matrix,
-            p1_return_matrix=forecast_matrix,
+            p1_return_matrix=p1_return_matrix,
             p2_next_dispatch_forecast_matrix=forecast_matrix,
         )
         policy = RouterSenseMultiphaseLookaheadPolicy(
@@ -755,11 +761,13 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
         self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
-        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(int(value) for value in per_peer))
+        self._prepared_plan_state["p2_matrix_total_bytes"] = int(matrix_bundle.total_bytes)
         self._prepared_plan_state["p2_matrix_row_sums"] = row_sums
         self._prepared_plan_state["p2_matrix_col_sums"] = col_sums
-        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = True
-        self._prepared_plan_state["p2_matrix_shape"] = [num_peers, num_peers]
+        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = bool(
+            matrix_bundle.p2_matrix_is_replicated_local_row
+        )
+        self._prepared_plan_state["p2_matrix_shape"] = list(matrix_bundle.shape)
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         cache_build_start_ns = time.monotonic_ns()
         _, _, cache_build_time_us = get_or_build_prepared_priority_cache(

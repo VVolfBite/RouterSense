@@ -9,8 +9,10 @@ import torch
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
+from rs.runtime.online.megatron_ep.control.p2_matrix import build_prepared_plan_matrices
 from rs.runtime.online.megatron_ep.pending_window import MultiphasePendingWindowAdapter, build_pending_window_shadow
 from rs.runtime.online.megatron_ep.observation import digest_text
+from rs.runtime.online.megatron_ep.observation.views import scheduled_plan_artifact
 from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
 from rs.runtime.online.megatron_ep.pending_window import compile_prepared_window_phase_plan
@@ -281,12 +283,86 @@ def test_prepared_plan_summary_exposes_p2_matrix_source() -> None:
     assert summary["p2_matrix_shape"] == [2, 2]
 
 
+def test_build_prepared_plan_matrices_falls_back_to_replicated_local_row(monkeypatch) -> None:
+    from rs.runtime.online.megatron_ep.control import p2_matrix as mod
+
+    monkeypatch.setattr(mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(mod.dist, "is_initialized", lambda: False)
+    bundle = build_prepared_plan_matrices(
+        rank=0,
+        ep_group_ranks=(0, 1),
+        ep_process_group=None,
+        layer_name="model.layers.0.mlp",
+        observation_p1=_observation(layer_name="model.layers.0.mlp", phase="P1", per_peer_bytes=(0, 24)),
+        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+    )
+    assert bundle.p2_matrix_source == "replicated_local_row"
+    assert bundle.p2_matrix_is_replicated_local_row is True
+    assert bundle.forecast_matrix == ((0, 24), (0, 0))
+
+
+def test_build_prepared_plan_matrices_gathers_global_rows(monkeypatch) -> None:
+    from rs.runtime.online.megatron_ep.control import p2_matrix as mod
+
+    monkeypatch.setattr(mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(mod.dist, "is_initialized", lambda: True)
+
+    def all_gather_object(output, payload, group=None):
+        if payload["row"] == [0, 24]:
+            output[0] = {"ep_rank": 0, "row": [0, 24]}
+            output[1] = {"ep_rank": 1, "row": [12, 0]}
+        else:
+            output[0] = {"ep_rank": 0, "row": [0, 16]}
+            output[1] = {"ep_rank": 1, "row": [8, 0]}
+
+    monkeypatch.setattr(mod.dist, "all_gather_object", all_gather_object)
+    bundle = build_prepared_plan_matrices(
+        rank=0,
+        ep_group_ranks=(0, 1),
+        ep_process_group=None,
+        layer_name="model.layers.0.mlp",
+        observation_p1=_observation(layer_name="model.layers.0.mlp", phase="P1", per_peer_bytes=(0, 24)),
+        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+    )
+    assert bundle.p2_matrix_source == "gathered_global_matrix"
+    assert bundle.p2_matrix_is_replicated_local_row is False
+    assert bundle.forecast_matrix == ((0, 24), (12, 0))
+    assert bundle.dispatch_matrix == ((0, 16), (8, 0))
+    assert bundle.total_bytes == 36
+
+
+def test_store_prepared_plan_uses_gathered_global_matrix_when_available(monkeypatch) -> None:
+    runtime = _runtime(observation_profile="perf")
+    from rs.runtime.online.megatron_ep.control import p2_matrix as mod
+
+    monkeypatch.setattr(mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(mod.dist, "is_initialized", lambda: True)
+
+    def all_gather_object(output, payload, group=None):
+        if payload["row"] == [0, 24]:
+            output[0] = {"ep_rank": 0, "row": [0, 24]}
+            output[1] = {"ep_rank": 1, "row": [12, 0]}
+        else:
+            output[0] = {"ep_rank": 0, "row": [0, 16]}
+            output[1] = {"ep_rank": 1, "row": [8, 0]}
+
+    monkeypatch.setattr(mod.dist, "all_gather_object", all_gather_object)
+    layer0 = "model.layers.0.mlp"
+    runtime._pending_p0[layer0] = _observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16))
+    runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["p2_matrix_source"] == "gathered_global_matrix"
+    assert summary["p2_matrix_is_replicated_local_row"] is False
+    assert summary["p2_matrix_row_sums"] == [24, 12]
+    assert summary["p2_matrix_col_sums"] == [12, 24]
+
+
 def test_perf_scheduled_plan_artifact_keeps_task_ids_only() -> None:
     runtime = _runtime(observation_profile="perf")
     contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (3, 0)), p2_hint_mode="none")
     policy = resolve_phase_policy(policy_name="birkhoff_phase_local", bucket_rows=0)
     plan = policy.build_plan(local_context=contexts[0], global_contexts=contexts)
-    artifact = runtime._scheduled_plan_artifact(plan)
+    artifact = scheduled_plan_artifact(plan=plan, perf_profile=runtime._is_perf_profile())
     assert artifact["waves"]
     first_wave = artifact["waves"][0]
     assert "task_ids" in first_wave
