@@ -61,3 +61,46 @@ class CopyCurrentDispatchPredictor:
             evaluation_eligible=True,
             created_at_phase="P0",
         )
+
+
+class HistoryEMATrafficPredictor:
+    predictor_name = "history_ema"
+    predictor_version = "v1"
+
+    def __init__(self, *, alpha: float = 0.5) -> None:
+        self.alpha = float(alpha)
+
+    def predict(self, *, prediction_input: PredictionInput, current_dispatch_matrix: Matrix) -> PredictedTrafficMatrix:
+        current = canonicalize_remote_matrix(current_dispatch_matrix)
+        previous = prediction_input.metadata.get("previous_dispatch_matrix")
+        if previous is None:
+            blended = current
+        else:
+            previous_matrix = canonicalize_remote_matrix(
+                tuple(tuple(int(value) for value in row) for row in previous)
+            )
+            blended_rows = []
+            for current_row, previous_row in zip(current, previous_matrix):
+                blended_rows.append(
+                    tuple(
+                        int(round(self.alpha * int(cur) + (1.0 - self.alpha) * int(prev)))
+                        for cur, prev in zip(current_row, previous_row)
+                    )
+                )
+            blended = canonicalize_remote_matrix(tuple(blended_rows))
+        total_bytes = matrix_remote_bytes(blended)
+        nonzero_edge_count = matrix_nonzero_remote_edge_count(blended)
+        return PredictedTrafficMatrix(
+            predictor_name=self.predictor_name,
+            predictor_version=self.predictor_version,
+            source_layer_id=prediction_input.layer_id,
+            predicted_layer_id=prediction_input.next_layer_id,
+            matrix=blended,
+            matrix_digest=matrix_digest_remote(blended),
+            total_bytes=total_bytes,
+            nonzero_edge_count=nonzero_edge_count,
+            confidence=0.75,
+            is_oracle=False,
+            evaluation_eligible=True,
+            created_at_phase="P0",
+        )

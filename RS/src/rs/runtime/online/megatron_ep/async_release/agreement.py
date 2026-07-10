@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from .compiled_schedule import CompiledAsyncReleaseSchedule
 
@@ -44,4 +45,34 @@ def validate_async_release_global_agreement(
     }
 
 
-__all__ = ["build_async_release_order_digest", "validate_async_release_global_agreement"]
+def gather_and_validate_async_release_schedule(
+    local_schedule: CompiledAsyncReleaseSchedule,
+    *,
+    process_group: Any | None = None,
+    gathered_schedules: tuple[CompiledAsyncReleaseSchedule, ...] | None = None,
+) -> dict[str, Any]:
+    if gathered_schedules is not None:
+        return validate_async_release_global_agreement(gathered_schedules)
+    if not dist.is_available() or not dist.is_initialized():
+        return validate_async_release_global_agreement((local_schedule,))
+    world_size = dist.get_world_size(group=process_group)
+    payload = local_schedule.tensor_payload.detach()
+    gather_buffers = [torch.empty_like(payload) for _ in range(world_size)]
+    dist.all_gather(gather_buffers, payload, group=process_group)
+    schedules = tuple(
+        CompiledAsyncReleaseSchedule(
+            task_count=int(local_schedule.task_count),
+            tensor_payload=buffer,
+            schema_version=int(local_schedule.schema_version),
+            digest=str(local_schedule.digest),
+        )
+        for buffer in gather_buffers
+    )
+    return validate_async_release_global_agreement(schedules)
+
+
+__all__ = [
+    "build_async_release_order_digest",
+    "gather_and_validate_async_release_schedule",
+    "validate_async_release_global_agreement",
+]

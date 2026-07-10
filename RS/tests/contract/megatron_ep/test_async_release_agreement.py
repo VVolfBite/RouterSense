@@ -3,6 +3,7 @@ from __future__ import annotations
 from rs.runtime.online.megatron_ep.async_release import (
     AsyncReleasePlanBuilder,
     compile_async_release_schedule,
+    gather_and_validate_async_release_schedule,
     validate_async_release_global_agreement,
 )
 from rs.scheduling.online_adapters.priority_artifact import PairedUPriorityArtifact, PriorityEntry
@@ -39,3 +40,11 @@ def test_async_release_agreement_fails_closed_on_payload_mismatch() -> None:
     assert result["valid"] is False
     assert any("mismatch" in error for error in result["errors"])
 
+
+def test_async_release_agreement_fake_backend_path_accepts_identical_schedules() -> None:
+    builder = AsyncReleasePlanBuilder(executor_available=False)
+    plan = builder.build(priority_artifact=_artifact(), observed_context={"layer_id": "0"})
+    first = compile_async_release_schedule(plan)
+    second = compile_async_release_schedule(plan)
+    result = gather_and_validate_async_release_schedule(first, gathered_schedules=(first, second))
+    assert result["valid"] is True

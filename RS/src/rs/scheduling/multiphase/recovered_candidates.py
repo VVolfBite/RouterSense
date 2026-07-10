@@ -112,6 +112,7 @@ class RecoveredMultiphaseCandidatePolicy:
             raise ValueError(f"unknown recovered candidate {algorithm_id!r}")
         self.algorithm_id = algorithm_id
         self.policy_name = algorithm_id
+        self.collect_debug_trace = False
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem):  # type: ignore[no-untyped-def]
         spec = RECOVERED_CANDIDATE_SPECS[self.algorithm_id]
@@ -140,6 +141,7 @@ class RecoveredMultiphaseCandidatePolicy:
             price_clip=spec.price_clip,
             iteration_budget=spec.iteration_budget,
             atomic=spec.atomic,
+            collect_debug_trace=bool(getattr(self, "collect_debug_trace", False)),
         )
         planning_time_ms = float(result.get("solve_time_ms", (time.perf_counter() - started) * 1000.0))
         return _raw_schedule_to_plan(
@@ -161,7 +163,9 @@ class RecoveredMultiphaseCandidatePolicy:
                     "age_weight": spec.age_weight,
                     "prediction_weight": spec.prediction_weight,
                     "adaptive_prices": spec.adaptive_prices,
-                }
+                },
+                "scheduler_debug_trace": list(result.get("debug_trace", [])),
+                "scheduler_debug_trace_collected": bool(getattr(self, "collect_debug_trace", False)),
             },
         )
 

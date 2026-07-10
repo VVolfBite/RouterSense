@@ -459,6 +459,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
                 p0_weight=float(online_policy.get("parameters", {}).get("p0_weight", 1.0)),
                 p1_reservation_weight=float(online_policy.get("parameters", {}).get("p1_reservation_weight", 1.0)),
                 p2_hint_weight=float(online_policy.get("parameters", {}).get("p2_hint_weight", 0.0)),
+                online_p2_predictor=str(online_policy.get("parameters", {}).get("online_p2_predictor", "copy_current_dispatch")),
             ),
             p2=OnlinePolicyP2Config(
                 mode=str(online_policy.get("p2", {}).get("mode", "none")),

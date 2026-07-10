@@ -37,6 +37,7 @@ Layer 4: online phase-sync runtime with control overhead
   - `total_forward_us`
   - inclusive dispatch/combine hook path duration
   - named control substages inside those hooks
+  - unattributed hook time after subtracting confirmed nested substages
 - Current `rank*_transport_execution.jsonl` artifacts do not expose reliable cross-rank transport timestamps, so true NCCL transport makespan is still unavailable.
 
 Layer 5: future async_release runtime
@@ -64,6 +65,12 @@ Both conversion steps currently lose.
 3. Defer or compact `record_window_state`.
 4. Compact `store_prepared_plan`.
 5. Re-measure actual transport timing after control-cost reduction once timestamped transport artifacts exist.
+
+Current online bridge semantic fixes already landed:
+
+- logical `P2(L)` prepared priority maps to runtime `P0(L+1)`
+- stale logical `P0/P1` prepared edges are excluded from next-layer priority
+- prepared priority is now an advisory/tie-break signal instead of an unconditional override
 
 ## Non-Claims
 

@@ -84,6 +84,10 @@ class CalibratedArtifactP2HintProvider:
                 "prediction_digest": str(self._shared_state.get("prediction_digest", "")),
                 "predicted_row_sums": list(self._shared_state.get("predicted_row_sums", ()) or ()),
                 "predicted_col_sums": list(self._shared_state.get("predicted_col_sums", ()) or ()),
+                "prepared_priority_mode": str(self._shared_state.get("prepared_priority_mode", "mapped_p2_tiebreak")),
+                "has_real_p1_reservation": bool(self._shared_state.get("has_real_p1_reservation", False)),
+                "p1_reservation_row_sums": list(self._shared_state.get("p1_reservation_row_sums", ()) or ()),
+                "p1_reservation_col_sums": list(self._shared_state.get("p1_reservation_col_sums", ()) or ()),
                 **plan_priority,
             },
         )
@@ -111,29 +115,39 @@ def extract_prepared_plan_priority(prepared_plan: PreparedWindowPlan | Any) -> d
 
     preferred_edges: list[dict[str, Any]] = []
     preferred_waves: list[dict[str, Any]] = []
+    stale_edges: list[dict[str, Any]] = []
     seen_edges: dict[tuple[str, int, int], int] = {}
+    seen_preferred_edges: set[tuple[str, int, int]] = set()
+    source_layer_id = str(getattr(prepared_plan, "created_at_layer_id", ""))
+    target_layer_id = str(getattr(prepared_plan, "applies_from_layer_id", ""))
     logical_plan = getattr(prepared_plan, "logical_plan")
     for wave in getattr(logical_plan, "waves", ()):
         wave_edges: list[dict[str, Any]] = []
         for flow in getattr(wave, "flows", ()):
-            phase = _runtime_phase_name(str(getattr(flow, "phase", "")))
-            if phase not in {"P0", "P1"}:
-                continue
-            edge_key = (phase, int(getattr(flow, "src_rank")), int(getattr(flow, "dst_rank")))
+            logical_phase = str(getattr(flow, "phase", ""))
+            runtime_phase = "P0" if logical_phase in {"p2_next_dispatch", "P2", "p2"} else _runtime_phase_name(logical_phase)
+            edge_key = (runtime_phase, int(getattr(flow, "src_rank")), int(getattr(flow, "dst_rank")))
             priority = seen_edges.setdefault(edge_key, len(seen_edges))
             edge = {
-                "phase": phase,
+                "phase": runtime_phase,
                 "src_rank": edge_key[1],
                 "dst_rank": edge_key[2],
                 "priority": priority,
-                "origin_phase": str(getattr(flow, "phase", "")),
+                "origin_phase": logical_phase,
                 "origin_flow_id": str(getattr(flow, "flow_id", "")),
                 "byte_count": int(getattr(flow, "byte_count", 0)),
                 "wave_id": int(getattr(wave, "wave_id", 0)),
+                "source_layer_id": source_layer_id,
+                "target_layer_id": target_layer_id,
+                "forecast_digest": str(getattr(prepared_plan, "forecast_digest", "")),
             }
-            wave_edges.append(edge)
-            if priority == len(preferred_edges):
-                preferred_edges.append(edge)
+            if logical_phase in {"p2_next_dispatch", "P2", "p2"}:
+                wave_edges.append(edge)
+                if edge_key not in seen_preferred_edges:
+                    preferred_edges.append(edge)
+                    seen_preferred_edges.add(edge_key)
+            else:
+                stale_edges.append(edge)
         if wave_edges:
             preferred_waves.append({"wave_id": int(getattr(wave, "wave_id", 0)), "edges": wave_edges})
     return {
@@ -141,6 +155,9 @@ def extract_prepared_plan_priority(prepared_plan: PreparedWindowPlan | Any) -> d
         "preferred_waves": preferred_waves,
         "preferred_edge_count": len(preferred_edges),
         "preferred_wave_count": len(preferred_waves),
+        "mapped_p2_edge_count": len(preferred_edges),
+        "stale_p0_p1_edge_count_ignored": len(stale_edges),
+        "stale_prepared_edges": stale_edges,
     }
 
 

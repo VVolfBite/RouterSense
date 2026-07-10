@@ -71,7 +71,9 @@ from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import Nat
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.runtime.online.megatron_ep.prediction import (
     CopyCurrentDispatchPredictor,
+    HistoryEMATrafficPredictor,
     PredictionInput,
+    ZeroHintPredictor,
     compare_predicted_to_actual,
     maybe_capture_expert_route_trace,
 )
@@ -104,6 +106,8 @@ class RouterSenseInjectionRuntime:
             "plan_source_layer": "",
             "predicted_dispatch_by_layer": {},
             "actual_dispatch_by_layer": {},
+            "prepared_priority_mode": "mapped_p2_tiebreak",
+            "has_real_p1_reservation": False,
         }
     )
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
@@ -405,6 +409,17 @@ class RouterSenseInjectionRuntime:
         except ValueError:
             return layer_id
 
+    def _online_p2_predictor_name(self) -> str:
+        return str(getattr(self.config, "online_p2_predictor", "copy_current_dispatch") or "copy_current_dispatch")
+
+    def _build_online_predictor(self):
+        name = self._online_p2_predictor_name()
+        if name == "none":
+            return ZeroHintPredictor()
+        if name == "history_ema":
+            return HistoryEMATrafficPredictor(alpha=0.5)
+        return CopyCurrentDispatchPredictor()
+
     def _record_prediction_for_dispatch(
         self,
         *,
@@ -467,7 +482,7 @@ class RouterSenseInjectionRuntime:
             predicted_dispatch_by_layer.pop(str(layer_id), None)
         audit_end_ns = time.monotonic_ns()
 
-        predictor = CopyCurrentDispatchPredictor()
+        predictor = self._build_online_predictor()
         prediction_input = PredictionInput(
             run_id_digest=digest_text(self.run_id),
             layer_id=str(layer_id),
@@ -480,6 +495,11 @@ class RouterSenseInjectionRuntime:
             metadata={
                 "matrix_source": matrix_bundle.matrix_source,
                 "is_global": bool(matrix_bundle.is_global),
+                "previous_dispatch_matrix": (
+                    actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
+                    if str(layer_id).isdigit()
+                    else None
+                ),
             },
         )
         prediction_start_ns = time.monotonic_ns()
@@ -842,7 +862,7 @@ class RouterSenseInjectionRuntime:
             prediction_evaluation_eligible = bool(prediction_entry.get("evaluation_eligible", True))
             prediction_is_oracle = bool(prediction_entry.get("is_oracle", False))
         else:
-            fallback = CopyCurrentDispatchPredictor().predict(
+            fallback = self._build_online_predictor().predict(
                 prediction_input=PredictionInput(
                     run_id_digest=digest_text(self.run_id),
                     layer_id=str(layer_id),
@@ -852,7 +872,14 @@ class RouterSenseInjectionRuntime:
                     current_dispatch_matrix_digest=str(dispatch_entry.get("matrix_digest", "")),
                     current_dispatch_total_bytes=int(dispatch_entry.get("total_bytes", 0) or 0),
                     current_dispatch_nonzero_edges=int(dispatch_entry.get("nonzero_edge_count", 0) or 0),
-                    metadata={"fallback": True},
+                    metadata={
+                        "fallback": True,
+                        "previous_dispatch_matrix": (
+                            actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
+                            if str(layer_id).isdigit()
+                            else None
+                        ),
+                    },
                 ),
                 current_dispatch_matrix=dispatch_matrix,
             )
@@ -951,6 +978,10 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["p2_matrix_gather_time_us"] = float(p1_bundle.gather_time_us)
         self._prepared_plan_state["p2_matrix_gather_status"] = str(p1_bundle.matrix_source)
         self._prepared_plan_state["p2_matrix_gather_call_count"] = int(p1_bundle.gather_call_count)
+        self._prepared_plan_state["prepared_priority_mode"] = "mapped_p2_tiebreak"
+        self._prepared_plan_state["has_real_p1_reservation"] = False
+        self._prepared_plan_state["p1_reservation_row_sums"] = []
+        self._prepared_plan_state["p1_reservation_col_sums"] = []
         self._prepared_plan_state["predictor_name"] = predictor_name
         self._prepared_plan_state["prediction_digest"] = prediction_digest
         self._prepared_plan_state.pop("prepared_priority_cache", None)

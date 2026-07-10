@@ -83,6 +83,7 @@ class AsyncReleasePlanBuilder:
             phase_tasks=tuple(phase_tasks),
             dependency_edges=tuple(dependency_edges),
             release_conditions=release_conditions,
+            event_table={},
             fallback_to_phase_sync=not self.executor_available,
             online_executor_eligible=bool(self.executor_available and runtime_line == "async_release"),
             debug_replay_only=not self.executor_available,

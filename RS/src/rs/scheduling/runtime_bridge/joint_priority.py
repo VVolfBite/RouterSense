@@ -104,14 +104,14 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
         p2_cols = meta["p2_col_sums"]
         if phase == "p0_dispatch":
             release_pressure = int((p1_rows[dst_rank] if dst_rank < len(p1_rows) else 0) + (p1_cols[dst_rank] if dst_rank < len(p1_cols) else 0))
-            downstream_pressure = int((p2_rows[dst_rank] if dst_rank < len(p2_rows) else 0) + (p2_cols[dst_rank] if dst_rank < len(p2_cols) else 0))
+            downstream_pressure = int((p2_rows[src_rank] if src_rank < len(p2_rows) else 0) + (p2_cols[src_rank] if src_rank < len(p2_cols) else 0))
             score = (
                 self.p0_weight * float(byte_count)
                 + self.p1_reservation_weight * float(release_pressure)
                 + self.p2_hint_weight * float(downstream_pressure)
             )
             return (score, float(release_pressure), src_rank, dst_rank)
-        downstream_pressure = int((p2_rows[src_rank] if src_rank < len(p2_rows) else 0) + (p2_cols[src_rank] if src_rank < len(p2_cols) else 0))
+        downstream_pressure = int((p2_rows[dst_rank] if dst_rank < len(p2_rows) else 0) + (p2_cols[dst_rank] if dst_rank < len(p2_cols) else 0))
         score = self.p0_weight * float(byte_count) + self.p2_hint_weight * float(downstream_pressure)
         return (score, float(rank_pressure.get(src_rank, 0)), src_rank, dst_rank)
 
@@ -236,6 +236,7 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
         p1_cols: defaultdict[int, int] = defaultdict(int)
         preferred_edges: dict[tuple[int, int], int] = {}
         metadata = local_context.p2_hint.metadata or {}
+        prepared_priority_mode = str(metadata.get("prepared_priority_mode", "mapped_p2_tiebreak") or "mapped_p2_tiebreak")
         for item in metadata.get("preferred_edges", ()) or ():
             phase_name = str(item.get("phase", ""))
             if phase_name != str(local_context.phase):
@@ -243,11 +244,12 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
             preferred_edges[(int(item.get("src_rank", -1)), int(item.get("dst_rank", -1)))] = int(item.get("priority", 0))
         predicted_row_sums = [int(value) for value in metadata.get("predicted_row_sums", ()) or ()]
         predicted_col_sums = [int(value) for value in metadata.get("predicted_col_sums", ()) or ()]
-        for layout in transfer_layouts:
-            if int(layout.src_rank) == int(layout.dst_rank):
-                continue
-            p1_rows[int(layout.dst_rank)] += int(layout.byte_count)
-            p1_cols[int(layout.src_rank)] += int(layout.byte_count)
+        uses_real_p1_reservation = bool(metadata.get("has_real_p1_reservation", False))
+        if uses_real_p1_reservation:
+            for row_idx, value in enumerate(metadata.get("p1_reservation_row_sums", ()) or ()):
+                p1_rows[int(row_idx)] = int(value)
+            for col_idx, value in enumerate(metadata.get("p1_reservation_col_sums", ()) or ()):
+                p1_cols[int(col_idx)] = int(value)
 
         def predicted_pressure(rank: int) -> int:
             row = predicted_row_sums[rank] if rank < len(predicted_row_sums) else 0
@@ -259,19 +261,38 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
             plan_priority = preferred_edges.get(edge)
             if local_context.phase == "P0":
                 release_pressure = int(p1_rows[int(task.dst_rank)] + p1_cols[int(task.dst_rank)])
-                downstream_pressure = predicted_pressure(int(task.dst_rank))
+                downstream_pressure = predicted_pressure(int(task.src_rank))
             else:
-                release_pressure = int(predicted_pressure(int(task.src_rank)))
+                release_pressure = int(p1_rows[int(task.src_rank)] + p1_cols[int(task.src_rank)])
                 downstream_pressure = int(predicted_pressure(int(task.dst_rank)))
             score = (
                 self.p0_weight * float(task.byte_count)
                 + self.p1_reservation_weight * float(release_pressure)
                 + self.p2_hint_weight * float(downstream_pressure)
             )
+            prepared_hint_bonus = 0.0
+            if plan_priority is not None:
+                prepared_hint_bonus = float(max(0, len(preferred_edges) - int(plan_priority)))
+            if prepared_priority_mode == "live_score_only":
+                return (
+                    -score,
+                    -int(task.byte_count),
+                    int(task.src_rank),
+                    int(task.dst_rank),
+                    int(task.bucket_ordinal),
+                )
+            if prepared_priority_mode == "mapped_p2_bounded_bonus":
+                return (
+                    -(score + 1e-3 * prepared_hint_bonus),
+                    -int(task.byte_count),
+                    int(task.src_rank),
+                    int(task.dst_rank),
+                    int(task.bucket_ordinal),
+                )
             return (
+                -score,
                 0 if plan_priority is not None else 1,
                 int(plan_priority) if plan_priority is not None else 10**9,
-                -score,
                 -int(task.byte_count),
                 int(task.src_rank),
                 int(task.dst_rank),
@@ -308,7 +329,9 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
             "wave_edges": [[{"src_rank": int(task.src_rank), "dst_rank": int(task.dst_rank), "bucket_id": task.task_id} for task in wave.bucket_tasks] for wave in waves],
             "per_wave_matching_weight": [float(sum(int(task.byte_count) for task in wave.bucket_tasks)) for wave in waves],
             "uses_current_phase_demand": True,
-            "uses_p1_reservation": True,
+            "uses_p1_reservation": bool(uses_real_p1_reservation),
+            "p1_reservation_source": "prepared_window_observation" if uses_real_p1_reservation else "unavailable",
+            "p1_reservation_weight_effective": float(self.p1_reservation_weight if uses_real_p1_reservation else 0.0),
             "uses_p2_hint": True,
             "priority_components": {
                 "p0_weight": self.p0_weight,
@@ -318,7 +341,7 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
                 "remote_only_matrix_invariant": True,
                 "self_bytes_ignored": int(metadata.get("predicted_self_bytes", 0) or 0),
             },
-            "tie_break_rule": "prepared_priority -> joint score -> byte_count -> src_rank,dst_rank,bucket_ordinal",
+            "tie_break_rule": f"{prepared_priority_mode} -> byte_count -> src_rank,dst_rank,bucket_ordinal",
             "fallback_reason": "",
             "evaluation_eligible": local_context.p2_hint.hint_mode == "calibrated_artifact",
             "p2_hint_source": local_context.p2_hint.hint_source,
@@ -331,6 +354,11 @@ class RouterSenseJointPriorityPhaseSyncPolicy:
             "predictor_name": str(metadata.get("predictor_name", "")),
             "prepared_plan_consumed_prediction_digest": str(metadata.get("prediction_digest", "")),
             "prepared_plan_p2_source": str(metadata.get("p2_matrix_source", local_context.p2_hint.hint_source)),
+            "prepared_priority_mode": prepared_priority_mode,
+            "mapped_p2_edge_count": int(metadata.get("mapped_p2_edge_count", len(preferred_edges)) or 0),
+            "stale_p0_p1_edge_count_ignored": int(metadata.get("stale_p0_p1_edge_count_ignored", 0) or 0),
+            "live_score_changed_order": True,
+            "prepared_hint_changed_order": bool(preferred_edges),
             "remote_only_matrix_invariant": True,
             "self_bytes_ignored": int(metadata.get("predicted_self_bytes", 0) or 0),
         }

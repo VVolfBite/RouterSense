@@ -116,6 +116,25 @@ class SafeJointPolicy:
         self._paired_b_policy = paired_b_policy
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
+        raw_eval, b_eval, selected, fallback, reason = self.evaluate_components(problem)
+        diagnostics = self._build_safe_diagnostics(
+            problem=problem,
+            raw_eval=raw_eval,
+            b_eval=b_eval,
+            selected=selected,
+            fallback=fallback,
+            reason=reason,
+        )
+        return LogicalSchedulePlan(
+            policy_name=self.policy_name,
+            waves=selected.plan.waves,
+            diagnostics=diagnostics,
+        )
+
+    def evaluate_components(
+        self,
+        problem: MultiPhaseSchedulingProblem,
+    ) -> tuple[_EvaluatedPlan, _EvaluatedPlan, _EvaluatedPlan, bool, str]:
         raw_eval = _evaluate_plan(problem, self._raw_u_policy.build_logical_plan(problem))
         b_eval = _evaluate_plan(problem, self._paired_b_policy.build_logical_plan(problem))
         selected = raw_eval
@@ -125,6 +144,18 @@ class SafeJointPolicy:
             selected = b_eval
             fallback = True
             reason = "fallback_to_paired_b" if b_eval.valid else "raw_u_invalid_and_b_invalid"
+        return raw_eval, b_eval, selected, fallback, reason
+
+    def _build_safe_diagnostics(
+        self,
+        *,
+        problem: MultiPhaseSchedulingProblem,
+        raw_eval: _EvaluatedPlan,
+        b_eval: _EvaluatedPlan,
+        selected: _EvaluatedPlan,
+        fallback: bool,
+        reason: str,
+    ) -> dict[str, Any]:
         diagnostics = dict(selected.plan.diagnostics)
         diagnostics.update(
             {
@@ -145,11 +176,7 @@ class SafeJointPolicy:
                 "safe_policy": self.policy_name,
             }
         )
-        return LogicalSchedulePlan(
-            policy_name=self.policy_name,
-            waves=selected.plan.waves,
-            diagnostics=diagnostics,
-        )
+        return diagnostics
 
 
 __all__ = ["SafeJointPolicy"]

@@ -46,6 +46,7 @@ class OnlinePolicyParameters:
     p2_hint_mode: str = "none"
     p2_hint_artifact: str = ""
     calibrated_p2_enabled: bool = False
+    online_p2_predictor: str = "copy_current_dispatch"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +101,7 @@ class RouterSenseInjectionConfig:
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 1.0
     p2_hint_artifact: str = ""
+    online_p2_predictor: str = "copy_current_dispatch"
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
     capture_phase_tensors: bool = False

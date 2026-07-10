@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rs.runtime.online.megatron_ep.async_release import AsyncReleasePlanBuilder, validate_async_release_execution_plan
+from rs.runtime.online.megatron_ep.async_release import AsyncReleaseP2PExecutor, AsyncReleaseP2PExecutorConfig, AsyncReleasePlanBuilder
 from rs.scheduling.online_adapters.priority_artifact import PairedUPriorityArtifact, PriorityEntry
 
 
@@ -12,8 +12,8 @@ def _artifact() -> PairedUPriorityArtifact:
         selected_policy="U_barrier_criticality_global_matching",
         fallback_to_paired_b=False,
         heuristic_family="barrier_criticality_matching",
-        predictor_name="fate_style_linear",
-        p2_source="fate_style_linear",
+        predictor_name="copy_current_dispatch",
+        p2_source="copy_current_dispatch",
         priority_entries=(
             PriorityEntry("p0_dispatch", 0, 1, 8, 10.0, 0, 8, "none"),
             PriorityEntry("p1_return", 1, 0, 4, 9.0, 1, 4, "wait_p0_complete"),
@@ -21,14 +21,15 @@ def _artifact() -> PairedUPriorityArtifact:
     )
 
 
-def test_async_release_plan_builder_fails_closed_without_executor() -> None:
+def test_async_release_p2p_executor_orders_recvs_before_sends_deterministically() -> None:
     plan = AsyncReleasePlanBuilder(executor_available=False).build(
         priority_artifact=_artifact(),
-        observed_context={"layer_id": "0", "phase": "P0"},
+        observed_context={"layer_id": "0"},
     )
-    assert plan.fallback_to_phase_sync is True
-    assert plan.online_executor_eligible is False
-    assert plan.debug_replay_only is True
-    result = validate_async_release_execution_plan(plan)
-    assert result["valid"] is True
-    assert plan.event_table == {}
+    executor = AsyncReleaseP2PExecutor(config=AsyncReleaseP2PExecutorConfig(enabled=True))
+    report = executor.execute(plan)
+    ordered = report["ordered_ops"]
+    assert ordered[0]["op_kind"] == "recv"
+    assert ordered[1]["op_kind"] == "send"
+    assert report["real_collectives_executed"] is False
+    assert report["fallback_to_phase_sync"] is True

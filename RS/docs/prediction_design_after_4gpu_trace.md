@@ -63,6 +63,13 @@ Current observations:
 
 Therefore, the next optimization should focus on policy P2 consumption before adding predictor complexity.
 
+Corrected bridge status after the current round:
+
+- `policy_explain` now reports raw-U / paired-B / safe actual order separately.
+- confidence double-scaling has been removed.
+- online prepared-plan mapping now treats logical `P2(layer L)` as next-layer runtime `P0(layer L+1)` advisory priority.
+- stale logical `P0/P1` prepared edges are ignored for next-layer execution order.
+
 Current P2-consumption diagnosis:
 
 - `RS_safe_barrier_criticality`

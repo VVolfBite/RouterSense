@@ -49,12 +49,9 @@ def outbound_loads(
     matrices = [dispatch_matrix, combine_matrix, next_dispatch_matrix]
     loads: dict[tuple[int, int], float] = {}
     for phase, matrix in enumerate(matrices):
-        scale = 1.0
-        if phase == 2 and mode == RUNTIME_LOOKAHEAD_MODE:
-            scale = max(0.0, min(1.0, prediction_confidence))
         remote_rows = matrix_row_sums_remote(canonicalize_remote_matrix(matrix))
         for gpu, row_sum in enumerate(remote_rows):
-            loads[(phase, gpu)] = scale * float(row_sum)
+            loads[(phase, gpu)] = float(row_sum)
     return loads
 
 

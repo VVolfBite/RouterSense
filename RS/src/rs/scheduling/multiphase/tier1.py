@@ -114,6 +114,7 @@ class Tier1MultiphasePolicy:
             raise ValueError(f"unknown Tier 1 algorithm {algorithm_id!r}")
         self.algorithm_id = algorithm_id
         self.policy_name = algorithm_id
+        self.collect_debug_trace = False
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
         if self.algorithm_id == "B_birkhoff":
@@ -122,7 +123,7 @@ class Tier1MultiphasePolicy:
             return _build_b_birkhoff_wave(problem)
         if self.algorithm_id == "U_lagrangian":
             return _build_lagrangian(problem)
-        return _build_u_policy(problem, _U_SPECS[self.algorithm_id])
+        return _build_u_policy(problem, _U_SPECS[self.algorithm_id], policy=self)
 
 
 def is_tier1_algorithm(policy_name: str) -> bool:
@@ -148,7 +149,12 @@ def tier1_inventory() -> tuple[dict[str, Any], ...]:
     )
 
 
-def _build_u_policy(problem: MultiPhaseSchedulingProblem, spec: Tier1PolicySpec) -> LogicalSchedulePlan:
+def _build_u_policy(
+    problem: MultiPhaseSchedulingProblem,
+    spec: Tier1PolicySpec,
+    *,
+    policy: Tier1MultiphasePolicy,
+) -> LogicalSchedulePlan:
     if spec.exact_matching and linear_sum_assignment is None:
         return _unsupported_exact_backend_plan(problem, spec)
     started = time.perf_counter()
@@ -174,6 +180,7 @@ def _build_u_policy(problem: MultiPhaseSchedulingProblem, spec: Tier1PolicySpec)
         price_clip=spec.price_clip,
         iteration_budget=spec.iteration_budget,
         atomic=spec.atomic,
+        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
     )
     planning_time_ms = float(result.get("solve_time_ms", (time.perf_counter() - started) * 1000.0))
     return _raw_schedule_to_plan(
@@ -195,7 +202,9 @@ def _build_u_policy(problem: MultiPhaseSchedulingProblem, spec: Tier1PolicySpec)
                 "age_weight": spec.age_weight,
                 "prediction_weight": spec.prediction_weight,
                 "adaptive_prices": spec.adaptive_prices,
-            }
+            },
+            "scheduler_debug_trace": list(result.get("debug_trace", [])),
+            "scheduler_debug_trace_collected": bool(getattr(policy, "collect_debug_trace", False)),
         },
     )
 

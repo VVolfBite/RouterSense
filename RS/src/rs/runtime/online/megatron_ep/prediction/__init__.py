@@ -11,7 +11,7 @@ from .expert_to_traffic import ExpertToTrafficAudit, compare_reconstructed_traff
 from .expert_trace import ExpertRouteRecord, SourceExpertCountMatrix, aggregate_route_records
 from .expert_trace_capture import maybe_capture_expert_route_trace
 from .gate_replay_predictor import GateReplayPredictionResult, MockGateReplayPredictor
-from .simple_predictors import CopyCurrentDispatchPredictor, ZeroHintPredictor
+from .simple_predictors import CopyCurrentDispatchPredictor, HistoryEMATrafficPredictor, ZeroHintPredictor
 from .traffic_calibration import TrafficCalibrationAudit, calibrate_traffic_matrix
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "TrafficCalibrationAudit",
     "ZeroHintPredictor",
     "CopyCurrentDispatchPredictor",
+    "HistoryEMATrafficPredictor",
     "aggregate_route_records",
     "calibrate_traffic_matrix",
     "compare_predicted_to_actual",

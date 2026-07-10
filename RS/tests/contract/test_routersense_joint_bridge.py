@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from rs.scheduling import ForecastPressure, FlowDemand, FlowWindow, GlobalReadySetOptions, LogicalTopology, MultiPhaseSchedulingProblem, ReleaseConstraint, resolve_policy
+from rs.runtime.online.megatron_ep.control.p2_provider import extract_prepared_plan_priority
+from rs.scheduling import ForecastPressure, FlowDemand, FlowWindow, GlobalReadySetOptions, LogicalTopology, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint, resolve_policy
 from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
 
@@ -126,3 +127,29 @@ def test_async_release_joint_bridge_path_can_beat_phase_sync_birkhoff_on_sensiti
         policy_name="routersense_joint_async_release",
     )
     assert float(sim["completion_time"]) < float(birkhoff.diagnostics["makespan"])
+
+
+def test_prepared_plan_maps_logical_p2_to_next_layer_runtime_p0() -> None:
+    prepared = PreparedWindowPlan(
+        window_key="w0",
+        forecast_digest="fd0",
+        logical_plan=LogicalSchedulePlan(
+            policy_name="routersense_multiphase_lookahead:p0_p1_p2",
+            waves=(
+                LogicalWave(wave_id=0, flows=(FlowDemand("p0_dispatch:0->1", "p0_dispatch", 0, 1, 8, "ready", True),)),
+                LogicalWave(wave_id=1, flows=(FlowDemand("p2_next_dispatch:1->0", "p2_next_dispatch", 1, 0, 6, "ready", True),)),
+            ),
+            diagnostics={},
+        ),
+        created_at_layer_id="4",
+        applies_from_layer_id="5",
+        execution_capability_required="phase_sync",
+    )
+    payload = extract_prepared_plan_priority(prepared)
+    assert payload["mapped_p2_edge_count"] == 1
+    assert payload["stale_p0_p1_edge_count_ignored"] >= 1
+    edge = payload["preferred_edges"][0]
+    assert edge["phase"] == "P0"
+    assert edge["origin_phase"] == "p2_next_dispatch"
+    assert edge["source_layer_id"] == "4"
+    assert edge["target_layer_id"] == "5"

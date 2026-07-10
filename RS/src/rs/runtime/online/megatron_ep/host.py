@@ -670,6 +670,7 @@ def attach_formal_online_runtime(
         p1_reservation_weight=runtime_config.policy_parameters.p1_reservation_weight,
         p2_hint_weight=runtime_config.policy_parameters.p2_hint_weight,
         p2_hint_artifact=runtime_config.policy_parameters.p2_hint_artifact,
+        online_p2_predictor=str(getattr(runtime_config.policy_parameters, "online_p2_predictor", "copy_current_dispatch")),
         schedule_layer_selector=runtime_config.execution_selection.layer_selector,
         schedule_phase_selector=runtime_config.execution_selection.phase_selector,
         capture_phase_tensors=bool(runtime_config.observation.get("capture_enabled", False)),

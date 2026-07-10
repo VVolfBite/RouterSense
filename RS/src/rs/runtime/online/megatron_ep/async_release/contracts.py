@@ -36,6 +36,7 @@ class AsyncReleaseExecutionPlan:
     phase_tasks: tuple[dict[str, Any], ...]
     dependency_edges: tuple[tuple[str, str], ...]
     release_conditions: dict[str, dict[str, Any]]
+    event_table: dict[str, dict[str, Any]]
     fallback_to_phase_sync: bool
     online_executor_eligible: bool
     debug_replay_only: bool
