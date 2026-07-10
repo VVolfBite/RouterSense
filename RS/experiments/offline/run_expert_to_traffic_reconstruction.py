@@ -12,8 +12,13 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
-from rs.runtime.online.megatron_ep.prediction.expert_to_traffic import compare_reconstructed_traffic, source_expert_counts_to_traffic_matrix
+from rs.runtime.online.megatron_ep.prediction.expert_to_traffic import (
+    DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN,
+    compare_reconstructed_traffic,
+    source_expert_counts_to_traffic_matrix,
+)
 from rs.runtime.online.megatron_ep.prediction.expert_trace import SourceExpertCountMatrix, load_source_expert_counts_jsonl
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix
 
 
 def _parse_args() -> argparse.Namespace:
@@ -21,7 +26,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fixture-dir", required=True)
     parser.add_argument("--output-summary", required=True)
     parser.add_argument("--output-summary-md", required=True)
-    parser.add_argument("--bytes-per-token", type=int, default=1)
+    parser.add_argument("--bytes-per-token", type=int, default=DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN)
     return parser.parse_args()
 
 
@@ -151,9 +156,72 @@ def merge_actual_traffic_by_layer_and_source_rank(
     return matrix, diagnostics
 
 
-def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: int = 1) -> dict[str, Any]:
+def merge_phase_context_dispatch_matrix_by_layer(
+    phase_context_rows: list[dict[str, Any]],
+    *,
+    layer_id: int,
+    world_size: int,
+) -> tuple[tuple[tuple[int, ...], ...] | None, dict[str, Any]]:
+    filtered = [
+        row
+        for row in phase_context_rows
+        if str(row.get("phase", "")).upper() == "P0" and int(row.get("layer_id", -1)) == int(layer_id)
+    ]
+    merged_rows = [[0 for _ in range(world_size)] for _ in range(world_size)]
+    seen_source_ranks: set[int] = set()
+    missing_source_ranks: list[int] = []
+    conflict_source_ranks: list[int] = []
+    for row in filtered:
+        source_rank = row.get("global_rank")
+        if source_rank is None:
+            source_rank = row.get("rank")
+        if source_rank is None:
+            source_rank = (row.get("topology", {}) or {}).get("ep_group_rank")
+        if source_rank is None:
+            raise ValueError(f"missing source rank in phase context for layer_id={layer_id}")
+        source_rank = int(source_rank)
+        peer_bytes = tuple(int(value) for value in (row.get("per_peer_bytes") or ()))
+        if len(peer_bytes) != world_size:
+            raise ValueError(
+                f"per_peer_bytes width mismatch for layer_id={layer_id}: got {len(peer_bytes)} expected {world_size}"
+            )
+        if source_rank in seen_source_ranks:
+            if tuple(merged_rows[source_rank]) != peer_bytes:
+                conflict_source_ranks.append(source_rank)
+            continue
+        merged_rows[source_rank] = list(peer_bytes)
+        seen_source_ranks.add(source_rank)
+    for source_rank in range(world_size):
+        if source_rank not in seen_source_ranks:
+            missing_source_ranks.append(source_rank)
+    diagnostics = {
+        "layer_id": int(layer_id),
+        "phase_context_row_count": len(filtered),
+        "seen_source_ranks": sorted(seen_source_ranks),
+        "missing_source_ranks": missing_source_ranks,
+        "conflict_source_ranks": sorted(set(conflict_source_ranks)),
+        "complete_world_matrix": not missing_source_ranks and not conflict_source_ranks,
+    }
+    if conflict_source_ranks:
+        raise ValueError(f"conflicting phase_context per_peer_bytes for layer_id={layer_id}: {sorted(set(conflict_source_ranks))}")
+    if not filtered:
+        return None, diagnostics
+    return canonicalize_remote_matrix(tuple(tuple(int(v) for v in row) for row in merged_rows)), diagnostics
+
+
+def _load_phase_context_rows(fixture_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted(fixture_dir.glob("*phase_contexts*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: int = DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN) -> dict[str, Any]:
     source_count_files = sorted(fixture_dir.glob("*source_expert_counts*.jsonl"))
     audit_files = sorted(fixture_dir.glob("*expert_to_traffic_audit*.jsonl"))
+    phase_context_rows = _load_phase_context_rows(fixture_dir)
     if not source_count_files:
         return {
             "fixture_dir": str(fixture_dir),
@@ -179,6 +247,14 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
                 "missing_source_ranks_by_layer": {},
                 "conflict_source_ranks_by_layer": {},
                 "mean_relative_l1_error": None,
+                "o1_corrected_relative_l1": None,
+                "o1_corrected_cosine": None,
+                "o1_corrected_row_sum_error": None,
+                "o1_corrected_col_sum_error": None,
+                "o1_legacy_debug_relative_l1": None,
+                "bytes_model_used": "hidden_only",
+                "actual_matrix_source": None,
+                "matrix_scope": "remote_only",
                 "expert_to_traffic_mapping_valid": False,
                 "source_rank_granularity_required": None,
             },
@@ -194,6 +270,10 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
     by_layer_ids = sorted({int(record.layer_id) for record in all_records})
     rows: list[dict[str, Any]] = []
     o1_errors: list[float] = []
+    o1_cosines: list[float] = []
+    o1_row_errors: list[float] = []
+    o1_col_errors: list[float] = []
+    legacy_o1_errors: list[float] = []
     o2_errors: list[float] = []
     o3_errors: list[float] = []
     o4_errors: list[float] = []
@@ -241,9 +321,18 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
             raise ValueError(f"missing expert_to_rank_map for layer_id={layer_id}")
         expert_to_rank = {expert_id: int(expert_to_rank_map[expert_id]) for expert_id in range(num_experts)}
         actual = None
-        if fixture_path.exists():
+        actual_matrix_source = None
+        actual, phase_context_diag = merge_phase_context_dispatch_matrix_by_layer(
+            phase_context_rows,
+            layer_id=int(layer_id),
+            world_size=int(world_size),
+        )
+        if actual is not None and phase_context_diag["complete_world_matrix"]:
+            actual_matrix_source = "phase_context_aggregated_p0_dispatch"
+        elif fixture_path.exists():
             fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-            actual = tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])
+            actual = canonicalize_remote_matrix(tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"]))
+            actual_matrix_source = "fixture_p0_dispatch_matrix"
         else:
             actual, actual_diag = merge_actual_traffic_by_layer_and_source_rank(
                 audit_rows,
@@ -262,14 +351,26 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
                 )
                 incomplete_world_matrix_layer_count += 1
                 continue
+            actual = canonicalize_remote_matrix(actual)
+            actual_matrix_source = "legacy_local_row_audit_merged"
         reconstructed = source_expert_counts_to_traffic_matrix(
             merged_counts,
             expert_to_rank,
-            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+            bytes_per_token=int(bytes_per_token or merged_counts.bytes_per_token or DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN),
         )
         audit = compare_reconstructed_traffic(reconstructed, actual)
         if merge_diag["complete_world_matrix"]:
             o1_errors.append(float(audit.relative_l1_error))
+            o1_cosines.append(float(audit.cosine_similarity))
+            o1_row_errors.append(float(audit.row_sum_error))
+            o1_col_errors.append(float(audit.col_sum_error))
+        legacy_actual, _legacy_diag = merge_actual_traffic_by_layer_and_source_rank(
+            audit_rows,
+            layer_id=int(layer_id),
+            world_size=int(world_size),
+        )
+        if legacy_actual is not None:
+            legacy_o1_errors.append(float(compare_reconstructed_traffic(reconstructed, canonicalize_remote_matrix(legacy_actual)).relative_l1_error))
         global_counts = SourceExpertCountMatrix(
             layer_id=int(layer_id),
             world_size=world_size,
@@ -284,14 +385,14 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
                 for source_rank in range(world_size)
             ),
             expert_to_rank_map=tuple(int(v) for v in expert_to_rank_map),
-            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+            bytes_per_token=int(bytes_per_token or merged_counts.bytes_per_token or DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN),
             selected_experts_available=bool(merged_counts.selected_experts_available),
             routing_weights_available=bool(merged_counts.routing_weights_available),
         )
         global_reconstructed = source_expert_counts_to_traffic_matrix(
             global_counts,
             expert_to_rank,
-            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+            bytes_per_token=int(bytes_per_token or merged_counts.bytes_per_token or DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN),
         )
         global_audit = compare_reconstructed_traffic(global_reconstructed, actual)
         o2_errors.append(float(global_audit.relative_l1_error))
@@ -301,13 +402,15 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
         next_actual = None
         if next_fixture_path.exists():
             next_fixture = json.loads(next_fixture_path.read_text(encoding="utf-8"))
-            next_actual = tuple(tuple(int(v) for v in row) for row in next_fixture["p0_dispatch_matrix"])
+            next_actual = canonicalize_remote_matrix(tuple(tuple(int(v) for v in row) for row in next_fixture["p0_dispatch_matrix"]))
         else:
             next_actual, _ = merge_actual_traffic_by_layer_and_source_rank(
                 audit_rows,
                 layer_id=int(layer_id) + 1,
                 world_size=int(world_size),
             )
+            if next_actual is not None:
+                next_actual = canonicalize_remote_matrix(next_actual)
         if next_actual is not None:
             current_expert_copy_audit = compare_reconstructed_traffic(reconstructed, next_actual)
             current_traffic_copy_audit = compare_reconstructed_traffic(actual, next_actual)
@@ -321,6 +424,9 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
                 "missing_source_ranks": list(merge_diag["missing_source_ranks"]),
                 "conflict_source_ranks": list(merge_diag["conflict_source_ranks"]),
                 "o1_valid": bool(merge_diag["complete_world_matrix"]),
+                "actual_matrix_source": actual_matrix_source,
+                "bytes_model_used": "hidden_only",
+                "matrix_scope": "remote_only",
                 "actual_source_expert_to_traffic_relative_l1": audit.relative_l1_error,
                 "traffic_cosine": audit.cosine_similarity,
                 "topk_edge_overlap": audit.topk_edge_overlap,
@@ -351,6 +457,18 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
             "missing_source_ranks_by_layer": missing_source_ranks_by_layer,
             "conflict_source_ranks_by_layer": conflict_source_ranks_by_layer,
             "mean_relative_l1_error": mean_relative,
+            "o1_corrected_relative_l1": mean_relative,
+            "o1_corrected_cosine": (sum(o1_cosines) / len(o1_cosines)) if o1_cosines else None,
+            "o1_corrected_row_sum_error": (sum(o1_row_errors) / len(o1_row_errors)) if o1_row_errors else None,
+            "o1_corrected_col_sum_error": (sum(o1_col_errors) / len(o1_col_errors)) if o1_col_errors else None,
+            "o1_legacy_debug_relative_l1": (sum(legacy_o1_errors) / len(legacy_o1_errors)) if legacy_o1_errors else None,
+            "bytes_model_used": "hidden_only",
+            "actual_matrix_source": (
+                "phase_context_aggregated_p0_dispatch"
+                if any(row.get("actual_matrix_source") == "phase_context_aggregated_p0_dispatch" for row in rows)
+                else ("fixture_p0_dispatch_matrix" if any(row.get("actual_matrix_source") == "fixture_p0_dispatch_matrix" for row in rows) else "legacy_local_row_audit_merged")
+            ),
+            "matrix_scope": "remote_only",
             "expert_to_traffic_mapping_valid": mean_relative is not None and complete_world_matrix_layer_count > 0,
             "source_rank_granularity_required": None if not o1_errors or not o2_errors else (sum(o1_errors) / len(o1_errors)) <= (sum(o2_errors) / len(o2_errors)),
             "expert_count_copy_baseline_l1": None if not o3_errors else sum(o3_errors) / len(o3_errors),
@@ -375,7 +493,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     if not payload["expert_trace_available"]:
         lines.append("- GPU collection required: collect selected_experts, routing_weights, source_rank, layer_id, expert_to_rank")
         return "\n".join(lines) + "\n"
-    lines.extend(
+        lines.extend(
         [
             "",
             "| Layer | O1 source-expert->traffic L1 | O2 global-expert->traffic L1 | O3 current-expert-copy->next L1 | O4 current-traffic-copy->next L1 | cosine | self bytes ignored |",
@@ -396,6 +514,21 @@ def render_markdown(payload: dict[str, Any]) -> str:
             f"{traffic_copy_text} | "
             f"{row['traffic_cosine']:.4f} | {row['self_bytes_ignored']} |"
         )
+    summary = payload["summary"]
+    lines.extend(
+        [
+            "",
+            "## Corrected O1",
+            f"- o1_corrected_relative_l1: `{summary.get('o1_corrected_relative_l1')}`",
+            f"- o1_corrected_cosine: `{summary.get('o1_corrected_cosine')}`",
+            f"- o1_corrected_row_sum_error: `{summary.get('o1_corrected_row_sum_error')}`",
+            f"- o1_corrected_col_sum_error: `{summary.get('o1_corrected_col_sum_error')}`",
+            f"- o1_legacy_debug_relative_l1: `{summary.get('o1_legacy_debug_relative_l1')}`",
+            f"- bytes_model_used: `{summary.get('bytes_model_used')}`",
+            f"- actual_matrix_source: `{summary.get('actual_matrix_source')}`",
+            f"- matrix_scope: `{summary.get('matrix_scope')}`",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 

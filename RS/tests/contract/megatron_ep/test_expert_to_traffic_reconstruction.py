@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from experiments.offline.run_expert_to_traffic_reconstruction import (
     merge_source_expert_counts_by_layer_and_source_rank,
+    run_expert_to_traffic_reconstruction,
 )
 from rs.runtime.online.megatron_ep.prediction.expert_to_traffic import (
     compare_reconstructed_traffic,
@@ -109,3 +113,44 @@ def test_merge_source_expert_counts_rejects_conflicting_rank_rows() -> None:
             world_size=2,
             num_experts=2,
         )
+
+
+def test_corrected_expert_to_traffic_o1_is_zero_on_gpu_trace_fixture(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "trace"
+    fixture_dir.mkdir()
+    rows = [
+        SourceExpertCountMatrix(
+            layer_id=0,
+            world_size=2,
+            num_experts=4,
+            counts=((1, 1, 0, 0), (0, 0, 0, 0)),
+            source_rank=0,
+            expert_to_rank_map=(0, 1, 0, 1),
+            bytes_per_token=4096,
+        ),
+        SourceExpertCountMatrix(
+            layer_id=0,
+            world_size=2,
+            num_experts=4,
+            counts=((0, 0, 0, 0), (0, 0, 2, 1)),
+            source_rank=1,
+            expert_to_rank_map=(0, 1, 0, 1),
+            bytes_per_token=4096,
+        ),
+    ]
+    from rs.runtime.online.megatron_ep.prediction.expert_trace import write_source_expert_counts_jsonl
+
+    write_source_expert_counts_jsonl(fixture_dir / "rank0_source_expert_counts.jsonl", rows)
+    phase_context_rows = [
+        {"phase": "P0", "layer_id": 0, "global_rank": 0, "per_peer_bytes": [4096, 4096]},
+        {"phase": "P0", "layer_id": 0, "global_rank": 1, "per_peer_bytes": [8192, 4096]},
+    ]
+    (fixture_dir / "rank0_phase_contexts.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in phase_context_rows) + "\n",
+        encoding="utf-8",
+    )
+    payload = run_expert_to_traffic_reconstruction(fixture_dir=fixture_dir, bytes_per_token=4096)
+    assert payload["summary"]["o1_corrected_relative_l1"] == 0.0
+    assert payload["summary"]["bytes_model_used"] == "hidden_only"
+    assert payload["summary"]["actual_matrix_source"] == "phase_context_aggregated_p0_dispatch"
+    assert payload["summary"]["matrix_scope"] == "remote_only"

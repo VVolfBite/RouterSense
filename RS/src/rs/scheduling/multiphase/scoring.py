@@ -45,12 +45,17 @@ def ready_flow_candidates(
         if mode == RUNTIME_LOOKAHEAD_MODE and flow.phase == 1:
             prediction_bonus = prediction_confidence * downstream_load.get((2, flow.dst_gpu), 0.0) / max(max_residual, 1.0)
         base_priority = 0.0 if base_score_lookup is None else float(base_score_lookup.get(flow.flow_id, 0.0))
+        base_priority_component = base_priority_weight * base_priority
+        residual_component = residual_weight * (remaining / max_residual)
+        barrier_component = barrier_weight * barrier_urgency
+        age_component = age_weight * age
+        prediction_component = prediction_weight * prediction_bonus
         score = (
-            base_priority_weight * base_priority
-            + residual_weight * (remaining / max_residual)
-            + barrier_weight * barrier_urgency
-            + age_weight * age
-            + prediction_weight * prediction_bonus
+            base_priority_component
+            + residual_component
+            + barrier_component
+            + age_component
+            + prediction_component
         )
         ready.append(
             {
@@ -64,6 +69,11 @@ def ready_flow_candidates(
                 "age": age,
                 "prediction_bonus": prediction_bonus,
                 "base_priority": base_priority,
+                "base_priority_component": base_priority_component,
+                "residual_component": residual_component,
+                "barrier_component": barrier_component,
+                "age_component": age_component,
+                "prediction_component": prediction_component,
                 "score": score,
             }
         )

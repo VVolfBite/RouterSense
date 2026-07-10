@@ -20,6 +20,7 @@ from .expert_trace import SourceExpertCountMatrix
 
 
 Matrix = tuple[tuple[int, ...], ...]
+DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN = 4096
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ def _sorted_edges(matrix: Matrix) -> list[tuple[int, int, int]]:
 
 
 __all__ = [
+    "DEFAULT_HIDDEN_ONLY_BYTES_PER_TOKEN",
     "ExpertToTrafficAudit",
     "compare_reconstructed_traffic",
     "reconstruction_report",

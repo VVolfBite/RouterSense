@@ -38,6 +38,7 @@ def run_global_matching_scheduler(
     atomic: bool,
     base_score_lookup: dict[str, float] | None = None,
     base_priority_weight: float = 0.0,
+    collect_debug_trace: bool = False,
 ) -> dict[str, Any]:
     start_time = time.perf_counter()
     flows = collect_real_flows(dispatch_matrix, combine_matrix, next_dispatch_matrix, mode=mode)
@@ -61,6 +62,7 @@ def run_global_matching_scheduler(
     prices = {(phase, gpu): 0.0 for phase in range(2) for gpu in range(num_gpus)}
     current_time = 0.0
     schedule: list[dict[str, Any]] = []
+    debug_trace: list[dict[str, Any]] = []
     wave_count = 0
     max_rounds = max(1, max_waves)
     while any(value > 1e-9 for value in residual.values()) and wave_count < max_rounds:
@@ -86,13 +88,52 @@ def run_global_matching_scheduler(
             for candidate in ready:
                 if candidate["phase"] < 2:
                     candidate["score"] += prices[(candidate["phase"], candidate["dst_gpu"])]
+        blocked = []
+        if collect_debug_trace:
+            blocked = [
+                {
+                    "flow_id": flow.flow_id,
+                    "phase": int(flow.phase),
+                    "src_gpu": int(flow.src_gpu),
+                    "dst_gpu": int(flow.dst_gpu),
+                    "residual": float(residual[flow.flow_id]),
+                    "release_time": float(release_time[(flow.phase, flow.src_gpu)]),
+                }
+                for flow in flows
+                if residual[flow.flow_id] > 0.0 and current_time + 1e-9 < release_time[(flow.phase, flow.src_gpu)]
+            ]
         if not ready:
             future = [release for release in release_time.values() if release < math.inf and release > current_time + 1e-9]
+            if collect_debug_trace:
+                debug_trace.append(
+                    {
+                        "wave_id": int(wave_count),
+                        "current_time": float(current_time),
+                        "ready": [],
+                        "blocked": blocked,
+                        "chosen": [],
+                        "next_release_candidates": [float(value) for value in sorted(future)],
+                        "advance_to": None if not future else float(min(future)),
+                    }
+                )
             if not future:
                 break
             current_time = min(future)
             continue
         chosen = maximum_weight_matching(ready, num_gpus) if exact_matching else greedy_maximal_matching(ready)
+        if collect_debug_trace:
+            debug_trace.append(
+                {
+                    "wave_id": int(wave_count),
+                    "current_time": float(current_time),
+                    "ready": [dict(candidate) for candidate in ready],
+                    "blocked": blocked,
+                    "chosen": [dict(candidate) for candidate in chosen],
+                    "release_time": {f"{phase}:{gpu}": float(value) for (phase, gpu), value in release_time.items()},
+                    "inbound_remaining": {f"{phase}:{gpu}": float(value) for (phase, gpu), value in inbound.items()},
+                    "downstream_load": {f"{phase}:{gpu}": float(value) for (phase, gpu), value in downstream_load.items()},
+                }
+            )
         if not chosen:
             break
         duration = min(float(candidate["residual"]) for candidate in chosen)
@@ -187,4 +228,5 @@ def run_global_matching_scheduler(
         "solver_status": solver_status,
         "residual_nonzero": residual_nonzero,
         "residual_remaining": {flow_id: value for flow_id, value in residual.items() if value > 1e-9},
+        "debug_trace": debug_trace if collect_debug_trace else [],
     }

@@ -30,9 +30,14 @@ Layer 4: online phase-sync runtime with control overhead
 
 - Real 4GPU run shows the bridge enters runtime, but is slower than Birkhoff.
 - The slowdown is mixed:
-  - communication proxy is worse
+  - dispatch/combine hook-path duration is worse
   - scheduling/control overhead is also worse
 - Top overhead sources are dispatch/combine hooks, `predict_next_dispatch`, and window-state recording.
+- Current trustworthy runtime comparisons are:
+  - `total_forward_us`
+  - inclusive dispatch/combine hook path duration
+  - named control substages inside those hooks
+- Current `rank*_transport_execution.jsonl` artifacts do not expose reliable cross-rank transport timestamps, so true NCCL transport makespan is still unavailable.
 
 Layer 5: future async_release runtime
 
@@ -58,10 +63,11 @@ Both conversion steps currently lose.
 2. Remove `prepared_phase_plan_shadow` from the hot path.
 3. Defer or compact `record_window_state`.
 4. Compact `store_prepared_plan`.
-5. Re-measure communication proxy before changing algorithmic weights.
+5. Re-measure actual transport timing after control-cost reduction once timestamped transport artifacts exist.
 
 ## Non-Claims
 
 - Do not use Run C as performance evidence; it is a bridge probe.
 - Do not call execution-window U replay an online upper bound.
 - Do not claim async_release performance until real collectives are implemented and validated.
+- Do not label dispatch/combine hook time as transport communication makespan.

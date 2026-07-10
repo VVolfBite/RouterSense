@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit 4GPU online strategy overhead and communication proxy timing."""
+"""Audit 4GPU online strategy overhead and hook-path timing."""
 
 from __future__ import annotations
 
@@ -38,6 +38,29 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _sum_stage(rows: list[dict[str, Any]], stage: str) -> float:
     return float(sum(float(row.get("duration_us", 0.0) or 0.0) for row in rows if row.get("stage") == stage))
+
+
+def _transport_makespan(rows: list[dict[str, Any]]) -> tuple[float | None, str | None, dict[str, float | None]]:
+    interval_rows: list[tuple[float, float, str]] = []
+    for row in rows:
+        start = row.get("start_timestamp_us", row.get("start_us", row.get("start_timestamp")))
+        end = row.get("end_timestamp_us", row.get("end_us", row.get("end_timestamp")))
+        phase = str(row.get("phase", "")).lower()
+        if start is None or end is None:
+            continue
+        interval_rows.append((float(start), float(end), phase))
+    if not interval_rows:
+        return None, "transport_execution rows do not expose reliable start/end timestamps", {
+            "actual_dispatch_transport_makespan_us": None,
+            "actual_return_transport_makespan_us": None,
+        }
+    overall = max(end for _start, end, _phase in interval_rows) - min(start for start, _end, _phase in interval_rows)
+    dispatch_rows = [(start, end) for start, end, phase in interval_rows if "dispatch" in phase or phase == "p0"]
+    return_rows = [(start, end) for start, end, phase in interval_rows if "return" in phase or phase == "p1"]
+    return overall, None, {
+        "actual_dispatch_transport_makespan_us": None if not dispatch_rows else max(end for _start, end in dispatch_rows) - min(start for start, _end in dispatch_rows),
+        "actual_return_transport_makespan_us": None if not return_rows else max(end for _start, end in return_rows) - min(start for start, _end in return_rows),
+    }
 
 
 def _remote_ratio_from_phase_contexts(rows: list[dict[str, Any]]) -> float | None:
@@ -82,10 +105,21 @@ def _collect_strategy(rep_dir: Path) -> dict[str, Any]:
     ]
     stage_sums = {stage: _sum_stage(planning_rows, stage) for stage in stage_names}
 
-    dispatch_makespan_us = stage_sums["hook_before_token_dispatch_total"] + stage_sums["hook_after_token_dispatch_total"]
-    return_makespan_us = stage_sums["hook_before_token_combine_total"] + stage_sums["hook_after_token_combine_total"]
+    dispatch_hook_path_us = stage_sums["hook_before_token_dispatch_total"] + stage_sums["hook_after_token_dispatch_total"]
+    combine_hook_path_us = stage_sums["hook_before_token_combine_total"] + stage_sums["hook_after_token_combine_total"]
+    transport_hook_path_total_us = dispatch_hook_path_us + combine_hook_path_us
     sync_makespan_us = stage_sums["run_phase_plan_agreement"]
-    communication_makespan_us = dispatch_makespan_us + return_makespan_us
+    actual_transport_makespan_us, actual_transport_reason, actual_transport_breakdown = _transport_makespan(transport_rows)
+    named_dispatch_substage_sum = (
+        stage_sums["predict_next_dispatch"]
+        + stage_sums["build_p2_hint"]
+        + stage_sums["record_window_state"]
+        + stage_sums["prepared_phase_plan_shadow"]
+        + stage_sums["store_prepared_plan"]
+        + stage_sums["run_phase_plan_agreement"]
+    )
+    unattributed_dispatch_hook_us = max(0.0, dispatch_hook_path_us - named_dispatch_substage_sum)
+    unattributed_combine_hook_us = combine_hook_path_us
 
     overhead_us = (
         stage_sums["build_runtime_observation"]
@@ -107,13 +141,19 @@ def _collect_strategy(rep_dir: Path) -> dict[str, Any]:
         "watchdog_status": watchdog.get("status"),
         "execution_audit_status": execution_audit_status,
         "total_forward_us": total_forward_us,
-        "communication_makespan_us": communication_makespan_us,
-        "dispatch_makespan_us": dispatch_makespan_us,
-        "return_makespan_us": return_makespan_us,
+        "dispatch_hook_path_us": dispatch_hook_path_us,
+        "combine_hook_path_us": combine_hook_path_us,
+        "transport_hook_path_total_us": transport_hook_path_total_us,
+        "inclusive_dispatch_hook_us": dispatch_hook_path_us,
+        "inclusive_combine_hook_us": combine_hook_path_us,
+        "actual_transport_makespan_us": actual_transport_makespan_us,
+        "actual_transport_makespan_unavailable_reason": actual_transport_reason,
+        "actual_dispatch_transport_makespan_us": actual_transport_breakdown["actual_dispatch_transport_makespan_us"],
+        "actual_return_transport_makespan_us": actual_transport_breakdown["actual_return_transport_makespan_us"],
         "sync_makespan_us": sync_makespan_us,
         "compute_proxy_us": None if total_forward_us is None else max(
             0.0,
-            float(total_forward_us) - communication_makespan_us,
+            float(total_forward_us) - transport_hook_path_total_us,
         ),
         "plan_build_time_us": float(sum(float(row.get("build_plan_time_us", 0.0) or 0.0) for row in planning_rows if row.get("stage") == "run_phase_plan_agreement")),
         "plan_agreement_time_us": stage_sums["run_phase_plan_agreement"],
@@ -125,6 +165,8 @@ def _collect_strategy(rep_dir: Path) -> dict[str, Any]:
         "store_prepared_plan_us": stage_sums["store_prepared_plan"],
         "hook_before_token_dispatch_total_us": stage_sums["hook_before_token_dispatch_total"],
         "hook_before_token_combine_total_us": stage_sums["hook_before_token_combine_total"],
+        "unattributed_dispatch_hook_us": unattributed_dispatch_hook_us,
+        "unattributed_combine_hook_us": unattributed_combine_hook_us,
         "artifact_recording_us": 0.0,
         "scheduling_overhead_us": overhead_us,
         "remote_byte_ratio": _remote_ratio_from_phase_contexts(phase_context_rows),
@@ -156,26 +198,33 @@ def run_overhead_audit(run_a_dir: Path, run_c_dir: Path | None) -> dict[str, Any
     for row in strategies.values():
         if birkhoff is None or row["strategy"] == "birkhoff_phase_local":
             row["benefit_vs_overhead"] = {
-                "comm_delta_vs_birkhoff_us": 0.0 if row["strategy"] == "birkhoff_phase_local" else None,
+                "transport_delta_vs_birkhoff_us": 0.0 if row["strategy"] == "birkhoff_phase_local" else None,
+                "transport_delta_reason": None,
                 "scheduling_overhead_delta_vs_birkhoff_us": 0.0 if row["strategy"] == "birkhoff_phase_local" else None,
                 "total_delta_vs_birkhoff_us": 0.0 if row["strategy"] == "birkhoff_phase_local" else None,
                 "overhead_explains_slowdown": None,
                 "slowdown_classification": "baseline",
             }
             continue
-        comm_delta = float(row["communication_makespan_us"] - birkhoff["communication_makespan_us"])
+        if row["actual_transport_makespan_us"] is not None and birkhoff["actual_transport_makespan_us"] is not None:
+            transport_delta = float(row["actual_transport_makespan_us"] - birkhoff["actual_transport_makespan_us"])
+            transport_delta_reason = None
+        else:
+            transport_delta = float(row["transport_hook_path_total_us"] - birkhoff["transport_hook_path_total_us"])
+            transport_delta_reason = "actual transport makespan unavailable; using hook-path proxy only"
         overhead_delta = float(row["scheduling_overhead_us"] - birkhoff["scheduling_overhead_us"])
         total_delta = float(row["total_forward_us"] - birkhoff["total_forward_us"])
-        if comm_delta > 0 and overhead_delta > 0:
+        if transport_delta > 0 and overhead_delta > 0:
             classification = "mixed"
-        elif comm_delta > 0:
+        elif transport_delta > 0:
             classification = "comm_worsens"
         elif overhead_delta > 0:
             classification = "overhead_eats_gain"
         else:
             classification = "no_comm_gain"
         row["benefit_vs_overhead"] = {
-            "comm_delta_vs_birkhoff_us": comm_delta,
+            "transport_delta_vs_birkhoff_us": transport_delta,
+            "transport_delta_reason": transport_delta_reason,
             "scheduling_overhead_delta_vs_birkhoff_us": overhead_delta,
             "total_delta_vs_birkhoff_us": total_delta,
             "overhead_explains_slowdown": bool(overhead_delta > 0 and total_delta > 0),
@@ -216,7 +265,7 @@ def run_overhead_audit(run_a_dir: Path, run_c_dir: Path | None) -> dict[str, Any
                 "remove_prepared_phase_plan_shadow_from_hot_path",
                 "defer_or_compact_record_window_state",
                 "compact_store_prepared_plan",
-                "re-measure_communication_makespan_after_control_cost_reduction",
+                "re-measure_actual_transport_makespan_after_control_cost_reduction",
             ],
         },
     }
@@ -228,14 +277,14 @@ def render_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- run_a_dir: `{payload['run_a_dir']}`",
         "",
-        "| strategy | total_forward_us | communication_makespan_us | scheduling_overhead_us | comm_delta_vs_birkhoff_us | overhead_delta_vs_birkhoff_us | slowdown_classification |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "| strategy | total_forward_us | transport_hook_path_total_us | actual_transport_makespan_us | scheduling_overhead_us | transport_delta_vs_birkhoff_us | overhead_delta_vs_birkhoff_us | slowdown_classification |",
+        "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for strategy_name, row in payload["strategies"].items():
         benefit = row["benefit_vs_overhead"]
         lines.append(
-            f"| {strategy_name} | {row['total_forward_us']} | {row['communication_makespan_us']} | "
-            f"{row['scheduling_overhead_us']} | {benefit['comm_delta_vs_birkhoff_us']} | "
+            f"| {strategy_name} | {row['total_forward_us']} | {row['transport_hook_path_total_us']} | {row['actual_transport_makespan_us']} | "
+            f"{row['scheduling_overhead_us']} | {benefit['transport_delta_vs_birkhoff_us']} | "
             f"{benefit['scheduling_overhead_delta_vs_birkhoff_us']} | {benefit['slowdown_classification']} |"
         )
     lines += [

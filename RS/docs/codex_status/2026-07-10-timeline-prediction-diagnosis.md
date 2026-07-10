@@ -10,6 +10,13 @@ Generated outputs:
 - `outputs/offline/m6q_timeline_prediction_diagnosis/p2_consumption_analysis.json`
 - `outputs/offline/m6q_timeline_prediction_diagnosis/prediction_design_matrix.json`
 - `outputs/offline/m6q_timeline_prediction_diagnosis/final_diagnosis.json`
+- `outputs/offline/m6r_p2_policy_explain/expert_to_traffic_summary.json`
+- `outputs/offline/m6r_p2_policy_explain/strategy_overhead_audit.json`
+- `outputs/offline/m6r_p2_policy_explain/policy_decision_timeline.json`
+- `outputs/offline/m6r_p2_policy_explain/barrier_criticality_p2_diagnosis.json`
+- `outputs/offline/m6r_p2_policy_explain/gated_greedy_p2_diagnosis.json`
+- `outputs/offline/m6r_p2_policy_explain/replay_comparison.json`
+- `outputs/offline/m6r_p2_policy_explain/prediction_track_summary.json`
 
 ## Main Diagnosis
 
@@ -39,22 +46,40 @@ Layered status:
 - P2 changed decision count: `7`
 - P2 no-effect count: `53`
 
+## Corrected Expert-To-Traffic Mapping
+
+- Corrected O1 now uses:
+  - aggregated `phase_context` P0 dispatch matrix
+  - remote-only matrix scope
+  - global expert id semantics
+  - hidden-only `4096` bytes per token-assignment
+- Result:
+  - `o1_corrected_relative_l1 = 0.0`
+  - `o1_corrected_cosine = 1.0`
+  - `o1_legacy_debug_relative_l1 ≈ 0.9356`
+- Conclusion:
+  - expert-to-traffic deterministic mapping is semantically validated
+  - the current blocker is policy P2 consumption, not trace reconstruction
+
 ## P2 Consumption
 
 `RS_safe_barrier_criticality`:
 
-- P2 inputs change.
-- Score/order export is not yet available, so score-level diagnosis is incomplete.
-- Outcome is largely insensitive to P2.
-- Oracle P2 does not improve replay.
-- Most likely: P2 pressure is dominated or masked before it can improve ordering.
+- P2 does enter the explain trace, but aggregate influence stays small (`~0.059` on actual-trace oracle replay).
+- Layer classifications are mixed:
+  - `no_p2_score`
+  - `p2_scale_dominated`
+  - `safe_fallback_masks`
+  - some `order_changed_no_bottleneck_change`
+- Oracle P2 still does not improve replay.
+- Most likely: P2 pressure is either too weak relative to non-P2 terms or changes order without changing the bottleneck edge.
 
 `RS_safe_gated_greedy`:
 
-- P2 can change outcome.
+- P2 enters with similar aggregate scale but changes order more aggressively.
 - Non-oracle P2 often moves ordering in the wrong direction.
-- Oracle P2 has a narrow positive window.
 - Safe fallback masks many bad cases.
+- Oracle P2 still has only a narrow positive window.
 
 ## Prediction Design
 
@@ -80,7 +105,13 @@ Recommended order:
 2. remove `prepared_phase_plan_shadow` from the hot path
 3. defer/compact `record_window_state`
 4. compact `store_prepared_plan`
-5. re-measure communication makespan after control-cost reduction
+5. re-measure actual transport makespan after control-cost reduction
+
+Important naming correction:
+
+- current trustworthy online measurements are inclusive hook-path durations and named control substages
+- current artifacts do not support true transport makespan yet
+- hook time must not be labeled `communication_makespan_us`
 
 ## Explicit Non-Claims
 

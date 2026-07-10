@@ -16,7 +16,13 @@ Current status:
 - `source_expert_counts` are non-empty for 4 ranks across 16 layers.
 - World merge succeeds with no missing or conflicting source ranks.
 - The original O1 reconstruction report showed high L1, but the semantic audit found that the old target/bytes path was misleading.
-- With `phase_context` P0 actual matrices and `hidden_only=4096`, the expert-count-to-traffic mapping can be aligned.
+- Corrected O1 now uses:
+  - actual matrix source = aggregated `phase_context` P0 dispatch matrix
+  - matrix scope = remote-only
+  - expert id semantic = global expert id
+  - bytes model = hidden-only `4096` bytes per token-assignment
+- Under that corrected path, `o1_corrected_relative_l1 = 0.0`.
+- The legacy local-row audit path remains useful only as a debug artifact; its mean relative L1 stays around `0.9356` and must not be used for paper claims.
 
 Candidate expert predictors:
 
@@ -57,10 +63,21 @@ Current observations:
 
 Therefore, the next optimization should focus on policy P2 consumption before adding predictor complexity.
 
+Current P2-consumption diagnosis:
+
+- `RS_safe_barrier_criticality`
+  - P2 enters the scheduler, but its aggregate influence is small (`~0.059` in the current explain trace aggregate).
+  - Most layers fall into `no_p2_score`, `p2_scale_dominated`, or `safe_fallback_masks`.
+  - Oracle P2 still does not improve replay.
+- `RS_safe_gated_greedy`
+  - P2 also enters with similar aggregate scale (`~0.057`), but the policy is more order-sensitive.
+  - Non-oracle P2 frequently produces `harmful_order_change`.
+  - Safe fallback saves many bad layers, but oracle P2 still shows only a narrow positive window.
+
 ## Recommended Sequence
 
-1. Fix and lock the expert-to-traffic semantic evaluation path.
-2. Add or expose debug-only policy decision explanations for P2 score/order effects.
+1. Keep the corrected expert-to-traffic semantic path fixed.
+2. Use debug-only policy decision explanations to inspect where P2 changes score/order and where it gets masked.
 3. Repair P2 consumption in `RS_safe_barrier_criticality` and `RS_safe_gated_greedy`.
-4. Compare traffic predictors against expert predictors.
+4. Compare traffic predictors against expert predictors only after policy consumption is meaningful.
 5. Only then implement faithful gate replay.
