@@ -44,6 +44,23 @@ This round only advanced code and CPU contracts. No GPU run was attempted.
   - local dst rank emits recv only
   - unrelated ranks emit no op
 
+### Runtime host/runtime-model cleanup
+
+- Added `RuntimeHostFeasibilityProjector`.
+- Host projection now explicitly assumes rank-level phase completion only:
+  - no per-bucket compute overlap
+  - no per-expert compute-complete event
+  - P1 release waits for full local P0 completion
+- Added `GlobalJointPlanWire` agreement and split validation:
+  - global abstract plan must agree
+  - local executable schedules may differ in length
+  - pairwise send/recv contracts are validated separately
+- `AsyncReleaseP2PExecutor` now distinguishes:
+  - `global_rank`
+  - `local_rank`
+  - `ep_group_ranks`
+- Added minimal `begin_forward()` / `end_forward()` lifecycle isolation so stale active prediction state does not silently leak across forwards.
+
 ## CPU Gate
 
 Passed:
@@ -74,3 +91,12 @@ Aggregate result:
 - `faithful_fate_not_validated=true`
 - `async_release_real_collectives_not_validated=true`
 - `expert_trace_collection_ready`: code path improved, not validated in this session due no visible GPUs
+- `runtime_host_projection_validated=true`
+- `local_schedules_allowed_to_differ=true`
+- `global_rank_namespace_validated=true`
+- `dedicated_p2p_group_initialized=false`
+- `nccl_tag_dependency=false`
+- `per_peer_sequence_validated=false`
+- `forward_epoch_isolation_validated=true`
+- `birkhoff_same_executor_control_ready=false`
+- `per_bucket_compute_overlap_claimed=false`

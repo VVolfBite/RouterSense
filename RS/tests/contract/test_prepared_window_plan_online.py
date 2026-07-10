@@ -159,6 +159,23 @@ def test_calibrated_artifact_digest_determinism() -> None:
     assert all(hint.metadata["window_key"] == prepared.window_key for hint in hints)
 
 
+def test_forward_epoch_clears_stale_prediction_state() -> None:
+    runtime = _runtime()
+    runtime.begin_forward(forward_epoch=1)
+    runtime._prepared_plan_state["active_next_dispatch_prediction"] = {  # noqa: SLF001
+        "source_layer_id": "4",
+        "target_layer_id": "5",
+        "forecast_matrix": ((0, 3), (4, 0)),
+    }
+    runtime._prepared_plan_state["prediction_consumption_records"] = [{"consumer_layer": "5"}]  # noqa: SLF001
+    runtime.begin_forward(forward_epoch=2)
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["prediction_source_layer"] == ""
+    assert summary["prediction_target_layer"] == ""
+    assert summary["consumed_before_p1"] is False
+    assert runtime._plan_key("model.layers.0.mlp", "P0")["forward_epoch"] == 2  # noqa: SLF001
+
+
 def test_calibrated_artifact_exports_prepared_edge_priority() -> None:
     prepared = _manual_prepared_plan_with_priority(phase="p0_dispatch", src_rank=2, dst_rank=0)
     state = {"prepared_plan": prepared, "plan_created_at_us": 123, "plan_source_layer": "model.layers.0.mlp"}
@@ -172,19 +189,10 @@ def test_calibrated_artifact_exports_prepared_edge_priority() -> None:
             ep_group_ranks=(0, 1, 2),
         )
     )
-    assert hint.metadata["preferred_edges"] == [
-        {
-            "phase": "P0",
-            "src_rank": 2,
-            "dst_rank": 0,
-            "priority": 0,
-            "origin_phase": "p0_dispatch",
-            "origin_flow_id": "p0_dispatch:2->0",
-            "byte_count": 16,
-            "wave_id": 0,
-        }
-    ]
-    assert hint.metadata["preferred_wave_count"] == 1
+    assert hint.metadata["preferred_edges"] == []
+    assert hint.metadata["stale_p0_p1_edge_count_ignored"] == 1
+    assert hint.metadata["stale_prepared_edges"][0]["origin_phase"] == "p0_dispatch"
+    assert hint.metadata["preferred_wave_count"] == 0
 
 
 def test_calibrated_artifact_no_plan_fallback() -> None:
@@ -365,7 +373,7 @@ def test_store_prepared_plan_prefers_predicted_next_dispatch(monkeypatch) -> Non
     )
     runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
     summary = runtime.export_prepared_plan_summary()
-    assert summary["p2_matrix_source"] == "predicted_next_dispatch"
+    assert summary["p2_matrix_source"] == "active_next_dispatch_prediction"
     assert summary["p2_matrix_is_replicated_local_row"] is False
     assert summary["p2_matrix_row_sums"] == [16, 8]
     assert summary["p2_matrix_col_sums"] == [8, 16]
@@ -448,10 +456,9 @@ def test_p0p1p2_hint_orders_by_prepared_edge_priority() -> None:
         local_context=hinted[0],
         global_contexts=hinted,
     )
-    assert plan.metrics["ordered_by_prepared_plan"] is True
-    assert plan.metrics["hint_edges_available"] == 1
-    assert plan.metrics["hint_edges_consumed"] == 1
-    assert plan.metrics["bucket_order"][0].startswith("P0:2->0:")
+    assert plan.metrics["ordered_by_prepared_plan"] is False
+    assert plan.metrics["hint_edges_available"] == 0
+    assert plan.metrics["hint_edges_consumed"] == 0
 
 
 def test_compile_prepared_window_phase_plan_preserves_prepared_edge_order() -> None:
@@ -470,8 +477,8 @@ def test_compile_prepared_window_phase_plan_preserves_prepared_edge_order() -> N
     )
     assert plan.metrics["compiled_from_prepared_plan"] is True
     assert plan.metrics["prepared_window_key"] == "window-priority"
-    assert plan.metrics["prepared_plan_order_preserved"] is True
-    assert plan.metrics["bucket_order"][0].startswith("P0:2->0:")
+    assert plan.metrics["prepared_plan_order_preserved"] is False
+    assert plan.metrics["bucket_order"][0].startswith("P0:")
 
 
 def test_shared_state_thread_isolation() -> None:

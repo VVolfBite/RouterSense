@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from rs.runtime.online.megatron_ep.async_release import AsyncReleaseP2PExecutor, AsyncReleaseP2PExecutorConfig, AsyncReleasePlanBuilder
+from rs.runtime.online.megatron_ep.async_release import (
+    AsyncReleaseP2PExecutor,
+    AsyncReleaseP2PExecutorConfig,
+    AsyncReleasePlanBuilder,
+    AsyncReleaseRankContext,
+)
 from rs.scheduling.online_adapters.priority_artifact import PairedUPriorityArtifact, PriorityEntry
 
 
@@ -41,11 +46,30 @@ def test_async_release_p2p_executor_filters_ops_by_local_rank() -> None:
         observed_context={"layer_id": "0"},
     )
     executor = AsyncReleaseP2PExecutor(config=AsyncReleaseP2PExecutorConfig(enabled=True))
-    report_rank0 = executor.execute(plan, local_rank=0)
-    report_rank1 = executor.execute(plan, local_rank=1)
+    report_rank0 = executor.execute(plan, rank_context=AsyncReleaseRankContext(global_rank=0, local_rank=0, ep_group_ranks=(0, 1)))
+    report_rank1 = executor.execute(plan, rank_context=AsyncReleaseRankContext(global_rank=1, local_rank=1, ep_group_ranks=(0, 1)))
     rank0_ops = report_rank0["ordered_ops"]
     rank1_ops = report_rank1["ordered_ops"]
     assert [item["op_kind"] for item in rank0_ops] == ["send", "recv"]
     assert [item["peer_rank"] for item in rank0_ops] == [1, 1]
     assert [item["op_kind"] for item in rank1_ops] == ["recv", "send"]
     assert [item["peer_rank"] for item in rank1_ops] == [0, 0]
+
+
+def test_async_release_p2p_executor_distinguishes_global_and_local_rank_namespaces() -> None:
+    plan = AsyncReleasePlanBuilder(executor_available=False).build(
+        priority_artifact=_artifact(),
+        observed_context={"layer_id": "0"},
+    )
+    executor = AsyncReleaseP2PExecutor(config=AsyncReleaseP2PExecutorConfig(enabled=True))
+    rank2 = executor.execute(
+        plan,
+        rank_context=AsyncReleaseRankContext(global_rank=2, local_rank=0, ep_group_ranks=(2, 3)),
+    )
+    rank3 = executor.execute(
+        plan,
+        rank_context=AsyncReleaseRankContext(global_rank=3, local_rank=1, ep_group_ranks=(2, 3)),
+    )
+    # This fixture has tasks between global ranks 0 and 1, so ranks 2/3 are non-participants.
+    assert rank2["op_count"] == 0
+    assert rank3["op_count"] == 0

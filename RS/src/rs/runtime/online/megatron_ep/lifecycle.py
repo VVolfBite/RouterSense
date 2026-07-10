@@ -129,6 +129,7 @@ class RouterSenseInjectionRuntime:
     _active_plan_versions: dict[str, int] = field(default_factory=dict)
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
     _window_states: dict[str, Any] = field(default_factory=dict)
+    _forward_epoch: int = 0
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
@@ -317,7 +318,7 @@ class RouterSenseInjectionRuntime:
             "event_seq": len(self.control_timeline) + 1,
             "event": event,
             "run_id": self.run_id,
-            "forward_epoch": 0,
+            "forward_epoch": int(self._forward_epoch),
             "step_id": self.step_id,
             "microbatch_id": self.microbatch_id,
             "layer_id": parse_layer_id(layer_name),
@@ -1191,7 +1192,7 @@ class RouterSenseInjectionRuntime:
     def _plan_key(self, layer_name: str, phase: str) -> dict[str, Any]:
         return {
             "run_id_digest": digest_text(self.run_id),
-            "forward_epoch": 0,
+            "forward_epoch": int(self._forward_epoch),
             "step_id": self.step_id,
             "microbatch_id": self.microbatch_id,
             "layer_id": parse_layer_id(layer_name),
@@ -1201,6 +1202,34 @@ class RouterSenseInjectionRuntime:
             "model_revision_hash": self.model_revision_hash,
             "expert_placement_hash": "unknown",
             "request_table_hash": self.request_table_hash,
+        }
+
+    def begin_forward(self, *, forward_epoch: int | None = None) -> None:
+        if forward_epoch is None:
+            self._forward_epoch += 1
+        else:
+            self._forward_epoch = int(forward_epoch)
+        self._pending_p0.clear()
+        self._pending_p1.clear()
+        self._active_transport = None
+        self._prepared_plan_state["active_next_dispatch_prediction"] = None
+        self._prepared_plan_state["prediction_consumption_records"] = []
+        self._prepared_plan_state.pop("prepared_priority_cache", None)
+
+    def end_forward(self) -> dict[str, Any]:
+        active_transport = self._active_transport is not None
+        has_active_prediction = bool(self._prepared_plan_state.get("active_next_dispatch_prediction"))
+        self._pending_p0.clear()
+        self._pending_p1.clear()
+        self._active_transport = None
+        self._prepared_plan_state["active_next_dispatch_prediction"] = None
+        self._prepared_plan_state["prediction_consumption_records"] = []
+        self._prepared_plan_state.pop("prepared_priority_cache", None)
+        return {
+            "forward_epoch": int(self._forward_epoch),
+            "active_transport_cleared": bool(active_transport),
+            "stale_prediction_cleared": bool(has_active_prediction),
+            "valid": not active_transport,
         }
 
     # Main lifecycle hooks
@@ -1279,7 +1308,7 @@ class RouterSenseInjectionRuntime:
                 plan_key=self._plan_key(layer_name, "P0"),
                 runtime_identity=RuntimeIdentity(
                     run_id=self.run_id,
-                    forward_epoch=0,
+                    forward_epoch=int(self._forward_epoch),
                     layer_id=parse_layer_id(layer_name),
                     layer_name=layer_name,
                     global_rank=self.rank,
@@ -1655,7 +1684,7 @@ class RouterSenseInjectionRuntime:
                 plan_key=self._plan_key(layer_name, "P1"),
                 runtime_identity=RuntimeIdentity(
                     run_id=self.run_id,
-                    forward_epoch=0,
+                    forward_epoch=int(self._forward_epoch),
                     layer_id=parse_layer_id(layer_name),
                     layer_name=layer_name,
                     global_rank=self.rank,

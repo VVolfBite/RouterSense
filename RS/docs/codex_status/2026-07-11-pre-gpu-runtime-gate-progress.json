@@ -11,7 +11,10 @@
     "predictor_shape_validation": true,
     "safe_joint_explain_reuses_prebuilt_plans": true,
     "async_release_agreement_variable_payload_support": true,
-    "async_release_p2p_local_rank_filtering": true
+    "async_release_p2p_local_rank_filtering": true,
+    "runtime_host_projection": true,
+    "global_joint_plan_wire_split": true,
+    "forward_epoch_isolation": true
   },
   "tests": {
     "targeted_pass_count": 30,
@@ -23,5 +26,16 @@
     "transport_timing_gpu_validation_not_run",
     "common_core_joint_only_replay_not_replaced",
     "edge_aware_p2_candidate_not_replayed"
-  ]
+  ],
+  "status_flags": {
+    "runtime_host_projection_validated": true,
+    "local_schedules_allowed_to_differ": true,
+    "global_rank_namespace_validated": true,
+    "dedicated_p2p_group_initialized": false,
+    "nccl_tag_dependency": false,
+    "per_peer_sequence_validated": false,
+    "forward_epoch_isolation_validated": true,
+    "birkhoff_same_executor_control_ready": false,
+    "per_bucket_compute_overlap_claimed": false
+  }
 }
