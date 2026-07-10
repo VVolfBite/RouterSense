@@ -100,3 +100,22 @@ Aggregate result:
 - `forward_epoch_isolation_validated=true`
 - `birkhoff_same_executor_control_ready=false`
 - `per_bucket_compute_overlap_claimed=false`
+
+## Runtime Callgraph Audit
+
+Generated artifact:
+
+- `outputs/runtime_callgraph_audit.json`
+
+Current audit result:
+
+- real Megatron hooks are attached
+- prediction path exists
+- active prediction state exists
+- `RuntimeHostFeasibilityProjector` exists, but is not yet called from the real runtime path
+- `GlobalJointPlanWire` agreement exists, but is not yet called from the real runtime path
+- experimental P2P executor exists, but is not yet called from the real transport adapter
+- `joint_window_async_p2p` is not yet reachable from `attach_dispatch_facade()`
+- `begin_forward()` / `end_forward()` are implemented, but not yet called from the real host runner
+
+This means the biggest remaining blocker is still runtime-path integration, not missing contracts.
