@@ -185,6 +185,10 @@ def write_rank_artifacts(
         prediction_audit_rows = runtime.export_prediction_audits()
         if prediction_audit_rows:
             write_jsonl(run_dir / f"rank{rank}_prediction_audit.jsonl", prediction_audit_rows)
+        write_jsonl(run_dir / f"rank{rank}_expert_route_trace.jsonl", runtime.export_expert_route_traces())
+        write_jsonl(run_dir / f"rank{rank}_source_expert_counts.jsonl", runtime.export_source_expert_counts())
+        write_jsonl(run_dir / f"rank{rank}_expert_to_traffic_audit.jsonl", runtime.export_expert_to_traffic_audits())
+        write_jsonl(run_dir / f"rank{rank}_expert_trace_warnings.jsonl", runtime.export_expert_trace_warnings())
         write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()

@@ -28,6 +28,8 @@
 下一轮只做：
 
 1. collect expert route trace
+   - use `observation.profile=debug`
+   - use `observation.capture_expert_trace=true`
 2. verify `source_expert_counts` non-empty
 3. run `run_expert_to_traffic_reconstruction.py`
 4. compare O1/O2/O3/O4

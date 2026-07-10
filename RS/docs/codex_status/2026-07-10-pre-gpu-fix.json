@@ -9,7 +9,15 @@
     "expert_to_traffic_world_merge",
     "strict_ep_local_expert_to_rank",
     "history_cold_start_no_self_fit",
-    "calibration_summary_mean_median_only"
+    "calibration_summary_mean_median_only",
+    "capture_expert_trace_config_preserved",
+    "expert_trace_rank_artifact_export",
+    "gpu_checklist_requires_debug_profile"
+  ],
+  "expert_trace_collection_ready": true,
+  "required_config_overrides": [
+    "observation.profile=debug",
+    "observation.capture_expert_trace=true"
   ],
   "next_gpu_steps": [
     "collect_expert_route_trace",

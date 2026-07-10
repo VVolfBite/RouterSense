@@ -118,3 +118,38 @@ artifact:
     )
     with pytest.raises(ValueError):
         load_run_config(config_path=path)
+
+
+def test_capture_expert_trace_is_preserved_from_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "capture-expert-trace.yaml"
+    path.write_text(
+        """
+run:
+  kind: online_observe
+  name: capture-expert-trace
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: torchrun
+    nproc_per_node: 2
+  ep_size: 2
+runtime:
+  precision: bf16
+online_policy:
+  name: disabled
+execution:
+  mode: native_passthrough
+observation:
+  profile: debug
+  capture_expert_trace: true
+validation:
+  save_logits: false
+artifact:
+  artifact_root: artifacts/test
+""".strip(),
+        encoding="utf-8",
+    )
+    config = load_run_config(config_path=path)
+    assert config.observation.profile == "debug"
+    assert config.observation.capture_expert_trace is True

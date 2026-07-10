@@ -79,6 +79,10 @@
 - `MockGateReplayPredictor` 仍然只是 mock/contract：
   - `faithful_fate_style=false`
   - 不得进入 paper claim
+- expert trace collection 是 debug path：
+  - 必须使用 `observation.profile=debug`
+  - 必须使用 `observation.capture_expert_trace=true`
+  - 不能把该 run 用作性能数字
 - 当前真实 fixture 还没有 `expert_route_trace` / `source_expert_counts`；
   contribution 2 现在是 “expert foundation ready, GPU collection still required”
 - 当前真实 fixture CPU 主线结论应先看：

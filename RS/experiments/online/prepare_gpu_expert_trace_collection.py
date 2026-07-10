@@ -24,6 +24,11 @@ def build_checklist(*, capture_expert_trace: bool, capture_per_token_trace: bool
         "heavy_debug_trace": bool(capture_per_token_trace),
         "fast_path_clean": not bool(capture_per_token_trace),
         "output_dir": str(output_dir),
+        "required_observation_profile": "debug",
+        "required_config_overrides": [
+            "observation.profile=debug",
+            "observation.capture_expert_trace=true",
+        ],
         "required_output_files": [
             "rank*_expert_route_trace.jsonl",
             "rank*_source_expert_counts.jsonl",

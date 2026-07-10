@@ -348,6 +348,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "observation": {
             "profile",
             "capture_enabled",
+            "capture_expert_trace",
             "capture_layer_selector",
             "capture_phase_selector",
             "heartbeat_enabled",
@@ -484,6 +485,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
         observation=RuntimeObservationConfig(
             profile=str(observation.get("profile", "minimal")),
             capture_enabled=bool(observation.get("capture_enabled", False)),
+            capture_expert_trace=bool(observation.get("capture_expert_trace", False)),
             capture_layer_selector=str(observation.get("capture_layer_selector", "")),
             capture_phase_selector=str(observation.get("capture_phase_selector", "")),
             heartbeat_enabled=bool(observation.get("heartbeat_enabled", False)),

@@ -14,6 +14,7 @@
 - 现有 `fate_style_history` / `fate_style_linear` 是 traffic-matrix baseline
 - 它们不是 faithful FATE-style gate replay predictor
 - faithful FATE 的下一步证据链必须先建立 expert-route trace 和 expert-level prediction
+- expert trace collection 是 debug collection path，必须使用 `observation.profile=debug` 和 `observation.capture_expert_trace=true`
 
 ## 目标
 

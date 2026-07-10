@@ -1926,6 +1926,18 @@ class RouterSenseInjectionRuntime:
             return []
         return self._export_list(self.prediction_audits)
 
+    def export_expert_route_traces(self) -> list[dict[str, Any]]:
+        return self._export_observation_rows("export_expert_route_traces")
+
+    def export_source_expert_counts(self) -> list[dict[str, Any]]:
+        return self._export_observation_rows("export_source_expert_counts")
+
+    def export_expert_to_traffic_audits(self) -> list[dict[str, Any]]:
+        return self._export_observation_rows("export_expert_to_traffic_audits")
+
+    def export_expert_trace_warnings(self) -> list[dict[str, Any]]:
+        return self._export_observation_rows("export_expert_trace_warnings")
+
     def export_assertions(self) -> dict[str, Any]:
         return dict(self.assertion_state)
 
