@@ -127,7 +127,15 @@ def maybe_capture_expert_route_trace(
             "heavy_debug_trace": False,
         }
     )
-    recorder.record_source_expert_counts(counts.to_dict())
+    source_count_payload = counts.to_dict()
+    source_count_payload["top_k"] = int(top_k)
+    source_count_payload["source_expert_counts"] = [list(row) for row in counts.counts]
+    source_count_payload["weighted_source_expert_counts"] = None
+    if counts.weighted_counts is not None:
+        source_count_payload["weighted_source_expert_counts"] = [
+            [float(value) for value in row] for row in counts.weighted_counts
+        ]
+    recorder.record_source_expert_counts(source_count_payload)
     recorder.record_expert_to_traffic_audit(
         {
             "layer_id": int(layer_id),

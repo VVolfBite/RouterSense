@@ -208,6 +208,32 @@ Offline / replay：
      4. 再决定是否做真实 gate replay predictor
 4. 如果 GPU 结果显示 phase_sync safe-U 仍弱，再推进 async_release executor real-collective integration
 
+## 8. Latest Real 4GPU Drop
+
+当前已经有一轮最小真实 4GPU 采集，索引见：
+
+- `docs/codex_status/2026-07-10-4gpu-collection.md`
+
+关键目录：
+
+- Run B:
+  - `outputs/online/4gpu_expert_trace_20260710_090102/run_b_expert_trace`
+- Run C:
+  - `outputs/online/4gpu_bridge_probe_20260710_091120`
+- Run A:
+  - `outputs/online/4gpu_strategy_compare_20260710_171849`
+
+当前直接结论：
+
+- expert trace collection 已真实打通，4 rank `source_expert_counts` 非空
+- expert-to-traffic reconstruction world merge 已打通，但 O1 平均误差仍高，不能声称 contribution 2 已验证
+- `routersense_joint_priority_phase_sync` 已真实进入 4GPU runtime bridge probe
+- 当前最小 smoke compare 上：
+  - `disabled`: `5186720.655 us`
+  - `birkhoff_phase_local`: `5157683.672 us`
+  - `routersense_joint_priority_phase_sync`: `7405063.436 us`
+- 所以下一轮不应直接放大 benchmark，而应先分析 planning/control timing
+
 ## 7. Repository rule
 
 GitHub `main` 是外部审查 source of truth。

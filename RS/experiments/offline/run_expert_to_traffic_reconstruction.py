@@ -55,16 +55,24 @@ def merge_source_expert_counts_by_layer_and_source_rank(
         source_rank = int(source_rank)
         if source_rank < 0 or source_rank >= world_size:
             raise ValueError(f"invalid source_rank={source_rank} for layer_id={layer_id}")
-        row_values = tuple(int(value) for value in record.counts[source_rank])
+        raw_row = tuple(int(value) for value in record.counts[source_rank])
+        if len(raw_row) > num_experts:
+            raise ValueError(f"source_expert_counts row wider than num_experts for layer_id={layer_id}")
+        row_values = raw_row + tuple(0 for _ in range(num_experts - len(raw_row)))
         if source_rank in seen_source_ranks:
             if tuple(merged_rows[source_rank]) != row_values:
                 conflict_source_ranks.append(source_rank)
             continue
         merged_rows[source_rank] = list(row_values)
         if merged_weighted is not None and record.weighted_counts is not None:
-            merged_weighted[source_rank] = [float(value) for value in record.weighted_counts[source_rank]]
+            raw_weighted_row = tuple(float(value) for value in record.weighted_counts[source_rank])
+            if len(raw_weighted_row) > num_experts:
+                raise ValueError(f"weighted_source_expert_counts row wider than num_experts for layer_id={layer_id}")
+            merged_weighted[source_rank] = list(raw_weighted_row + tuple(0.0 for _ in range(num_experts - len(raw_weighted_row))))
         seen_source_ranks.add(source_rank)
-        if expert_to_rank_map is None and record.expert_to_rank_map is not None:
+        if record.expert_to_rank_map is not None and (
+            expert_to_rank_map is None or len(record.expert_to_rank_map) > len(expert_to_rank_map)
+        ):
             expert_to_rank_map = tuple(int(v) for v in record.expert_to_rank_map)
         bytes_per_token = int(record.bytes_per_token or bytes_per_token)
         selected_experts_available = selected_experts_available or bool(record.selected_experts_available)
@@ -98,8 +106,54 @@ def merge_source_expert_counts_by_layer_and_source_rank(
     return merged, diagnostics
 
 
+def merge_actual_traffic_by_layer_and_source_rank(
+    audit_rows: list[dict[str, Any]],
+    *,
+    layer_id: int,
+    world_size: int,
+) -> tuple[tuple[tuple[int, ...], ...] | None, dict[str, Any]]:
+    filtered = [row for row in audit_rows if int(row.get("layer_id", -1)) == int(layer_id)]
+    merged_rows = [[0 for _ in range(world_size)] for _ in range(world_size)]
+    seen_source_ranks: set[int] = set()
+    missing_source_ranks: list[int] = []
+    conflict_source_ranks: list[int] = []
+    for row in filtered:
+        source_rank = row.get("source_rank")
+        if source_rank is None:
+            raise ValueError(f"missing source_rank in expert_to_traffic_audit for layer_id={layer_id}")
+        source_rank = int(source_rank)
+        actual_matrix = row.get("actual_matrix")
+        if not isinstance(actual_matrix, list) or source_rank >= len(actual_matrix):
+            raise ValueError(f"invalid actual_matrix for layer_id={layer_id} source_rank={source_rank}")
+        local_row = tuple(int(v) for v in actual_matrix[source_rank])
+        if source_rank in seen_source_ranks:
+            if tuple(merged_rows[source_rank]) != local_row:
+                conflict_source_ranks.append(source_rank)
+            continue
+        merged_rows[source_rank] = list(local_row)
+        seen_source_ranks.add(source_rank)
+    for source_rank in range(world_size):
+        if source_rank not in seen_source_ranks:
+            missing_source_ranks.append(source_rank)
+    diagnostics = {
+        "layer_id": int(layer_id),
+        "actual_audit_row_count": len(filtered),
+        "seen_source_ranks": sorted(seen_source_ranks),
+        "missing_source_ranks": missing_source_ranks,
+        "conflict_source_ranks": sorted(set(conflict_source_ranks)),
+        "complete_world_matrix": not missing_source_ranks and not conflict_source_ranks,
+    }
+    if conflict_source_ranks:
+        raise ValueError(f"conflicting actual_matrix rows for layer_id={layer_id}: {sorted(set(conflict_source_ranks))}")
+    if not filtered:
+        return None, diagnostics
+    matrix = tuple(tuple(int(v) for v in row) for row in merged_rows)
+    return matrix, diagnostics
+
+
 def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: int = 1) -> dict[str, Any]:
     source_count_files = sorted(fixture_dir.glob("*source_expert_counts*.jsonl"))
+    audit_files = sorted(fixture_dir.glob("*expert_to_traffic_audit*.jsonl"))
     if not source_count_files:
         return {
             "fixture_dir": str(fixture_dir),
@@ -132,6 +186,11 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
     all_records = []
     for count_path in source_count_files:
         all_records.extend(load_source_expert_counts_jsonl(count_path))
+    audit_rows: list[dict[str, Any]] = []
+    for audit_path in audit_files:
+        for line in audit_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                audit_rows.append(json.loads(line))
     by_layer_ids = sorted({int(record.layer_id) for record in all_records})
     rows: list[dict[str, Any]] = []
     o1_errors: list[float] = []
@@ -145,9 +204,6 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
     conflict_source_ranks_by_layer: dict[str, Any] = {}
     for layer_id in by_layer_ids:
         fixture_path = fixture_dir / f"replay_layer_{layer_id}.json"
-        if not fixture_path.exists():
-            continue
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         layer_records = [record for record in all_records if int(record.layer_id) == int(layer_id)]
         if not layer_records:
             continue
@@ -184,7 +240,28 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
         if expert_to_rank_map is None:
             raise ValueError(f"missing expert_to_rank_map for layer_id={layer_id}")
         expert_to_rank = {expert_id: int(expert_to_rank_map[expert_id]) for expert_id in range(num_experts)}
-        actual = tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])
+        actual = None
+        if fixture_path.exists():
+            fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+            actual = tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])
+        else:
+            actual, actual_diag = merge_actual_traffic_by_layer_and_source_rank(
+                audit_rows,
+                layer_id=int(layer_id),
+                world_size=int(world_size),
+            )
+            if actual is None:
+                rows.append(
+                    {
+                        "layer_id": int(layer_id),
+                        "source_expert_records_count": int(merge_diag["source_expert_records_count"]),
+                        "complete_world_matrix": False,
+                        "o1_valid": False,
+                        "merge_error": "actual_dispatch_matrix_unavailable",
+                    }
+                )
+                incomplete_world_matrix_layer_count += 1
+                continue
         reconstructed = source_expert_counts_to_traffic_matrix(
             merged_counts,
             expert_to_rank,
@@ -221,9 +298,17 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
         current_expert_copy_audit = None
         current_traffic_copy_audit = None
         next_fixture_path = fixture_dir / f"replay_layer_{int(layer_id) + 1}.json"
+        next_actual = None
         if next_fixture_path.exists():
             next_fixture = json.loads(next_fixture_path.read_text(encoding="utf-8"))
             next_actual = tuple(tuple(int(v) for v in row) for row in next_fixture["p0_dispatch_matrix"])
+        else:
+            next_actual, _ = merge_actual_traffic_by_layer_and_source_rank(
+                audit_rows,
+                layer_id=int(layer_id) + 1,
+                world_size=int(world_size),
+            )
+        if next_actual is not None:
             current_expert_copy_audit = compare_reconstructed_traffic(reconstructed, next_actual)
             current_traffic_copy_audit = compare_reconstructed_traffic(actual, next_actual)
             o3_errors.append(float(current_expert_copy_audit.relative_l1_error))
