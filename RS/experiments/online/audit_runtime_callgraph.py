@@ -16,10 +16,13 @@ def main() -> None:
     lifecycle = ROOT / "src/rs/runtime/online/megatron_ep/lifecycle.py"
     transport_adapter = ROOT / "src/rs/runtime/online/megatron_ep/execution/transport_adapter.py"
     sync_exec = ROOT / "src/rs/runtime/online/megatron_ep/execution/sync_wave_executor.py"
+    async_exec = ROOT / "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py"
     p2_provider = ROOT / "src/rs/runtime/online/megatron_ep/control/p2_provider.py"
     async_projection = ROOT / "src/rs/runtime/online/megatron_ep/async_release/runtime_projection.py"
     async_joint = ROOT / "src/rs/runtime/online/megatron_ep/async_release/joint_plan_agreement.py"
     async_p2p = ROOT / "src/rs/runtime/online/megatron_ep/async_release/p2p_executor.py"
+    correctness_runner = ROOT / "experiments/online/run_policy_correctness.py"
+    observe_runner = ROOT / "experiments/online/collect_native_ep_trace.py"
 
     audit = {
         "megatron_hook_entry": {
@@ -32,7 +35,7 @@ def main() -> None:
         },
         "phase_sync_transport_adapter": {
             "file": str(transport_adapter.relative_to(ROOT)),
-            "reachable": _contains(host, 'config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}'),
+            "reachable": _contains(transport_adapter, "execute_scheduled_phase_tensor"),
         },
         "joint_async_execution_mode_reachable": {
             "file": str(host.relative_to(ROOT)),
@@ -46,7 +49,8 @@ def main() -> None:
         "host_projection_call": {
             "file": str(async_projection.relative_to(ROOT)),
             "implemented": async_projection.exists(),
-            "referenced_from_runtime": _contains(lifecycle, "RuntimeHostFeasibilityProjector"),
+            "referenced_from_runtime": _contains(lifecycle, "host_project_safe_selection")
+            or _contains(lifecycle, "RuntimeHostFeasibilityProjector"),
         },
         "global_plan_agreement_call": {
             "file": str(async_joint.relative_to(ROOT)),
@@ -54,18 +58,26 @@ def main() -> None:
             "referenced_from_runtime": _contains(lifecycle, "GlobalJointPlanWire") or _contains(host, "GlobalJointPlanWire"),
         },
         "p2p_executor_call": {
-            "file": str(async_p2p.relative_to(ROOT)),
-            "implemented": async_p2p.exists(),
-            "referenced_from_transport_adapter": _contains(transport_adapter, "AsyncReleaseP2PExecutor"),
+            "file": str(async_exec.relative_to(ROOT)),
+            "implemented": async_exec.exists(),
+            "referenced_from_transport_adapter": _contains(transport_adapter, "execute_async_phase_tensor"),
         },
         "forward_begin_end_call": {
             "file": str(lifecycle.relative_to(ROOT)),
             "implemented": _contains(lifecycle, "def begin_forward") and _contains(lifecycle, "def end_forward"),
-            "referenced_from_host": _contains(host, "begin_forward(") or _contains(host, "end_forward("),
+            "referenced_from_host": (
+                _contains(host, "begin_forward(")
+                or _contains(host, "end_forward(")
+                or _contains(correctness_runner, ".begin_forward(")
+                or _contains(correctness_runner, ".end_forward(")
+                or _contains(observe_runner, ".begin_forward(")
+                or _contains(observe_runner, ".end_forward(")
+            ),
         },
         "current_real_executor": {
-            "file": str(sync_exec.relative_to(ROOT)),
-            "phase_sync_only": sync_exec.exists(),
+            "file": str(async_exec.relative_to(ROOT)),
+            "phase_sync_only": False,
+            "async_p2p_available": async_exec.exists(),
         },
     }
 

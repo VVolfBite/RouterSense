@@ -46,3 +46,16 @@ def test_host_project_safe_selection_compares_projected_plans() -> None:
     summary = host_project_safe_selection(raw_u_plan=raw_u, paired_b_plan=paired_b)
     assert "host_projected_safe_selection" in summary
     assert summary["projection_constraints"]
+
+
+def test_host_projection_preserves_duration_when_release_is_delayed() -> None:
+    plan = _plan(
+        "U_duration",
+        3.0,
+        [
+            {"phase": 0, "src_gpu": 0, "dst_gpu": 1, "start": 0.0, "end": 5.0},
+            {"phase": 1, "src_gpu": 1, "dst_gpu": 0, "start": 1.0, "end": 3.0},
+        ],
+    )
+    projected = RuntimeHostFeasibilityProjector().project(plan)
+    assert projected.host_projected_estimated_makespan == 7.0

@@ -57,12 +57,16 @@ class RuntimeHostFeasibilityProjector:
             phase = int(step.get("phase", -1))
             src = int(step.get("src_gpu", -1))
             dst = int(step.get("dst_gpu", -1))
+            start = float(step.get("start", 0.0))
             end = float(step.get("end", 0.0))
+            duration = max(0.0, end - start)
             if phase == 0:
                 rank_phase_end[(0, dst)] = max(rank_phase_end.get((0, dst), 0.0), end)
             elif phase == 1:
-                # P1 cannot start before full local compute-ready after complete local P0 receive.
-                end = max(end, rank_phase_end.get((0, src), 0.0))
+                # P1 materialization occurs at the expert/source rank after full local P0 completion.
+                release_time = rank_phase_end.get((0, src), 0.0)
+                start = max(start, release_time)
+                end = start + duration
                 rank_phase_end[(1, dst)] = max(rank_phase_end.get((1, dst), 0.0), end)
             projected_end = max(projected_end, end)
         return HostProjectedPlan(

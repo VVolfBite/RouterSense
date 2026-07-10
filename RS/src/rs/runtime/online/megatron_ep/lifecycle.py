@@ -56,6 +56,7 @@ from rs.runtime.online.megatron_ep.pending_window import (
     compile_prepared_window_phase_plan,
     record_release_event,
 )
+from rs.runtime.online.megatron_ep.async_release.joint_plan_agreement import GlobalJointPlanWire
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     PhaseContextBuildRequest,
@@ -78,7 +79,8 @@ from rs.runtime.online.megatron_ep.prediction import (
     compare_predicted_to_actual,
     maybe_capture_expert_route_trace,
 )
-from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.contracts import PreparedWindowPlan
+from rs.scheduling.registry import resolve_phase_policy, resolve_policy, supported_phase_policies
 from rs.scheduling.validation import stable_hash
 
 
@@ -134,6 +136,7 @@ class RouterSenseInjectionRuntime:
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
     _pending_window_adapter_instance: MultiphasePendingWindowAdapter | None = None
+    perf_counters: dict[str, dict[str, float]] = field(default_factory=dict)
 
     # Configuration and policy selection
 
@@ -243,11 +246,20 @@ class RouterSenseInjectionRuntime:
     def _should_schedule_phase(self, *, layer_name: str, phase: str) -> bool:
         return (
             bool(self._effective_phase_policy_name())
-            and self.config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}
+            and self.config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             and self.config.control_mode == "sync_before_phase"
             and self._layer_selected(layer_name)
             and self._phase_selected(phase)
         )
+
+    def _is_joint_window_async_mode(self) -> bool:
+        return str(self.config.execution_mode) == "joint_window_async_p2p"
+
+    def _runtime_safe_joint_pair(self) -> tuple[str, str]:
+        policy_name = str(self.config.policy or "")
+        if "gated_greedy" in policy_name:
+            return ("U_gated_greedy_maximal", "B_gated_greedy_maximal")
+        return ("U_barrier_criticality_global_matching", "B_barrier_criticality_matching")
 
     def _should_stop_after_layer(self, *, layer_name: str, phase: str) -> bool:
         if not (
@@ -302,6 +314,8 @@ class RouterSenseInjectionRuntime:
             self.observation_recorder.record_transport_execution(dict(payload))
 
     def _append_heartbeat(self, payload: dict[str, Any]) -> None:
+        if self._is_perf_profile():
+            return
         if not self.config.executor_heartbeat_path:
             return
         heartbeat_dir = Path(self.config.executor_heartbeat_path)
@@ -312,6 +326,8 @@ class RouterSenseInjectionRuntime:
             handle.flush()
 
     def _timeline(self, event: str, *, layer_name: str, **detail: Any) -> None:
+        if self._is_perf_profile():
+            return
         row = {
             "ts_us": int(time.time() * 1e6),
             "monotonic_ns": time.monotonic_ns(),
@@ -358,6 +374,15 @@ class RouterSenseInjectionRuntime:
         **detail: Any,
     ) -> float:
         duration_us = max(0.0, float(end_ns - start_ns) / 1000.0)
+        if self._is_perf_profile():
+            counter = self.perf_counters.setdefault(
+                str(stage),
+                {"count": 0.0, "total_us": 0.0, "max_us": 0.0},
+            )
+            counter["count"] += 1.0
+            counter["total_us"] += float(duration_us)
+            counter["max_us"] = max(float(counter["max_us"]), float(duration_us))
+            return duration_us
         record = {
             "ts_us": int(time.time() * 1e6),
             "layer_name": layer_name,
@@ -837,6 +862,294 @@ class RouterSenseInjectionRuntime:
             hint_edges_consumed=int(compiled.metrics.get("hint_edges_consumed", 0) or 0),
         )
 
+    def _build_global_joint_plan_wire(self, *, prepared_plan: Any) -> GlobalJointPlanWire:
+        logical_plan = getattr(prepared_plan, "logical_plan")
+        canonical_edge_order: list[tuple[str, int, int]] = []
+        wave_metadata: list[tuple[int, tuple[tuple[str, int, int], ...]]] = []
+        per_peer_sequence_rows: list[str] = []
+        for wave in getattr(logical_plan, "waves", ()):
+            wave_edges: list[tuple[str, int, int]] = []
+            for flow in getattr(wave, "flows", ()):
+                edge = (str(flow.phase), int(flow.src_rank), int(flow.dst_rank))
+                wave_edges.append(edge)
+                canonical_edge_order.append(edge)
+                per_peer_sequence_rows.append(
+                    f"{getattr(prepared_plan, 'created_at_layer_id', '')}:{getattr(prepared_plan, 'applies_from_layer_id', '')}:"
+                    f"{str(flow.phase)}:{int(flow.src_rank)}:{int(flow.dst_rank)}:{int(getattr(wave, 'wave_id', 0))}"
+                )
+            wave_metadata.append((int(getattr(wave, "wave_id", 0)), tuple(wave_edges)))
+        per_peer_sequence_digest = stable_hash(per_peer_sequence_rows)
+        return GlobalJointPlanWire(
+            window_key=str(getattr(prepared_plan, "window_key", "")),
+            policy_name=str(getattr(logical_plan, "policy_name", "")),
+            safe_selected_policy=str(getattr(logical_plan, "policy_name", "")),
+            prediction_digest=str(getattr(prepared_plan, "forecast_digest", "")),
+            canonical_edge_order=tuple(canonical_edge_order),
+            wave_metadata=tuple(wave_metadata),
+            per_peer_sequence_digest=str(per_peer_sequence_digest),
+        )
+
+    def _agree_joint_plan_digest(self, *, layer_name: str, phase: str, prepared_plan: Any) -> dict[str, Any]:
+        wire = self._build_global_joint_plan_wire(prepared_plan=prepared_plan)
+        digest = str(wire.global_plan_digest)
+        device = torch.device("cuda", self.local_rank) if (torch.cuda.is_available() and self.ep_process_group is not None) else torch.device("cpu")
+        digest_value = int(digest[:16], 16)
+        if digest_value >= (1 << 63):
+            digest_value -= 1 << 64
+        local = torch.tensor([digest_value], dtype=torch.long, device=device)
+        gathered = [torch.empty_like(local) for _ in range(len(self.ep_group_ranks) or 1)]
+        if len(gathered) > 1 and torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_gather(gathered, local, group=self.ep_process_group)
+        else:
+            gathered = [local]
+        gathered_values = [int(item.item()) for item in gathered]
+        valid = len(set(gathered_values)) == 1
+        agreement = {
+            "valid": bool(valid),
+            "global_plan_digest": digest,
+            "gathered_plan_digests": [
+                f"{int(value) & ((1 << 64) - 1):016x}"
+                for value in gathered_values
+            ],
+            "per_peer_sequence_digest": str(wire.per_peer_sequence_digest),
+            "window_key": str(wire.window_key),
+            "policy_name": str(wire.policy_name),
+        }
+        self._prepared_plan_state["global_joint_plan_wire"] = wire
+        self._prepared_plan_state["global_joint_plan_agreement"] = agreement
+        self._timeline(
+            "global_joint_plan_digest_agreed" if valid else "global_joint_plan_digest_mismatch",
+            layer_name=layer_name,
+            phase_name=phase,
+            global_plan_digest=digest,
+            per_peer_sequence_digest=str(wire.per_peer_sequence_digest),
+        )
+        return agreement
+
+    def _store_runtime_joint_plan_from_p0(
+        self,
+        *,
+        layer_name: str,
+        observation_p0: RuntimeObservation,
+    ) -> None:
+        from rs.scheduling.contracts import (
+            FlowWindow,
+            ForecastPressure,
+            GlobalReadySetOptions,
+            LogicalTopology,
+            MultiPhaseSchedulingProblem,
+            ReleaseConstraint,
+        )
+        from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
+
+        layer_id = parse_layer_id(layer_name)
+        dispatch_entry = dict((self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {}).get(str(layer_id), {}) or {})
+        dispatch_matrix = tuple(
+            tuple(int(value) for value in row)
+            for row in dispatch_entry.get("matrix", ())
+        )
+        if not dispatch_matrix:
+            return
+        num_peers = len(dispatch_matrix)
+        inferred_p1 = tuple(
+            tuple(int(dispatch_matrix[src_idx][dst_idx]) if src_idx != dst_idx else 0 for dst_idx in range(num_peers))
+            for src_idx in range(num_peers)
+        )
+        inferred_p1 = tuple(
+            tuple(int(dispatch_matrix[col_idx][row_idx]) if row_idx != col_idx else 0 for col_idx in range(num_peers))
+            for row_idx in range(num_peers)
+        )
+        active_prediction = dict(self._prepared_plan_state.get("active_next_dispatch_prediction") or {})
+        forecast_matrix = tuple(
+            tuple(int(value) for value in row)
+            for row in active_prediction.get("forecast_matrix", ())
+        ) if active_prediction and bool(active_prediction.get("valid", False)) else tuple(tuple(0 for _ in range(num_peers)) for _ in range(num_peers))
+        predictor_name = str(active_prediction.get("predictor_name", "")) if active_prediction else ""
+        prediction_digest = str(active_prediction.get("matrix_digest", "")) if active_prediction else ""
+        prediction_confidence = float(active_prediction.get("confidence", 0.0) or 0.0) if active_prediction else 0.0
+        next_layer_id = self._next_layer_id(layer_name)
+        forecast_digest = stable_hash(
+            {
+                "forecast_matrix": [list(row) for row in forecast_matrix],
+                "source_layer": str(layer_id),
+                "target_layer": str(next_layer_id),
+                "predictor_name": predictor_name,
+                "prediction_digest": prediction_digest,
+            }
+        )
+        problem = MultiPhaseSchedulingProblem(
+            flow_window=FlowWindow(ready_flows=(), blocked_flows=(), forecast_pressure=()),
+            topology=LogicalTopology(num_gpus=num_peers),
+            release_model=ReleaseConstraint(
+                phase="p1_return",
+                rank=0,
+                release_after_phase="p0_dispatch",
+                expert_compute_delay=0.0,
+            ),
+            forecast=ForecastPressure(
+                source="active_next_dispatch_prediction" if active_prediction else "zero_hint",
+                digest=forecast_digest,
+                oracle=bool(active_prediction.get("is_oracle", False)) if active_prediction else False,
+                evaluation_eligible=bool(active_prediction.get("evaluation_eligible", True)) if active_prediction else True,
+                matrix_shape=(num_peers, num_peers),
+                matrix_total_bytes=int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
+                matrix=forecast_matrix,
+                metadata={
+                    "predictor_name": predictor_name,
+                    "prediction_digest": prediction_digest,
+                },
+            ),
+            options=GlobalReadySetOptions(
+                scheduling_mode="runtime_lookahead",
+                information_mode="p0_p1_p2",
+                prediction_confidence=float(prediction_confidence),
+                p0_weight=float(self.config.p0_weight),
+                p1_reservation_weight=float(self.config.p1_reservation_weight),
+                p2_hint_weight=float(self.config.p2_hint_weight),
+                max_waves=256,
+            ),
+            p0_dispatch_matrix=dispatch_matrix,
+            p1_return_matrix=inferred_p1,
+            p2_next_dispatch_forecast_matrix=forecast_matrix,
+        )
+        raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
+        raw_u_policy = resolve_policy(
+            policy_name=raw_u_name,
+            bucket_rows=self.config.bucket_rows,
+            p0_weight=self.config.p0_weight,
+            p1_reservation_weight=self.config.p1_reservation_weight,
+            p2_hint_weight=self.config.p2_hint_weight,
+        )
+        paired_b_policy = resolve_policy(
+            policy_name=paired_b_name,
+            bucket_rows=self.config.bucket_rows,
+            p0_weight=self.config.p0_weight,
+            p1_reservation_weight=self.config.p1_reservation_weight,
+            p2_hint_weight=self.config.p2_hint_weight,
+        )
+        raw_u_plan = raw_u_policy.build_logical_plan(problem)
+        paired_b_plan = paired_b_policy.build_logical_plan(problem)
+        safe_projection = host_project_safe_selection(
+            raw_u_plan=raw_u_plan,
+            paired_b_plan=paired_b_plan,
+        )
+        selected_plan = (
+            paired_b_plan
+            if str(safe_projection["host_projected_safe_selection"]) == str(paired_b_plan.policy_name)
+            else raw_u_plan
+        )
+        prepared = PreparedWindowPlan(
+            window_key=stable_hash(
+                {
+                    "runtime_safe_joint": True,
+                    "raw_u_policy": raw_u_name,
+                    "paired_b_policy": paired_b_name,
+                    "selected_policy": str(selected_plan.policy_name),
+                    "created_at_layer_id": str(layer_id),
+                    "applies_from_layer_id": str(next_layer_id),
+                    "forecast_digest": forecast_digest,
+                }
+            )[:16],
+            forecast_digest=forecast_digest,
+            logical_plan=selected_plan,
+            created_at_layer_id=str(layer_id),
+            applies_from_layer_id=str(next_layer_id),
+            execution_capability_required="multiphase_pending_window",
+            forecast_matrix=forecast_matrix,
+        )
+        self._prepared_plan_state["prepared_plan"] = prepared
+        self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
+        self._prepared_plan_state["plan_source_layer"] = layer_name
+        self._prepared_plan_state["predictor_name"] = predictor_name
+        self._prepared_plan_state["prediction_digest"] = prediction_digest
+        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
+        self._prepared_plan_state["predicted_row_sums"] = [int(sum(row)) for row in forecast_matrix]
+        self._prepared_plan_state["predicted_col_sums"] = [
+            int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))
+            for col_idx in range(len(forecast_matrix[0]) if forecast_matrix else 0)
+        ]
+        self._prepared_plan_state["p2_matrix_source"] = "active_next_dispatch_prediction" if active_prediction else "zero_hint"
+        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(sum(int(v) for v in row) for row in forecast_matrix))
+        self._prepared_plan_state["p1_inferred_from_p0"] = [list(row) for row in inferred_p1]
+        self._prepared_plan_state["global_joint_window_plan"] = {
+            "window_key": str(prepared.window_key),
+            "source_layer_id": str(layer_id),
+            "target_layer_id": str(next_layer_id),
+            "predictor_name": predictor_name,
+            "prediction_digest": prediction_digest,
+            "prediction_confidence": float(prediction_confidence),
+            "actual_p0_matrix": [list(row) for row in dispatch_matrix],
+            "inferred_p1_matrix": [list(row) for row in inferred_p1],
+            "predicted_p2_matrix": [list(row) for row in forecast_matrix],
+            "created_stage": "after_p0_observation",
+            "raw_u_policy_name": raw_u_name,
+            "paired_b_policy_name": paired_b_name,
+            "safe_selected_policy": str(selected_plan.policy_name),
+            "safe_selection_margin": float(
+                safe_projection["host_projected_paired_b_estimated_makespan"]
+                - safe_projection["host_projected_raw_u_estimated_makespan"]
+            ),
+            "safe_comparison_is_strict_common_core": False,
+            "raw_u_plan_policy": str(raw_u_plan.policy_name),
+            "paired_b_plan_policy": str(paired_b_plan.policy_name),
+        }
+        self._prepared_plan_state["global_joint_window_plan"]["host_projected_safe_selection"] = dict(safe_projection)
+        self._prepared_plan_state["host_projected_estimated_makespan"] = float(
+            safe_projection["host_projected_paired_b_estimated_makespan"]
+            if str(selected_plan.policy_name) == str(paired_b_plan.policy_name)
+            else safe_projection["host_projected_raw_u_estimated_makespan"]
+        )
+        self._prepared_plan_state["ideal_estimated_makespan"] = float(
+            safe_projection["ideal_paired_b_estimated_makespan"]
+            if str(selected_plan.policy_name) == str(paired_b_plan.policy_name)
+            else safe_projection["ideal_raw_u_estimated_makespan"]
+        )
+        self._prepared_plan_state.pop("prepared_priority_cache", None)
+        self._timeline(
+            "runtime_joint_window_plan_stored",
+            layer_name=layer_name,
+            source_layer_id=str(layer_id),
+            target_layer_id=str(next_layer_id),
+            prediction_digest=prediction_digest,
+            prediction_confidence=float(prediction_confidence),
+            host_projected_estimated_makespan=float(self._prepared_plan_state["host_projected_estimated_makespan"]),
+            ideal_estimated_makespan=float(self._prepared_plan_state["ideal_estimated_makespan"]),
+            safe_selected_policy=str(selected_plan.policy_name),
+            raw_u_policy_name=raw_u_name,
+            paired_b_policy_name=paired_b_name,
+        )
+
+    def _compile_async_local_phase_plan(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        local_context: PhaseReadyContext,
+    ) -> PhaseExecutionPlan:
+        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        if prepared_plan is None:
+            raise RuntimeError(f"missing prepared runtime joint plan for {layer_name} {phase}")
+        compiled = compile_prepared_window_phase_plan(
+            prepared_plan=prepared_plan,
+            local_context=local_context,
+            global_contexts=(local_context,),
+            bucket_rows=self.config.bucket_rows,
+            p0_weight=self.config.p0_weight,
+            p1_reservation_weight=self.config.p1_reservation_weight,
+            p2_hint_weight=self.config.p2_hint_weight,
+            policy_name=self._effective_phase_policy_name() or "routersense_p0p1p2_hint",
+        )
+        return replace(
+            compiled,
+            execution_mode="joint_window_async_p2p",
+            metrics={
+                **compiled.metrics,
+                "joint_window_async_local_materialization": True,
+                "p1_planning_collective_count": 0 if str(phase) == "P1" else int(compiled.metrics.get("p1_planning_collective_count", 0) or 0),
+                "prediction_extra_collective_count": 0,
+            },
+        )
+
     def _store_prepared_plan(self, *, layer_name: str, observation_p1: RuntimeObservation) -> None:
         total_start_ns = time.monotonic_ns()
         from rs.scheduling.contracts import (
@@ -1215,6 +1528,9 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["active_next_dispatch_prediction"] = None
         self._prepared_plan_state["prediction_consumption_records"] = []
         self._prepared_plan_state.pop("prepared_priority_cache", None)
+        self._prepared_plan_state.pop("global_joint_plan_wire", None)
+        self._prepared_plan_state.pop("global_joint_plan_agreement", None)
+        self._prepared_plan_state.pop("global_joint_window_plan", None)
 
     def end_forward(self) -> dict[str, Any]:
         active_transport = self._active_transport is not None
@@ -1225,6 +1541,9 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["active_next_dispatch_prediction"] = None
         self._prepared_plan_state["prediction_consumption_records"] = []
         self._prepared_plan_state.pop("prepared_priority_cache", None)
+        self._prepared_plan_state.pop("global_joint_plan_wire", None)
+        self._prepared_plan_state.pop("global_joint_plan_agreement", None)
+        self._prepared_plan_state.pop("global_joint_window_plan", None)
         return {
             "forward_epoch": int(self._forward_epoch),
             "active_transport_cleared": bool(active_transport),
@@ -1298,6 +1617,11 @@ class RouterSenseInjectionRuntime:
                 observation=observation,
                 device=self._matrix_device(packed_hidden_states),
             )
+            if self._is_joint_window_async_mode():
+                self._store_runtime_joint_plan_from_p0(
+                    layer_name=layer_name,
+                    observation_p0=observation,
+                )
         self._record_plan_arrival(layer_name=layer_name, phase="P0")
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
@@ -1379,6 +1703,57 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P0")
         if self._should_schedule_phase(layer_name=layer_name, phase="P0"):
+            if self._is_joint_window_async_mode():
+                agreement_start_ns = time.monotonic_ns()
+                agreement = self._agree_joint_plan_digest(
+                    layer_name=layer_name,
+                    phase="P0",
+                    prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+                )
+                if not bool(agreement.get("valid", False)):
+                    raise RuntimeError(f"global joint plan digest mismatch for {layer_name} P0")
+                plan = self._compile_async_local_phase_plan(
+                    layer_name=layer_name,
+                    phase="P0",
+                    local_context=phase_ctx,
+                )
+                agreement_end_ns = time.monotonic_ns()
+                self._record_planning_timing(
+                    layer_name=layer_name,
+                    phase="P0",
+                    stage="agree_global_joint_plan_digest",
+                    start_ns=agreement_start_ns,
+                    end_ns=agreement_end_ns,
+                    global_plan_digest=str(agreement.get("global_plan_digest", "")),
+                )
+                if self.observation_recorder is not None:
+                    self.observation_recorder.record_scheduled_plan(
+                        scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
+                    )
+                self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
+                self._timeline(
+                    "phase_execution_plan_agreed",
+                    layer_name=layer_name,
+                    phase_name="P0",
+                    plan_hash=plan.plan_hash,
+                    wave_count=len(plan.waves),
+                    bucket_count=sum(len(wave.bucket_tasks) for wave in plan.waves),
+                    execution_mode=plan.execution_mode,
+                    global_plan_digest=str(agreement.get("global_plan_digest", "")),
+                )
+                hook_end_ns = time.monotonic_ns()
+                self._record_hook_timing(
+                    layer_name=layer_name,
+                    phase="P0",
+                    hook_name="before_token_dispatch_total",
+                    start_ns=hook_start_ns,
+                    end_ns=hook_end_ns,
+                    scheduled=True,
+                    plan_hash=plan.plan_hash,
+                    wave_count=int(len(plan.waves)),
+                )
+                self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=True, plan_hash=plan.plan_hash)
+                return
             agreement_start_ns = time.monotonic_ns()
             policy = self._pending_window_adapter() if self.config.execution_mode == "multiphase_pending_window" else self._phase_policy()
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=policy, group=self.ep_process_group)
@@ -1745,6 +2120,56 @@ class RouterSenseInjectionRuntime:
         )
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P1")
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
+            if self._is_joint_window_async_mode():
+                inferred_p1 = tuple(
+                    tuple(int(value) for value in row)
+                    for row in (self._prepared_plan_state.get("p1_inferred_from_p0") or [])
+                )
+                expected_send = tuple(int(value) for value in observation.input_splits)
+                expected_recv = tuple(int(value) for value in observation.output_splits)
+                if inferred_p1:
+                    local_index = tuple(int(v) for v in self.ep_group_ranks).index(int(self.rank))
+                    inferred_send = tuple(int(inferred_p1[local_index][dst]) for dst in range(len(expected_send)))
+                    inferred_recv = tuple(int(inferred_p1[src][local_index]) for src in range(len(expected_recv)))
+                    if inferred_send != expected_send or inferred_recv != expected_recv:
+                        raise RuntimeError(
+                            f"local P1 invariant mismatch for {layer_name}: "
+                            f"inferred_send={inferred_send} actual_send={expected_send} "
+                            f"inferred_recv={inferred_recv} actual_recv={expected_recv}"
+                        )
+                plan = self._compile_async_local_phase_plan(
+                    layer_name=layer_name,
+                    phase="P1",
+                    local_context=phase_ctx,
+                )
+                if self.observation_recorder is not None:
+                    self.observation_recorder.record_scheduled_plan(
+                        scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
+                    )
+                self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
+                self._timeline(
+                    "phase_execution_plan_agreed",
+                    layer_name=layer_name,
+                    phase_name="P1",
+                    plan_hash=plan.plan_hash,
+                    wave_count=len(plan.waves),
+                    bucket_count=sum(len(wave.bucket_tasks) for wave in plan.waves),
+                    execution_mode=plan.execution_mode,
+                    p1_planning_collective_count=0,
+                )
+                hook_end_ns = time.monotonic_ns()
+                self._record_hook_timing(
+                    layer_name=layer_name,
+                    phase="P1",
+                    hook_name="before_token_combine_total",
+                    start_ns=hook_start_ns,
+                    end_ns=hook_end_ns,
+                    scheduled=True,
+                    plan_hash=plan.plan_hash,
+                    wave_count=int(len(plan.waves)),
+                )
+                self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=True, plan_hash=plan.plan_hash)
+                return
             agreement_start_ns = time.monotonic_ns()
             policy = self._pending_window_adapter() if self.config.execution_mode == "multiphase_pending_window" else self._phase_policy()
             plan = run_phase_plan_agreement(local_context=phase_ctx, policy=policy, group=self.ep_process_group)
@@ -1848,8 +2273,11 @@ class RouterSenseInjectionRuntime:
                 end_ns=clear_end_ns,
             )
             observation_p1 = self._pending_p1.pop(layer_name, None)
-            if observation_p1 is not None and self.config.p2_hint_mode == "calibrated_artifact":
+            if observation_p1 is not None and self.config.p2_hint_mode == "calibrated_artifact" and not self._is_joint_window_async_mode():
                 self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
+            if self._is_joint_window_async_mode():
+                self._prepared_plan_state["prepared_plan"] = None
+                self._prepared_plan_state.pop("prepared_priority_cache", None)
             if observation_p1 is not None:
                 self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
@@ -2077,6 +2505,11 @@ class RouterSenseInjectionRuntime:
             "consumer_layer": str(consumption_records[0].get("consumer_layer", "")) if consumption_records else "",
             "consumer_phase": str(consumption_records[0].get("consumer_phase", "")) if consumption_records else "",
             "consumed_before_p1": bool(consumption_records[0].get("consumed_before_p1", False)) if consumption_records else False,
+            "safe_selected_policy": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("safe_selected_policy", ""))),
+            "raw_u_policy_name": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("raw_u_policy_name", ""))),
+            "paired_b_policy_name": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("paired_b_policy_name", ""))),
+            "host_projected_estimated_makespan": float(self._prepared_plan_state.get("host_projected_estimated_makespan", 0.0) or 0.0),
+            "ideal_estimated_makespan": float(self._prepared_plan_state.get("ideal_estimated_makespan", 0.0) or 0.0),
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

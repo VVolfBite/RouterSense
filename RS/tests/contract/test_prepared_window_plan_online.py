@@ -22,6 +22,7 @@ from rs.scheduling.contracts import FlowDemand, FlowWindow, ForecastPressure, Gl
 from rs.scheduling.multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy
 from rs.scheduling.observation_contracts import RankTopologyRecord, RuntimeObservation
 from rs.scheduling.phase_execution import FutureDemandHint
+from rs.scheduling.phase_local.common import build_transfer_layouts_and_tasks
 from rs.scheduling.validation import stable_hash
 
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
@@ -100,6 +101,29 @@ def _runtime(*, control_mode: str = "sync_before_phase", observation_profile: st
             p2_hint_mode="calibrated_artifact",
             p2_hint_weight=1.0,
             observation_profile=observation_profile,
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="request",
+        hostname="host",
+        ep_group_ranks=(0, 1),
+        ep_group_root_global_rank=0,
+    )
+
+
+def _async_runtime() -> RouterSenseInjectionRuntime:
+    return RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(
+            policy="routersense_p0p1p2_hint",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            p2_hint_mode="calibrated_artifact",
+            p2_hint_weight=1.0,
+            observation_profile="execution",
         ),
         rank=0,
         local_rank=0,
@@ -258,6 +282,55 @@ def test_prediction_audit_exports_after_next_dispatch_arrives() -> None:
     assert "relative_l1_error" in rows[-1]
 
 
+def test_joint_window_async_p0_stores_joint_plan_and_compiles_local_plan() -> None:
+    runtime = _async_runtime()
+    runtime._record_prediction_for_dispatch(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        observation=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+        device=torch.device("cpu"),
+    )
+    runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+    )
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 16), (8, 0)), p2_hint_mode="none")
+    plan = runtime._compile_async_local_phase_plan(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase="P0",
+        local_context=contexts[0],
+    )
+    assert plan.execution_mode == "joint_window_async_p2p"
+    assert plan.metrics["prediction_extra_collective_count"] == 0
+    assert runtime.export_prepared_plan_summary()["prediction_target_layer"] == "1"
+
+
+def test_joint_window_async_p1_reuses_prepared_plan_without_planning_collective() -> None:
+    runtime = _async_runtime()
+    runtime._prepared_plan_state["prepared_plan"] = _prepared_plan(created="0")  # noqa: SLF001
+    runtime._prepared_plan_state["p1_inferred_from_p0"] = [[0, 8], [4, 0]]  # noqa: SLF001
+    contexts = make_contexts_from_matrix(phase="P1", matrix=((0, 4), (8, 0)), p2_hint_mode="none")
+    plan = runtime._compile_async_local_phase_plan(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase="P1",
+        local_context=contexts[0],
+    )
+    assert plan.execution_mode == "joint_window_async_p2p"
+    assert plan.metrics["p1_planning_collective_count"] == 0
+
+
+def test_transfer_layouts_preserve_receiver_offsets_for_async_p2p() -> None:
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (1, 0)), p2_hint_mode="none")
+    transfer_layouts, tasks = build_transfer_layouts_and_tasks(
+        local_context=contexts[0],
+        global_contexts=contexts,
+        bucket_rows=1,
+    )
+    remote_tasks = [task for task in tasks if int(task.src_rank) != int(task.dst_rank)]
+    recv_offsets = {(int(task.src_rank), int(task.dst_rank), int(task.receiver_offset_rows)) for task in remote_tasks}
+    assert (1, 0, 0) in recv_offsets
+    assert (0, 1, 0) in recv_offsets or (0, 1, 1) in recv_offsets
+
+
 def test_perf_profile_suppresses_window_shadow_exports() -> None:
     runtime = _runtime(observation_profile="perf")
     runtime.window_state_records.append({"window": "x"})
@@ -381,6 +454,34 @@ def test_store_prepared_plan_prefers_predicted_next_dispatch(monkeypatch) -> Non
     assert summary["p2_matrix_gather_call_count"] == 1
     assert summary["p2_matrix_gather_time_us"] >= 0.0
     assert summary["predictor_name"] == "copy_current_dispatch"
+
+
+def test_runtime_joint_plan_records_host_projected_safe_selection(monkeypatch) -> None:
+    runtime = _async_runtime()
+    from rs.runtime.online.megatron_ep.control import p2_matrix as mod
+
+    monkeypatch.setattr(mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(mod.dist, "is_initialized", lambda: True)
+
+    def all_gather_into_tensor(output, input_tensor, group=None):
+        output.copy_(torch.tensor([0, 16, 8, 0], dtype=input_tensor.dtype, device=input_tensor.device))
+
+    monkeypatch.setattr(mod.dist, "all_gather_into_tensor", all_gather_into_tensor)
+    layer0 = "model.layers.0.mlp"
+    runtime._record_prediction_for_dispatch(  # noqa: SLF001
+        layer_name=layer0,
+        observation=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+        device=torch.device("cpu"),
+    )
+    runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name=layer0,
+        observation_p0=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+    )
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["safe_selected_policy"] != ""
+    assert summary["raw_u_policy_name"].startswith("U_")
+    assert summary["paired_b_policy_name"].startswith("B_")
+    assert summary["host_projected_estimated_makespan"] >= 0.0
 
 
 def test_store_prepared_plan_legacy_fallback_is_not_marked_as_predictor_matrix() -> None:

@@ -39,6 +39,20 @@ def test_online_policy_correctness_accepts_multiphase_pending_window_for_hint_po
     assert config.online_policy.name == "routersense_p0p1p2_hint"
 
 
+def test_online_policy_correctness_accepts_joint_window_async_p2p_for_hint_policy() -> None:
+    config = load_run_config(
+        config_path=ROOT / "configs/experiment/online_policy_correctness_local_2gpu.yaml",
+        overrides=[
+            "online_policy.name=routersense_p0p1p2_hint",
+            "execution.mode=joint_window_async_p2p",
+            "online_policy.p2.mode=calibrated_artifact",
+            "online_policy.parameters.p2_hint_weight=1.0",
+        ],
+    )
+    assert config.execution.mode == "joint_window_async_p2p"
+    assert config.online_policy.name == "routersense_p0p1p2_hint"
+
+
 def test_build_launch_command_uses_torchrun_for_online() -> None:
     config = load_run_config(config_path=ROOT / "configs/experiment/online_observe_local_2gpu.yaml")
     command = build_launch_command(

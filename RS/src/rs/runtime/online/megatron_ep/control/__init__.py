@@ -1,14 +1,11 @@
-"""控制面子包入口。
+"""Control-plane package exports.
 
-控制面当前分三类：
-- 正式热路径：agreement_wire、plan_agreement、p2_provider
-- shadow / native-order 兼容路径：shadow_policy/*
-- 早期异步 control-plane 试验残留：mailbox / state_machine / timeline
+Keep package import light. Heavy control modules are resolved lazily so that
+runtime subprocesses importing only a narrow helper do not eagerly import the
+entire planning stack.
 """
 
-from .p2_contracts import P2HintMetadata, P2HintRequest
-from .p2_provider import build_p2_hint_provider, extract_prepared_plan_priority
-from .plan_agreement import run_phase_plan_agreement
+from __future__ import annotations
 
 __all__ = [
     "P2HintMetadata",
@@ -17,3 +14,22 @@ __all__ = [
     "extract_prepared_plan_priority",
     "run_phase_plan_agreement",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"P2HintMetadata", "P2HintRequest"}:
+        from .p2_contracts import P2HintMetadata, P2HintRequest
+
+        return {"P2HintMetadata": P2HintMetadata, "P2HintRequest": P2HintRequest}[name]
+    if name in {"build_p2_hint_provider", "extract_prepared_plan_priority"}:
+        from .p2_provider import build_p2_hint_provider, extract_prepared_plan_priority
+
+        return {
+            "build_p2_hint_provider": build_p2_hint_provider,
+            "extract_prepared_plan_priority": extract_prepared_plan_priority,
+        }[name]
+    if name == "run_phase_plan_agreement":
+        from .plan_agreement import run_phase_plan_agreement
+
+        return run_phase_plan_agreement
+    raise AttributeError(name)

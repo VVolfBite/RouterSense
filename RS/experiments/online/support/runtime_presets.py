@@ -7,9 +7,18 @@ PUBLIC_RUNTIME_LINES = {"phase_sync", "async_release"}
 PUBLIC_OUTPUT_MODES = {"paper", "debug_replay"}
 PUBLIC_STRATEGIES = {
     "disabled",
+    "native",
     "birkhoff_phase_local",
+    "birkhoff_phase_local_sync",
+    "birkhoff_phase_local_async_p2p",
+    "fifo_async_p2p",
+    "greedy_async_p2p",
     "routersense_p0p1p2_hint",
     "routersense_joint_priority_phase_sync",
+    "routersense_joint_phase_sync",
+    "routersense_joint_zero_hint_async_p2p",
+    "routersense_joint_predicted_async_p2p",
+    "routersense_safe_joint_async",
 }
 
 
@@ -104,7 +113,7 @@ def public_runtime_defaults(*, output_mode: str) -> dict[str, Any]:
 def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[str, Any]:
     if runtime_line == "async_release":
         raise ValueError("async_release runtime_line has a shadow-only skeleton but no online executor integration yet")
-    if strategy_name == "disabled":
+    if strategy_name in {"disabled", "native"}:
         return {
             "policy": "",
             "run_kind": "online_observe",
@@ -118,6 +127,42 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "policy": "birkhoff_phase_local",
             "run_kind": "online_policy_correctness",
             "execution_mode": "phase_sync_wave",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+        }
+    if strategy_name == "birkhoff_phase_local_sync":
+        return {
+            "policy": "birkhoff_phase_local",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "phase_sync_wave",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+        }
+    if strategy_name == "birkhoff_phase_local_async_p2p":
+        return {
+            "policy": "birkhoff_phase_local",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+        }
+    if strategy_name == "fifo_async_p2p":
+        return {
+            "policy": "bucketed_fifo",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+        }
+    if strategy_name == "greedy_async_p2p":
+        return {
+            "policy": "greedy_ready_set",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
@@ -136,6 +181,42 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "policy": "routersense_joint_priority_phase_sync",
             "run_kind": "online_policy_correctness",
             "execution_mode": "phase_sync_wave",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "calibrated_artifact",
+            "calibrated_p2": True,
+        }
+    if strategy_name == "routersense_joint_phase_sync":
+        return {
+            "policy": "routersense_joint_priority_phase_sync",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "phase_sync_wave",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "calibrated_artifact",
+            "calibrated_p2": True,
+        }
+    if strategy_name == "routersense_joint_zero_hint_async_p2p":
+        return {
+            "policy": "routersense_p0p1p2_hint",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+        }
+    if strategy_name == "routersense_joint_predicted_async_p2p":
+        return {
+            "policy": "routersense_p0p1p2_hint",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "calibrated_artifact",
+            "calibrated_p2": True,
+        }
+    if strategy_name == "routersense_safe_joint_async":
+        return {
+            "policy": "routersense_p0p1p2_hint",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,

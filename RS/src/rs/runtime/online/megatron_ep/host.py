@@ -40,6 +40,19 @@ class StageStatus:
     detail: str = ""
 
 
+@dataclass
+class DedicatedP2PGroupRegistry:
+    ordered_group_ranks: tuple[tuple[int, ...], ...]
+    groups: dict[tuple[int, ...], dist.ProcessGroup]
+    local_group_ranks: tuple[int, ...]
+    local_group: dist.ProcessGroup | None
+    warmup_passed: bool
+    new_group_call_order: tuple[tuple[int, ...], ...]
+
+
+_DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}
+
+
 # Basic runtime/bootstrap helpers
 
 
@@ -54,6 +67,89 @@ def get_process_group_ranks_safe(group: dist.ProcessGroup | None) -> tuple[int, 
 def get_process_group_root_safe(group: dist.ProcessGroup | None) -> int:
     ranks = get_process_group_ranks_safe(group)
     return int(ranks[0]) if ranks else 0
+
+
+def _discover_all_ep_group_tuples(local_group_ranks: tuple[int, ...]) -> tuple[tuple[int, ...], ...]:
+    normalized_local = tuple(int(rank) for rank in local_group_ranks)
+    if not dist.is_available() or not dist.is_initialized():
+        return (normalized_local,)
+    gathered: list[tuple[int, ...] | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, normalized_local)
+    unique = sorted({tuple(int(rank) for rank in (item or ())) for item in gathered if item is not None})
+    return tuple(group for group in unique if group)
+
+
+def _get_or_create_dedicated_p2p_group_registry(
+    *,
+    ep_group_ranks: tuple[int, ...],
+    local_rank: int,
+) -> DedicatedP2PGroupRegistry | None:
+    if not dist.is_available() or not dist.is_initialized():
+        return None
+    ordered = _discover_all_ep_group_tuples(tuple(int(rank) for rank in ep_group_ranks))
+    cached = _DEDICATED_P2P_GROUP_REGISTRY.get(ordered)
+    if cached is not None:
+        return cached
+    if torch.cuda.is_available() and int(local_rank) < int(torch.cuda.device_count()):
+        torch.cuda.set_device(int(local_rank))
+    groups: dict[tuple[int, ...], dist.ProcessGroup] = {}
+    call_order: list[tuple[int, ...]] = []
+    warmup_passed = False
+    local_group: dist.ProcessGroup | None = None
+    for group_ranks in ordered:
+        group = dist.new_group(ranks=list(group_ranks))
+        groups[group_ranks] = group
+        call_order.append(group_ranks)
+        if tuple(group_ranks) == tuple(int(rank) for rank in ep_group_ranks):
+            local_group = group
+    try:
+        for group_ranks, group in groups.items():
+            if int(dist.get_rank()) not in set(group_ranks):
+                continue
+            tensor = torch.zeros(1, dtype=torch.int64, device=("cuda" if torch.cuda.is_available() else "cpu"))
+            dist.all_reduce(tensor, group=group)
+        warmup_passed = True
+    except Exception:
+        warmup_passed = False
+    registry = DedicatedP2PGroupRegistry(
+        ordered_group_ranks=ordered,
+        groups=groups,
+        local_group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+        local_group=local_group,
+        warmup_passed=bool(warmup_passed),
+        new_group_call_order=tuple(call_order),
+    )
+    _DEDICATED_P2P_GROUP_REGISTRY[ordered] = registry
+    return registry
+
+
+def _maybe_create_dedicated_p2p_group(
+    *,
+    ep_group_ranks: tuple[int, ...],
+    local_rank: int,
+) -> tuple[dist.ProcessGroup | None, dict[str, Any]]:
+    registry = _get_or_create_dedicated_p2p_group_registry(
+        ep_group_ranks=ep_group_ranks,
+        local_rank=local_rank,
+    )
+    if registry is None:
+        return None, {
+            "dedicated_p2p_group_initialized": False,
+            "p2p_group_ranks": list(ep_group_ranks),
+            "p2p_group_warmup_passed": False,
+            "hotpath_new_group_count": 0,
+            "dedicated_p2p_groups_created": [],
+            "local_dedicated_group_ranks": list(ep_group_ranks),
+        }
+    return registry.local_group, {
+        "dedicated_p2p_group_initialized": True,
+        "p2p_group_ranks": list(ep_group_ranks),
+        "p2p_group_warmup_passed": bool(registry.warmup_passed),
+        "hotpath_new_group_count": 0,
+        "dedicated_p2p_groups_created": [list(item) for item in registry.ordered_group_ranks],
+        "local_dedicated_group_ranks": list(registry.local_group_ranks),
+        "new_group_call_order": [list(item) for item in registry.new_group_call_order],
+    }
 
 
 def model_is_local_path(model: str) -> bool:
@@ -568,13 +664,21 @@ def attach_dispatch_facade(
     original_all_to_all = None
     supported_policies = set(supported_phase_policies())
     phase_policy_name = config.policy or (config.scheduler_mode if config.scheduler_mode in supported_policies else "")
-    if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"} and sample_dispatcher is not None:
+    if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"} and sample_dispatcher is not None:
         import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
 
         original_all_to_all = token_dispatcher_mod.all_to_all
+        p2p_group = None
+        if config.execution_mode == "joint_window_async_p2p":
+            p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
+                ep_group_ranks=ep_group_ranks,
+                local_rank=local_rank,
+            )
+            runtime._prepared_plan_state.update(p2p_status)
         transport_adapter = MegatronPhaseTransportAdapter(
             dispatcher_class=type(sample_dispatcher).__name__,
             dispatcher_module_sha256=None,
+            p2p_group=p2p_group,
         )
         transport_adapter.timeline_hook = lambda event, **detail: runtime._timeline(
             event,
@@ -589,6 +693,7 @@ def attach_dispatch_facade(
                 output_split_sizes=output_split_sizes_,
                 input_split_sizes=input_split_sizes,
                 original_all_to_all=original_all_to_all,
+                use_nccl_stream=use_nccl_stream,
             )
 
         token_dispatcher_mod.all_to_all = wrapped_all_to_all

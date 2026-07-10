@@ -211,8 +211,10 @@ def main(argv: list[str] | None = None) -> int:
 
         forward_start_ns = time.monotonic_ns()
         record_event("forward_start")
+        policy_runtime.begin_forward(forward_epoch=0)
         with torch.inference_mode():
             logits = model(tokens, position_ids, None)
+        policy_runtime.end_forward()
         forward_end_ns = time.monotonic_ns()
         record_event("forward_end", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
         stage_barrier("observer_forward", ok=isinstance(logits, torch.Tensor), detail=str(tuple(logits.shape)))

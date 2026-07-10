@@ -1,39 +1,6 @@
-"""Phase 子包入口。
+"""Phase package exports with lazy import."""
 
-这一层放 phase 级别的数据结构与辅助函数：
-- context_builder：把 dispatcher 现场信息整理成 PhaseReadyContext
-- contracts：phase 执行合同
-- layout_join / validation：布局拼接与校验
-"""
-
-from .context_builder import (
-    DispatcherSnapshot,
-    PhaseContextBuildRequest,
-    PhasePayloadContract,
-    RuntimeIdentity,
-    build_phase_ready_context,
-)
-from .contracts import (
-    AbstractPhaseExecutionPlan,
-    AbstractPlanWave,
-    AbstractTaskRef,
-    BucketTask,
-    FutureDemandHint,
-    IncomingSlot,
-    OutgoingSegment,
-    PackedTensorDescriptor,
-    PayloadSlice,
-    PhaseExecutionPlan,
-    PhaseHookResult,
-    PhaseName,
-    PhasePlanningSummary,
-    PhaseReadyContext,
-    PlanWave,
-    TransferLayout,
-    TransportBundle,
-)
-from .layout_join import join_transfer_layouts
-from .validation import validate_layout_offsets_cover_exactly_once, validate_p0_atomic_bundle
+from __future__ import annotations
 
 __all__ = [
     "BucketTask",
@@ -62,3 +29,98 @@ __all__ = [
     "validate_layout_offsets_cover_exactly_once",
     "validate_p0_atomic_bundle",
 ]
+
+
+def __getattr__(name: str):
+    if name in {
+        "DispatcherSnapshot",
+        "PhaseContextBuildRequest",
+        "PhasePayloadContract",
+        "RuntimeIdentity",
+        "build_phase_ready_context",
+    }:
+        from .context_builder import (
+            DispatcherSnapshot,
+            PhaseContextBuildRequest,
+            PhasePayloadContract,
+            RuntimeIdentity,
+            build_phase_ready_context,
+        )
+
+        return {
+            "DispatcherSnapshot": DispatcherSnapshot,
+            "PhaseContextBuildRequest": PhaseContextBuildRequest,
+            "PhasePayloadContract": PhasePayloadContract,
+            "RuntimeIdentity": RuntimeIdentity,
+            "build_phase_ready_context": build_phase_ready_context,
+        }[name]
+    if name in {
+        "AbstractPhaseExecutionPlan",
+        "AbstractPlanWave",
+        "AbstractTaskRef",
+        "BucketTask",
+        "FutureDemandHint",
+        "IncomingSlot",
+        "OutgoingSegment",
+        "PackedTensorDescriptor",
+        "PayloadSlice",
+        "PhaseExecutionPlan",
+        "PhaseHookResult",
+        "PhaseName",
+        "PhasePlanningSummary",
+        "PhaseReadyContext",
+        "PlanWave",
+        "TransferLayout",
+        "TransportBundle",
+    }:
+        from .contracts import (
+            AbstractPhaseExecutionPlan,
+            AbstractPlanWave,
+            AbstractTaskRef,
+            BucketTask,
+            FutureDemandHint,
+            IncomingSlot,
+            OutgoingSegment,
+            PackedTensorDescriptor,
+            PayloadSlice,
+            PhaseExecutionPlan,
+            PhaseHookResult,
+            PhaseName,
+            PhasePlanningSummary,
+            PhaseReadyContext,
+            PlanWave,
+            TransferLayout,
+            TransportBundle,
+        )
+
+        return {
+            "AbstractPhaseExecutionPlan": AbstractPhaseExecutionPlan,
+            "AbstractPlanWave": AbstractPlanWave,
+            "AbstractTaskRef": AbstractTaskRef,
+            "BucketTask": BucketTask,
+            "FutureDemandHint": FutureDemandHint,
+            "IncomingSlot": IncomingSlot,
+            "OutgoingSegment": OutgoingSegment,
+            "PackedTensorDescriptor": PackedTensorDescriptor,
+            "PayloadSlice": PayloadSlice,
+            "PhaseExecutionPlan": PhaseExecutionPlan,
+            "PhaseHookResult": PhaseHookResult,
+            "PhaseName": PhaseName,
+            "PhasePlanningSummary": PhasePlanningSummary,
+            "PhaseReadyContext": PhaseReadyContext,
+            "PlanWave": PlanWave,
+            "TransferLayout": TransferLayout,
+            "TransportBundle": TransportBundle,
+        }[name]
+    if name == "join_transfer_layouts":
+        from .layout_join import join_transfer_layouts
+
+        return join_transfer_layouts
+    if name in {"validate_layout_offsets_cover_exactly_once", "validate_p0_atomic_bundle"}:
+        from .validation import validate_layout_offsets_cover_exactly_once, validate_p0_atomic_bundle
+
+        return {
+            "validate_layout_offsets_cover_exactly_once": validate_layout_offsets_cover_exactly_once,
+            "validate_p0_atomic_bundle": validate_p0_atomic_bundle,
+        }[name]
+    raise AttributeError(name)

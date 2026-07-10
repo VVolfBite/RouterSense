@@ -1,0 +1,20 @@
+{
+  "date": "2026-07-11",
+  "real_async_executor_reachable": true,
+  "dedicated_group_order_validated": true,
+  "coalescing_enabled": false,
+  "per_peer_sequence_validated": true,
+  "microbatch_sequence_isolated": true,
+  "preflight_validated": true,
+  "post_start_fallback_forbidden": true,
+  "host_projected_safe_selection_active": true,
+  "birkhoff_same_executor_ready": true,
+  "p1_planning_collective_count": 0,
+  "prediction_extra_collective_count": 0,
+  "runtime_integrated_gloo_passed": true,
+  "gpu_run_b2_ready": true,
+  "gpu_run_c2_ready": true,
+  "gpu_run_a2_ready": true,
+  "current_cuda_device_count": 1,
+  "current_4gpu_runs_executed": false
+}

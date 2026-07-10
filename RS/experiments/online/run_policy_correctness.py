@@ -319,13 +319,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             forward_start_ns = time.monotonic_ns()
             record_event("forward_start")
+            runtime.begin_forward(forward_epoch=0)
             with torch.inference_mode():
                 logits = model(tokens, position_ids, attention_mask)
+            runtime.end_forward()
             forward_end_ns = time.monotonic_ns()
             record_event("forward_end", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
         except SelectedLayerStop:
             partial_stop = True
             logits = None
+            runtime.end_forward()
             forward_end_ns = time.monotonic_ns()
             record_event("forward_partial_stop", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
 

@@ -1,17 +1,18 @@
 {
   "current_real_executor": {
-    "file": "src/rs/runtime/online/megatron_ep/execution/sync_wave_executor.py",
-    "phase_sync_only": true
+    "async_p2p_available": true,
+    "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
+    "phase_sync_only": false
   },
   "forward_begin_end_call": {
     "file": "src/rs/runtime/online/megatron_ep/lifecycle.py",
     "implemented": true,
-    "referenced_from_host": false
+    "referenced_from_host": true
   },
   "global_plan_agreement_call": {
     "file": "src/rs/runtime/online/megatron_ep/async_release/joint_plan_agreement.py",
     "implemented": true,
-    "referenced_from_runtime": false
+    "referenced_from_runtime": true
   },
   "host_attach_point": {
     "attach_formal_online_runtime": true,
@@ -20,20 +21,20 @@
   "host_projection_call": {
     "file": "src/rs/runtime/online/megatron_ep/async_release/runtime_projection.py",
     "implemented": true,
-    "referenced_from_runtime": false
+    "referenced_from_runtime": true
   },
   "joint_async_execution_mode_reachable": {
     "file": "src/rs/runtime/online/megatron_ep/host.py",
-    "reachable": false
+    "reachable": true
   },
   "megatron_hook_entry": {
     "attached": true,
     "file": "src/rs/runtime/online/megatron_ep/host.py"
   },
   "p2p_executor_call": {
-    "file": "src/rs/runtime/online/megatron_ep/async_release/p2p_executor.py",
+    "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
     "implemented": true,
-    "referenced_from_transport_adapter": false
+    "referenced_from_transport_adapter": true
   },
   "phase_sync_transport_adapter": {
     "file": "src/rs/runtime/online/megatron_ep/execution/transport_adapter.py",

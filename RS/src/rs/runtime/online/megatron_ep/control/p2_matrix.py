@@ -151,10 +151,18 @@ def _all_gather_matrix(
     world_size: int,
     group: Any | None,
 ) -> torch.Tensor:
-    if hasattr(dist, "all_gather_into_tensor"):
-        flat = torch.empty(world_size * world_size, dtype=local_peer_bytes.dtype, device=local_peer_bytes.device)
-        dist.all_gather_into_tensor(flat, local_peer_bytes.contiguous(), group=group)
-        return flat.view(world_size, world_size)
+    backend = ""
+    try:
+        backend = str(dist.get_backend(group if group is not None else dist.group.WORLD))
+    except Exception:
+        backend = ""
+    if hasattr(dist, "all_gather_into_tensor") and backend != "gloo":
+        try:
+            flat = torch.empty(world_size * world_size, dtype=local_peer_bytes.dtype, device=local_peer_bytes.device)
+            dist.all_gather_into_tensor(flat, local_peer_bytes.contiguous(), group=group)
+            return flat.view(world_size, world_size)
+        except Exception:
+            pass
     gathered = [torch.empty_like(local_peer_bytes) for _ in range(world_size)]
     dist.all_gather(gathered, local_peer_bytes.contiguous(), group=group)
     return torch.stack(gathered, dim=0)

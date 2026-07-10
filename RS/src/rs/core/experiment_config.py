@@ -20,7 +20,7 @@ SUPPORTED_RUN_KINDS = {
 
 SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "execution", "debug"}
 SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
-SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window"}
+SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
 SUPPORTED_ONLINE_PHASE_POLICIES = {
     "phase_barrier_fifo",
     "bucketed_fifo",
@@ -93,6 +93,7 @@ class OnlinePolicyParameters:
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 0.0
+    online_p2_predictor: str = "copy_current_dispatch"
 
 
 @dataclass(frozen=True)
@@ -243,14 +244,14 @@ def validate_run_config(config: RunConfig) -> None:
                 "online_policy_correctness only supports phase-local executable policies; "
                 f"got {config.online_policy.name!r}"
             )
-        if config.execution.mode not in {"phase_sync_wave", "multiphase_pending_window"}:
-            raise ValueError("online_policy_correctness requires phase_sync_wave or multiphase_pending_window execution")
+        if config.execution.mode not in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}:
+            raise ValueError("online_policy_correctness requires phase_sync_wave, multiphase_pending_window, or joint_window_async_p2p execution")
         if config.runtime.control_mode != "sync_before_phase":
             raise ValueError("online_policy_correctness requires sync_before_phase control mode")
         if config.offline_study.policies:
             raise ValueError("online_policy_correctness must not declare offline_study.policies")
-        if config.execution.mode == "multiphase_pending_window" and config.online_policy.name != "routersense_p0p1p2_hint":
-            raise ValueError("multiphase_pending_window currently supports online_policy.name=routersense_p0p1p2_hint only")
+        if config.execution.mode in {"multiphase_pending_window", "joint_window_async_p2p"} and config.online_policy.name != "routersense_p0p1p2_hint":
+            raise ValueError("multiphase_pending_window and joint_window_async_p2p currently support online_policy.name=routersense_p0p1p2_hint only")
     if config.online_policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
         raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
     _assert_no_credential_fields(config.to_dict())

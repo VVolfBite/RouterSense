@@ -49,6 +49,21 @@ def build_transfer_layouts_and_tasks(
     return_stats: bool = False,
 ) -> tuple[tuple[Any, ...], list[BucketTask]] | tuple[tuple[Any, ...], list[BucketTask], dict[str, Any]]:
     started_ns = time.perf_counter_ns()
+    receive_slots: dict[tuple[str, int, int, int], tuple[int, str, int]] = {}
+    for context in global_contexts:
+        for slot in getattr(context, "incoming_slots", ()):
+            receive_slots[
+                (
+                    str(slot.phase),
+                    int(slot.src_rank),
+                    int(slot.dst_rank),
+                    int(slot.segment_ordinal),
+                )
+            ] = (
+                int(slot.receive_offset_rows),
+                str(slot.canonical_receive_layout_id),
+                int(getattr(slot, "source_peer_index", -1)),
+            )
 
     def _payload_specs(context: Any) -> tuple[PackedTensorDescriptor, ...]:
         if getattr(context, "payload_specs", ()):
@@ -101,6 +116,10 @@ def build_transfer_layouts_and_tasks(
                 destination_peer_index = int(segment.destination_peer_index)
                 send_offset_rows = int(segment.send_offset_rows)
                 packed_send_layout_id = str(segment.packed_send_layout_id)
+            recv_offset_rows, canonical_receive_layout_id, source_peer_index = receive_slots.get(
+                (str(segment.phase), int(segment.src_rank), int(segment.dst_rank), int(segment.segment_ordinal)),
+                (0, "", -1),
+            )
             layout_count += 1
             transfer_layouts.append(
                 SimpleNamespace(
@@ -109,13 +128,14 @@ def build_transfer_layouts_and_tasks(
                     phase=segment.phase,
                     src_rank=int(segment.src_rank),
                     dst_rank=int(segment.dst_rank),
+                    source_peer_index=source_peer_index,
                     segment_ordinal=int(segment.segment_ordinal),
                     sender_offset_rows=send_offset_rows,
-                    receiver_offset_rows=0,
+                    receiver_offset_rows=recv_offset_rows,
                     row_count=int(segment.row_count),
                     byte_count=int(segment.byte_count),
                     packed_send_layout_id=packed_send_layout_id,
-                    canonical_receive_layout_id="",
+                    canonical_receive_layout_id=canonical_receive_layout_id,
                     atomic_submit=bool(getattr(context, "atomic_submit", True)),
                     payloads=payload_specs,
                 )
@@ -134,7 +154,7 @@ def build_transfer_layouts_and_tasks(
                         dst_rank=int(segment.dst_rank),
                         segment_ordinal=int(segment.segment_ordinal),
                         sender_offset_rows=sender_offset,
-                        receiver_offset_rows=0,
+                        receiver_offset_rows=recv_offset_rows + consumed,
                         row_count=int(current_rows),
                         dtype=str(payload.dtype),
                         shape_suffix=tuple(int(v) for v in payload.shape_suffix),
@@ -156,16 +176,16 @@ def build_transfer_layouts_and_tasks(
                         phase=segment.phase,
                         src_rank=int(segment.src_rank),
                         dst_rank=int(segment.dst_rank),
-                        source_peer_index=-1,
+                        source_peer_index=source_peer_index,
                         destination_peer_index=destination_peer_index,
                         segment_ordinal=int(segment.segment_ordinal),
                         bucket_ordinal=bucket_ordinal,
                         sender_offset_rows=sender_offset,
-                        receiver_offset_rows=0,
+                        receiver_offset_rows=recv_offset_rows + consumed,
                         row_count=int(current_rows),
                         byte_count=int(payload_slices[0].payload_byte_count) if payload_slices else 0,
                         packed_send_layout_id=packed_send_layout_id,
-                        canonical_receive_layout_id="",
+                        canonical_receive_layout_id=canonical_receive_layout_id,
                         payload_slices=payload_slices,
                     )
                 )
