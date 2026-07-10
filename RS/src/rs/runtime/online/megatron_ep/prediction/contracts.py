@@ -39,6 +39,8 @@ class PredictedTrafficMatrix:
     is_oracle: bool
     evaluation_eligible: bool
     created_at_phase: str
+    valid: bool = True
+    error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,3 +75,27 @@ class PredictionAuditRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ActiveNextDispatchPrediction:
+    source_layer_id: str
+    target_layer_id: str
+    forecast_matrix: Matrix
+    matrix_digest: str
+    predictor_name: str
+    predictor_version: str
+    confidence: float
+    evaluation_eligible: bool
+    is_oracle: bool
+    created_at_phase: str
+    created_at_stage: str
+    prediction_time_us: float = 0.0
+    valid: bool = True
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "forecast_matrix": [list(row) for row in self.forecast_matrix],
+        }

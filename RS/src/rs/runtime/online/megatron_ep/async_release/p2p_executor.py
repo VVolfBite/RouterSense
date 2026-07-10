@@ -39,31 +39,41 @@ class AsyncReleaseP2PExecutor:
     def __init__(self, *, config: AsyncReleaseP2PExecutorConfig) -> None:
         self.config = config
 
-    def ordered_ops(self, plan: AsyncReleaseExecutionPlan) -> tuple[P2POp, ...]:
+    def ordered_ops(
+        self,
+        plan: AsyncReleaseExecutionPlan,
+        *,
+        local_rank: int | None = None,
+    ) -> tuple[P2POp, ...]:
         ops: list[P2POp] = []
         for task in sorted(plan.phase_tasks, key=lambda item: (int(item.get("global_order_index", 0)), str(item["task_id"]))):
-            ops.append(
-                P2POp(
-                    op_kind="recv",
-                    peer_rank=int(task.get("dst_rank", -1)),
-                    task_id=str(task["task_id"]),
-                    byte_count=int(task.get("byte_count", 0)),
-                    global_order_index=int(task.get("global_order_index", 0)),
+            src_rank = int(task.get("src_rank", -1))
+            dst_rank = int(task.get("dst_rank", -1))
+            order_index = int(task.get("global_order_index", 0))
+            if local_rank is None or int(local_rank) == dst_rank:
+                ops.append(
+                    P2POp(
+                        op_kind="recv",
+                        peer_rank=src_rank,
+                        task_id=str(task["task_id"]),
+                        byte_count=int(task.get("byte_count", 0)),
+                        global_order_index=order_index,
+                    )
                 )
-            )
-            ops.append(
-                P2POp(
-                    op_kind="send",
-                    peer_rank=int(task.get("dst_rank", -1)),
-                    task_id=str(task["task_id"]),
-                    byte_count=int(task.get("byte_count", 0)),
-                    global_order_index=int(task.get("global_order_index", 0)),
+            if local_rank is None or int(local_rank) == src_rank:
+                ops.append(
+                    P2POp(
+                        op_kind="send",
+                        peer_rank=dst_rank,
+                        task_id=str(task["task_id"]),
+                        byte_count=int(task.get("byte_count", 0)),
+                        global_order_index=order_index,
+                    )
                 )
-            )
         return tuple(ops)
 
-    def execute(self, plan: AsyncReleaseExecutionPlan) -> dict[str, Any]:
-        ops = self.ordered_ops(plan)
+    def execute(self, plan: AsyncReleaseExecutionPlan, *, local_rank: int | None = None) -> dict[str, Any]:
+        ops = self.ordered_ops(plan, local_rank=local_rank)
         return {
             "enabled": bool(self.config.enabled),
             "allow_real_collectives": bool(self.config.allow_real_collectives),
@@ -75,6 +85,7 @@ class AsyncReleaseP2PExecutor:
             else "p2p_executor_disabled",
             "ordered_ops": [op.to_dict() for op in ops],
             "op_count": len(ops),
+            "local_rank": None if local_rank is None else int(local_rank),
         }
 
 

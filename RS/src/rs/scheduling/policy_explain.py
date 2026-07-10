@@ -412,7 +412,11 @@ def explain_policy_decision(
             waves=(),
             diagnostics={},
         )
-        raw_eval, b_eval, selected, fallback, reason = safe_policy.evaluate_components(problem)
+        raw_eval, b_eval, selected, fallback, reason = safe_policy.evaluate_components(
+            problem,
+            raw_plan=raw_plan,
+            paired_b_plan=b_plan,
+        )
         diagnostics = safe_policy._build_safe_diagnostics(  # type: ignore[attr-defined]
             problem=problem,
             raw_eval=raw_eval,

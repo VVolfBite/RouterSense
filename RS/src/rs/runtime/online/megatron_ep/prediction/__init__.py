@@ -5,7 +5,7 @@ debug/replay baselines, not faithful FATE-style expert predictors.
 """
 
 from .audit import compare_predicted_to_actual
-from .contracts import PredictionAuditRecord, PredictionInput, PredictedTrafficMatrix
+from .contracts import ActiveNextDispatchPrediction, PredictionAuditRecord, PredictionInput, PredictedTrafficMatrix
 from .expert_evaluation import ExpertPredictionMetrics, evaluate_expert_prediction
 from .expert_to_traffic import ExpertToTrafficAudit, compare_reconstructed_traffic, source_expert_counts_to_traffic_matrix
 from .expert_trace import ExpertRouteRecord, SourceExpertCountMatrix, aggregate_route_records
@@ -18,6 +18,7 @@ __all__ = [
     "PredictionAuditRecord",
     "PredictionInput",
     "PredictedTrafficMatrix",
+    "ActiveNextDispatchPrediction",
     "ExpertPredictionMetrics",
     "ExpertRouteRecord",
     "ExpertToTrafficAudit",

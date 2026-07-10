@@ -1,0 +1,27 @@
+{
+  "session_date": "2026-07-11",
+  "start_commit": "b954987b0daea42f088de4665566bf639ccfe83c",
+  "gpu_not_run": true,
+  "cuda_available": false,
+  "device_count": 0,
+  "landed": {
+    "active_next_dispatch_prediction": true,
+    "forecast_matrix_to_next_p0_priority": true,
+    "prediction_confidence_preserved_in_hint_metadata": true,
+    "predictor_shape_validation": true,
+    "safe_joint_explain_reuses_prebuilt_plans": true,
+    "async_release_agreement_variable_payload_support": true,
+    "async_release_p2p_local_rank_filtering": true
+  },
+  "tests": {
+    "targeted_pass_count": 30,
+    "git_diff_check_passed": true
+  },
+  "still_blocked": [
+    "gpu_runs_b2_c2_a2_not_executed",
+    "async_release_real_collectives_not_validated",
+    "transport_timing_gpu_validation_not_run",
+    "common_core_joint_only_replay_not_replaced",
+    "edge_aware_p2_candidate_not_replayed"
+  ]
+}

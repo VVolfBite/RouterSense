@@ -134,9 +134,12 @@ class SafeJointPolicy:
     def evaluate_components(
         self,
         problem: MultiPhaseSchedulingProblem,
+        *,
+        raw_plan: LogicalSchedulePlan | None = None,
+        paired_b_plan: LogicalSchedulePlan | None = None,
     ) -> tuple[_EvaluatedPlan, _EvaluatedPlan, _EvaluatedPlan, bool, str]:
-        raw_eval = _evaluate_plan(problem, self._raw_u_policy.build_logical_plan(problem))
-        b_eval = _evaluate_plan(problem, self._paired_b_policy.build_logical_plan(problem))
+        raw_eval = _evaluate_plan(problem, raw_plan if raw_plan is not None else self._raw_u_policy.build_logical_plan(problem))
+        b_eval = _evaluate_plan(problem, paired_b_plan if paired_b_plan is not None else self._paired_b_policy.build_logical_plan(problem))
         selected = raw_eval
         fallback = False
         reason = "selected_raw_u"

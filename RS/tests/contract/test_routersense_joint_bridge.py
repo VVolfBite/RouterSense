@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from rs.runtime.online.megatron_ep.control.p2_provider import extract_prepared_plan_priority
+from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
+from rs.runtime.online.megatron_ep.control.p2_provider import (
+    build_next_p0_priority_from_forecast,
+    build_p2_hint_provider,
+    extract_prepared_plan_priority,
+)
 from rs.scheduling import ForecastPressure, FlowDemand, FlowWindow, GlobalReadySetOptions, LogicalTopology, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan, ReleaseConstraint, resolve_policy
 from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.async_release import simulate_async_release
@@ -153,3 +158,80 @@ def test_prepared_plan_maps_logical_p2_to_next_layer_runtime_p0() -> None:
     assert edge["origin_phase"] == "p2_next_dispatch"
     assert edge["source_layer_id"] == "4"
     assert edge["target_layer_id"] == "5"
+
+
+def test_forecast_matrix_maps_next_p0_priority_without_logical_p2_flow() -> None:
+    prepared = PreparedWindowPlan(
+        window_key="w1",
+        forecast_digest="fd1",
+        logical_plan=LogicalSchedulePlan(
+            policy_name="routersense_multiphase_lookahead:p0_p1_only",
+            waves=(
+                LogicalWave(wave_id=0, flows=(FlowDemand("p0_dispatch:0->1", "p0_dispatch", 0, 1, 8, "ready", True),)),
+                LogicalWave(wave_id=1, flows=(FlowDemand("p1_return:1->0", "p1_return", 1, 0, 8, "blocked", False),)),
+            ),
+            diagnostics={},
+        ),
+        created_at_layer_id="7",
+        applies_from_layer_id="8",
+        execution_capability_required="phase_sync",
+        forecast_matrix=((0, 5, 0, 0), (0, 0, 3, 0), (4, 0, 0, 0), (0, 0, 0, 0)),
+    )
+    payload = extract_prepared_plan_priority(prepared)
+    assert payload["mapped_p2_edge_count"] == 3
+    assert payload["priority_origin"] == "forecast_matrix"
+    assert payload["stale_p0_p1_edge_count_ignored"] == 2
+    p0_edges = [edge for edge in payload["preferred_edges"] if edge["phase"] == "P0"]
+    assert len(p0_edges) == 3
+    assert all(edge["origin_phase"] == "forecast_matrix" for edge in p0_edges)
+
+
+def test_forecast_priority_builder_ignores_stale_logical_edges() -> None:
+    payload = build_next_p0_priority_from_forecast(
+        ((0, 0, 9), (7, 0, 0), (0, 0, 0)),
+        source_layer_id="10",
+        target_layer_id="11",
+        prediction_confidence=0.75,
+        prediction_digest="pd0",
+    )
+    assert payload["mapped_p2_edge_count"] == 2
+    edges = payload["preferred_edges"]
+    assert {tuple((edge["src_rank"], edge["dst_rank"])) for edge in edges} == {(0, 2), (1, 0)}
+    assert all(edge["origin_phase"] == "forecast_matrix" for edge in edges)
+    assert all(edge["target_layer_id"] == "11" for edge in edges)
+
+
+def test_active_prediction_is_consumed_before_p1_with_confidence_preserved() -> None:
+    provider = build_p2_hint_provider(
+        "calibrated_artifact",
+        shared_state={
+            "active_next_dispatch_prediction": {
+                "source_layer_id": "12",
+                "target_layer_id": "13",
+                "forecast_matrix": ((0, 7, 0), (0, 0, 5), (3, 0, 0)),
+                "matrix_digest": "pred13",
+                "predictor_name": "history_ema",
+                "predictor_version": "v1",
+                "confidence": 0.75,
+                "created_at_stage": "after_p0_observation",
+                "evaluation_eligible": True,
+                "is_oracle": False,
+            },
+            "prepared_priority_mode": "mapped_p2_tiebreak",
+            "has_real_p1_reservation": False,
+        },
+    )
+    hint = provider.build_hint(
+        P2HintRequest(
+            plan_key={"layer": "13", "phase": "P1"},
+            layer_id="13",
+            phase="P1",
+            global_rank=0,
+            local_rank=0,
+            ep_group_ranks=(0, 1, 2),
+        )
+    )
+    assert hint.hint_mode == "active_prediction"
+    assert hint.metadata["consumed_before_p1"] is True
+    assert hint.metadata["prediction_confidence"] == 0.75
+    assert hint.metadata["mapped_p2_edge_count"] == 3

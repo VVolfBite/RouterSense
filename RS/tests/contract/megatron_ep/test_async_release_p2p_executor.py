@@ -33,3 +33,19 @@ def test_async_release_p2p_executor_orders_recvs_before_sends_deterministically(
     assert ordered[1]["op_kind"] == "send"
     assert report["real_collectives_executed"] is False
     assert report["fallback_to_phase_sync"] is True
+
+
+def test_async_release_p2p_executor_filters_ops_by_local_rank() -> None:
+    plan = AsyncReleasePlanBuilder(executor_available=False).build(
+        priority_artifact=_artifact(),
+        observed_context={"layer_id": "0"},
+    )
+    executor = AsyncReleaseP2PExecutor(config=AsyncReleaseP2PExecutorConfig(enabled=True))
+    report_rank0 = executor.execute(plan, local_rank=0)
+    report_rank1 = executor.execute(plan, local_rank=1)
+    rank0_ops = report_rank0["ordered_ops"]
+    rank1_ops = report_rank1["ordered_ops"]
+    assert [item["op_kind"] for item in rank0_ops] == ["send", "recv"]
+    assert [item["peer_rank"] for item in rank0_ops] == [1, 1]
+    assert [item["op_kind"] for item in rank1_ops] == ["recv", "send"]
+    assert [item["peer_rank"] for item in rank1_ops] == [0, 0]

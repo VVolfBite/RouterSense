@@ -70,6 +70,7 @@ from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import Joi
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.runtime.online.megatron_ep.prediction import (
+    ActiveNextDispatchPrediction,
     CopyCurrentDispatchPredictor,
     HistoryEMATrafficPredictor,
     PredictionInput,
@@ -106,6 +107,8 @@ class RouterSenseInjectionRuntime:
             "plan_source_layer": "",
             "predicted_dispatch_by_layer": {},
             "actual_dispatch_by_layer": {},
+            "active_next_dispatch_prediction": None,
+            "prediction_consumption_records": [],
             "prepared_priority_mode": "mapped_p2_tiebreak",
             "has_real_p1_reservation": False,
         }
@@ -507,6 +510,23 @@ class RouterSenseInjectionRuntime:
         prediction_end_ns = time.monotonic_ns()
         predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
         self._prepared_plan_state["predicted_dispatch_by_layer"] = predicted_dispatch_by_layer
+        active_prediction = ActiveNextDispatchPrediction(
+            source_layer_id=str(layer_id),
+            target_layer_id=str(next_layer_id),
+            forecast_matrix=predicted.matrix,
+            matrix_digest=str(predicted.matrix_digest),
+            predictor_name=str(predicted.predictor_name),
+            predictor_version=str(predicted.predictor_version),
+            confidence=float(predicted.confidence),
+            evaluation_eligible=bool(predicted.evaluation_eligible),
+            is_oracle=bool(predicted.is_oracle),
+            created_at_phase=str(predicted.created_at_phase),
+            created_at_stage="after_p0_observation",
+            prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
+            valid=bool(predicted.valid),
+            error=str(predicted.error),
+        )
+        self._prepared_plan_state["active_next_dispatch_prediction"] = active_prediction.to_dict()
         self._prepared_plan_state["latest_predictor_name"] = predicted.predictor_name
         self._prepared_plan_state["latest_prediction_digest"] = predicted.matrix_digest
         self._prepared_plan_state["latest_prediction_target_layer_id"] = str(next_layer_id)
@@ -530,6 +550,9 @@ class RouterSenseInjectionRuntime:
             p2_matrix_gather_call_count=int(matrix_bundle.gather_call_count),
             predictor_name=str(predicted.predictor_name),
             predicted_layer_id=str(next_layer_id),
+            prediction_confidence=float(predicted.confidence),
+            prediction_valid=bool(predicted.valid),
+            prediction_error=str(predicted.error),
             prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
             audit_time_us=max(0.0, float(audit_end_ns - audit_start_ns) / 1000.0),
             prediction_audit_emitted=bool(existing_prediction is not None),
@@ -847,11 +870,28 @@ class RouterSenseInjectionRuntime:
         )
         predicted_dispatch_by_layer = dict(self._prepared_plan_state.get("predicted_dispatch_by_layer", {}) or {})
         prediction_entry = predicted_dispatch_by_layer.get(str(next_layer_id))
+        active_prediction = self._prepared_plan_state.get("active_next_dispatch_prediction")
         predictor_name = ""
         prediction_digest = ""
+        prediction_confidence = 0.0
         prediction_evaluation_eligible = True
         prediction_is_oracle = False
-        if isinstance(prediction_entry, dict) and prediction_entry:
+        if (
+            isinstance(active_prediction, dict)
+            and active_prediction
+            and str(active_prediction.get("target_layer_id", "")) == str(next_layer_id)
+        ):
+            forecast_matrix = tuple(
+                tuple(int(value) for value in row)
+                for row in active_prediction.get("forecast_matrix", [])
+            )
+            p2_matrix_source = "active_next_dispatch_prediction"
+            predictor_name = str(active_prediction.get("predictor_name", ""))
+            prediction_digest = str(active_prediction.get("matrix_digest", ""))
+            prediction_confidence = float(active_prediction.get("confidence", 0.0) or 0.0)
+            prediction_evaluation_eligible = bool(active_prediction.get("evaluation_eligible", True))
+            prediction_is_oracle = bool(active_prediction.get("is_oracle", False))
+        elif isinstance(prediction_entry, dict) and prediction_entry:
             forecast_matrix = tuple(
                 tuple(int(value) for value in row)
                 for row in prediction_entry.get("matrix", [])
@@ -859,6 +899,7 @@ class RouterSenseInjectionRuntime:
             p2_matrix_source = "predicted_next_dispatch"
             predictor_name = str(prediction_entry.get("predictor_name", ""))
             prediction_digest = str(prediction_entry.get("matrix_digest", ""))
+            prediction_confidence = float(prediction_entry.get("confidence", 0.0) or 0.0)
             prediction_evaluation_eligible = bool(prediction_entry.get("evaluation_eligible", True))
             prediction_is_oracle = bool(prediction_entry.get("is_oracle", False))
         else:
@@ -887,6 +928,7 @@ class RouterSenseInjectionRuntime:
             p2_matrix_source = "copy_current_dispatch_fallback"
             predictor_name = fallback.predictor_name
             prediction_digest = fallback.matrix_digest
+            prediction_confidence = float(fallback.confidence)
             prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
             prediction_is_oracle = bool(fallback.is_oracle)
         row_sums = [int(sum(row)) for row in forecast_matrix]
@@ -933,7 +975,7 @@ class RouterSenseInjectionRuntime:
             options=GlobalReadySetOptions(
                 scheduling_mode="runtime_lookahead",
                 information_mode="p0_p1_p2",
-                prediction_confidence=1.0,
+                prediction_confidence=float(prediction_confidence),
                 p0_weight=float(self.config.p0_weight),
                 p1_reservation_weight=float(self.config.p1_reservation_weight),
                 p2_hint_weight=float(self.config.p2_hint_weight),
@@ -967,6 +1009,7 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = False
         self._prepared_plan_state["predictor_name"] = predictor_name
         self._prepared_plan_state["prediction_digest"] = prediction_digest
+        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
         self._prepared_plan_state["predicted_row_sums"] = row_sums
         self._prepared_plan_state["predicted_col_sums"] = col_sums
         self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
@@ -984,6 +1027,7 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["p1_reservation_col_sums"] = []
         self._prepared_plan_state["predictor_name"] = predictor_name
         self._prepared_plan_state["prediction_digest"] = prediction_digest
+        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         cache_build_start_ns = time.monotonic_ns()
         _, _, cache_build_time_us = get_or_build_prepared_priority_cache(
@@ -1017,6 +1061,7 @@ class RouterSenseInjectionRuntime:
             p2_matrix_gather_call_count=int(p1_bundle.gather_call_count),
             predictor_name=predictor_name,
             prediction_digest=prediction_digest,
+            prediction_confidence=float(prediction_confidence),
         )
 
     def _record_pending_window_driver(
@@ -1973,6 +2018,8 @@ class RouterSenseInjectionRuntime:
         return dict(self.assertion_state)
 
     def export_prepared_plan_summary(self) -> dict[str, Any]:
+        active_prediction = self._prepared_plan_state.get("active_next_dispatch_prediction") or {}
+        consumption_records = list(self._prepared_plan_state.get("prediction_consumption_records", []) or [])
         return {
             "has_prepared_plan": bool(self._prepared_plan_state.get("prepared_plan") is not None),
             "plan_source_layer": str(self._prepared_plan_state.get("plan_source_layer", "")),
@@ -1988,6 +2035,19 @@ class RouterSenseInjectionRuntime:
             "p2_matrix_gather_call_count": int(self._prepared_plan_state.get("p2_matrix_gather_call_count", 0) or 0),
             "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
             "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
+            "prediction_confidence": float(self._prepared_plan_state.get("prediction_confidence", 0.0) or 0.0),
+            "active_prediction": dict(active_prediction),
+            "prediction_created_stage": str(active_prediction.get("created_at_stage", "")),
+            "prediction_source_layer": str(active_prediction.get("source_layer_id", "")),
+            "prediction_target_layer": str(active_prediction.get("target_layer_id", "")),
+            "prediction_first_consumed_stage": (
+                str(consumption_records[0].get("prediction_first_consumed_stage", ""))
+                if consumption_records
+                else ""
+            ),
+            "consumer_layer": str(consumption_records[0].get("consumer_layer", "")) if consumption_records else "",
+            "consumer_phase": str(consumption_records[0].get("consumer_phase", "")) if consumption_records else "",
+            "consumed_before_p1": bool(consumption_records[0].get("consumed_before_p1", False)) if consumption_records else False,
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

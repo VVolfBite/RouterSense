@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rs.runtime.online.megatron_ep.async_release import (
     AsyncReleasePlanBuilder,
+    CompiledAsyncReleaseSchedule,
     compile_async_release_schedule,
     gather_and_validate_async_release_schedule,
     validate_async_release_global_agreement,
@@ -48,3 +49,17 @@ def test_async_release_agreement_fake_backend_path_accepts_identical_schedules()
     second = compile_async_release_schedule(plan)
     result = gather_and_validate_async_release_schedule(first, gathered_schedules=(first, second))
     assert result["valid"] is True
+
+
+def test_async_release_agreement_detects_variable_length_payload_mismatch() -> None:
+    builder = AsyncReleasePlanBuilder(executor_available=False)
+    first = compile_async_release_schedule(builder.build(priority_artifact=_artifact(8), observed_context={"layer_id": "0"}))
+    second = CompiledAsyncReleaseSchedule(
+        task_count=int(first.task_count) + 1,
+        tensor_payload=first.tensor_payload[:-1].clone(),
+        schema_version=int(first.schema_version),
+        digest=str(first.digest),
+    )
+    result = gather_and_validate_async_release_schedule(first, gathered_schedules=(first, second))
+    assert result["valid"] is False
+    assert any("mismatch" in error for error in result["errors"])
