@@ -43,6 +43,16 @@ PREDICTOR_TO_SOURCE = {
     "perfect_trace": "perfect_trace",
     "actual_trace": "actual_trace",
 }
+PREDICTOR_ROLLOUT_METADATA = {
+    "fate_style_history": {
+        "history_empty_fallback": "copy_current_dispatch",
+        "used_current_sample_for_fit": False,
+    },
+    "fate_style_linear": {
+        "history_empty_fallback": "copy_current_dispatch",
+        "used_current_sample_for_fit": False,
+    },
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -218,7 +228,6 @@ def run_prediction_replay_suite(
                         "mean_traffic_error_after_calibration": float(calibration_audit.after_relative_l1),
                         "median_traffic_error_before_calibration": float(calibration_audit.before_relative_l1),
                         "median_traffic_error_after_calibration": float(calibration_audit.after_relative_l1),
-                        "traffic_error_after_calibration": float(calibrated_metrics["prediction_relative_l1_error"]),
                         "predictor_quality_raw": {
                             "relative_l1_error": float(prediction_metrics["prediction_relative_l1_error"]),
                             "cosine_similarity": float(prediction_metrics["prediction_cosine_similarity"]),
@@ -240,7 +249,6 @@ def run_prediction_replay_suite(
                         "mean_traffic_error_after_calibration": None,
                         "median_traffic_error_before_calibration": None,
                         "median_traffic_error_after_calibration": None,
-                        "traffic_error_after_calibration": None,
                         "predictor_quality_raw": {
                             "relative_l1_error": float(prediction_metrics["prediction_relative_l1_error"]),
                             "cosine_similarity": float(prediction_metrics["prediction_cosine_similarity"]),
@@ -299,7 +307,6 @@ def run_prediction_replay_suite(
                         "expert_topk_overlap": prediction_metrics["expert_topk_overlap"],
                         "expert_to_traffic_reconstruction_error": prediction_metrics["expert_to_traffic_reconstruction_error"],
                         "traffic_error_from_predicted_experts": prediction_metrics["traffic_error_from_predicted_experts"],
-                        "traffic_error_after_calibration": prediction_metrics["traffic_error_after_calibration"],
                         "gate_replay_available": prediction_metrics["gate_replay_available"],
                         "expert_trace_unavailable_reason": prediction_metrics["expert_trace_unavailable_reason"],
                         "traffic_calibration_mode": prediction_metrics.get("traffic_calibration_mode"),
@@ -365,7 +372,6 @@ def run_prediction_replay_suite(
                     "expert_topk_overlap": None if not source_rows else source_rows[0]["expert_topk_overlap"],
                     "expert_to_traffic_reconstruction_error": None if not source_rows else source_rows[0]["expert_to_traffic_reconstruction_error"],
                     "traffic_error_from_predicted_experts": None if not source_rows else source_rows[0]["traffic_error_from_predicted_experts"],
-                    "traffic_error_after_calibration": None if not source_rows else source_rows[0]["traffic_error_after_calibration"],
                     "gate_replay_available": bool(source_rows[0]["gate_replay_available"]) if source_rows else False,
                     "expert_trace_unavailable_reason": None if not source_rows else source_rows[0]["expert_trace_unavailable_reason"],
                     "traffic_calibration_mode": None if not source_rows else source_rows[0].get("traffic_calibration_mode"),
@@ -403,7 +409,10 @@ def run_prediction_replay_suite(
         "expert_trace_available": expert_trace_available,
         "expert_trace_unavailable_reason": expert_trace_reason,
         "predictor_quality_raw": {
-            name: summarize_prediction_records(list(records.values()))
+            name: {
+                **summarize_prediction_records(list(records.values())),
+                **PREDICTOR_ROLLOUT_METADATA.get(name, {}),
+            }
             for name, records in predictor_records.items()
         },
         "predictor_quality_calibrated": {
@@ -450,6 +459,8 @@ def main() -> None:
         p2_sources=args.p2_sources,
         traffic_calibration=args.traffic_calibration,
     )
+    Path(args.output_summary).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output_summary_md).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(render_prediction_replay_markdown(payload), encoding="utf-8")
     print(json.dumps({"output_summary": args.output_summary, "row_count": len(payload["rows"])}, ensure_ascii=False, indent=2))

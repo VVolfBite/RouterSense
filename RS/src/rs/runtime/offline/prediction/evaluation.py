@@ -78,9 +78,13 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
             predicted = sample.current_dispatch_matrix
             records.append(compare_prediction(predictor_name="copy_current_dispatch", predictor_version="v1", sample=sample, predicted=predicted, confidence=1.0))
         elif predictor_name == "fate_style_history":
-            predictor = FATEStyleHistoryPredictor().fit(history or [sample])
-            predicted = predictor.predict_matrix(sample)
-            records.append(compare_prediction(predictor_name=predictor.predictor_name, predictor_version=predictor.predictor_version, sample=sample, predicted=predicted, confidence=0.75 if history else 0.25))
+            if not history:
+                predicted = sample.current_dispatch_matrix
+                records.append(compare_prediction(predictor_name="fate_style_history", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.25))
+            else:
+                predictor = FATEStyleHistoryPredictor().fit(history)
+                predicted = predictor.predict_matrix(sample)
+                records.append(compare_prediction(predictor_name=predictor.predictor_name, predictor_version=predictor.predictor_version, sample=sample, predicted=predicted, confidence=0.75))
         elif predictor_name == "fate_style_linear":
             if len(history) < 2:
                 predicted = sample.current_dispatch_matrix

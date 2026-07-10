@@ -48,7 +48,11 @@ def source_expert_counts_to_traffic_matrix(
     traffic = [[0 for _ in range(world_size)] for _ in range(world_size)]
     for source_rank, row in enumerate(counts.counts):
         for expert_id, count in enumerate(row):
-            dst_rank = int(expert_to_rank.get(int(expert_id), source_rank))
+            if int(expert_id) not in expert_to_rank:
+                raise ValueError(f"missing expert_to_rank for expert_id={int(expert_id)}")
+            dst_rank = int(expert_to_rank[int(expert_id)])
+            if dst_rank < 0 or dst_rank >= world_size:
+                raise ValueError("expert_to_rank must use EP-local rank indices")
             traffic[source_rank][dst_rank] += int(count) * int(bytes_per_token)
     return canonicalize_remote_matrix(tuple(tuple(int(v) for v in row) for row in traffic))
 

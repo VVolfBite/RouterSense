@@ -25,6 +25,79 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def merge_source_expert_counts_by_layer_and_source_rank(
+    records,
+    *,
+    layer_id: int,
+    world_size: int,
+    num_experts: int,
+) -> tuple[SourceExpertCountMatrix, dict[str, Any]]:
+    filtered = [record for record in records if int(record.layer_id) == int(layer_id)]
+    merged_rows = [[0 for _ in range(num_experts)] for _ in range(world_size)]
+    merged_weighted = None
+    if any(record.weighted_counts is not None for record in filtered):
+        merged_weighted = [[0.0 for _ in range(num_experts)] for _ in range(world_size)]
+    seen_source_ranks: set[int] = set()
+    missing_source_ranks: list[int] = []
+    conflict_source_ranks: list[int] = []
+    expert_to_rank_map: tuple[int, ...] | None = None
+    bytes_per_token = 1
+    selected_experts_available = False
+    routing_weights_available = False
+    for record in filtered:
+        source_rank = record.source_rank
+        if source_rank is None:
+            nonzero_rows = [idx for idx, row in enumerate(record.counts) if any(int(value) > 0 for value in row)]
+            if len(nonzero_rows) == 1:
+                source_rank = int(nonzero_rows[0])
+            else:
+                raise ValueError(f"cannot infer unique source_rank for layer_id={layer_id}")
+        source_rank = int(source_rank)
+        if source_rank < 0 or source_rank >= world_size:
+            raise ValueError(f"invalid source_rank={source_rank} for layer_id={layer_id}")
+        row_values = tuple(int(value) for value in record.counts[source_rank])
+        if source_rank in seen_source_ranks:
+            if tuple(merged_rows[source_rank]) != row_values:
+                conflict_source_ranks.append(source_rank)
+            continue
+        merged_rows[source_rank] = list(row_values)
+        if merged_weighted is not None and record.weighted_counts is not None:
+            merged_weighted[source_rank] = [float(value) for value in record.weighted_counts[source_rank]]
+        seen_source_ranks.add(source_rank)
+        if expert_to_rank_map is None and record.expert_to_rank_map is not None:
+            expert_to_rank_map = tuple(int(v) for v in record.expert_to_rank_map)
+        bytes_per_token = int(record.bytes_per_token or bytes_per_token)
+        selected_experts_available = selected_experts_available or bool(record.selected_experts_available)
+        routing_weights_available = routing_weights_available or bool(record.routing_weights_available)
+    for source_rank in range(world_size):
+        if source_rank not in seen_source_ranks:
+            missing_source_ranks.append(source_rank)
+    diagnostics = {
+        "layer_id": int(layer_id),
+        "source_expert_records_count": len(filtered),
+        "seen_source_ranks": sorted(seen_source_ranks),
+        "missing_source_ranks": missing_source_ranks,
+        "conflict_source_ranks": sorted(set(conflict_source_ranks)),
+        "complete_world_matrix": not missing_source_ranks and not conflict_source_ranks,
+    }
+    if conflict_source_ranks:
+        raise ValueError(f"conflicting source_expert_counts for layer_id={layer_id}: {sorted(set(conflict_source_ranks))}")
+    merged = SourceExpertCountMatrix(
+        layer_id=int(layer_id),
+        world_size=int(world_size),
+        num_experts=int(num_experts),
+        counts=tuple(tuple(int(value) for value in row) for row in merged_rows),
+        weighted_counts=None
+        if merged_weighted is None
+        else tuple(tuple(float(value) for value in row) for row in merged_weighted),
+        expert_to_rank_map=expert_to_rank_map,
+        bytes_per_token=int(bytes_per_token),
+        selected_experts_available=bool(selected_experts_available),
+        routing_weights_available=bool(routing_weights_available),
+    )
+    return merged, diagnostics
+
+
 def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: int = 1) -> dict[str, Any]:
     source_count_files = sorted(fixture_dir.glob("*source_expert_counts*.jsonl"))
     if not source_count_files:
@@ -45,88 +118,140 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
             "rows": [],
             "summary": {
                 "record_count": 0,
+                "source_expert_records_count": 0,
+                "merged_layer_count": 0,
+                "complete_world_matrix_layer_count": 0,
+                "incomplete_world_matrix_layer_count": 0,
+                "missing_source_ranks_by_layer": {},
+                "conflict_source_ranks_by_layer": {},
                 "mean_relative_l1_error": None,
                 "expert_to_traffic_mapping_valid": False,
                 "source_rank_granularity_required": None,
             },
         }
+    all_records = []
+    for count_path in source_count_files:
+        all_records.extend(load_source_expert_counts_jsonl(count_path))
+    by_layer_ids = sorted({int(record.layer_id) for record in all_records})
     rows: list[dict[str, Any]] = []
     o1_errors: list[float] = []
     o2_errors: list[float] = []
     o3_errors: list[float] = []
     o4_errors: list[float] = []
-    for count_path in source_count_files:
-        for source_counts in load_source_expert_counts_jsonl(count_path):
-            fixture_path = fixture_dir / f"replay_layer_{source_counts.layer_id}.json"
-            if not fixture_path.exists():
-                continue
-            fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-            num_experts = int(source_counts.num_experts)
-            world_size = int(source_counts.world_size)
-            expert_to_rank_map = tuple(
-                source_counts.expert_to_rank_map
-                or tuple(expert_id % max(1, world_size) for expert_id in range(num_experts))
+    merged_layer_count = 0
+    complete_world_matrix_layer_count = 0
+    incomplete_world_matrix_layer_count = 0
+    missing_source_ranks_by_layer: dict[str, Any] = {}
+    conflict_source_ranks_by_layer: dict[str, Any] = {}
+    for layer_id in by_layer_ids:
+        fixture_path = fixture_dir / f"replay_layer_{layer_id}.json"
+        if not fixture_path.exists():
+            continue
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        layer_records = [record for record in all_records if int(record.layer_id) == int(layer_id)]
+        if not layer_records:
+            continue
+        num_experts = max(int(record.num_experts) for record in layer_records)
+        world_size = max(int(record.world_size) for record in layer_records)
+        try:
+            merged_counts, merge_diag = merge_source_expert_counts_by_layer_and_source_rank(
+                layer_records,
+                layer_id=int(layer_id),
+                world_size=int(world_size),
+                num_experts=int(num_experts),
             )
-            expert_to_rank = {expert_id: int(expert_to_rank_map[expert_id]) for expert_id in range(num_experts)}
-            reconstructed = source_expert_counts_to_traffic_matrix(
-                source_counts,
-                expert_to_rank,
-                bytes_per_token=int(source_counts.bytes_per_token or bytes_per_token),
-            )
-            actual = tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])
-            audit = compare_reconstructed_traffic(reconstructed, actual)
-            o1_errors.append(float(audit.relative_l1_error))
-            global_counts = SourceExpertCountMatrix(
-                layer_id=int(source_counts.layer_id),
-                world_size=world_size,
-                num_experts=num_experts,
-                counts=tuple(
-                    tuple(
-                        int(sum(source_counts.counts[src_rank][expert_id] for src_rank in range(world_size)))
-                        if source_rank == 0
-                        else 0
-                        for expert_id in range(num_experts)
-                    )
-                    for source_rank in range(world_size)
-                ),
-                bytes_per_token=int(source_counts.bytes_per_token or bytes_per_token),
-                selected_experts_available=bool(source_counts.selected_experts_available),
-                routing_weights_available=bool(source_counts.routing_weights_available),
-            )
-            global_reconstructed = source_expert_counts_to_traffic_matrix(
-                global_counts,
-                expert_to_rank,
-                bytes_per_token=int(source_counts.bytes_per_token or bytes_per_token),
-            )
-            global_audit = compare_reconstructed_traffic(global_reconstructed, actual)
-            o2_errors.append(float(global_audit.relative_l1_error))
-            current_expert_copy_audit = None
-            current_traffic_copy_audit = None
-            next_fixture_path = fixture_dir / f"replay_layer_{int(source_counts.layer_id) + 1}.json"
-            if next_fixture_path.exists():
-                next_fixture = json.loads(next_fixture_path.read_text(encoding="utf-8"))
-                next_actual = tuple(tuple(int(v) for v in row) for row in next_fixture["p0_dispatch_matrix"])
-                current_expert_copy_audit = compare_reconstructed_traffic(reconstructed, next_actual)
-                current_traffic_copy_audit = compare_reconstructed_traffic(actual, next_actual)
-                o3_errors.append(float(current_expert_copy_audit.relative_l1_error))
-                o4_errors.append(float(current_traffic_copy_audit.relative_l1_error))
+        except ValueError as exc:
+            merged_layer_count += 1
+            incomplete_world_matrix_layer_count += 1
+            conflict_source_ranks_by_layer[str(layer_id)] = str(exc)
             rows.append(
                 {
-                    "layer_id": source_counts.layer_id,
-                    "actual_source_expert_to_traffic_relative_l1": audit.relative_l1_error,
-                    "traffic_cosine": audit.cosine_similarity,
-                    "topk_edge_overlap": audit.topk_edge_overlap,
-                    "row_sum_error": audit.row_sum_error,
-                    "col_sum_error": audit.col_sum_error,
-                    "bottleneck_src_match": None,
-                    "bottleneck_dst_match": None,
-                    "global_expert_count_to_traffic_relative_l1": global_audit.relative_l1_error,
-                    "expert_count_copy_baseline_l1": None if current_expert_copy_audit is None else current_expert_copy_audit.relative_l1_error,
-                    "traffic_copy_baseline_l1": None if current_traffic_copy_audit is None else current_traffic_copy_audit.relative_l1_error,
-                    "self_bytes_ignored": audit.self_bytes_ignored,
+                    "layer_id": int(layer_id),
+                    "complete_world_matrix": False,
+                    "o1_valid": False,
+                    "merge_error": str(exc),
                 }
             )
-    mean_relative = None if not rows else sum(float(row["actual_source_expert_to_traffic_relative_l1"]) for row in rows) / len(rows)
+            continue
+        merged_layer_count += 1
+        missing_source_ranks_by_layer[str(layer_id)] = merge_diag["missing_source_ranks"]
+        conflict_source_ranks_by_layer[str(layer_id)] = merge_diag["conflict_source_ranks"]
+        if merge_diag["complete_world_matrix"]:
+            complete_world_matrix_layer_count += 1
+        else:
+            incomplete_world_matrix_layer_count += 1
+        expert_to_rank_map = merged_counts.expert_to_rank_map
+        if expert_to_rank_map is None:
+            raise ValueError(f"missing expert_to_rank_map for layer_id={layer_id}")
+        expert_to_rank = {expert_id: int(expert_to_rank_map[expert_id]) for expert_id in range(num_experts)}
+        actual = tuple(tuple(int(v) for v in row) for row in fixture["p0_dispatch_matrix"])
+        reconstructed = source_expert_counts_to_traffic_matrix(
+            merged_counts,
+            expert_to_rank,
+            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+        )
+        audit = compare_reconstructed_traffic(reconstructed, actual)
+        if merge_diag["complete_world_matrix"]:
+            o1_errors.append(float(audit.relative_l1_error))
+        global_counts = SourceExpertCountMatrix(
+            layer_id=int(layer_id),
+            world_size=world_size,
+            num_experts=num_experts,
+            counts=tuple(
+                tuple(
+                    int(sum(merged_counts.counts[src_rank][expert_id] for src_rank in range(world_size)))
+                    if source_rank == 0
+                    else 0
+                    for expert_id in range(num_experts)
+                )
+                for source_rank in range(world_size)
+            ),
+            expert_to_rank_map=tuple(int(v) for v in expert_to_rank_map),
+            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+            selected_experts_available=bool(merged_counts.selected_experts_available),
+            routing_weights_available=bool(merged_counts.routing_weights_available),
+        )
+        global_reconstructed = source_expert_counts_to_traffic_matrix(
+            global_counts,
+            expert_to_rank,
+            bytes_per_token=int(merged_counts.bytes_per_token or bytes_per_token),
+        )
+        global_audit = compare_reconstructed_traffic(global_reconstructed, actual)
+        o2_errors.append(float(global_audit.relative_l1_error))
+        current_expert_copy_audit = None
+        current_traffic_copy_audit = None
+        next_fixture_path = fixture_dir / f"replay_layer_{int(layer_id) + 1}.json"
+        if next_fixture_path.exists():
+            next_fixture = json.loads(next_fixture_path.read_text(encoding="utf-8"))
+            next_actual = tuple(tuple(int(v) for v in row) for row in next_fixture["p0_dispatch_matrix"])
+            current_expert_copy_audit = compare_reconstructed_traffic(reconstructed, next_actual)
+            current_traffic_copy_audit = compare_reconstructed_traffic(actual, next_actual)
+            o3_errors.append(float(current_expert_copy_audit.relative_l1_error))
+            o4_errors.append(float(current_traffic_copy_audit.relative_l1_error))
+        rows.append(
+            {
+                "layer_id": int(layer_id),
+                "source_expert_records_count": int(merge_diag["source_expert_records_count"]),
+                "complete_world_matrix": bool(merge_diag["complete_world_matrix"]),
+                "missing_source_ranks": list(merge_diag["missing_source_ranks"]),
+                "conflict_source_ranks": list(merge_diag["conflict_source_ranks"]),
+                "o1_valid": bool(merge_diag["complete_world_matrix"]),
+                "actual_source_expert_to_traffic_relative_l1": audit.relative_l1_error,
+                "traffic_cosine": audit.cosine_similarity,
+                "topk_edge_overlap": audit.topk_edge_overlap,
+                "row_sum_error": audit.row_sum_error,
+                "col_sum_error": audit.col_sum_error,
+                "bottleneck_src_match": None,
+                "bottleneck_dst_match": None,
+                "global_expert_count_to_traffic_relative_l1": global_audit.relative_l1_error,
+                "gap_vs_source_rank_expert_counts": float(global_audit.relative_l1_error - audit.relative_l1_error),
+                "expert_count_copy_baseline_l1": None if current_expert_copy_audit is None else current_expert_copy_audit.relative_l1_error,
+                "traffic_copy_baseline_l1": None if current_traffic_copy_audit is None else current_traffic_copy_audit.relative_l1_error,
+                "self_bytes_ignored": audit.self_bytes_ignored,
+            }
+        )
+    valid_o1_rows = [row for row in rows if row.get("o1_valid") and row.get("actual_source_expert_to_traffic_relative_l1") is not None]
+    mean_relative = None if not valid_o1_rows else sum(float(row["actual_source_expert_to_traffic_relative_l1"]) for row in valid_o1_rows) / len(valid_o1_rows)
     return {
         "fixture_dir": str(fixture_dir),
         "expert_trace_available": True,
@@ -134,14 +259,25 @@ def run_expert_to_traffic_reconstruction(*, fixture_dir: Path, bytes_per_token: 
         "rows": rows,
         "summary": {
             "record_count": len(rows),
+            "source_expert_records_count": len(all_records),
+            "merged_layer_count": int(merged_layer_count),
+            "complete_world_matrix_layer_count": int(complete_world_matrix_layer_count),
+            "incomplete_world_matrix_layer_count": int(incomplete_world_matrix_layer_count),
+            "missing_source_ranks_by_layer": missing_source_ranks_by_layer,
+            "conflict_source_ranks_by_layer": conflict_source_ranks_by_layer,
             "mean_relative_l1_error": mean_relative,
-            "expert_to_traffic_mapping_valid": mean_relative is not None,
+            "expert_to_traffic_mapping_valid": mean_relative is not None and complete_world_matrix_layer_count > 0,
             "source_rank_granularity_required": None if not o1_errors or not o2_errors else (sum(o1_errors) / len(o1_errors)) <= (sum(o2_errors) / len(o2_errors)),
             "expert_count_copy_baseline_l1": None if not o3_errors else sum(o3_errors) / len(o3_errors),
             "traffic_copy_baseline_l1": None if not o4_errors else sum(o4_errors) / len(o4_errors),
             "best_non_oracle_expert_to_traffic_l1": min(
                 [value for value in [mean_relative, None if not o3_errors else sum(o3_errors) / len(o3_errors)] if value is not None],
                 default=None,
+            ),
+            "recommended_next_predictor_direction": (
+                "collect_complete_source_rank_expert_trace"
+                if complete_world_matrix_layer_count <= 0
+                else "source_rank_expert_prediction"
             ),
         },
     }
@@ -162,6 +298,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ]
     )
     for row in payload["rows"]:
+        if not row.get("o1_valid", False):
+            lines.append(
+                f"| {row['layer_id']} | incomplete | incomplete | - | - | - | - |"
+            )
+            continue
         expert_copy_text = "-" if row["expert_count_copy_baseline_l1"] is None else f"{row['expert_count_copy_baseline_l1']:.4f}"
         traffic_copy_text = "-" if row["traffic_copy_baseline_l1"] is None else f"{row['traffic_copy_baseline_l1']:.4f}"
         lines.append(
@@ -179,6 +320,8 @@ def main() -> None:
         fixture_dir=Path(args.fixture_dir),
         bytes_per_token=int(args.bytes_per_token),
     )
+    Path(args.output_summary).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output_summary_md).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output_summary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(args.output_summary_md).write_text(render_markdown(payload), encoding="utf-8")
     print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))

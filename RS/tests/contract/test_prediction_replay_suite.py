@@ -52,3 +52,7 @@ def test_prediction_replay_suite_cli(tmp_path: Path) -> None:
     assert perfect_row["forecast_remote_bytes"] == perfect_row["actual_remote_bytes"]
     assert perfect_row["evaluation_eligible"] is False
     assert copy_row["mean_traffic_error_after_calibration"] is not None
+    assert "traffic_error_after_calibration" not in copy_row
+    history_meta = payload["predictor_quality_raw"]["fate_style_history"]
+    assert history_meta["history_empty_fallback"] == "copy_current_dispatch"
+    assert history_meta["used_current_sample_for_fit"] is False

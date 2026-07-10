@@ -75,6 +75,10 @@ def maybe_capture_expert_route_trace(
         ep_group_ranks=ep_group_ranks,
         dispatcher=dispatcher,
     )
+    expert_to_global_rank_map = tuple(
+        int(ep_group_ranks[local_rank]) if 0 <= int(local_rank) < len(ep_group_ranks) else int(local_rank)
+        for local_rank in expert_to_rank_map
+    )
     counts = SourceExpertCountMatrix(
         layer_id=counts.layer_id,
         world_size=counts.world_size,
@@ -110,6 +114,8 @@ def maybe_capture_expert_route_trace(
             "routing_weights_available": weights is not None,
             "hidden_shape": list(hidden_shape) if hidden_shape is not None else None,
             "expert_to_rank_map": list(expert_to_rank_map),
+            "expert_to_ep_local_rank_map": list(expert_to_rank_map),
+            "expert_to_global_rank_map": list(expert_to_global_rank_map),
             "source_expert_counts": [list(row) for row in counts.counts],
             "weighted_source_expert_counts": None
             if counts.weighted_counts is None
@@ -129,6 +135,8 @@ def maybe_capture_expert_route_trace(
             "source_rank": int(source_rank),
             "scope": "local_row_only",
             "expert_to_rank_map": list(expert_to_rank_map),
+            "expert_to_ep_local_rank_map": list(expert_to_rank_map),
+            "expert_to_global_rank_map": list(expert_to_global_rank_map),
             "actual_matrix": [list(row) for row in canonicalize_remote_matrix(actual_matrix)],
             "reconstructed_matrix": [list(row) for row in reconstructed],
             **audit.to_dict(),
@@ -205,7 +213,7 @@ def _infer_expert_to_rank_map(*, num_experts: int, world_size: int, ep_group_ran
     mapping: list[int] = []
     for expert_id in range(int(num_experts)):
         rank_index = min(max(0, expert_id // max(1, num_local_experts)), max(0, world_size - 1))
-        mapping.append(int(ep_group_ranks[rank_index] if rank_index < len(ep_group_ranks) else rank_index))
+        mapping.append(int(rank_index))
     return tuple(mapping)
 
 

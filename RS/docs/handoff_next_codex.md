@@ -72,6 +72,7 @@
   - `allow_real_collectives=false`
   - `dry_run=true`
   - agreement 失败必须 fallback `phase_sync`
+  - real collectives are not implemented or validated yet
 - 当前 online prepared-plan 应优先消费 `predicted_next_dispatch`；
   dispatch matrix 的全局构造方式必须是 tensorized gather，不能再走 Python object collective
 - 当前 `fate_style_history` / `fate_style_linear` 只是 traffic-matrix baseline，不要再把它们当 faithful FATE predictor

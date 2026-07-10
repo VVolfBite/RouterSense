@@ -21,6 +21,7 @@ class AsyncReleaseExecutorConfig:
     enabled: bool = False
     dry_run: bool = True
     allow_real_collectives: bool = False
+    real_collective_executor_implemented: bool = False
     require_global_order_agreement: bool = True
     fallback_policy: str = "phase_sync"
     max_ready_queue_size: int = 4096
@@ -83,15 +84,9 @@ class AsyncReleaseExecutor:
     ) -> dict[str, Any]:
         prepared, compiled = self.prepare(plan, rank=rank, world_size=world_size)
         fallback_reason = prepared.fallback_reason
-        real_collective_allowed = (
-            bool(self.config.enabled)
-            and not bool(self.config.dry_run)
-            and bool(self.config.allow_real_collectives)
-            and bool(prepared.global_order_agreement_passed)
-            and bool(prepared.dependency_validation_passed)
-            and not bool(prepared.fallback_to_phase_sync)
-        )
-        if not bool(self.config.allow_real_collectives):
+        if not bool(self.config.real_collective_executor_implemented):
+            fallback_reason = "real_collective_path_not_implemented"
+        elif not bool(self.config.allow_real_collectives):
             fallback_reason = fallback_reason or "allow_real_collectives_disabled"
         elif bool(self.config.dry_run):
             fallback_reason = fallback_reason or "dry_run_enabled"
@@ -99,12 +94,15 @@ class AsyncReleaseExecutor:
             fallback_reason = fallback_reason or "global_order_agreement_failed"
         elif not bool(prepared.dependency_validation_passed):
             fallback_reason = fallback_reason or "dependency_validation_failed"
+        real_collective_allowed = False
         result = {
             "async_release_enabled": bool(self.config.enabled),
             "dry_run": bool(self.config.dry_run),
+            "async_release_dry_run": bool(self.config.dry_run),
             "allow_real_collectives": bool(self.config.allow_real_collectives),
+            "real_collective_executor_implemented": bool(self.config.real_collective_executor_implemented),
             "async_release_real_collectives": bool(real_collective_allowed),
-            "fallback_to_phase_sync": not bool(real_collective_allowed),
+            "fallback_to_phase_sync": True,
             "fallback_policy": str(self.config.fallback_policy),
             "fallback_reason": str(fallback_reason),
             "global_order_agreement_passed": bool(prepared.global_order_agreement_passed),

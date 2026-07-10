@@ -127,4 +127,5 @@
 
 - online reproducible runtime 已成立；
 - full async joint execution 仍是下一阶段工作；
+- async_release real collectives are not implemented or validated yet;
 - `async_release simulator` 只能证明语义路径和潜在 hidden-cost 机制，不能替代真实 online executor 结果。

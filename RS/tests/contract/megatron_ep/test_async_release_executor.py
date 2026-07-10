@@ -50,3 +50,21 @@ def test_async_release_executor_real_collectives_require_explicit_flags() -> Non
     assert result["fallback_to_phase_sync"] is True
     assert result["fallback_reason"]
 
+
+def test_async_release_executor_flags_cannot_bypass_unimplemented_real_collective_path() -> None:
+    plan = AsyncReleasePlanBuilder(executor_available=True).build(
+        priority_artifact=_artifact(),
+        observed_context={"layer_id": "0"},
+    )
+    executor = AsyncReleaseExecutor(
+        config=AsyncReleaseExecutorConfig(
+            enabled=True,
+            dry_run=False,
+            allow_real_collectives=True,
+            real_collective_executor_implemented=False,
+        )
+    )
+    result = executor.execute_or_fallback(plan, rank=0, world_size=2)
+    assert result["async_release_real_collectives"] is False
+    assert result["fallback_to_phase_sync"] is True
+    assert result["fallback_reason"] == "real_collective_path_not_implemented"
