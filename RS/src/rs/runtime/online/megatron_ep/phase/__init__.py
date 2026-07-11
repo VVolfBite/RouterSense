@@ -25,6 +25,7 @@ __all__ = [
     "TransferLayout",
     "TransportBundle",
     "build_phase_ready_context",
+    "reconstruct_global_phase_contexts_from_byte_matrix",
     "join_transfer_layouts",
     "validate_layout_offsets_cover_exactly_once",
     "validate_p0_atomic_bundle",
@@ -38,6 +39,7 @@ def __getattr__(name: str):
         "PhasePayloadContract",
         "RuntimeIdentity",
         "build_phase_ready_context",
+        "reconstruct_global_phase_contexts_from_byte_matrix",
     }:
         from .context_builder import (
             DispatcherSnapshot,
@@ -45,6 +47,7 @@ def __getattr__(name: str):
             PhasePayloadContract,
             RuntimeIdentity,
             build_phase_ready_context,
+            reconstruct_global_phase_contexts_from_byte_matrix,
         )
 
         return {
@@ -53,6 +56,7 @@ def __getattr__(name: str):
             "PhasePayloadContract": PhasePayloadContract,
             "RuntimeIdentity": RuntimeIdentity,
             "build_phase_ready_context": build_phase_ready_context,
+            "reconstruct_global_phase_contexts_from_byte_matrix": reconstruct_global_phase_contexts_from_byte_matrix,
         }[name]
     if name in {
         "AbstractPhaseExecutionPlan",

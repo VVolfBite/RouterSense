@@ -85,6 +85,19 @@ def _phase_send_recv_splits(phase: str, input_splits: tuple[int, ...], output_sp
     return tuple(int(v) for v in output_splits), tuple(int(v) for v in input_splits)
 
 
+def _bytes_to_rows(byte_count: int, *, shape_suffix: tuple[int, ...], element_size_bytes: int) -> int:
+    multiplier = int(element_size_bytes)
+    for dim in shape_suffix:
+        multiplier *= int(dim)
+    if multiplier <= 0:
+        raise ValueError("rows_to_bytes inverse requires positive payload row size")
+    if int(byte_count) % multiplier != 0:
+        raise ValueError(
+            f"byte_count={byte_count} is not divisible by payload_row_bytes={multiplier}"
+        )
+    return int(byte_count) // multiplier
+
+
 def build_phase_ready_context(request: PhaseContextBuildRequest) -> PhaseReadyContext:
     phase = request.payload_contract.phase
     if len(request.packed_tensors) != len(request.payload_contract.payload_roles):
@@ -264,3 +277,159 @@ def build_phase_ready_context(request: PhaseContextBuildRequest) -> PhaseReadyCo
         payload_exists=payload_exists,
         p2_hint=request.p2_hint or FutureDemandHint(),
     )
+
+
+def reconstruct_global_phase_contexts_from_byte_matrix(
+    *,
+    local_context: PhaseReadyContext,
+    matrix: tuple[tuple[int, ...], ...],
+    matrix_unit: str = "bytes",
+) -> tuple[PhaseReadyContext, ...]:
+    world_size = int(len(matrix))
+    ep_group_ranks = tuple(int(v) for v in local_context.ep_group_ranks)
+    if world_size != len(ep_group_ranks):
+        raise ValueError(f"matrix size {world_size} does not match ep group size {len(ep_group_ranks)}")
+    if not local_context.payload_specs:
+        raise ValueError("payload_specs required to reconstruct global contexts")
+    base_spec = local_context.payload_specs[0]
+    if str(matrix_unit) == "rows":
+        row_matrix = tuple(tuple(int(value) for value in row) for row in matrix)
+    else:
+        row_matrix = tuple(
+            tuple(
+                _bytes_to_rows(
+                    int(value),
+                    shape_suffix=tuple(int(v) for v in base_spec.shape_suffix),
+                    element_size_bytes=int(base_spec.element_size_bytes),
+                )
+                for value in row
+            )
+            for row in matrix
+        )
+    contexts: list[PhaseReadyContext] = []
+    for rank_index, global_rank in enumerate(ep_group_ranks):
+        row = tuple(int(v) for v in row_matrix[rank_index])
+        col = tuple(int(row_matrix[src][rank_index]) for src in range(world_size))
+        if str(local_context.phase) == "P0":
+            input_splits = row
+            output_splits = col
+        else:
+            input_splits = col
+            output_splits = row
+        send_splits, recv_splits = _phase_send_recv_splits(str(local_context.phase), input_splits, output_splits)
+        per_peer_rows = tuple(int(v) for v in send_splits)
+        base_suffix = tuple(int(v) for v in base_spec.shape_suffix)
+        base_elem_size = int(base_spec.element_size_bytes)
+        per_peer_bytes = tuple(
+            _rows_to_bytes(int(rows), shape_suffix=base_suffix, element_size_bytes=base_elem_size)
+            for rows in per_peer_rows
+        )
+        outgoing_segments: list[OutgoingSegment] = []
+        incoming_slots: list[IncomingSlot] = []
+        bundles: list[TransportBundle] = []
+        running_recv = 0
+        for peer_index, rows in enumerate(recv_splits):
+            src_rank = int(ep_group_ranks[peer_index])
+            incoming_slots.append(
+                IncomingSlot(
+                    slot_id=f"{local_context.phase}:{src_rank}->{global_rank}:{peer_index}:slot",
+                    phase=str(local_context.phase),
+                    src_rank=src_rank,
+                    dst_rank=int(global_rank),
+                    source_peer_index=int(peer_index),
+                    segment_ordinal=int(peer_index),
+                    receive_offset_rows=int(running_recv),
+                    row_count=int(rows),
+                    byte_count=_rows_to_bytes(int(rows), shape_suffix=base_suffix, element_size_bytes=base_elem_size),
+                    canonical_receive_layout_id=str(local_context.canonical_receive_layout_id),
+                    is_local=bool(src_rank == int(global_rank)),
+                )
+            )
+            running_recv += int(rows)
+        send_offset = 0
+        for peer_index, rows in enumerate(send_splits):
+            dst_rank = int(ep_group_ranks[peer_index])
+            segment = OutgoingSegment(
+                segment_id=f"{local_context.phase}:{global_rank}->{dst_rank}:{peer_index}",
+                phase=str(local_context.phase),
+                src_rank=int(global_rank),
+                dst_rank=dst_rank,
+                destination_peer_index=int(peer_index),
+                segment_ordinal=int(peer_index),
+                send_offset_rows=int(send_offset),
+                row_count=int(rows),
+                byte_count=_rows_to_bytes(int(rows), shape_suffix=base_suffix, element_size_bytes=base_elem_size),
+                packed_send_layout_id=str(local_context.packed_send_layout_id),
+                is_local=bool(int(global_rank) == dst_rank),
+            )
+            send_offset += int(rows)
+            outgoing_segments.append(segment)
+            payload_slices = tuple(
+                PayloadSlice(
+                    bundle_id=f"{segment.segment_id}:bundle",
+                    tensor_role=str(spec.tensor_role),
+                    src_rank=int(global_rank),
+                    dst_rank=dst_rank,
+                    segment_ordinal=int(segment.segment_ordinal),
+                    sender_offset_rows=int(segment.send_offset_rows),
+                    receiver_offset_rows=0,
+                    row_count=int(rows),
+                    dtype=str(spec.dtype),
+                    shape_suffix=tuple(int(v) for v in spec.shape_suffix),
+                    element_size_bytes=int(spec.element_size_bytes),
+                    payload_byte_count=_rows_to_bytes(1, shape_suffix=tuple(int(v) for v in spec.shape_suffix), element_size_bytes=int(spec.element_size_bytes)) * int(rows),
+                    packed_layout_id=str(local_context.packed_send_layout_id),
+                )
+                for spec in local_context.payload_specs
+            )
+            bundles.append(
+                TransportBundle(
+                    bundle_id=f"{segment.segment_id}:bundle",
+                    phase=str(local_context.phase),
+                    atomic_submit=bool(local_context.atomic_submit),
+                    outgoing_segment=segment,
+                    payloads=tuple(local_context.payload_specs),
+                    payload_slices=payload_slices,
+                )
+            )
+        contexts.append(
+            PhaseReadyContext(
+                plan_key=dict(local_context.plan_key),
+                phase=str(local_context.phase),
+                control_mode=str(local_context.control_mode),
+                forward_epoch=int(local_context.forward_epoch),
+                layer_id=str(local_context.layer_id),
+                layer_name=str(local_context.layer_name),
+                global_rank=int(global_rank),
+                local_rank=int(rank_index),
+                ep_group_ranks=ep_group_ranks,
+                ep_group_root_rank=int(local_context.ep_group_root_rank),
+                topology={
+                    **dict(local_context.topology),
+                    "global_rank": int(global_rank),
+                    "local_rank": int(rank_index),
+                    "ep_group_rank": int(rank_index),
+                },
+                dispatcher_class=str(local_context.dispatcher_class),
+                dispatcher_fingerprint=dict(local_context.dispatcher_fingerprint),
+                expert_placement_hash=str(local_context.expert_placement_hash),
+                input_splits=tuple(int(v) for v in input_splits),
+                output_splits=tuple(int(v) for v in output_splits),
+                send_splits=tuple(int(v) for v in send_splits),
+                recv_splits=tuple(int(v) for v in recv_splits),
+                per_peer_rows=per_peer_rows,
+                per_peer_bytes=per_peer_bytes,
+                packed_send_layout_id=str(local_context.packed_send_layout_id),
+                canonical_receive_layout_id=str(local_context.canonical_receive_layout_id),
+                payload_specs=tuple(local_context.payload_specs),
+                atomic_submit=bool(local_context.atomic_submit),
+                outgoing_segments=tuple(outgoing_segments),
+                incoming_slots=tuple(incoming_slots),
+                transport_bundles=tuple(bundles),
+                release_state=str(local_context.release_state),
+                demand_known_at=str(local_context.demand_known_at),
+                payload_exists=bool(local_context.payload_exists),
+                p2_hint=local_context.p2_hint,
+            )
+        )
+    return tuple(contexts)

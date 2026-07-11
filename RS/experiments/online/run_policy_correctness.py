@@ -342,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime=runtime,
             transport_results=transport_results,
             policy_enabled=bool(
-                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}
+                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             ),
         )
 
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             "schedule_phase_selector": online_runtime_config.execution_selection.phase_selector,
             "precision": config.runtime.precision,
             "transport_mutation": bool(
-                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}
+                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             ),
             "dispatcher_rows": native_dispatch_summary["dispatcher_rows"],
             "transport_execution_count": len(transport_results),
@@ -403,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             remote_dispatch_exercised = any(int(item.get("remote_dispatch_rows", 0)) > 0 for item in gathered)
             remote_combine_exercised = any(int(item.get("remote_combine_rows", 0)) > 0 for item in gathered)
             transport_mutation = bool(
-                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window"}
+                policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             )
             details = {
                 "run_id": run_id,

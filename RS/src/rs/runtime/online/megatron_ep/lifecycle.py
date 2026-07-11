@@ -65,6 +65,7 @@ from rs.runtime.online.megatron_ep.phase import (
     PhaseReadyContext,
     RuntimeIdentity,
     build_phase_ready_context,
+    reconstruct_global_phase_contexts_from_byte_matrix,
 )
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, UnsupportedSchedulerMode
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
@@ -1051,6 +1052,13 @@ class RouterSenseInjectionRuntime:
             raw_u_plan=raw_u_plan,
             paired_b_plan=paired_b_plan,
         )
+        bytes_per_row = 1
+        for rows, byte_count in zip(tuple(observation_p0.per_peer_rows), tuple(observation_p0.per_peer_bytes), strict=False):
+            if int(rows) > 0 and int(byte_count) > 0:
+                bytes_per_row = max(1, int(round(int(byte_count) / int(rows))))
+                break
+        actual_p0_row_matrix = [[int(round(int(value) / bytes_per_row)) if int(value) > 0 else 0 for value in row] for row in dispatch_matrix]
+        inferred_p1_row_matrix = [[int(round(int(value) / bytes_per_row)) if int(value) > 0 else 0 for value in row] for row in inferred_p1]
         selected_plan = (
             paired_b_plan
             if str(safe_projection["host_projected_safe_selection"]) == str(paired_b_plan.policy_name)
@@ -1097,7 +1105,9 @@ class RouterSenseInjectionRuntime:
             "prediction_digest": prediction_digest,
             "prediction_confidence": float(prediction_confidence),
             "actual_p0_matrix": [list(row) for row in dispatch_matrix],
+            "actual_p0_row_matrix": actual_p0_row_matrix,
             "inferred_p1_matrix": [list(row) for row in inferred_p1],
+            "inferred_p1_row_matrix": inferred_p1_row_matrix,
             "predicted_p2_matrix": [list(row) for row in forecast_matrix],
             "created_stage": "after_p0_observation",
             "raw_u_policy_name": raw_u_name,
@@ -1148,10 +1158,56 @@ class RouterSenseInjectionRuntime:
         prepared_plan = self._prepared_plan_state.get("prepared_plan")
         if prepared_plan is None:
             raise RuntimeError(f"missing prepared runtime joint plan for {layer_name} {phase}")
+        if str(phase) == "P0":
+            matrix = tuple(
+                tuple(int(value) for value in row)
+                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_row_matrix")) or [])
+            )
+            matrix_unit = "rows"
+            if not matrix:
+                matrix = tuple(
+                    tuple(int(value) for value in row)
+                    for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix")) or [])
+                )
+                matrix_unit = "bytes"
+        else:
+            matrix = tuple(
+                tuple(int(value) for value in row)
+                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
+            )
+            matrix_unit = "rows"
+            if not matrix:
+                matrix = tuple(
+                    tuple(int(value) for value in row)
+                    for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix")) or self._prepared_plan_state.get("p1_inferred_from_p0") or [])
+                )
+                matrix_unit = "bytes"
+        if not matrix:
+            raise RuntimeError(f"missing global byte matrix for async local materialization {layer_name} {phase}")
+        if str(matrix_unit) == "bytes":
+            matrix_max = max((int(value) for row in matrix for value in row), default=0)
+            local_hint_max = max(
+                [int(value) for value in tuple(getattr(local_context, "send_splits", ()) or ())]
+                + [int(value) for value in tuple(getattr(local_context, "per_peer_rows", ()) or ())]
+                + [int(value) for value in tuple(getattr(local_context, "input_splits", ()) or ())]
+                + [int(value) for value in tuple(getattr(local_context, "output_splits", ()) or ())]
+                + [0]
+            )
+            if matrix_max > 0 and matrix_max == local_hint_max:
+                matrix_unit = "rows"
+        global_contexts = reconstruct_global_phase_contexts_from_byte_matrix(
+            local_context=local_context,
+            matrix=matrix,
+            matrix_unit=matrix_unit,
+        )
+        compiled_local_context = next(
+            (context for context in global_contexts if int(context.global_rank) == int(local_context.global_rank)),
+            local_context,
+        )
         compiled = compile_prepared_window_phase_plan(
             prepared_plan=prepared_plan,
-            local_context=local_context,
-            global_contexts=(local_context,),
+            local_context=compiled_local_context,
+            global_contexts=global_contexts,
             bucket_rows=self.config.bucket_rows,
             p0_weight=self.config.p0_weight,
             p1_reservation_weight=self.config.p1_reservation_weight,
@@ -1702,12 +1758,23 @@ class RouterSenseInjectionRuntime:
                 self.observation_recorder.record_transport_bundle(
                     transport_bundle_artifact(bundle=bundle, perf_profile=self._is_perf_profile())
                 )
-        self._record_prepared_phase_plan_shadow(
-            layer_name=layer_name,
-            phase="P0",
-            local_context=phase_ctx,
-            global_contexts=(phase_ctx,),
-        )
+            self._record_prepared_phase_plan_shadow(
+                layer_name=layer_name,
+                phase="P0",
+                local_context=phase_ctx,
+                global_contexts=(
+                    reconstruct_global_phase_contexts_from_byte_matrix(
+                        local_context=phase_ctx,
+                        matrix=tuple(
+                            tuple(int(value) for value in row)
+                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix")) or [])
+                        ),
+                    )
+                    if self._is_joint_window_async_mode()
+                    and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix"))
+                    else (phase_ctx,)
+                ),
+            )
         pre_input_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "input_splits", None)))
         pre_output_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "output_splits", None)))
         hidden_ptr = int(packed_hidden_states.data_ptr()) if isinstance(packed_hidden_states, torch.Tensor) else -1
@@ -2131,7 +2198,18 @@ class RouterSenseInjectionRuntime:
             layer_name=layer_name,
             phase="P1",
             local_context=phase_ctx,
-            global_contexts=(phase_ctx,),
+            global_contexts=(
+                reconstruct_global_phase_contexts_from_byte_matrix(
+                    local_context=phase_ctx,
+                    matrix=tuple(
+                        tuple(int(value) for value in row)
+                        for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix")) or [])
+                    ),
+                )
+                if self._is_joint_window_async_mode()
+                and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix"))
+                else (phase_ctx,)
+            ),
         )
         self._timeline(
             "p1_pre_transport_observation_ready",

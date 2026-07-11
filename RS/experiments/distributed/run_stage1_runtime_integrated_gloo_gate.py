@@ -15,7 +15,6 @@ from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPh
 from rs.runtime.online.megatron_ep.host import _maybe_create_dedicated_p2p_group
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import digest_text
-from rs.runtime.online.megatron_ep.pending_window import compile_prepared_window_phase_plan
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     FutureDemandHint,
@@ -76,7 +75,16 @@ def _runtime(
     )
 
 
-def _observation(*, rank: int, layer_name: str, phase: str, per_peer_bytes: tuple[int, ...]) -> RuntimeObservation:
+def _observation(
+    *,
+    rank: int,
+    layer_name: str,
+    phase: str,
+    per_peer_bytes: tuple[int, ...],
+    input_splits: tuple[int, ...],
+    output_splits: tuple[int, ...],
+) -> RuntimeObservation:
+    per_peer_rows = tuple(int(value // 16) for value in per_peer_bytes)
     return RuntimeObservation(
         run_id="runtime-gloo",
         step_id="step",
@@ -99,13 +107,13 @@ def _observation(*, rank: int, layer_name: str, phase: str, per_peer_bytes: tupl
         step_id_digest=digest_text("step"),
         microbatch_id_digest=digest_text("mb0"),
         phase=phase,
-        per_peer_rows=tuple(1 if value else 0 for value in per_peer_bytes),
+        per_peer_rows=per_peer_rows,
         per_peer_bytes=per_peer_bytes,
         local_rows=0,
         remote_rows=sum(1 for value in per_peer_bytes if value),
         topology=RankTopologyRecord(global_rank=rank, local_rank=rank, node_index=0, hostname_digest="host", device_index=rank, ep_group_rank=rank),
-        input_splits=(0, 1) if per_peer_bytes == (0, 16) else (0, 2),
-        output_splits=(0, 1) if per_peer_bytes == (0, 16) else (0, 2),
+        input_splits=tuple(int(v) for v in input_splits),
+        output_splits=tuple(int(v) for v in output_splits),
         observation_digest=stable_hash({"layer": layer_name, "phase": phase, "bytes": per_peer_bytes, "rank": rank}),
     )
 
@@ -226,26 +234,6 @@ def _execute_plan(
     adapter.deactivate(layer_name=layer_name, phase=phase)
 
 
-def _materialize_from_runtime_prepared_plan(
-    *,
-    runtime: RouterSenseInjectionRuntime,
-    local_context: Any,
-    global_contexts: tuple[Any, ...],
-) -> Any:
-    prepared = runtime._prepared_plan_state["prepared_plan"]  # noqa: SLF001
-    compiled = compile_prepared_window_phase_plan(
-        prepared_plan=prepared,
-        local_context=local_context,
-        global_contexts=global_contexts,
-        bucket_rows=runtime.config.bucket_rows,
-        p0_weight=runtime.config.p0_weight,
-        p1_reservation_weight=runtime.config.p1_reservation_weight,
-        p2_hint_weight=runtime.config.p2_hint_weight,
-        policy_name=runtime._effective_phase_policy_name() or "routersense_p0p1p2_hint",  # noqa: SLF001
-    )
-    return replace(compiled, execution_mode="joint_window_async_p2p")
-
-
 def main() -> None:
     rank, world_size, local_rank = _init()
     if world_size != 2:
@@ -283,7 +271,17 @@ def main() -> None:
             for layer_index, p0_rows in enumerate(layer_matrices[:layer_count]):
                 layer_name = f"model.layers.{layer_index}.mlp"
                 layer_id = str(layer_index)
-                observation = _observation(rank=rank, layer_name=layer_name, phase="P0", per_peer_bytes=(0, 16) if layer_index == 0 else (0, 8))
+                per_peer_bytes = tuple(int(value) * 16 for value in p0_rows[rank])
+                p0_row = tuple(int(v) for v in p0_rows[rank])
+                p0_col = tuple(int(p0_rows[src][rank]) for src in range(world_size))
+                observation = _observation(
+                    rank=rank,
+                    layer_name=layer_name,
+                    phase="P0",
+                    per_peer_bytes=per_peer_bytes,
+                    input_splits=p0_row,
+                    output_splits=p0_col,
+                )
                 runtime._record_prediction_for_dispatch(  # noqa: SLF001
                     layer_name=layer_name,
                     observation=observation,
@@ -296,10 +294,10 @@ def main() -> None:
                 last_safe_selected_policy = str(runtime.export_prepared_plan_summary().get("safe_selected_policy", ""))
                 p0_contexts_and_inputs = _contexts_from_matrix(matrix=p0_rows, phase="P0", layer_id=layer_id, forward_epoch=forward_epoch)
                 local_p0_context, local_p0_inputs = p0_contexts_and_inputs[rank]
-                p0_plan = _materialize_from_runtime_prepared_plan(
-                    runtime=runtime,
+                p0_plan = runtime._compile_async_local_phase_plan(  # noqa: SLF001
+                    layer_name=layer_name,
+                    phase="P0",
                     local_context=local_p0_context,
-                    global_contexts=tuple(item[0] for item in p0_contexts_and_inputs),
                 )
                 _execute_plan(
                     adapter=adapter,
@@ -312,10 +310,10 @@ def main() -> None:
                 p1_rows = tuple(tuple(int(p0_rows[col][row]) if row != col else 0 for col in range(world_size)) for row in range(world_size))
                 p1_contexts_and_inputs = _contexts_from_matrix(matrix=p1_rows, phase="P1", layer_id=layer_id, forward_epoch=forward_epoch)
                 local_p1_context, local_p1_inputs = p1_contexts_and_inputs[rank]
-                p1_plan = _materialize_from_runtime_prepared_plan(
-                    runtime=runtime,
+                p1_plan = runtime._compile_async_local_phase_plan(  # noqa: SLF001
+                    layer_name=layer_name,
+                    phase="P1",
                     local_context=local_p1_context,
-                    global_contexts=tuple(item[0] for item in p1_contexts_and_inputs),
                 )
                 _execute_plan(
                     adapter=adapter,

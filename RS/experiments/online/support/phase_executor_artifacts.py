@@ -159,7 +159,6 @@ def write_rank_artifacts(
         logits_path = run_dir / f"{run_id}-rank{rank}-logits.pt"
         torch.save(logits.detach().float().cpu(), logits_path)
         rank_summary["logits_path"] = str(logits_path)
-    write_json(run_dir / f"rank{rank}_summary.json", rank_summary)
     write_json(run_dir / f"rank{rank}_native_dispatch.json", native_dispatch_summary)
     if runtime is not None:
         prepared_plan_summary = runtime.export_prepared_plan_summary()
@@ -192,6 +191,17 @@ def write_rank_artifacts(
         write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
+        if adapter is not None:
+            rank_summary.update(
+                {
+                    "async_executor_invocation_count": int(getattr(adapter, "async_executor_invocation_count", 0)),
+                    "batch_isend_irecv_call_count": int(getattr(adapter, "batch_isend_irecv_call_count", 0)),
+                    "real_send_op_count": int(getattr(adapter, "real_send_op_count", 0)),
+                    "real_recv_op_count": int(getattr(adapter, "real_recv_op_count", 0)),
+                    "local_copy_task_count": int(getattr(adapter, "local_copy_task_count", 0)),
+                    "phase_sync_fallback_count": int(getattr(adapter, "phase_sync_fallback_count", 0)),
+                }
+            )
         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)
         write_jsonl(run_dir / f"rank{rank}_captured_phase_tensors.jsonl", runtime.export_captured_phase_tensors())
         capture_dir = run_dir / "captured_phase_tensors"
@@ -208,6 +218,7 @@ def write_rank_artifacts(
                 continue
             tensor_path = capture_dir / f"rank{rank}_layer{layer_id}_{phase}_{item['tensor_role']}.pt"
             torch.save(item["tensor"], tensor_path)
+    write_json(run_dir / f"rank{rank}_summary.json", rank_summary)
     return rank_summary
 
 

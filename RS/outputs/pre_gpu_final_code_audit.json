@@ -1,0 +1,122 @@
+{
+  "commit_base": "0a6c7d58a1f9beee74f9e7887cbeb2f0119e3bbb",
+  "items": {
+    "runtime_global_materialization": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "local_copy_coverage": {
+      "status": "IMPLEMENTED_AND_TESTED_CPU",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": false,
+      "gpu_untested": true
+    },
+    "ordered_sequence_digest": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "multi_ep_subgroup_pair_index": {
+      "status": "IMPLEMENTED_AND_TESTED_CPU",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": false,
+      "gpu_untested": true
+    },
+    "zero_hint_async_joint_plan": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "fifo_async_p2p": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": false,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "greedy_async_p2p": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": false,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "birkhoff_async_p2p": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": false,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "predicted_joint_async_p2p": {
+      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": false,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "b2_runner_body": {
+      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": true,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "c2_runner_body": {
+      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": true,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "a2_runner_body": {
+      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": true,
+      "tested_cpu": true,
+      "tested_gloo": true,
+      "gpu_untested": true
+    },
+    "offline_stage1_paper_closure": {
+      "status": "IMPLEMENTED_AND_TESTED_CPU",
+      "already_complete": false,
+      "implemented_this_round": true,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": false,
+      "gpu_untested": true
+    }
+  }
+}
