@@ -1454,16 +1454,6 @@ class RouterSenseInjectionRuntime:
                 for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
             )
             matrix_unit = "rows"
-            if not matrix:
-                matrix = tuple(
-                    tuple(int(value) for value in row)
-                    for row in (
-                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_matrix"))
-                        or ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix"))
-                        or []
-                    )
-                )
-                matrix_unit = "bytes"
         else:
             matrix = tuple(
                 tuple(int(value) for value in row)
@@ -1473,30 +1463,14 @@ class RouterSenseInjectionRuntime:
             if not matrix:
                 matrix = tuple(
                     tuple(int(value) for value in row)
-                    for row in (
-                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix"))
-                        or self._prepared_plan_state.get("p1_inferred_from_p0")
-                        or []
-                    )
+                    for row in (self._prepared_plan_state.get("p1_inferred_from_p0") or [])
                 )
-                matrix_unit = "bytes"
         if not matrix:
-            raise RuntimeError(f"missing global byte matrix for async local materialization {layer_name} {phase}")
-        if str(matrix_unit) == "bytes":
-            matrix_max = max((int(value) for row in matrix for value in row), default=0)
-            local_hint_max = max(
-                [int(value) for value in tuple(getattr(local_context, "send_splits", ()) or ())]
-                + [int(value) for value in tuple(getattr(local_context, "per_peer_rows", ()) or ())]
-                + [int(value) for value in tuple(getattr(local_context, "input_splits", ()) or ())]
-                + [int(value) for value in tuple(getattr(local_context, "output_splits", ()) or ())]
-                + [0]
-            )
-            if matrix_max > 0 and matrix_max == local_hint_max:
-                matrix_unit = "rows"
+            raise RuntimeError(f"missing global row matrix for async local materialization {layer_name} {phase}")
         global_contexts = reconstruct_global_phase_contexts_from_byte_matrix(
             local_context=local_context,
             matrix=matrix,
-            matrix_unit=matrix_unit,
+            matrix_unit="rows",
         )
         compiled_local_context = next(
             (context for context in global_contexts if int(context.global_rank) == int(local_context.global_rank)),
@@ -2062,6 +2036,7 @@ class RouterSenseInjectionRuntime:
                             tuple(int(value) for value in row)
                             for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
                         ),
+                        matrix_unit="rows",
                     )
                     if self._is_joint_window_async_mode()
                     and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix"))
@@ -2503,11 +2478,12 @@ class RouterSenseInjectionRuntime:
                     local_context=phase_ctx,
                     matrix=tuple(
                         tuple(int(value) for value in row)
-                        for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix")) or [])
+                        for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
                     ),
+                    matrix_unit="rows",
                 )
                 if self._is_joint_window_async_mode()
-                and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix"))
+                and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
                 else (phase_ctx,)
             ),
         )
@@ -2521,7 +2497,10 @@ class RouterSenseInjectionRuntime:
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
             if self._is_joint_window_async_mode():
                 binding = self._current_prepared_plan_binding(layer_name=layer_name)
-                if binding is not None:
+                stored_digest = str(self._prepared_plan_state.get("stored_p1_plan_digest", "") or "")
+                if stored_digest:
+                    self._prepared_plan_state["consumed_p1_plan_digest"] = stored_digest
+                elif binding is not None:
                     self._prepared_plan_state["consumed_p1_plan_digest"] = str(binding.source_logical_plan_hash)
                 inferred_p1 = tuple(
                     tuple(int(value) for value in row)
@@ -2952,8 +2931,10 @@ class RouterSenseInjectionRuntime:
             "ideal_estimated_makespan": float(self._prepared_plan_state.get("ideal_estimated_makespan", 0.0) or 0.0),
             "actual_p0_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_row_matrix", [])) or []),
             "actual_p0_full_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix", [])) or []),
+            "actual_p0_matrix_unit": "rows",
             "inferred_p1_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix", [])) or []),
             "inferred_p1_remote_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_remote_row_matrix", [])) or []),
+            "inferred_p1_matrix_unit": "rows",
             "p1_is_exact_transpose": bool(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("p1_is_exact_transpose", False))),
         }
 

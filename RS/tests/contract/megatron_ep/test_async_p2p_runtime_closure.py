@@ -110,10 +110,9 @@ def test_local_copy_coverage_is_counted(monkeypatch) -> None:
 def test_local_copy_coverage_gap_fails(monkeypatch) -> None:
     from rs.runtime.online.megatron_ep.execution import async_p2p_executor as module
 
-    context = make_contexts_from_matrix(phase="P0", matrix=((2, 3), (1, 0)))[0]
+    context = make_contexts_from_matrix(phase="P0", matrix=((0, 3), (2, 0)))[0]
     tasks = [
-        _task(context=context, src=0, dst=0, sender_offset=0, receiver_offset=0, row_count=1, task_id="local"),
-        _task(context=context, src=1, dst=0, sender_offset=0, receiver_offset=2, row_count=1, task_id="remote"),
+        _task(context=context, src=1, dst=0, sender_offset=0, receiver_offset=0, row_count=1, task_id="remote"),
     ]
     plan = _plan_for_context(context=context, tasks=tasks)
     _patch_all_gather_same_rank(monkeypatch, module)

@@ -1,0 +1,50 @@
+{
+  "actual_p0_full_row_matrix": [
+    [
+      2,
+      1
+    ],
+    [
+      1,
+      2
+    ]
+  ],
+  "actual_p0_matrix_unit": "rows",
+  "commit_base": "13b76bcdf5fb45456532ccc305af39a54c9c9e5c",
+  "consumed_p1_plan_digest": "b9cfff281faa9f376aeb97e1bfb8027f8f583737e921110ff2e4843aee40e315",
+  "gpu_b2_status": "IMPLEMENTED_GPU_UNTESTED",
+  "inferred_p1_matrix_unit": "rows",
+  "inferred_p1_row_matrix": [
+    [
+      2,
+      1
+    ],
+    [
+      1,
+      2
+    ]
+  ],
+  "local_copy_coverage_fixed": true,
+  "per_rank_counts": {
+    "rank0": {
+      "batch_isend_irecv_call_count": 12,
+      "local_copy_task_count": 18,
+      "phase_sync_fallback_count": 0,
+      "real_recv_op_count": 12,
+      "real_send_op_count": 12
+    },
+    "rank1": {
+      "batch_isend_irecv_call_count": 12,
+      "local_copy_task_count": 18,
+      "phase_sync_fallback_count": 0,
+      "real_recv_op_count": 12,
+      "real_send_op_count": 12
+    }
+  },
+  "phase_ready_context_methods_restored": true,
+  "phase_ready_context_unique_source": true,
+  "runtime_integrated_gloo_passed": true,
+  "runtime_observation_removed_from_planning_path": true,
+  "stored_consumed_digest_equal": true,
+  "stored_p1_plan_digest": "b9cfff281faa9f376aeb97e1bfb8027f8f583737e921110ff2e4843aee40e315"
+}

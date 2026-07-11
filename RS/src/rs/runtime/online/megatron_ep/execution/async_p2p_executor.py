@@ -155,6 +155,33 @@ def _mark_coverage(coverage: list[int], *, start: int, row_count: int) -> str | 
     return None
 
 
+def _mark_local_copy_coverage(
+    coverage: list[int],
+    *,
+    context: PhaseReadyContext,
+    tensor_role: str,
+    rank: int,
+) -> str | None:
+    incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
+    for bundle in context.transport_bundles:
+        segment = bundle.outgoing_segment
+        if not bool(segment.is_local) or int(segment.row_count) <= 0 or int(segment.dst_rank) != int(rank):
+            continue
+        if not any(str(payload.tensor_role) == str(tensor_role) for payload in bundle.payloads):
+            continue
+        incoming_slot = incoming_by_src.get(int(segment.src_rank))
+        if incoming_slot is None:
+            return "missing_local_incoming_slot"
+        reason = _mark_coverage(
+            coverage,
+            start=int(incoming_slot.receive_offset_rows),
+            row_count=int(segment.row_count),
+        )
+        if reason:
+            return reason
+    return None
+
+
 def validate_async_phase_preflight(
     *,
     context: PhaseReadyContext,
@@ -174,12 +201,18 @@ def validate_async_phase_preflight(
     coverage = [0] * max(expected_rows, 0)
     local_send_items: list[tuple[int, ...]] = []
     local_recv_items: list[tuple[int, ...]] = []
+    local_reason = _mark_local_copy_coverage(
+        coverage,
+        context=context,
+        tensor_role=tensor_role,
+        rank=rank,
+    )
     for wave in plan.waves:
         for task in wave.bucket_tasks:
             payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
             if payload is None or int(payload.row_count) <= 0:
                 continue
-            if int(task.dst_rank) == rank:
+            if int(task.dst_rank) == rank and int(task.src_rank) != int(task.dst_rank):
                 reason = _mark_coverage(
                     coverage,
                     start=int(payload.receiver_offset_rows),

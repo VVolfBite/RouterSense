@@ -50,8 +50,14 @@ def build_transfer_layouts_and_tasks(
 ) -> tuple[tuple[Any, ...], list[BucketTask]] | tuple[tuple[Any, ...], list[BucketTask], dict[str, Any]]:
     started_ns = time.perf_counter_ns()
     receive_slots: dict[tuple[str, int, int, int], tuple[int, str, int]] = {}
+    receive_slots_by_pair: dict[tuple[str, int, int], tuple[int, str, int]] = {}
     for context in global_contexts:
         for slot in getattr(context, "incoming_slots", ()):
+            slot_value = (
+                int(slot.receive_offset_rows),
+                str(slot.canonical_receive_layout_id),
+                int(getattr(slot, "source_peer_index", -1)),
+            )
             receive_slots[
                 (
                     str(slot.phase),
@@ -59,11 +65,14 @@ def build_transfer_layouts_and_tasks(
                     int(slot.dst_rank),
                     int(slot.segment_ordinal),
                 )
-            ] = (
-                int(slot.receive_offset_rows),
-                str(slot.canonical_receive_layout_id),
-                int(getattr(slot, "source_peer_index", -1)),
-            )
+            ] = slot_value
+            receive_slots_by_pair[
+                (
+                    str(slot.phase),
+                    int(slot.src_rank),
+                    int(slot.dst_rank),
+                )
+            ] = slot_value
 
     def _payload_specs(context: Any) -> tuple[PackedTensorDescriptor, ...]:
         if getattr(context, "payload_specs", ()):
@@ -118,7 +127,10 @@ def build_transfer_layouts_and_tasks(
                 packed_send_layout_id = str(segment.packed_send_layout_id)
             recv_offset_rows, canonical_receive_layout_id, source_peer_index = receive_slots.get(
                 (str(segment.phase), int(segment.src_rank), int(segment.dst_rank), int(segment.segment_ordinal)),
-                (0, "", -1),
+                receive_slots_by_pair.get(
+                    (str(segment.phase), int(segment.src_rank), int(segment.dst_rank)),
+                    (0, "", -1),
+                ),
             )
             layout_count += 1
             transfer_layouts.append(

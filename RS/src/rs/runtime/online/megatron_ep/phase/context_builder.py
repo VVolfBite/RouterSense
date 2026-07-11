@@ -349,6 +349,7 @@ def reconstruct_global_phase_contexts_from_byte_matrix(
         send_offset = 0
         for peer_index, rows in enumerate(send_splits):
             dst_rank = int(ep_group_ranks[peer_index])
+            receiver_offset_rows = int(sum(int(row_matrix[src_index][peer_index]) for src_index in range(rank_index)))
             segment = OutgoingSegment(
                 segment_id=f"{local_context.phase}:{global_rank}->{dst_rank}:{peer_index}",
                 phase=str(local_context.phase),
@@ -372,7 +373,7 @@ def reconstruct_global_phase_contexts_from_byte_matrix(
                     dst_rank=dst_rank,
                     segment_ordinal=int(segment.segment_ordinal),
                     sender_offset_rows=int(segment.send_offset_rows),
-                    receiver_offset_rows=0,
+                    receiver_offset_rows=int(receiver_offset_rows),
                     row_count=int(rows),
                     dtype=str(spec.dtype),
                     shape_suffix=tuple(int(v) for v in spec.shape_suffix),
