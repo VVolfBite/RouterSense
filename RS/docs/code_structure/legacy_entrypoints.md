@@ -1,5 +1,11 @@
-# Legacy Entrypoints
+# Legacy / Validation Entrypoints
 
+## Validation
+- `experiments/dev/run_gpu_validation.py`
+- `experiments/distributed/run_stage1_gloo_e2e_gate.py`
+- `experiments/distributed/run_stage1_runtime_integrated_gloo_gate.py`
+
+## Historical / Diagnostic
 - `experiments/__init__.py`
 - `experiments/_bootstrap.py`
 - `experiments/distributed/_gpu_runner_common.py`

@@ -1,22 +1,41 @@
-fixture_dir: tests/fixtures/offline_replay_smoke
-output_dir: outputs/offline/offline_replay_smoke
-max_windows: 2
-scheduling_mode: execution_window
-expert_compute_delay: 0.0
-default_bucket_rows: 1024
-bucket_rows:
-  - 128
-  - 512
-  - 1024
-policies:
-  - phase_barrier_fifo
-  - greedy_ready_set
-  - islip_round_robin
-  - birkhoff_bucket_phase_local
-  - B_barrier_criticality_matching
-  - U_barrier_criticality_global_matching
-  - RS_safe_barrier_criticality
-hints:
-  - zero_hint
-  - copy_current_dispatch
-  - perfect_trace_hint
+schema_version: 1
+run:
+  kind: offline_replay
+  name: offline_replay_smoke
+model: {}
+topology: {}
+workload: {}
+runtime:
+  line: offline_replay
+traffic:
+  matrix_unit: rows
+  bucket_rows:
+    - 128
+    - 512
+    - 1024
+policy:
+  names:
+    - fifo_bucket
+    - greedy_bucket
+    - islip_bucket
+    - birkhoff_bucket_phase_local
+    - barrier_criticality_phase_local
+    - barrier_criticality_joint
+    - barrier_criticality_runtime_safe
+prediction:
+  names:
+    - zero_hint
+    - copy_current_dispatch
+    - perfect_trace_hint
+evaluation:
+  max_windows: 2
+  metrics:
+    - makespan
+    - plan_digest
+replay:
+  fixture_dir: tests/fixtures/offline_replay_smoke
+  output_dir: outputs/offline/offline_replay_smoke
+  scheduling_mode: execution_window
+  expert_compute_delay: 0.0
+oracle: {}
+regime_analysis: {}

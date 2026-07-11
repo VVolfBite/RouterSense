@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config)
     output_dir = Path(args.output_dir)
     comparison = _load_yaml(config_path)
-    if uses_public_runtime_surface(comparison):
+    if uses_public_runtime_surface(comparison) and not bool(comparison.get("_normalized_public_bridge", False)):
         validate_public_runtime_surface(comparison)
     _copy_config(config_path, output_dir)
     model_config_path = _model_config(comparison.get("model", {}) or {}, output_dir)

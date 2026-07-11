@@ -18,7 +18,9 @@ ROOT = ensure_src_on_path()
 
 import yaml
 
+from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
 from rs.runtime.offline.replay_unified import CanonicalBucketizer, PlanningHint, ReplayEngine, ReplayWindow, _matrix
+from rs.scheduling.catalog import resolve_algorithm_id
 
 
 def _parse_args() -> argparse.Namespace:
@@ -85,32 +87,41 @@ def _hint(window: ReplayWindow, hint_type: str) -> PlanningHint:
 def main() -> None:
     args = _parse_args()
     config_path = Path(args.config)
-    config = _load_yaml(config_path)
-    output_dir = (ROOT / str(config.get("output_dir", "outputs/offline/offline_replay_smoke"))).resolve()
+    normalized = normalize_run_config(_load_yaml(config_path))
+    config = canonical_offline_replay_payload(normalized)
+    legacy_config = legacy_offline_replay_payload(normalized)
+    replay_cfg = dict(config.get("replay", {}) or {})
+    output_dir = (ROOT / str(replay_cfg.get("output_dir", "outputs/offline/offline_replay_smoke"))).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    fixture_dir = (ROOT / str(config["fixture_dir"])).resolve()
-    windows = _load_windows(fixture_dir, max_windows=int(config.get("max_windows", 4)))
-    bucket_rows_values = [int(value) for value in config.get("bucket_rows", [1024])]
-    policies = [str(item) for item in config.get("policies", [])]
-    hints = [str(item) for item in config.get("hints", [])]
+    fixture_dir = (ROOT / str(replay_cfg["fixture_dir"])).resolve()
+    evaluation = dict(config.get("evaluation", {}) or {})
+    traffic = dict(config.get("traffic", {}) or {})
+    policy_cfg = dict(config.get("policy", {}) or {})
+    prediction_cfg = dict(config.get("prediction", {}) or {})
+    runtime_cfg = dict(config.get("runtime", {}) or {})
+    windows = _load_windows(fixture_dir, max_windows=int(evaluation.get("max_windows", 4)))
+    bucket_rows_values = [int(value) for value in traffic.get("bucket_rows", [1024])]
+    policies = [str(item) for item in policy_cfg.get("names", [])]
+    hints = [str(item) for item in prediction_cfg.get("names", [])]
     rows: list[dict[str, Any]] = []
     invariant_rows: list[dict[str, Any]] = []
     for bucket_rows in bucket_rows_values:
         bucketizer = CanonicalBucketizer(bucket_rows=bucket_rows)
         engine = ReplayEngine(
-            scheduling_mode=str(config.get("scheduling_mode", "execution_window")),
-            expert_compute_delay=float(config.get("expert_compute_delay", 0.0)),
+            scheduling_mode=str(replay_cfg.get("scheduling_mode", "execution_window")),
+            expert_compute_delay=float(replay_cfg.get("expert_compute_delay", 0.0)),
             bucket_rows=bucket_rows,
         )
         for window in windows:
             tasks = bucketizer.bucketize(window)
             task_digest = CanonicalBucketizer.digest(tasks)
             for policy_name in policies:
+                resolved_policy = resolve_algorithm_id(policy_name)
                 for hint_type in hints:
                     result = engine.execute(
                         replay_window=window,
                         planning_hint=_hint(window, hint_type),
-                        policy_name=policy_name,
+                        policy_name=resolved_policy.builder_key,
                     )
                     rows.append(
                         {
@@ -118,11 +129,14 @@ def main() -> None:
                             "window_id": window.window_id,
                             "layer_id": window.layer_id,
                             "bucket_rows": bucket_rows,
-                            "policy_name": policy_name,
+                            "requested_policy_name": policy_name,
+                            "canonical_policy_name": resolved_policy.canonical_name,
+                            "builder_policy_name": resolved_policy.builder_key,
                             "hint_type": hint_type,
                             "input_task_count": result["input_task_count"],
                             "input_total_rows": result["input_total_rows"],
                             "input_task_digest": result["input_task_digest"],
+                            "logical_plan_digest": result["logical_plan_digest"],
                             "makespan": result["makespan"],
                             "audit_valid": result["audit_valid"],
                         }
@@ -139,6 +153,7 @@ def main() -> None:
             )
     (output_dir / "summary.json").write_text(json.dumps({"rows": rows, "invariants": invariant_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "config_snapshot.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
 
 
 if __name__ == "__main__":

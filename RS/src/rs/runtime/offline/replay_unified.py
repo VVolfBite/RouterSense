@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
+from rs.scheduling.validation import stable_hash
 from rs.scheduling import (
     FlowDemand,
     FlowWindow,
@@ -283,6 +284,7 @@ class ReplayEngine:
             "input_total_rows": int(sum(task.row_count for task in canonical_tasks)),
             "input_task_digest": CanonicalBucketizer.digest(canonical_tasks),
             "logical_plan_policy_name": str(logical_plan.policy_name),
+            "logical_plan_digest": stable_hash(logical_plan.to_dict()),
             "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
             "audit_valid": bool(audit.get("valid", False)),
             "audit": audit,
