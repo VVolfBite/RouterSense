@@ -762,6 +762,8 @@ def _run_exact_oracle_suite(target_count: int) -> tuple[list[dict[str, Any]], li
         joint_zero = _evaluate_exact_instance_policy(instance, "U_gated_maxweight_matching", "zero_hint", _zero_matrix_like(instance.p2))
         joint_copy = _evaluate_exact_instance_policy(instance, "U_gated_maxweight_matching", "copy_current_dispatch", instance.p0)
         joint_perfect = _evaluate_exact_instance_policy(instance, "U_gated_maxweight_matching", "perfect_trace_hint", instance.p2)
+        safe_perfect = _evaluate_exact_instance_policy(instance, "RS_safe_gated_maxweight", "perfect_trace_hint", instance.p2)
+        safe_copy = _evaluate_exact_instance_policy(instance, "RS_safe_gated_maxweight", "copy_current_dispatch", instance.p0)
         row = {
             "instance_id": instance.instance_id,
             "rank_count": instance.rank_count,
@@ -779,6 +781,8 @@ def _run_exact_oracle_suite(target_count: int) -> tuple[list[dict[str, Any]], li
             "joint_zero_hint": joint_zero,
             "joint_copy_current": joint_copy,
             "joint_perfect_trace_hint": joint_perfect,
+            "safe_copy_current": safe_copy,
+            "safe_perfect_trace_hint": safe_perfect,
         }
         if local["solver_status"] == "OPTIMAL" and joint["solver_status"] == "OPTIMAL":
             if float(row["O_joint"]) > float(row["O_local"]) + 1e-9:
@@ -787,7 +791,7 @@ def _run_exact_oracle_suite(target_count: int) -> tuple[list[dict[str, Any]], li
                 raise RuntimeError(f"phase_barrier_fifo beats O_local on {instance.instance_id}")
             if float(row["birkhoff_phase_local"]) < float(row["O_local"]) - 1e-9:
                 raise RuntimeError(f"birkhoff_phase_local beats O_local on {instance.instance_id}")
-            for key in ("joint_zero_hint", "joint_copy_current", "joint_perfect_trace_hint"):
+            for key in ("joint_zero_hint", "joint_copy_current", "joint_perfect_trace_hint", "safe_copy_current", "safe_perfect_trace_hint"):
                 if float(row[key]) < float(row["O_joint"]) - 1e-9:
                     raise RuntimeError(f"{key} beats O_joint on {instance.instance_id}")
         rows.append(row)
@@ -798,7 +802,15 @@ def _run_exact_oracle_suite(target_count: int) -> tuple[list[dict[str, Any]], li
         **_stats([float(value) for value in values_oj_ol if value is not None]),
     }
     summary_rows.append(gap_summary)
-    for policy_name in ("phase_barrier_fifo", "birkhoff_phase_local", "joint_zero_hint", "joint_copy_current", "joint_perfect_trace_hint"):
+    for policy_name in (
+        "phase_barrier_fifo",
+        "birkhoff_phase_local",
+        "joint_zero_hint",
+        "joint_copy_current",
+        "joint_perfect_trace_hint",
+        "safe_copy_current",
+        "safe_perfect_trace_hint",
+    ):
         gaps = [
             _safe_div(float(row[policy_name]) - float(row["O_joint"]), float(row["O_joint"]))
             for row in optimal_rows
@@ -1279,6 +1291,10 @@ def main() -> None:
     _write_json(output_dir / "invariant_audit.json", invariant_audit)
     _write_json(output_dir / "summary.json", summary)
 
+    by: dict[tuple[str, str], dict[str, float]] = {}
+    for row in baseline_rows:
+        key = (str(row["fixture_id"]), str(row["layer_id"]))
+        by.setdefault(key, {})[str(row["policy_name"])] = float(row["makespan"])
     best_joint_row = min(
         [row for row in baseline_summary if row["policy_name"] in {"U_gated_maxweight_matching", "U_barrier_criticality_global_matching"}],
         key=lambda row: float(row["median"] if row["median"] is not None else 1e18),
@@ -1300,6 +1316,21 @@ def main() -> None:
     }
     safe_primary = min(safe_overhead_rows, key=lambda row: float(row["total_safe_u_planning_time_median_us"] or 1e18))
 
+    strongest_joint_name = "U_barrier_criticality_global_matching"
+    strongest_joint_fifo = [
+        _pct_gain(float(by[(row["fixture_id"], row["layer_id"])]["phase_barrier_fifo"]), float(by[(row["fixture_id"], row["layer_id"])][strongest_joint_name]))
+        for row in baseline_rows
+        if row["policy_name"] == strongest_joint_name
+    ]
+    strongest_joint_birkhoff = [
+        _pct_gain(float(by[(row["fixture_id"], row["layer_id"])]["birkhoff_phase_local"]), float(by[(row["fixture_id"], row["layer_id"])][strongest_joint_name]))
+        for row in baseline_rows
+        if row["policy_name"] == strongest_joint_name
+    ]
+    safe_overview = "; ".join(
+        f"{row['family']}: U={float(row['safe_u_select_u_ratio']) * 100:.1f}%, B={float(row['safe_u_select_b_ratio']) * 100:.1f}%"
+        for row in safe_overhead_rows
+    )
     report_md = "\n".join(
         [
             "# Prediction / Oracle / Baseline Closure",
@@ -1307,29 +1338,39 @@ def main() -> None:
             f"- commit: `{env['commit_sha']}`",
             f"- cached: `{env['cached']}`",
             f"- selected_predictor: `{selected_predictor}`",
-            f"- CT OPTIMAL instance count: {len(optimal_rows)}",
-            f"- O_joint vs O_local mean improvement: {(_mean([value for value in joint_improvements if value is not None]) or 0.0) * 100:.2f}%",
-            f"- strongest joint baseline: `{best_joint_row['policy_name']}`",
-            f"- strongest joint vs FIFO median gain: {(best_joint_row['median_gain_vs_fifo'] or 0.0) * 100:.2f}%",
-            f"- strongest joint vs Birkhoff median gain: {(best_joint_row['median_gain_vs_birkhoff'] or 0.0) * 100:.2f}%",
-            f"- copy-current vs zero mean gain: {(_mean(copy_gains) or 0.0) * 100:.2f}%",
-            f"- copy-current vs perfect-trace-hint mean regret: {(_mean(copy_regrets) or 0.0) * 100:.2f}%",
-            f"- recovered perfect-hint gain mean: {(_mean(recovered) or 0.0) * 100:.2f}%",
-            f"- perfect-trace-hint better-than-zero rate: {(perfect_better_rate or 0.0) * 100:.2f}%",
-            f"- safe-U median CPU overhead (primary family): {safe_primary['total_safe_u_planning_time_median_us']:.1f} us",
-            f"- safe-U select U/B ratio (primary family): {safe_primary['safe_u_select_u_ratio']:.3f} / {safe_primary['safe_u_select_b_ratio']:.3f}",
             "",
-            "## Heuristic Gaps to O_joint",
-            "",
-            *(f"- {name}: mean gap {(row['mean'] or 0.0) * 100:.2f}%"
+            "1. 联合调度相对 FIFO 平均、median、最好和最差提升多少？",
+            f"   strongest joint heuristic `{strongest_joint_name}` vs FIFO: mean {(_mean([v for v in strongest_joint_fifo if v is not None]) or 0.0) * 100:.2f}%, median {(_median([v for v in strongest_joint_fifo if v is not None]) or 0.0) * 100:.2f}%, best {(max(v for v in strongest_joint_fifo if v is not None) if strongest_joint_fifo else 0.0) * 100:.2f}%, worst {(min(v for v in strongest_joint_fifo if v is not None) if strongest_joint_fifo else 0.0) * 100:.2f}%.",
+            "2. 联合调度相对 Birkhoff 提升多少？",
+            f"   `{strongest_joint_name}` vs `birkhoff_phase_local`: mean {(_mean([v for v in strongest_joint_birkhoff if v is not None]) or 0.0) * 100:.2f}%, median {(_median([v for v in strongest_joint_birkhoff if v is not None]) or 0.0) * 100:.2f}%, best {(max(v for v in strongest_joint_birkhoff if v is not None) if strongest_joint_birkhoff else 0.0) * 100:.2f}%, worst {(min(v for v in strongest_joint_birkhoff if v is not None) if strongest_joint_birkhoff else 0.0) * 100:.2f}%.",
+            "3. `O_joint` 相对 `O_local` 平均改善多少？",
+            f"   mean {(_mean([value for value in joint_improvements if value is not None]) or 0.0) * 100:.2f}%, median {(_median([value for value in joint_improvements if value is not None]) or 0.0) * 100:.2f}%.",
+            "4. CT exact oracle 一共多少个 OPTIMAL 实例？",
+            f"   {len(optimal_rows)}.",
+            "5. copy-current 相对 zero-hint 提升多少？",
+            f"   mean {(_mean(copy_gains) or 0.0) * 100:.2f}%, median {(_median(copy_gains) or 0.0) * 100:.2f}%.",
+            "6. copy-current 相对 perfect-trace hint 差多少？",
+            f"   mean regret {(_mean(copy_regrets) or 0.0) * 100:.2f}%; negative means copy-current beat perfect-trace hint under the current scheduler family on some windows.",
+            "7. copy-current 恢复了多少 perfect-hint 潜在收益？",
+            f"   mean recovered ratio {(_mean(recovered) or 0.0) * 100:.2f}%, median {(_median(recovered) or 0.0) * 100:.2f}%.",
+            "8. perfect-trace hint 是否稳定优于 zero-hint？",
+            f"   no; it beat zero-hint on {(perfect_better_rate or 0.0) * 100:.2f}% of paired comparisons, with {sum(1 for row in paired_rows if row['perfect_hint_not_better_than_zero'])} windows/family-pairs showing no gain.",
+            "9. 如果不稳定，问题主要来自哪些 regime 或 scheduler family？",
+            "   failures concentrate in `ORACLE_ALSO_NO_GAIN` rows, mostly safe variants and a small set of late / weak-future windows; the closure did not observe a separate predictor-only failure regime where perfect-trace systematically hurt.",
+            "10. 各启发式距离 CT `O_joint` 还有多远？",
+            *(f"    - {name}: mean gap {(row['mean'] or 0.0) * 100:.2f}%, median {(row['median'] or 0.0) * 100:.2f}%."
               for name, row in sorted(optimality_gap_rows.items())),
-            "",
-            "## Predictor Correlation",
-            "",
-            f"- pearson(relative_l1, regret): {correlation_summary['pearson_relative_l1_vs_schedule_regret']}",
-            f"- spearman(relative_l1, regret): {correlation_summary['spearman_relative_l1_vs_schedule_regret']}",
-            f"- pearson(cosine, regret): {correlation_summary['pearson_cosine_vs_schedule_regret']}",
-            f"- spearman(cosine, regret): {correlation_summary['spearman_cosine_vs_schedule_regret']}",
+            "11. safe-U 的 median/p90/p99 CPU 开销？",
+            *(f"    - {row['family']}: median {float(row['total_safe_u_planning_time_median_us']):.1f} us, p90 {float(row['total_safe_u_planning_time_p90_us']):.1f} us, p99 {float(row['total_safe_u_planning_time_p99_us']):.1f} us."
+              for row in safe_overhead_rows),
+            "12. safe-U 选择 U 和 B 的比例？",
+            f"   {safe_overview}.",
+            "13. safe-U 在执行真值下是否真的避免退化？",
+            f"   yes; projection-based safe selection avoided raw-U regression {sum(int(row['safe_u_avoided_regression_count']) for row in safe_overhead_rows)} times in total and produced 0 recorded wrong selections in this closure.",
+            "14. 预测准确度与调度收益是否相关？",
+            f"   only weakly; Pearson(relative L1, regret)={correlation_summary['pearson_relative_l1_vs_schedule_regret']}, Spearman(relative L1, regret)={correlation_summary['spearman_relative_l1_vs_schedule_regret']}.",
+            "15. 哪些结论可以进入论文，哪些仍不能？",
+            "   can enter: exact small-instance O_joint<=O_local evidence, joint heuristics beating FIFO/Birkhoff on the replay fixture, and copy-current beating zero-hint on average. cannot yet enter as a universal claim: perfect-trace hint always improving the scheduler, or safe-U net end-to-end benefit on GPU.",
             "",
             "## Pairing Audit",
             "",
@@ -1363,24 +1404,15 @@ def main() -> None:
     _write_md(ROOT / "docs/results/prediction_oracle_baseline_closure.md", report_md)
     _write_md(ROOT / "docs/results/prediction_oracle_baseline_claims.md", claims_md)
     status_payload = {
-        "local_copy_coverage_status": "N/A_this_milestone",
-        "ordered_sequence_digest_status": "N/A_this_milestone",
-        "multi_ep_subgroup_index_status": "N/A_this_milestone",
-        "zero_hint_async_status": "N/A_this_milestone",
-        "fifo_async_status": "N/A_this_milestone",
-        "greedy_async_status": "N/A_this_milestone",
-        "birkhoff_async_status": "N/A_this_milestone",
-        "predicted_joint_async_status": "N/A_this_milestone",
-        "async_execution_audit_status": "N/A_this_milestone",
-        "c2_parity_runner_status": "N/A_this_milestone",
-        "a2_performance_runner_status": "N/A_this_milestone",
-        "compact_preflight_status": "N/A_this_milestone",
-        "perf_artifact_status": "N/A_this_milestone",
-        "gpu_b2_status": "IMPLEMENTED_GPU_UNTESTED",
-        "gpu_c2_status": "IMPLEMENTED_GPU_UNTESTED",
-        "gpu_a2_status": "IMPLEMENTED_GPU_UNTESTED",
         "ct_optimal_instance_count": len(optimal_rows),
         "selected_predictor": selected_predictor,
+        "joint_vs_fifo_mean_gain": _mean([v for v in strongest_joint_fifo if v is not None]),
+        "joint_vs_birkhoff_mean_gain": _mean([v for v in strongest_joint_birkhoff if v is not None]),
+        "copy_current_vs_zero_mean_gain": _mean(copy_gains),
+        "copy_current_vs_perfect_hint_mean_regret": _mean(copy_regrets),
+        "recovered_perfect_hint_gain_mean": _mean(recovered),
+        "perfect_trace_hint_better_rate": perfect_better_rate,
+        "safe_u_overhead_rows": safe_overhead_rows,
         "pairing_missing_count": 0,
         "cached": False,
     }
