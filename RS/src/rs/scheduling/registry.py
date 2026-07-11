@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rs.scheduling.base import RouterSensePhasePolicy, SchedulingPolicy
+from rs.scheduling.legacy_interfaces import RouterSensePhasePolicy, SchedulingPolicy
 from rs.scheduling.catalog import algorithm_specs, phase_local_algorithm_specs, resolve_algorithm_id
 
 from .phase_local.aurora_fixed import AuroraOrderFixedPolicy
