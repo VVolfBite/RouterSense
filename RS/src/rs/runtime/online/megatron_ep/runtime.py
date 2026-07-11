@@ -17,7 +17,8 @@ from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import Joi
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.runtime.online.megatron_ep.observation import PolicyRuntimeRecord
-from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.catalog import ResolvedAlgorithmId, resolve_algorithm_id
+from rs.scheduling.registry import resolve_phase_policy
 
 
 class UnsupportedSchedulerMode(ValueError):
@@ -26,6 +27,31 @@ class UnsupportedSchedulerMode(ValueError):
 
 class SelectedLayerStop(RuntimeError):
     pass
+
+
+_SPECIAL_SCHEDULER_MODES = {
+    "disabled",
+    "native_order",
+    "joint_shadow_p0p1",
+    "native_passthrough_identity",
+}
+
+
+def resolve_online_policy_config(config: RouterSenseInjectionConfig) -> ResolvedAlgorithmId | None:
+    requested_name = str(config.policy or "").strip()
+    if not requested_name:
+        scheduler_mode = str(config.scheduler_mode or "").strip()
+        if scheduler_mode in _SPECIAL_SCHEDULER_MODES:
+            return None
+        requested_name = scheduler_mode
+    if not requested_name or requested_name == "disabled":
+        return None
+    resolved = resolve_algorithm_id(requested_name)
+    if not resolved.spec.online_eligible:
+        raise UnsupportedSchedulerMode(
+            f"Algorithm {requested_name!r} resolves to {resolved.canonical_name!r}, which is not online-eligible"
+        )
+    return resolved
 
 
 @dataclass
@@ -46,18 +72,9 @@ class RouterSenseDispatcherFacade:
         native_dispatcher: Callable[..., Any],
         config: RouterSenseInjectionConfig,
     ) -> "RouterSenseDispatcherFacade":
-        supported_scheduler_modes = {
-            "disabled",
-            "native_order",
-            "joint_shadow_p0p1",
-            "native_passthrough_identity",
-            *supported_phase_policies(),
-        }
-        if config.scheduler_mode not in supported_scheduler_modes:
-            raise UnsupportedSchedulerMode(
-                "Unsupported scheduler_mode="
-                f"{config.scheduler_mode!r}; only {sorted(supported_scheduler_modes)!r} are implemented"
-            )
+        scheduler_mode = str(config.scheduler_mode)
+        if scheduler_mode not in _SPECIAL_SCHEDULER_MODES:
+            resolve_online_policy_config(config)
         if config.future_hint_mode != "none":
             raise UnsupportedSchedulerMode(
                 f"Unsupported future_hint_mode={config.future_hint_mode!r}; only 'none' is implemented"
@@ -78,12 +95,10 @@ class RouterSenseDispatcherFacade:
 
 
 def resolve_configured_policy(config: RouterSenseInjectionConfig):
-    phase_policy_name = str(config.policy) if config.policy else ""
-    if not phase_policy_name and config.scheduler_mode in set(supported_phase_policies()):
-        phase_policy_name = str(config.scheduler_mode)
-    if phase_policy_name:
+    resolved = resolve_online_policy_config(config)
+    if resolved is not None:
         return resolve_phase_policy(
-            policy_name=phase_policy_name,
+            policy_name=str(resolved.builder_key),
             bucket_rows=config.bucket_rows,
             p0_weight=config.p0_weight,
             p1_reservation_weight=config.p1_reservation_weight,

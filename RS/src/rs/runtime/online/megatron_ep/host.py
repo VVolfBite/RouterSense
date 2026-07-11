@@ -28,8 +28,7 @@ from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterS
 from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
-from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
-from rs.scheduling.registry import supported_phase_policies
+from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade, resolve_online_policy_config
 
 
 @dataclass
@@ -664,8 +663,8 @@ def attach_dispatch_facade(
     )
     transport_adapter = None
     original_all_to_all = None
-    supported_policies = set(supported_phase_policies())
-    phase_policy_name = config.policy or (config.scheduler_mode if config.scheduler_mode in supported_policies else "")
+    resolved_online_policy = resolve_online_policy_config(config)
+    phase_policy_name = str(resolved_online_policy.builder_key) if resolved_online_policy is not None else ""
     if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"} and sample_dispatcher is not None:
         import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
 

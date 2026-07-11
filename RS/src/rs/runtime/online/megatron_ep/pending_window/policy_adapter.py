@@ -68,13 +68,22 @@ def compile_prepared_window_phase_plan(
     context_replace_start_ns = time.monotonic_ns()
     hinted_local = replace(local_context, p2_hint=hint)
     context_replace_end_ns = time.monotonic_ns()
-    policy = phase_policy or resolve_phase_policy(
-        policy_name=policy_name,
-        bucket_rows=bucket_rows,
-        p0_weight=p0_weight,
-        p1_reservation_weight=p1_reservation_weight,
-        p2_hint_weight=p2_hint_weight,
-    )
+    policy = phase_policy
+    if policy is None and str(policy_name) == "routersense_p0p1p2_hint":
+        policy = build_phase_policy_fast_path(
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+            p2_hint_weight=p2_hint_weight,
+        )
+    if policy is None:
+        policy = resolve_phase_policy(
+            policy_name=policy_name,
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+            p2_hint_weight=p2_hint_weight,
+        )
     phase_policy_build_start_ns = time.monotonic_ns()
     plan = policy.build_plan(local_context=hinted_local, global_contexts=global_contexts)
     phase_policy_build_end_ns = time.monotonic_ns()

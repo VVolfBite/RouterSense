@@ -76,7 +76,11 @@ from rs.runtime.online.megatron_ep.phase import (
     build_phase_ready_context,
     reconstruct_global_phase_contexts_from_byte_matrix,
 )
-from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop, UnsupportedSchedulerMode
+from rs.runtime.online.megatron_ep.runtime import (
+    SelectedLayerStop,
+    UnsupportedSchedulerMode,
+    resolve_online_policy_config,
+)
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
@@ -90,7 +94,7 @@ from rs.runtime.online.megatron_ep.prediction import (
     maybe_capture_expert_route_trace,
 )
 from rs.scheduling.contracts import PreparedWindowPlan
-from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.registry import resolve_phase_policy
 from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 from rs.scheduling.traffic_matrix import (
     canonicalize_remote_matrix,
@@ -196,11 +200,10 @@ class RouterSenseInjectionRuntime:
         )
 
     def _effective_phase_policy_name(self) -> str:
-        if self.config.policy:
-            return str(self.config.policy)
-        if self.config.scheduler_mode in set(supported_phase_policies()):
-            return str(self.config.scheduler_mode)
-        return ""
+        resolved = resolve_online_policy_config(self.config)
+        if resolved is None:
+            return ""
+        return str(resolved.builder_key)
 
     def _phase_policy(self):
         phase_policy_name = self._effective_phase_policy_name()
