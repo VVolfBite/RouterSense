@@ -58,6 +58,11 @@ from rs.runtime.online.megatron_ep.pending_window import (
     record_release_event,
 )
 from rs.runtime.online.megatron_ep.async_release.joint_plan_agreement import GlobalJointPlanWire
+from rs.runtime.online.megatron_ep.compiler_facade import (
+    CompilationOptions,
+    PlanCompilationRequest,
+    compile_schedule,
+)
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     PhaseContextBuildRequest,
@@ -83,7 +88,8 @@ from rs.runtime.online.megatron_ep.prediction import (
     maybe_capture_expert_route_trace,
 )
 from rs.scheduling.contracts import PreparedWindowPlan
-from rs.scheduling.registry import resolve_phase_policy, resolve_policy, supported_phase_policies
+from rs.scheduling.registry import resolve_phase_policy, supported_phase_policies
+from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 from rs.scheduling.traffic_matrix import (
     canonicalize_remote_matrix,
     matrix_col_sums_remote,
@@ -1039,16 +1045,31 @@ class RouterSenseInjectionRuntime:
             )
             return
         try:
-            compiled = compile_prepared_window_phase_plan(
-                prepared_plan=prepared_plan,
-                local_context=local_context,
-                global_contexts=global_contexts,
-                bucket_rows=self.config.bucket_rows,
-                p0_weight=self.config.p0_weight,
-                p1_reservation_weight=self.config.p1_reservation_weight,
-                p2_hint_weight=self.config.p2_hint_weight,
-                policy_name=phase_policy_name,
+            compilation = compile_schedule(
+                PlanCompilationRequest(
+                    logical_plan=getattr(prepared_plan, "logical_plan"),
+                    local_context=local_context,
+                    global_contexts=global_contexts,
+                    canonical_tasks=(),
+                    phase=str(phase),
+                    tensor_role="shadow",
+                    rank_context={
+                        "global_rank": int(local_context.global_rank),
+                        "local_rank": int(local_context.local_rank),
+                    },
+                    compilation_options=CompilationOptions(
+                        bucket_rows=int(self.config.bucket_rows),
+                        p0_weight=float(self.config.p0_weight),
+                        p1_reservation_weight=float(self.config.p1_reservation_weight),
+                        p2_hint_weight=float(self.config.p2_hint_weight),
+                        debug_trace=not self._is_perf_profile(),
+                    ),
+                    prepared_plan=prepared_plan,
+                    prepared_priority_cache=self._prepared_plan_state.get("prepared_priority_cache"),
+                    legacy_phase_policy_name=str(phase_policy_name),
+                )
             )
+            compiled = compilation.execution_plan
         except Exception as exc:  # pragma: no cover
             self.prepared_phase_plan_shadows.append(
                 {
@@ -1254,17 +1275,23 @@ class RouterSenseInjectionRuntime:
         effective_policy = str(self._effective_phase_policy_name() or "")
         phase_local_async_policies = {"bucketed_fifo", "greedy_ready_set", "birkhoff_phase_local", "phase_barrier_fifo"}
         if effective_policy in phase_local_async_policies:
-            phase_local_policy = resolve_policy(
-                policy_name=effective_policy,
-                bucket_rows=self.config.bucket_rows,
-                p0_weight=self.config.p0_weight,
-                p1_reservation_weight=self.config.p1_reservation_weight,
-                p2_hint_weight=self.config.p2_hint_weight,
+            phase_local_request = build_request_from_problem(
+                request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:raw_u",
+                problem=problem,
+                bucket_rows=int(self.config.bucket_rows),
+                policy_options=PolicyOptions(
+                    p0_weight=float(self.config.p0_weight),
+                    p1_weight=float(self.config.p1_reservation_weight),
+                    p2_hint_weight=float(self.config.p2_hint_weight),
+                ),
+                hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
+                confidence=float(prediction_confidence),
+                layer_id=int(layer_id),
             )
             raw_u_name = effective_policy
             paired_b_name = effective_policy
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = phase_local_policy.build_logical_plan(problem)
+            raw_u_plan = build_policy(raw_u_name, phase_local_request.policy_options).plan(phase_local_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -1287,22 +1314,21 @@ class RouterSenseInjectionRuntime:
             )
         else:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
-            raw_u_policy = resolve_policy(
-                policy_name=raw_u_name,
-                bucket_rows=self.config.bucket_rows,
-                p0_weight=self.config.p0_weight,
-                p1_reservation_weight=self.config.p1_reservation_weight,
-                p2_hint_weight=self.config.p2_hint_weight,
-            )
-            paired_b_policy = resolve_policy(
-                policy_name=paired_b_name,
-                bucket_rows=self.config.bucket_rows,
-                p0_weight=self.config.p0_weight,
-                p1_reservation_weight=self.config.p1_reservation_weight,
-                p2_hint_weight=self.config.p2_hint_weight,
+            request = build_request_from_problem(
+                request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:safe_joint",
+                problem=problem,
+                bucket_rows=int(self.config.bucket_rows),
+                policy_options=PolicyOptions(
+                    p0_weight=float(self.config.p0_weight),
+                    p1_weight=float(self.config.p1_reservation_weight),
+                    p2_hint_weight=float(self.config.p2_hint_weight),
+                ),
+                hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
+                confidence=float(prediction_confidence),
+                layer_id=int(layer_id),
             )
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = raw_u_policy.build_logical_plan(problem)
+            raw_u_plan = build_policy(raw_u_name, request.policy_options).plan(request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -1313,7 +1339,7 @@ class RouterSenseInjectionRuntime:
                 policy_name=raw_u_name,
             )
             paired_b_start_ns = time.monotonic_ns()
-            paired_b_plan = paired_b_policy.build_logical_plan(problem)
+            paired_b_plan = build_policy(paired_b_name, request.policy_options).plan(request)
             paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -1526,15 +1552,36 @@ class RouterSenseInjectionRuntime:
             (context for context in global_contexts if int(context.global_rank) == int(local_context.global_rank)),
             local_context,
         )
-        compiled = compile_prepared_window_phase_plan(
-            prepared_plan=prepared_plan,
-            local_context=compiled_local_context,
-            global_contexts=global_contexts,
-            bucket_rows=self.config.bucket_rows,
-            p0_weight=self.config.p0_weight,
-            p1_reservation_weight=self.config.p1_reservation_weight,
-            p2_hint_weight=self.config.p2_hint_weight,
-            policy_name=self._effective_phase_policy_name() or "routersense_p0p1p2_hint",
+        compilation = compile_schedule(
+            PlanCompilationRequest(
+                logical_plan=getattr(prepared_plan, "logical_plan"),
+                local_context=compiled_local_context,
+                global_contexts=global_contexts,
+                canonical_tasks=(),
+                phase=str(phase),
+                tensor_role="hidden_states" if str(phase) == "P1" else "dispatch_bundle",
+                rank_context={
+                    "global_rank": int(compiled_local_context.global_rank),
+                    "local_rank": int(compiled_local_context.local_rank),
+                },
+                compilation_options=CompilationOptions(
+                    bucket_rows=int(self.config.bucket_rows),
+                    p0_weight=float(self.config.p0_weight),
+                    p1_reservation_weight=float(self.config.p1_reservation_weight),
+                    p2_hint_weight=float(self.config.p2_hint_weight),
+                    debug_trace=not self._is_perf_profile(),
+                ),
+                prepared_plan=prepared_plan,
+                prepared_priority_cache=self._prepared_plan_state.get("prepared_priority_cache"),
+                legacy_phase_policy_name=str(self._effective_phase_policy_name() or "routersense_p0p1p2_hint"),
+            )
+        )
+        compiled = compilation.execution_plan
+        self._prepared_plan_state["compiler_id"] = str(compilation.audit.compiler_id)
+        self._prepared_plan_state["logical_plan_digest"] = str(compilation.audit.logical_plan_digest)
+        self._prepared_plan_state["compiled_plan_digest"] = str(compilation.audit.compiled_plan_digest)
+        self._prepared_plan_state["legacy_secondary_policy_invocation_count"] = int(
+            compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0
         )
         return replace(
             compiled,
@@ -2991,6 +3038,12 @@ class RouterSenseInjectionRuntime:
             "all_layer_async_phase_count": int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0),
             "stored_p1_plan_digest": str(self._prepared_plan_state.get("stored_p1_plan_digest", "")),
             "consumed_p1_plan_digest": str(self._prepared_plan_state.get("consumed_p1_plan_digest", "")),
+            "compiler_id": str(self._prepared_plan_state.get("compiler_id", "")),
+            "logical_plan_digest": str(self._prepared_plan_state.get("logical_plan_digest", "")),
+            "compiled_plan_digest": str(self._prepared_plan_state.get("compiled_plan_digest", "")),
+            "legacy_secondary_policy_invocation_count": int(
+                self._prepared_plan_state.get("legacy_secondary_policy_invocation_count", 0) or 0
+            ),
             "dispatch_transport_start_ns": int(self._prepared_plan_state.get("dispatch_transport_start_ns", 0) or 0),
             "dispatch_transport_end_ns": int(self._prepared_plan_state.get("dispatch_transport_end_ns", 0) or 0),
             "rank_release_ns": int(self._prepared_plan_state.get("rank_release_ns", 0) or 0),

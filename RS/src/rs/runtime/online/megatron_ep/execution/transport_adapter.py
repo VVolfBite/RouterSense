@@ -16,7 +16,8 @@ import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext
 
-from .async_p2p_executor import execute_async_phase_tensor, validate_async_phase_preflight
+from .async_p2p_executor import validate_async_phase_preflight
+from .executor_facade import ExecutionRequest, execute_transport
 from .sync_wave_executor import PhaseExecutionResult, execute_scheduled_phase_tensor
 
 
@@ -147,21 +148,24 @@ class MegatronPhaseTransportAdapter:
                 ]
             else:
                 self.async_executor_invocation_count += 1
-                async_result = execute_async_phase_tensor(
-                    context=state.context,
-                    plan=state.plan,
-                    tensor_role=tensor_role,
-                    input_tensor=input_tensor,
-                    process_group=self.p2p_group if self.p2p_group is not None else group,
-                    rank_context={
-                        "global_rank": int(state.context.global_rank),
-                        "local_rank": int(state.context.local_rank),
-                    },
-                    timeline_hook=getattr(self, "timeline_hook", None),
+                facade_result = execute_transport(
+                    ExecutionRequest(
+                        execution_plan=state.plan,
+                        phase_context=state.context,
+                        tensor_role=tensor_role,
+                        input_tensor=input_tensor,
+                        process_group=self.p2p_group if self.p2p_group is not None else group,
+                        rank_context={
+                            "global_rank": int(state.context.global_rank),
+                            "local_rank": int(state.context.local_rank),
+                        },
+                        event_sink=getattr(self, "timeline_hook", None),
+                    ),
+                    backend="async_release",
                 )
-                output = async_result.output
-                result = async_result.summary
-                execution_entries = async_result.execution_entries
+                output = facade_result.output_tensor
+                result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
+                execution_entries = list(facade_result.execution_entries)
                 summary_entry = next(
                     (row for row in execution_entries if row.get("record_type") == "async_phase_summary"),
                     {},
@@ -180,14 +184,24 @@ class MegatronPhaseTransportAdapter:
                     }
                 )
         else:
-            output, result, execution_entries = execute_scheduled_phase_tensor(
-                context=state.context,
-                plan=state.plan,
-                tensor_role=tensor_role,
-                input_tensor=input_tensor,
-                    group=group,
-                    timeline_hook=getattr(self, "timeline_hook", None),
-                )
+            facade_result = execute_transport(
+                ExecutionRequest(
+                    execution_plan=state.plan,
+                    phase_context=state.context,
+                    tensor_role=tensor_role,
+                    input_tensor=input_tensor,
+                    process_group=group,
+                    rank_context={
+                        "global_rank": int(state.context.global_rank),
+                        "local_rank": int(state.context.local_rank),
+                    },
+                    event_sink=getattr(self, "timeline_hook", None),
+                ),
+                backend="phase_sync",
+            )
+            output = facade_result.output_tensor
+            result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
+            execution_entries = list(facade_result.execution_entries)
         state.call_index += 1
         base_ordinal = len(self._latest_results)
         for index, entry in enumerate(execution_entries, start=1):
