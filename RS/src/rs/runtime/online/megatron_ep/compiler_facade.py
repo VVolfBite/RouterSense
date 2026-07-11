@@ -231,6 +231,22 @@ class UnifiedScheduleCompiler:
                     "shadow_error_type": type(exc).__name__,
                     "shadow_error": str(exc),
                 }
+            if (
+                shadow_plan is not None
+                and str(shadow_metrics.get("shadow_status", "")) == "ok"
+                and int(shadow_metrics.get("shadow_missing_task_count", 0) or 0) == 0
+                and int(shadow_metrics.get("shadow_extra_task_count", 0) or 0) == 0
+            ):
+                legacy_task_ids = tuple(str(task.task_id) for wave in plan.waves for task in wave.bucket_tasks)
+                shadow_task_ids = tuple(str(task.task_id) for wave in shadow_plan.waves for task in wave.bucket_tasks)
+                if legacy_task_ids == shadow_task_ids:
+                    plan = shadow_plan
+                    legacy_bridge = False
+                    shadow_metrics["shadow_cutover_selected"] = True
+                else:
+                    shadow_metrics["shadow_cutover_selected"] = False
+            else:
+                shadow_metrics["shadow_cutover_selected"] = False
         else:
             abstract_plan = request.logical_plan.diagnostics.get("abstract_phase_execution_plan")
             if abstract_plan is None:
@@ -251,8 +267,13 @@ class UnifiedScheduleCompiler:
         plan_metrics["logical_plan_policy_id"] = str(request.logical_plan.policy_name)
         plan_metrics.update(shadow_metrics)
         if shadow_plan is not None:
+            legacy_task_ids = tuple(str(task.task_id) for wave in plan.waves for task in wave.bucket_tasks)
+            shadow_task_ids = tuple(str(task.task_id) for wave in shadow_plan.waves for task in wave.bucket_tasks)
             plan_metrics["shadow_plan_hash"] = str(shadow_plan.plan_hash)
             plan_metrics["shadow_plan_hash_matches_legacy"] = bool(str(shadow_plan.plan_hash) == str(plan.plan_hash))
+            plan_metrics["shadow_execution_order_matches_legacy"] = bool(legacy_task_ids == shadow_task_ids)
+            plan_metrics["shadow_legacy_task_count"] = int(len(legacy_task_ids))
+            plan_metrics["shadow_direct_task_count"] = int(len(shadow_task_ids))
         updated_plan = PhaseExecutionPlan(
             plan_key=dict(plan.plan_key),
             phase=str(plan.phase),

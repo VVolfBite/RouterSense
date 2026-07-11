@@ -224,6 +224,14 @@ def _worker(rank: int, init_file: str) -> None:
             "canonical_task_digest": str(summary.get("canonical_task_digest", "")),
             "canonical_task_count": int(summary.get("canonical_task_count", 0) or 0),
             "canonical_task_total_rows": int(summary.get("canonical_task_total_rows", 0) or 0),
+            "compiler_shadow_status": str(summary.get("compiler_shadow_status", "")),
+            "compiler_shadow_plan_hash_matches_legacy": bool(summary.get("compiler_shadow_plan_hash_matches_legacy", False)),
+            "compiler_shadow_plan_hash": str(summary.get("compiler_shadow_plan_hash", "")),
+            "compiler_shadow_missing_task_count": int(summary.get("compiler_shadow_missing_task_count", 0) or 0),
+            "compiler_shadow_extra_task_count": int(summary.get("compiler_shadow_extra_task_count", 0) or 0),
+            "compiler_shadow_execution_order_matches_legacy": bool(
+                summary.get("compiler_shadow_execution_order_matches_legacy", False)
+            ),
             "legacy_secondary_policy_invocation_count": int(summary.get("legacy_secondary_policy_invocation_count", 0) or 0),
             "p0_traffic_matrix_gather_count": int(summary.get("p0_traffic_matrix_gather_count", 0) or 0),
             "prediction_extra_collective_count": int(summary.get("prediction_extra_collective_count", 0) or 0),

@@ -1577,6 +1577,24 @@ class RouterSenseInjectionRuntime:
             "legacy_secondary_policy_invocation_count",
             int(compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0),
         )
+        self._runtime_state.write("compiler_shadow_status", str(compilation.audit.metrics.get("shadow_status", "")))
+        self._runtime_state.write(
+            "compiler_shadow_plan_hash_matches_legacy",
+            bool(compilation.audit.metrics.get("shadow_plan_hash_matches_legacy", False)),
+        )
+        self._runtime_state.write("compiler_shadow_plan_hash", str(compilation.audit.metrics.get("shadow_plan_hash", "")))
+        self._runtime_state.write(
+            "compiler_shadow_missing_task_count",
+            int(compilation.audit.metrics.get("shadow_missing_task_count", 0) or 0),
+        )
+        self._runtime_state.write(
+            "compiler_shadow_extra_task_count",
+            int(compilation.audit.metrics.get("shadow_extra_task_count", 0) or 0),
+        )
+        self._runtime_state.write(
+            "compiler_shadow_execution_order_matches_legacy",
+            bool(compilation.audit.metrics.get("shadow_execution_order_matches_legacy", False)),
+        )
         return replace(
             compiled,
             execution_mode="joint_window_async_p2p",
@@ -3038,6 +3056,20 @@ class RouterSenseInjectionRuntime:
             "canonical_task_digest": str(self._runtime_state.read("canonical_task_digest", "")),
             "canonical_task_count": int(self._runtime_state.read("canonical_task_count", 0) or 0),
             "canonical_task_total_rows": int(self._runtime_state.read("canonical_task_total_rows", 0) or 0),
+            "compiler_shadow_status": str(self._runtime_state.read("compiler_shadow_status", "")),
+            "compiler_shadow_plan_hash_matches_legacy": bool(
+                self._runtime_state.read("compiler_shadow_plan_hash_matches_legacy", False)
+            ),
+            "compiler_shadow_plan_hash": str(self._runtime_state.read("compiler_shadow_plan_hash", "")),
+            "compiler_shadow_missing_task_count": int(
+                self._runtime_state.read("compiler_shadow_missing_task_count", 0) or 0
+            ),
+            "compiler_shadow_extra_task_count": int(
+                self._runtime_state.read("compiler_shadow_extra_task_count", 0) or 0
+            ),
+            "compiler_shadow_execution_order_matches_legacy": bool(
+                self._runtime_state.read("compiler_shadow_execution_order_matches_legacy", False)
+            ),
             "legacy_secondary_policy_invocation_count": int(
                 self._runtime_state.read("legacy_secondary_policy_invocation_count", 0) or 0
             ),
