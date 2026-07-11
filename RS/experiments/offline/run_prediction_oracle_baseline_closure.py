@@ -589,7 +589,7 @@ def _build_exact_tasks(matrix: Matrix, *, phase: int) -> list[dict[str, int]]:
     return tasks
 
 
-def _solve_exact_oracle(instance: ExactInstance, *, mode: str, compute_delay: int = 1, time_limit_s: float = 30.0) -> dict[str, Any]:
+def _solve_exact_oracle(instance: ExactInstance, *, mode: str, compute_delay: int = 0, time_limit_s: float = 30.0) -> dict[str, Any]:
     tasks = _build_exact_tasks(instance.p0, phase=0) + _build_exact_tasks(instance.p1, phase=1) + _build_exact_tasks(instance.p2, phase=2)
     if not tasks:
         return {
@@ -742,7 +742,7 @@ def _evaluate_exact_instance_policy(instance: ExactInstance, policy_name: str, h
         execution_truth=instance.p2,
         hint_type=hint_type,
         scheduling_mode="execution_window",
-        expert_compute_delay=1.0,
+        expert_compute_delay=0.0,
     )
     policy = resolve_policy(policy_name=policy_name, bucket_rows=0)
     plan = policy.build_logical_plan(problem)
