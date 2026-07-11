@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from rs.runtime.online.megatron_ep.pending_window import (
-    build_pending_window_shadow,
-    build_window_state,
-    record_release_event,
-)
+from rs.runtime.online.megatron_ep.diagnostics.pending_window_shadow import build_pending_window_shadow
+from rs.runtime.online.megatron_ep.planning.window_release_service import record_release_event
+from rs.runtime.online.megatron_ep.state.window_runtime_state import build_window_state
 
 
 def build_window_state_record(

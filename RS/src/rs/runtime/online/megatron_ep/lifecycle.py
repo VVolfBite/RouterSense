@@ -47,7 +47,11 @@ from rs.runtime.online.megatron_ep.observation import (
     scheduled_plan_artifact,
     transport_bundle_artifact,
 )
-from rs.runtime.online.megatron_ep.pending_window import PreparedPlanBinding, WindowReleaseState, bind_prepared_plan
+from rs.runtime.online.megatron_ep.state.window_runtime_state import (
+    PreparedPlanBinding,
+    WindowReleaseState,
+    bind_prepared_plan,
+)
 from rs.runtime.online.megatron_ep.async_release.joint_plan_agreement import GlobalJointPlanWire
 from rs.runtime.online.megatron_ep.compiler_facade import (
     CompilationOptions,
@@ -167,6 +171,10 @@ class RouterSenseInjectionRuntime:
                 self.config.p2_hint_mode,
                 shared_state=self._runtime_state,
             )
+
+    @property
+    def _prepared_plan_state(self) -> PreparedWindowRuntimeState:
+        return self._runtime_state
 
     def _artifact_profile(self) -> str:
         return str(getattr(self.config, "observation_profile", "minimal"))
@@ -531,7 +539,7 @@ class RouterSenseInjectionRuntime:
             local_p0_row=send_splits_rows,
             local_send_rows=int(sum(send_splits_rows)),
             local_recv_rows=int(sum(recv_splits_rows)),
-            source="pre_transport_phase_ready_context",
+            source="phase_ready_context_dispatcher_splits",
             captured_before_transport=True,
             valid=bool(valid),
             error=error,

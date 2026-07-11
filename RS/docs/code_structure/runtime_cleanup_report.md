@@ -7,7 +7,7 @@
 - Module 3: direct logical-plan to physical-plan cutover 完成。
 - Module 4: transport fallback 收敛到统一 facade。
 - Module 5: legacy protocol bridge 部分完成。
-- Module 6: lifecycle 内部 service 拆分尚未开始正式迁移。
+- Module 6: lifecycle 内部 service 已抽出 window-shadow/export 两组正式服务。
 
 当前关键结果：
 - `actual P0 matrix` 非零。
@@ -19,4 +19,4 @@
 - `stored/consumed P1 logical digest` 一致。
 
 当前唯一剩余阻塞：
-- 还需要把 `pending_window` / `async_release` 的旧 shadow 命名空间和 `lifecycle.py` 内部职责继续清理，才能把下一次 GPU 状态提升到 `C2_AND_A2_READY`。
+- 还需要把 `pending_window` / `async_release` 的旧 shadow 命名空间继续收口，才能把下一次 GPU 状态提升到 `C2_AND_A2_READY`。

@@ -10,10 +10,6 @@ from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext,
 from rs.scheduling.phase_local.common import build_transfer_layouts_and_tasks, finalize_execution_plan
 from rs.scheduling.phase_execution_utils import materialize_local_execution_plan, pack_waves
 from rs.scheduling.validation import stable_hash
-from rs.runtime.online.megatron_ep.pending_window.policy_adapter import (
-    build_phase_policy_fast_path,
-    compile_prepared_window_phase_plan,
-)
 
 
 @dataclass(frozen=True)
@@ -241,6 +237,11 @@ class UnifiedScheduleCompiler:
         )
         if request.prepared_plan is not None:
             if not request.canonical_tasks:
+                from rs.runtime.online.megatron_ep.pending_window.policy_adapter import (
+                    build_phase_policy_fast_path,
+                    compile_prepared_window_phase_plan,
+                )
+
                 phase_policy = build_phase_policy_fast_path(
                     bucket_rows=int(request.compilation_options.bucket_rows),
                     p0_weight=float(request.compilation_options.p0_weight),

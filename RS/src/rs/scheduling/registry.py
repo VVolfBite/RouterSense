@@ -179,6 +179,26 @@ def resolve_phase_policy(
     p2_hint_weight: float = 1.0,
     p2_hint_artifact: str = "",
 ) -> RouterSensePhasePolicy:
+    if policy_name == "routersense_p0p1_reservation":
+        return RouterSenseP0P1ReservationPolicy(
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+        )
+    if policy_name == "routersense_p0p1p2_hint":
+        return RouterSenseP0P1P2HintPolicy(
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+            p2_hint_weight=p2_hint_weight,
+        )
+    if policy_name == "routersense_joint_priority_phase_sync":
+        return RouterSenseJointPriorityPhaseSyncPolicy(
+            bucket_rows=bucket_rows,
+            p0_weight=p0_weight,
+            p1_reservation_weight=p1_reservation_weight,
+            p2_hint_weight=p2_hint_weight,
+        )
     policy = resolve_policy(
         policy_name=policy_name,
         bucket_rows=bucket_rows,

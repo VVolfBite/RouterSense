@@ -1,6 +1,6 @@
 {
   "checkpoint_sha": "d985197",
-  "head_sha": "7a453f152ea9ebf6ced29f9aceaa2341244aea0e",
+  "head_sha": "d554a5f",
   "module1": {
     "commit": "d985197",
     "status": "passed",
@@ -32,11 +32,13 @@
   "module5": {
     "commit": "7a453f1",
     "status": "partial",
-    "legacy_protocol_bridge_isolated": true
+    "legacy_protocol_bridge_isolated": true,
+    "formal_runtime_pending_window_imports_reduced": true
   },
   "module6": {
-    "commit": "",
-    "status": "pending"
+    "commit": "d554a5f",
+    "status": "passed",
+    "service_extraction": true
   },
   "gloo_gate": {
     "passed": true,
@@ -157,5 +159,5 @@
       }
     ]
   },
-  "next_gpu_status": "BLOCKED_BY_MODULE6_AND_LEGACY_NAMESPACE_CLEANUP"
+  "next_gpu_status": "BLOCKED_BY_MODULE5_LEGACY_NAMESPACE_CLEANUP"
 }
