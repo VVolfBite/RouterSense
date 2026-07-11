@@ -1,0 +1,22 @@
+{
+  "local_copy_coverage_status": "N/A_this_milestone",
+  "ordered_sequence_digest_status": "N/A_this_milestone",
+  "multi_ep_subgroup_index_status": "N/A_this_milestone",
+  "zero_hint_async_status": "N/A_this_milestone",
+  "fifo_async_status": "N/A_this_milestone",
+  "greedy_async_status": "N/A_this_milestone",
+  "birkhoff_async_status": "N/A_this_milestone",
+  "predicted_joint_async_status": "N/A_this_milestone",
+  "async_execution_audit_status": "N/A_this_milestone",
+  "c2_parity_runner_status": "N/A_this_milestone",
+  "a2_performance_runner_status": "N/A_this_milestone",
+  "compact_preflight_status": "N/A_this_milestone",
+  "perf_artifact_status": "N/A_this_milestone",
+  "gpu_b2_status": "IMPLEMENTED_GPU_UNTESTED",
+  "gpu_c2_status": "IMPLEMENTED_GPU_UNTESTED",
+  "gpu_a2_status": "IMPLEMENTED_GPU_UNTESTED",
+  "ct_optimal_instance_count": 32,
+  "selected_predictor": "history_linear_trend",
+  "pairing_missing_count": 0,
+  "cached": false
+}
