@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
-from rs.runtime.offline.replay_unified import CanonicalBucketTask, CanonicalBucketizer
 from rs.scheduling.contracts import LogicalSchedulePlan
+from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
 from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext
 from rs.scheduling.phase_execution_utils import materialize_local_execution_plan
+from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.pending_window.policy_adapter import (
     build_phase_policy_fast_path,
     compile_prepared_window_phase_plan,
@@ -68,6 +69,29 @@ class ScheduleCompiler(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class _PhaseBucketWindowLike:
+    p0_truth_rows: tuple[tuple[int, ...], ...]
+    p1_truth_rows: tuple[tuple[int, ...], ...]
+    p2_truth_rows: tuple[tuple[int, ...], ...]
+
+
+def build_phase_canonical_tasks(
+    *,
+    phase: str,
+    matrix_rows: tuple[tuple[int, ...], ...],
+    bucket_rows: int,
+) -> tuple[CanonicalBucketTask, ...]:
+    zero_matrix = tuple(tuple(0 for _ in row) for row in matrix_rows)
+    phase_name = str(phase)
+    window_like = _PhaseBucketWindowLike(
+        p0_truth_rows=matrix_rows if phase_name == "P0" else zero_matrix,
+        p1_truth_rows=matrix_rows if phase_name == "P1" else zero_matrix,
+        p2_truth_rows=matrix_rows if phase_name == "P2" else zero_matrix,
+    )
+    return CanonicalBucketizer(bucket_rows=int(bucket_rows)).bucketize(window_like)
+
+
 def _local_counts(plan: PhaseExecutionPlan, *, global_rank: int) -> tuple[int, int, int]:
     send = recv = local_copy = 0
     for wave in plan.waves:
@@ -85,6 +109,15 @@ class UnifiedScheduleCompiler:
     compiler_id = "unified_schedule_compiler"
 
     def compile(self, request: PlanCompilationRequest) -> CompilationResult:
+        logical_plan_digest = str(
+            request.logical_plan.diagnostics.get(
+                "logical_plan_digest",
+                request.logical_plan.diagnostics.get(
+                    "source_logical_plan_hash",
+                    stable_hash(request.logical_plan.to_dict()),
+                ),
+            )
+        )
         if request.prepared_plan is not None:
             phase_policy = build_phase_policy_fast_path(
                 bucket_rows=int(request.compilation_options.bucket_rows),
@@ -146,7 +179,7 @@ class UnifiedScheduleCompiler:
                 total_rows=total_rows,
                 phase=str(request.phase),
                 legacy_phase_policy_invoked=legacy_bridge,
-                logical_plan_digest=str(request.logical_plan.diagnostics.get("logical_plan_digest", request.logical_plan.diagnostics.get("source_logical_plan_hash", ""))),
+                logical_plan_digest=logical_plan_digest,
                 compiled_plan_digest=str(updated_plan.plan_hash),
                 local_send_task_count=send_count,
                 local_recv_task_count=recv_count,
@@ -167,5 +200,6 @@ __all__ = [
     "PlanCompilationRequest",
     "ScheduleCompiler",
     "UnifiedScheduleCompiler",
+    "build_phase_canonical_tasks",
     "compile_schedule",
 ]

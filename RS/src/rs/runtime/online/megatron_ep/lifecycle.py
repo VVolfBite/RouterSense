@@ -61,6 +61,7 @@ from rs.runtime.online.megatron_ep.async_release.joint_plan_agreement import Glo
 from rs.runtime.online.megatron_ep.compiler_facade import (
     CompilationOptions,
     PlanCompilationRequest,
+    build_phase_canonical_tasks,
     compile_schedule,
 )
 from rs.runtime.online.megatron_ep.state import PreparedWindowRuntimeState
@@ -1536,12 +1537,17 @@ class RouterSenseInjectionRuntime:
             (context for context in global_contexts if int(context.global_rank) == int(local_context.global_rank)),
             local_context,
         )
+        canonical_tasks = build_phase_canonical_tasks(
+            phase=str(phase),
+            matrix_rows=matrix,
+            bucket_rows=int(self.config.bucket_rows),
+        )
         compilation = compile_schedule(
             PlanCompilationRequest(
                 logical_plan=getattr(prepared_plan, "logical_plan"),
                 local_context=compiled_local_context,
                 global_contexts=global_contexts,
-                canonical_tasks=(),
+                canonical_tasks=canonical_tasks,
                 phase=str(phase),
                 tensor_role="hidden_states" if str(phase) == "P1" else "dispatch_bundle",
                 rank_context={
@@ -1564,6 +1570,9 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("compiler_id", str(compilation.audit.compiler_id))
         self._runtime_state.write("logical_plan_digest", str(compilation.audit.logical_plan_digest))
         self._runtime_state.write("compiled_plan_digest", str(compilation.audit.compiled_plan_digest))
+        self._runtime_state.write("canonical_task_digest", str(compilation.audit.task_digest))
+        self._runtime_state.write("canonical_task_count", int(compilation.audit.task_count))
+        self._runtime_state.write("canonical_task_total_rows", int(compilation.audit.total_rows))
         self._runtime_state.write(
             "legacy_secondary_policy_invocation_count",
             int(compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0),
@@ -3026,6 +3035,9 @@ class RouterSenseInjectionRuntime:
             "compiler_id": str(self._runtime_state.read("compiler_id", "")),
             "logical_plan_digest": str(self._runtime_state.read("logical_plan_digest", "")),
             "compiled_plan_digest": str(self._runtime_state.read("compiled_plan_digest", "")),
+            "canonical_task_digest": str(self._runtime_state.read("canonical_task_digest", "")),
+            "canonical_task_count": int(self._runtime_state.read("canonical_task_count", 0) or 0),
+            "canonical_task_total_rows": int(self._runtime_state.read("canonical_task_total_rows", 0) or 0),
             "legacy_secondary_policy_invocation_count": int(
                 self._runtime_state.read("legacy_secondary_policy_invocation_count", 0) or 0
             ),

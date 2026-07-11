@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
 from rs.scheduling.contracts import (
     FlowDemand,
     FlowWindow,
@@ -17,7 +18,7 @@ from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_dige
 from rs.scheduling.registry import resolve_policy
 
 if TYPE_CHECKING:
-    from rs.runtime.offline.replay_unified import CanonicalBucketTask, ReplayWindow
+    from rs.runtime.offline.replay_unified import ReplayWindow
 
 
 MatrixRows = tuple[tuple[int, ...], ...]
@@ -186,8 +187,6 @@ class LegacyLogicalPolicyAdapter:
         diagnostics.setdefault("requested_policy_id", self.policy_id)
         diagnostics.setdefault("builder_key", self._builder_key)
         diagnostics.setdefault("request_id", str(request.request_id))
-        from rs.runtime.offline.replay_unified import CanonicalBucketizer
-
         diagnostics.setdefault("task_digest", CanonicalBucketizer.digest(request.tasks))
         return LogicalSchedulePlan(
             policy_name=str(plan.policy_name),
@@ -224,8 +223,6 @@ def build_request_from_replay_window(
     bucket_rows: int,
     policy_options: PolicyOptions,
 ) -> SchedulingRequest:
-    from rs.runtime.offline.replay_unified import CanonicalBucketizer
-
     tasks = CanonicalBucketizer(bucket_rows=bucket_rows).bucketize(replay_window)
     return SchedulingRequest(
         request_id=f"{replay_window.fixture_id}:{replay_window.window_id}:bucket={bucket_rows}:hint={hint_type}",
@@ -270,7 +267,7 @@ def build_request_from_problem(
     layer_id: int | None = None,
     hint_metadata: dict[str, Any] | None = None,
 ) -> SchedulingRequest:
-    from rs.runtime.offline.replay_unified import CanonicalBucketizer, ReplayWindow
+    from rs.runtime.offline.replay_unified import ReplayWindow
 
     replay_window = ReplayWindow(
         fixture_id=str(fixture_id or "runtime"),
