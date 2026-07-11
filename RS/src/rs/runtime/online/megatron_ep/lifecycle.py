@@ -547,7 +547,7 @@ class RouterSenseInjectionRuntime:
             local_p0_row=send_splits_rows,
             local_send_rows=int(sum(send_splits_rows)),
             local_recv_rows=int(sum(recv_splits_rows)),
-            source="phase_ready_context_dispatcher_splits",
+            source="pre_transport_phase_ready_context",
             captured_before_transport=True,
             valid=bool(valid),
             error=error,

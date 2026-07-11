@@ -404,6 +404,16 @@ def main() -> int:
         "dispatcher_matches_local_rows": bool(candidate_evidence["dispatcher_consistency"]),
         "candidate_status_ready": str(candidate_summary_payload.get("status", "")) == "ready",
     }
+    if str(args.strategy) == "routersense_joint_zero_hint_async_p2p":
+        checks["zero_hint_joint_plan_built"] = bool(candidate_evidence["zero_hint_joint_plan_built"])
+        zero_hint_confidence = payload.get("prediction_confidence")
+        checks["zero_hint_confidence_zero"] = zero_hint_confidence is not None and float(zero_hint_confidence) == 0.0
+    else:
+        prediction_audit = dict(payload.get("prediction_audit") or {})
+        checks["prediction_audit_present"] = bool(prediction_audit)
+        checks["prediction_nonzero_consumed"] = bool(candidate_evidence["prediction_consumed_during_p0_joint_planning"])
+        checks["prediction_confidence_nonzero"] = float(payload.get("prediction_confidence", 0.0) or 0.0) > 0.0
+        checks["prediction_audit_before_overwrite"] = str(prediction_audit.get("source_layer_id", "")) != ""
     payload["checks"] = checks
     payload["status"] = "passed" if all(bool(value) for value in checks.values()) else "failed"
     write_json(output_dir / "b2_runner_summary.json", payload)
