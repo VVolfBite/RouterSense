@@ -68,6 +68,7 @@ def gather_global_peer_bytes_matrix(
     local_peer_bytes: torch.Tensor,
     *,
     group: Any | None = None,
+    zero_diagonal: bool = True,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     if local_peer_bytes.ndim != 1:
         raise ValueError("local_peer_bytes must be rank-1")
@@ -90,7 +91,7 @@ def gather_global_peer_bytes_matrix(
         is_global = True
         gather_call_count = 1
 
-    if matrix.numel() > 0:
+    if zero_diagonal and matrix.numel() > 0:
         diag = torch.arange(min(int(matrix.shape[0]), int(matrix.shape[1])), device=matrix.device)
         matrix = matrix.clone()
         matrix[diag, diag] = 0
@@ -123,10 +124,15 @@ def build_traffic_matrix_bundle(
     world_size: int,
     device: torch.device | str,
     group: Any | None = None,
+    zero_diagonal: bool = True,
 ) -> TrafficMatrixBundle:
     local_tensor = build_local_peer_bytes_tensor(per_peer_bytes, world_size, device)
-    matrix_tensor, metadata = gather_global_peer_bytes_matrix(local_tensor, group=group)
-    matrix = canonicalize_remote_matrix(matrix_tensor.detach().cpu().tolist())
+    matrix_tensor, metadata = gather_global_peer_bytes_matrix(local_tensor, group=group, zero_diagonal=zero_diagonal)
+    matrix = (
+        canonicalize_remote_matrix(matrix_tensor.detach().cpu().tolist())
+        if zero_diagonal
+        else tuple(tuple(int(value) for value in row) for row in matrix_tensor.detach().cpu().tolist())
+    )
     return TrafficMatrixBundle(
         matrix=matrix,
         matrix_source=str(metadata["matrix_source"]),

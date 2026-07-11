@@ -106,7 +106,9 @@ def _get_or_create_dedicated_p2p_group_registry(
         for group_ranks, group in groups.items():
             if int(dist.get_rank()) not in set(group_ranks):
                 continue
-            tensor = torch.zeros(1, dtype=torch.int64, device=("cuda" if torch.cuda.is_available() else "cpu"))
+            backend = str(dist.get_backend(group))
+            warmup_device = "cuda" if backend == "nccl" and torch.cuda.is_available() else "cpu"
+            tensor = torch.zeros(1, dtype=torch.int64, device=warmup_device)
             dist.all_reduce(tensor, group=group)
         warmup_passed = True
     except Exception:

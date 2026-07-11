@@ -193,6 +193,7 @@ class MegatronPhaseTransportAdapter:
                 {
                     "layer_name": state.layer_name,
                     "layer_id": str(state.plan.plan_key.get("layer_id", "unknown")),
+                    "forward_epoch": int(getattr(state.context, "forward_epoch", 0)),
                     "phase": state.phase,
                     "tensor_role": tensor_role,
                     "policy_name": state.plan.policy_name,
@@ -205,6 +206,7 @@ class MegatronPhaseTransportAdapter:
             {
                 "layer_name": state.layer_name,
                 "layer_id": str(state.plan.plan_key.get("layer_id", "unknown")),
+                "forward_epoch": int(getattr(state.context, "forward_epoch", 0)),
                 "phase": state.phase,
                 "tensor_role": tensor_role,
                 "result": result.to_dict(),

@@ -1,0 +1,100 @@
+{
+  "status": "gpu_blocked_offline_closed",
+  "date": "2026-07-11",
+  "offline_final_output_dir": "outputs/offline/stage1_paper_closure_final",
+  "gpu_blocker_summary": "outputs/distributed/stage1_gpu_blocker_summary.json",
+  "main_conclusions": {
+    "strongest_offline_baseline": "phase_barrier_fifo",
+    "joint_only_gain_percent": {
+      "gated_greedy": 14.912500913600413,
+      "barrier_criticality_matching": 11.146046552753155
+    },
+    "exact_oracle_joint_vs_local_reduction_percent": 13.333333333333334,
+    "selected_predictor": "zero_hint",
+    "selected_predictor_held_out_schedule_regret": 0.0,
+    "oracle_prediction_schedule_gain_vs_zero": -0.05283281887882107,
+    "gpu_b2_status": "blocked_before_pass",
+    "gpu_c2_status": "not_run_due_to_b2",
+    "gpu_a2_status": "not_run_due_to_b2"
+  },
+  "progress": [
+    {
+      "track": "联合调度机会",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 90,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure_final/shared_core_b_u.csv",
+        "outputs/offline/stage1_paper_closure_final/oracle_gap.csv"
+      ],
+      "remaining_work": "real 4GPU A2 validation",
+      "gpu_dependency": true
+    },
+    {
+      "track": "离线完整基线与 oracle",
+      "previous_completion_percent": 65,
+      "new_completion_percent": 90,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure_final/baseline_summary.csv",
+        "outputs/offline/stage1_paper_closure_final/oracle_gap.csv",
+        "outputs/offline/stage1_paper_closure_final/paper_ready_tables.md"
+      ],
+      "remaining_work": "optionally widen exact-oracle sample set",
+      "gpu_dependency": false
+    },
+    {
+      "track": "流量生成与预测数据链",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 88,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure_final/fixture_manifest.json",
+        "outputs/offline/stage1_paper_closure_final/prediction_replay_raw.json"
+      ],
+      "remaining_work": "finish B2 lifecycle pass",
+      "gpu_dependency": true
+    },
+    {
+      "track": "非 oracle 预测器",
+      "previous_completion_percent": 55,
+      "new_completion_percent": 72,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure_final/predictor_selection.json",
+        "outputs/offline/stage1_paper_closure_final/predictor_test.csv"
+      ],
+      "remaining_work": "current selected predictor is still zero_hint",
+      "gpu_dependency": false
+    },
+    {
+      "track": "预测带来的调度收益",
+      "previous_completion_percent": 35,
+      "new_completion_percent": 45,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure_final/prediction_schedule_regret.csv",
+        "outputs/offline/stage1_paper_closure_final/final_offline_summary.json"
+      ],
+      "remaining_work": "scheduler consumption remains the blocker",
+      "gpu_dependency": false
+    },
+    {
+      "track": "Async P2P 执行器",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 84,
+      "evidence_generated": [
+        "outputs/distributed/run_b2_20260711_145000/candidate/heartbeat-rank0.jsonl",
+        "outputs/distributed/stage1_gpu_blocker_summary.json"
+      ],
+      "remaining_work": "P1 lifecycle/materialization bug",
+      "gpu_dependency": true
+    },
+    {
+      "track": "Runtime 联合规划链",
+      "previous_completion_percent": 72,
+      "new_completion_percent": 82,
+      "evidence_generated": [
+        "outputs/distributed/run_b2_20260711_144200/candidate/b2_candidate/failure_report.json",
+        "outputs/distributed/run_b2_20260711_145000/candidate/heartbeat-rank0.jsonl"
+      ],
+      "remaining_work": "stored P1 plan state must match real combine-time layout",
+      "gpu_dependency": true
+    }
+  ]
+}

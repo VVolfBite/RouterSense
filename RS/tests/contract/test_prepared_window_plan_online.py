@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import torch
 
@@ -172,6 +174,13 @@ def _observation(*, layer_name: str, phase: str, per_peer_bytes: tuple[int, ...]
     )
 
 
+def _phase_ctx_and_pretransport(*, matrix: tuple[tuple[int, ...], ...], layer_name: str = "model.layers.0.mlp"):
+    contexts = make_contexts_from_matrix(phase="P0", matrix=matrix, p2_hint_mode="none")
+    runtime = _async_runtime()
+    observation = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    return runtime, contexts[0], observation, tuple(tuple(int(v) for v in row) for row in matrix)
+
+
 def test_calibrated_artifact_digest_determinism() -> None:
     prepared = _prepared_plan(forecast_digest="forecast-xyz")
     state = {"prepared_plan": prepared, "plan_created_at_us": 123, "plan_source_layer": "model.layers.0.mlp"}
@@ -266,14 +275,22 @@ def test_plan_arrival_status_recording() -> None:
 
 def test_prediction_audit_exports_after_next_dispatch_arrives() -> None:
     runtime = _runtime(observation_profile="debug")
+    contexts0 = make_contexts_from_matrix(phase="P0", matrix=((0, 1), (0, 0)), p2_hint_mode="none")
+    pre0 = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts0[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(
         layer_name="model.layers.0.mlp",
-        observation=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts0[0],
+        observation=pre0,
+        actual_p0_full_row_matrix=((0, 1), (0, 0)),
         device=torch.device("cpu"),
     )
+    contexts1 = make_contexts_from_matrix(phase="P0", matrix=((0, 1), (0, 0)), p2_hint_mode="none")
+    pre1 = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts1[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(
         layer_name="model.layers.1.mlp",
-        observation=_observation(layer_name="model.layers.1.mlp", phase="P0", per_peer_bytes=(0, 12)),
+        phase_ctx=contexts1[0],
+        observation=pre1,
+        actual_p0_full_row_matrix=((0, 1), (0, 0)),
         device=torch.device("cpu"),
     )
     rows = runtime.export_prediction_audits()
@@ -284,16 +301,21 @@ def test_prediction_audit_exports_after_next_dispatch_arrives() -> None:
 
 def test_joint_window_async_p0_stores_joint_plan_and_compiles_local_plan() -> None:
     runtime = _async_runtime()
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 16), (8, 0)), p2_hint_mode="none")
+    pre = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(  # noqa: SLF001
         layer_name="model.layers.0.mlp",
-        observation=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts[0],
+        observation=pre,
+        actual_p0_full_row_matrix=((0, 16), (8, 0)),
         device=torch.device("cpu"),
     )
     runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
         layer_name="model.layers.0.mlp",
-        observation_p0=_observation(layer_name="model.layers.0.mlp", phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts[0],
+        observation_p0=pre,
+        actual_p0_full_row_matrix=((0, 16), (8, 0)),
     )
-    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 16), (8, 0)), p2_hint_mode="none")
     plan = runtime._compile_async_local_phase_plan(  # noqa: SLF001
         layer_name="model.layers.0.mlp",
         phase="P0",
@@ -316,6 +338,53 @@ def test_joint_window_async_p1_reuses_prepared_plan_without_planning_collective(
     )
     assert plan.execution_mode == "joint_window_async_p2p"
     assert plan.metrics["p1_planning_collective_count"] == 0
+
+
+def test_pretransport_observation_uses_phase_ready_context_splits() -> None:
+    runtime = _async_runtime()
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((1, 2), (3, 1)), p2_hint_mode="none")
+    observation = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    assert observation.source == "phase_ready_context_dispatcher_splits"
+    assert observation.captured_before_transport is True
+    assert observation.valid is True
+    assert observation.send_splits_rows == contexts[0].send_splits
+    assert observation.recv_splits_rows == contexts[0].recv_splits
+    assert observation.local_p0_row == contexts[0].send_splits
+
+
+def test_zero_matrix_with_nonzero_splits_fails_fast(tmp_path: Path, monkeypatch) -> None:
+    runtime = _async_runtime()
+    runtime.config = replace(runtime.config, executor_heartbeat_path=str(tmp_path))
+    runtime.ep_process_group = object()
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((1, 2), (3, 1)), p2_hint_mode="none")
+    observation = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+
+    monkeypatch.setattr("rs.runtime.online.megatron_ep.lifecycle.dist.is_available", lambda: True)
+    monkeypatch.setattr("rs.runtime.online.megatron_ep.lifecycle.dist.is_initialized", lambda: True)
+
+    def _zero_all_gather(out_list, local_tensor, group=None):
+        for item in out_list:
+            item.zero_()
+
+    monkeypatch.setattr("rs.runtime.online.megatron_ep.lifecycle.dist.all_gather", _zero_all_gather)
+
+    try:
+        runtime._gather_actual_p0_full_row_matrix(  # noqa: SLF001
+            layer_name="model.layers.0.mlp",
+            observation=observation,
+            device=torch.device("cpu"),
+        )
+    except RuntimeError as exc:
+        assert "traffic_source_mismatch" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected traffic_source_mismatch")
+
+    artifact = tmp_path / "traffic_source_mismatch_rank0.json"
+    assert artifact.exists()
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["dispatcher_send_splits"] == [1, 2]
+    assert payload["phase_ready_context_send_splits"] == [1, 2]
+    assert payload["global_p0_matrix"] == [[0, 0], [0, 0]]
 
 
 def test_transfer_layouts_preserve_receiver_offsets_for_async_p2p() -> None:
@@ -439,9 +508,13 @@ def test_store_prepared_plan_prefers_predicted_next_dispatch(monkeypatch) -> Non
 
     monkeypatch.setattr(mod.dist, "all_gather_into_tensor", all_gather_into_tensor)
     layer0 = "model.layers.0.mlp"
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 16), (8, 0)), p2_hint_mode="none")
+    pre = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(
         layer_name=layer0,
-        observation=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts[0],
+        observation=pre,
+        actual_p0_full_row_matrix=((0, 16), (8, 0)),
         device=torch.device("cpu"),
     )
     runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
@@ -468,14 +541,20 @@ def test_runtime_joint_plan_records_host_projected_safe_selection(monkeypatch) -
 
     monkeypatch.setattr(mod.dist, "all_gather_into_tensor", all_gather_into_tensor)
     layer0 = "model.layers.0.mlp"
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((0, 16), (8, 0)), p2_hint_mode="none")
+    pre = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(  # noqa: SLF001
         layer_name=layer0,
-        observation=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts[0],
+        observation=pre,
+        actual_p0_full_row_matrix=((0, 16), (8, 0)),
         device=torch.device("cpu"),
     )
     runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
         layer_name=layer0,
-        observation_p0=_observation(layer_name=layer0, phase="P0", per_peer_bytes=(0, 16)),
+        phase_ctx=contexts[0],
+        observation_p0=pre,
+        actual_p0_full_row_matrix=((0, 16), (8, 0)),
     )
     summary = runtime.export_prepared_plan_summary()
     assert summary["safe_selected_policy"] != ""

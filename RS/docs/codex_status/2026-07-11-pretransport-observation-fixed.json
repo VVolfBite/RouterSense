@@ -1,0 +1,34 @@
+{
+  "date": "2026-07-11",
+  "branch": "main",
+  "base_commit": "b38ad19d29b8879bec78e268a06320e7329af8af",
+  "planning_traffic_source": "pre_transport_phase_ready_context",
+  "old_runtime_observation_removed_from_planning": true,
+  "phase_ready_context_unique_source": true,
+  "cpu_validation": {
+    "compileall_passed": true,
+    "targeted_pytest": "tests/contract/test_prepared_window_plan_online.py",
+    "targeted_pytest_passed": true
+  },
+  "gloo_validation": {
+    "low_level_gate_passed": true,
+    "runtime_integrated_gate_passed": false,
+    "runtime_integrated_gate_blocker": "torchrun child exits by external SIGKILL before result emission"
+  },
+  "runtime_fields": {
+    "actual_p0_full_row_matrix_exported": true,
+    "actual_p0_total_rows_exported": true,
+    "p1_is_exact_transpose_exported": true,
+    "stored_p1_plan_digest_exported": true,
+    "consumed_p1_plan_digest_exported": true,
+    "p0_traffic_matrix_gather_count_exported": true,
+    "prediction_extra_collective_count_exported": true,
+    "p1_planning_collective_count_exported": true
+  },
+  "gpu_b2_status": "IMPLEMENTED_GPU_UNTESTED",
+  "artifacts": {
+    "code_audit": "outputs/pre_gpu_final_code_audit.json",
+    "low_level_gloo_summary": "outputs/distributed/run_stage1_gloo_e2e_gate/summary.json",
+    "runtime_integrated_gloo_summary": "outputs/distributed/run_stage1_runtime_integrated_gloo_gate/summary.json"
+  }
+}

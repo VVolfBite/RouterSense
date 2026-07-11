@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
@@ -63,6 +64,7 @@ from rs.runtime.online.megatron_ep.phase import (
     PhaseExecutionPlan,
     PhasePayloadContract,
     PhaseReadyContext,
+    PreTransportTrafficObservation,
     RuntimeIdentity,
     build_phase_ready_context,
     reconstruct_global_phase_contexts_from_byte_matrix,
@@ -82,6 +84,14 @@ from rs.runtime.online.megatron_ep.prediction import (
 )
 from rs.scheduling.contracts import PreparedWindowPlan
 from rs.scheduling.registry import resolve_phase_policy, resolve_policy, supported_phase_policies
+from rs.scheduling.traffic_matrix import (
+    canonicalize_remote_matrix,
+    matrix_col_sums_remote,
+    matrix_digest_remote,
+    matrix_nonzero_remote_edge_count,
+    matrix_remote_bytes,
+    matrix_row_sums_remote,
+)
 from rs.scheduling.validation import stable_hash
 
 
@@ -108,12 +118,26 @@ class RouterSenseInjectionRuntime:
             "prepared_plan": None,
             "plan_created_at_us": 0,
             "plan_source_layer": "",
+            "stored_p1_plan_digest": "",
+            "consumed_p1_plan_digest": "",
             "predicted_dispatch_by_layer": {},
             "actual_dispatch_by_layer": {},
             "active_next_dispatch_prediction": None,
             "prediction_consumption_records": [],
             "prepared_priority_mode": "mapped_p2_tiebreak",
             "has_real_p1_reservation": False,
+            "planning_traffic_source": "",
+            "pre_transport_observation_valid": False,
+            "captured_before_transport": False,
+            "dispatcher_send_splits": (),
+            "dispatcher_recv_splits": (),
+            "local_p0_row": (),
+            "actual_p0_total_rows": 0,
+            "p0_traffic_matrix_gather_count": 0,
+            "prediction_extra_collective_count": 0,
+            "p1_planning_collective_count": 0,
+            "before_async_p2p_phase_count": 0,
+            "after_async_p2p_phase_count": 0,
         }
     )
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
@@ -432,6 +456,196 @@ class RouterSenseInjectionRuntime:
             return candidate.device
         return torch.device("cpu")
 
+    def _runtime_topology_dict(self) -> dict[str, Any]:
+        return {
+            "global_rank": int(self.rank),
+            "local_rank": int(self.local_rank),
+            "node_index": -1,
+            "hostname_digest": digest_text(self.hostname),
+            "device_index": int(self.local_rank),
+            "ep_group_rank": int(tuple(int(v) for v in self.ep_group_ranks).index(int(self.rank))) if int(self.rank) in tuple(int(v) for v in self.ep_group_ranks) else 0,
+        }
+
+    def _dispatcher_expert_placement_hash(self, dispatcher: Any) -> str:
+        return digest_text(
+            stable_hash(
+                {
+                    "placement_mode": "megatron_native_ep",
+                    "ep_group_ranks": list(int(v) for v in self.ep_group_ranks),
+                    "ep_group_size": len(self.ep_group_ranks),
+                    "dispatcher_class": type(dispatcher).__name__,
+                }
+            )
+        )
+
+    def _build_phase_ready_context_from_dispatcher(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        dispatcher: Any,
+        packed_tensors: tuple[torch.Tensor, ...],
+        p2_hint: Any | None = None,
+    ) -> PhaseReadyContext:
+        return build_phase_ready_context(
+            PhaseContextBuildRequest(
+                plan_key=self._plan_key(layer_name, phase),
+                runtime_identity=RuntimeIdentity(
+                    run_id=self.run_id,
+                    forward_epoch=int(self._forward_epoch),
+                    layer_id=parse_layer_id(layer_name),
+                    layer_name=layer_name,
+                    global_rank=self.rank,
+                    local_rank=self.local_rank,
+                    ep_group_ranks=self.ep_group_ranks,
+                    ep_group_root_rank=self.ep_group_root_global_rank,
+                ),
+                topology=self._runtime_topology_dict(),
+                dispatcher_snapshot=DispatcherSnapshot(
+                    dispatcher_class=type(dispatcher).__name__,
+                    dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
+                    expert_placement_hash=self._dispatcher_expert_placement_hash(dispatcher),
+                    input_splits=tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "input_splits", None))[: len(self.ep_group_ranks)]),
+                    output_splits=tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "output_splits", None))[: len(self.ep_group_ranks)]),
+                ),
+                payload_contract=PhasePayloadContract(
+                    phase=phase,
+                    payload_roles=("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",),
+                    atomic_submit=(phase == "P0"),
+                ),
+                packed_tensors=packed_tensors,
+                control_mode=self.config.control_mode,
+                release_state="ready",
+                demand_known_at="router_ready",
+                payload_exists=True,
+                p2_hint=p2_hint,
+            )
+        )
+
+    def _capture_pretransport_traffic_observation(
+        self,
+        *,
+        phase_ctx: PhaseReadyContext,
+    ) -> PreTransportTrafficObservation:
+        group_ranks = tuple(int(v) for v in phase_ctx.ep_group_ranks)
+        group_rank = group_ranks.index(int(phase_ctx.global_rank)) if int(phase_ctx.global_rank) in group_ranks else 0
+        send_splits_rows = tuple(int(v) for v in phase_ctx.send_splits)
+        recv_splits_rows = tuple(int(v) for v in phase_ctx.recv_splits)
+        valid = str(phase_ctx.phase) == "P0" and len(send_splits_rows) == len(group_ranks) and len(recv_splits_rows) == len(group_ranks)
+        error = None if valid else "invalid_phase_or_split_shape"
+        return PreTransportTrafficObservation(
+            run_id=str(self.run_id),
+            forward_epoch=int(phase_ctx.forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+            layer_id=int(parse_layer_id(phase_ctx.layer_name)) if str(parse_layer_id(phase_ctx.layer_name)).isdigit() else -1,
+            phase=str(phase_ctx.phase),
+            global_rank=int(phase_ctx.global_rank),
+            group_rank=int(group_rank),
+            group_global_ranks=group_ranks,
+            send_splits_rows=send_splits_rows,
+            recv_splits_rows=recv_splits_rows,
+            local_p0_row=send_splits_rows,
+            local_send_rows=int(sum(send_splits_rows)),
+            local_recv_rows=int(sum(recv_splits_rows)),
+            source="phase_ready_context_dispatcher_splits",
+            captured_before_transport=True,
+            valid=bool(valid),
+            error=error,
+        )
+
+    def _bundle_bytes_per_row(self, *, phase_ctx: PhaseReadyContext) -> int:
+        max_row_count = max((int(bundle.outgoing_segment.row_count) for bundle in phase_ctx.transport_bundles if int(bundle.outgoing_segment.row_count) > 0), default=0)
+        if max_row_count <= 0:
+            return 1
+        for bundle in phase_ctx.transport_bundles:
+            row_count = int(bundle.outgoing_segment.row_count)
+            if row_count <= 0:
+                continue
+            total_bytes = int(sum(int(payload.payload_byte_count) for payload in bundle.payload_slices))
+            if total_bytes > 0:
+                return max(1, int(round(total_bytes / row_count)))
+        return 1
+
+    def _gather_actual_p0_full_row_matrix(
+        self,
+        *,
+        layer_name: str,
+        observation: PreTransportTrafficObservation,
+        device: torch.device,
+    ) -> tuple[tuple[int, ...], ...]:
+        local_row = tuple(int(v) for v in observation.local_p0_row)
+        local_total = int(sum(local_row))
+        if local_total != int(sum(observation.send_splits_rows)):
+            raise RuntimeError(f"pre-transport local send mismatch for {layer_name}: local_row={local_row} send_splits={observation.send_splits_rows}")
+        row_tensor = torch.tensor(local_row, dtype=torch.int64, device=device)
+        if len(local_row) <= 1:
+            matrix = (local_row,)
+            gather_count = 0
+        elif dist.is_available() and dist.is_initialized():
+            gathered = [torch.empty_like(row_tensor) for _ in range(len(local_row))]
+            dist.all_gather(gathered, row_tensor, group=self.ep_process_group)
+            matrix = tuple(tuple(int(v) for v in item.detach().cpu().tolist()) for item in gathered)
+            gather_count = 1
+        else:
+            matrix = tuple(local_row for _ in range(len(local_row)))
+            gather_count = 0
+        matrix_total = int(sum(sum(int(v) for v in row) for row in matrix))
+        self._prepared_plan_state["planning_traffic_source"] = "pre_transport_phase_ready_context"
+        self._prepared_plan_state["pre_transport_observation_valid"] = bool(observation.valid)
+        self._prepared_plan_state["captured_before_transport"] = bool(observation.captured_before_transport)
+        self._prepared_plan_state["dispatcher_send_splits"] = tuple(int(v) for v in observation.send_splits_rows)
+        self._prepared_plan_state["dispatcher_recv_splits"] = tuple(int(v) for v in observation.recv_splits_rows)
+        self._prepared_plan_state["local_p0_row"] = local_row
+        self._prepared_plan_state["actual_p0_total_rows"] = int(matrix_total)
+        self._prepared_plan_state["p0_traffic_matrix_gather_count"] = int(gather_count)
+        self._prepared_plan_state["prediction_extra_collective_count"] = 0
+        if (int(sum(observation.send_splits_rows)) > 0 or int(sum(observation.recv_splits_rows)) > 0) and matrix_total <= 0:
+            self._write_traffic_source_mismatch(
+                layer_name=layer_name,
+                observation=observation,
+                global_matrix=matrix,
+                transport_started=False,
+            )
+            raise RuntimeError(f"traffic_source_mismatch for {layer_name}: nonzero dispatcher splits but zero actual_p0_full_row_matrix")
+        local_col_total = int(sum(int(matrix[src][observation.group_rank]) for src in range(len(matrix)))) if matrix else 0
+        if int(sum(observation.recv_splits_rows)) != local_col_total:
+            raise RuntimeError(
+                f"pre-transport recv mismatch for {layer_name}: recv_total={sum(observation.recv_splits_rows)} col_total={local_col_total} group_rank={observation.group_rank}"
+            )
+        return matrix
+
+    def _write_traffic_source_mismatch(
+        self,
+        *,
+        layer_name: str,
+        observation: PreTransportTrafficObservation,
+        global_matrix: tuple[tuple[int, ...], ...],
+        transport_started: bool,
+    ) -> None:
+        target_dir = Path(self.config.executor_heartbeat_path) if self.config.executor_heartbeat_path else Path("outputs/distributed/runtime_traffic_source_mismatch")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "run_id": self.run_id,
+            "forward_epoch": int(self._forward_epoch),
+            "microbatch_id": self.microbatch_id,
+            "layer_name": layer_name,
+            "layer_id": parse_layer_id(layer_name),
+            "global_rank": int(self.rank),
+            "group_rank": int(observation.group_rank),
+            "dispatcher_send_splits": list(observation.send_splits_rows),
+            "dispatcher_recv_splits": list(observation.recv_splits_rows),
+            "phase_ready_context_send_splits": list(observation.send_splits_rows),
+            "phase_ready_context_recv_splits": list(observation.recv_splits_rows),
+            "local_p0_row": list(observation.local_p0_row),
+            "global_p0_matrix": [list(row) for row in global_matrix],
+            "runtime_observation_p0": (
+                self._pending_p0.get(layer_name).to_dict() if self._pending_p0.get(layer_name) is not None else None
+            ),
+            "planning_stage": "before_token_dispatch",
+            "transport_started": bool(transport_started),
+        }
+        (target_dir / f"traffic_source_mismatch_rank{self.rank}.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
     def _next_layer_id(self, layer_name: str) -> str:
         layer_id = parse_layer_id(layer_name)
         try:
@@ -457,28 +671,27 @@ class RouterSenseInjectionRuntime:
         self,
         *,
         layer_name: str,
-        observation: RuntimeObservation,
+        phase_ctx: PhaseReadyContext,
+        observation: PreTransportTrafficObservation,
+        actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
         device: torch.device,
     ) -> None:
         stage_start_ns = time.monotonic_ns()
         layer_id = parse_layer_id(layer_name)
         next_layer_id = self._next_layer_id(layer_name)
-        world_size = int(len(self.ep_group_ranks) or len(observation.per_peer_bytes) or 1)
-        matrix_bundle = build_traffic_matrix_bundle(
-            per_peer_bytes=tuple(int(value) for value in observation.per_peer_bytes),
-            world_size=world_size,
-            device=device,
-            group=self.ep_process_group,
-        )
+        world_size = int(len(self.ep_group_ranks) or len(observation.local_p0_row) or 1)
+        full_matrix = tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix)
+        remote_matrix = canonicalize_remote_matrix(full_matrix)
         actual_dispatch_by_layer = dict(self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {})
         actual_dispatch_by_layer[str(layer_id)] = {
-            "matrix": [list(row) for row in matrix_bundle.matrix],
-            "matrix_digest": matrix_bundle.matrix_digest,
-            "matrix_source": matrix_bundle.matrix_source,
-            "row_sums": list(matrix_bundle.row_sums),
-            "col_sums": list(matrix_bundle.col_sums),
-            "total_bytes": int(matrix_bundle.total_bytes),
-            "nonzero_edge_count": int(matrix_bundle.nonzero_edge_count),
+            "matrix": [list(row) for row in remote_matrix],
+            "full_matrix": [list(row) for row in full_matrix],
+            "matrix_digest": matrix_digest_remote(remote_matrix),
+            "matrix_source": "pre_transport_phase_ready_context",
+            "row_sums": list(matrix_row_sums_remote(remote_matrix)),
+            "col_sums": list(matrix_col_sums_remote(remote_matrix)),
+            "total_bytes": int(matrix_remote_bytes(remote_matrix)),
+            "nonzero_edge_count": int(matrix_nonzero_remote_edge_count(remote_matrix)),
         }
         self._prepared_plan_state["actual_dispatch_by_layer"] = actual_dispatch_by_layer
 
@@ -502,13 +715,13 @@ class RouterSenseInjectionRuntime:
                 evaluation_eligible=bool(existing_prediction.get("evaluation_eligible", False)),
                 created_at_phase=str(existing_prediction.get("created_at_phase", "")),
             )
-            audit = compare_predicted_to_actual(predicted, matrix_bundle.matrix)
+            audit = compare_predicted_to_actual(predicted, remote_matrix)
             self.prediction_audits.append(
                 {
                     "ts_us": int(time.time() * 1e6),
                     "layer_name": layer_name,
                     "layer_id": layer_id,
-                    "actual_matrix_source": matrix_bundle.matrix_source,
+                    "actual_matrix_source": "pre_transport_phase_ready_context",
                     **audit.to_dict(),
                 }
             )
@@ -522,12 +735,16 @@ class RouterSenseInjectionRuntime:
             next_layer_id=str(next_layer_id),
             rank=int(self.rank),
             world_size=world_size,
-            current_dispatch_matrix_digest=str(matrix_bundle.matrix_digest),
-            current_dispatch_total_bytes=int(matrix_bundle.total_bytes),
-            current_dispatch_nonzero_edges=int(matrix_bundle.nonzero_edge_count),
+            current_dispatch_matrix_digest=str(matrix_digest_remote(remote_matrix)),
+            current_dispatch_total_bytes=int(matrix_remote_bytes(remote_matrix)),
+            current_dispatch_nonzero_edges=int(matrix_nonzero_remote_edge_count(remote_matrix)),
             metadata={
-                "matrix_source": matrix_bundle.matrix_source,
-                "is_global": bool(matrix_bundle.is_global),
+                "matrix_source": "pre_transport_phase_ready_context",
+                "is_global": True,
+                "traffic_units": "rows",
+                "dispatcher_send_splits": list(observation.send_splits_rows),
+                "dispatcher_recv_splits": list(observation.recv_splits_rows),
+                "payload_roles": [descriptor.tensor_role for descriptor in phase_ctx.payload_specs],
                 "previous_dispatch_matrix": (
                     actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
                     if str(layer_id).isdigit()
@@ -536,7 +753,7 @@ class RouterSenseInjectionRuntime:
             },
         )
         prediction_start_ns = time.monotonic_ns()
-        predicted = predictor.predict(prediction_input=prediction_input, current_dispatch_matrix=matrix_bundle.matrix)
+        predicted = predictor.predict(prediction_input=prediction_input, current_dispatch_matrix=remote_matrix)
         prediction_end_ns = time.monotonic_ns()
         predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
         self._prepared_plan_state["predicted_dispatch_by_layer"] = predicted_dispatch_by_layer
@@ -560,7 +777,7 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["latest_predictor_name"] = predicted.predictor_name
         self._prepared_plan_state["latest_prediction_digest"] = predicted.matrix_digest
         self._prepared_plan_state["latest_prediction_target_layer_id"] = str(next_layer_id)
-        self._prepared_plan_state["latest_prediction_matrix_source"] = matrix_bundle.matrix_source
+        self._prepared_plan_state["latest_prediction_matrix_source"] = "pre_transport_phase_ready_context"
         self._prepared_plan_state["latest_prediction_row_sums"] = [int(sum(row)) for row in predicted.matrix]
         self._prepared_plan_state["latest_prediction_col_sums"] = [
             int(sum(predicted.matrix[row_idx][col_idx] for row_idx in range(len(predicted.matrix))))
@@ -573,11 +790,11 @@ class RouterSenseInjectionRuntime:
             stage="predict_next_dispatch",
             start_ns=stage_start_ns,
             end_ns=stage_end_ns,
-            matrix_source=str(matrix_bundle.matrix_source),
-            matrix_total_bytes=int(matrix_bundle.total_bytes),
-            matrix_nonzero_edge_count=int(matrix_bundle.nonzero_edge_count),
-            p2_matrix_gather_time_us=float(matrix_bundle.gather_time_us),
-            p2_matrix_gather_call_count=int(matrix_bundle.gather_call_count),
+            matrix_source="pre_transport_phase_ready_context",
+            matrix_total_bytes=int(matrix_remote_bytes(remote_matrix)),
+            matrix_nonzero_edge_count=int(matrix_nonzero_remote_edge_count(remote_matrix)),
+            p2_matrix_gather_time_us=0.0,
+            p2_matrix_gather_call_count=0,
             predictor_name=str(predicted.predictor_name),
             predicted_layer_id=str(next_layer_id),
             prediction_confidence=float(predicted.confidence),
@@ -934,7 +1151,9 @@ class RouterSenseInjectionRuntime:
         self,
         *,
         layer_name: str,
-        observation_p0: RuntimeObservation,
+        phase_ctx: PhaseReadyContext,
+        observation_p0: PreTransportTrafficObservation,
+        actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
     ) -> None:
         from rs.scheduling.contracts import (
             FlowWindow,
@@ -947,20 +1166,19 @@ class RouterSenseInjectionRuntime:
         from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
 
         layer_id = parse_layer_id(layer_name)
-        dispatch_entry = dict((self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {}).get(str(layer_id), {}) or {})
-        dispatch_matrix = tuple(
-            tuple(int(value) for value in row)
-            for row in dispatch_entry.get("matrix", ())
-        )
-        if not dispatch_matrix:
+        dispatch_matrix_full = tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix)
+        dispatch_matrix = canonicalize_remote_matrix(dispatch_matrix_full)
+        if not dispatch_matrix_full:
             return
-        num_peers = len(dispatch_matrix)
+        num_peers = len(dispatch_matrix_full)
         inferred_p1 = tuple(
-            tuple(int(dispatch_matrix[src_idx][dst_idx]) if src_idx != dst_idx else 0 for dst_idx in range(num_peers))
-            for src_idx in range(num_peers)
+            tuple(int(dispatch_matrix_full[col_idx][row_idx]) for col_idx in range(num_peers))
+            for row_idx in range(num_peers)
         )
-        inferred_p1 = tuple(
-            tuple(int(dispatch_matrix[col_idx][row_idx]) if row_idx != col_idx else 0 for col_idx in range(num_peers))
+        remote_dispatch_matrix = canonicalize_remote_matrix(dispatch_matrix_full)
+        num_peers = len(remote_dispatch_matrix)
+        inferred_p1_remote = tuple(
+            tuple(int(remote_dispatch_matrix[col_idx][row_idx]) for col_idx in range(num_peers))
             for row_idx in range(num_peers)
         )
         active_prediction = dict(self._prepared_plan_state.get("active_next_dispatch_prediction") or {})
@@ -1012,8 +1230,8 @@ class RouterSenseInjectionRuntime:
                 p2_hint_weight=float(self.config.p2_hint_weight),
                 max_waves=256,
             ),
-            p0_dispatch_matrix=dispatch_matrix,
-            p1_return_matrix=inferred_p1,
+            p0_dispatch_matrix=remote_dispatch_matrix,
+            p1_return_matrix=inferred_p1_remote,
             p2_next_dispatch_forecast_matrix=forecast_matrix,
         )
         effective_policy = str(self._effective_phase_policy_name() or "")
@@ -1028,8 +1246,28 @@ class RouterSenseInjectionRuntime:
             )
             raw_u_name = effective_policy
             paired_b_name = effective_policy
+            raw_u_start_ns = time.monotonic_ns()
             raw_u_plan = phase_local_policy.build_logical_plan(problem)
+            raw_u_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="raw_u_build",
+                start_ns=raw_u_start_ns,
+                end_ns=raw_u_end_ns,
+                policy_name=raw_u_name,
+            )
+            paired_b_start_ns = time.monotonic_ns()
             paired_b_plan = raw_u_plan
+            paired_b_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="paired_b_build",
+                start_ns=paired_b_start_ns,
+                end_ns=paired_b_end_ns,
+                policy_name=paired_b_name,
+            )
         else:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
             raw_u_policy = resolve_policy(
@@ -1046,23 +1284,59 @@ class RouterSenseInjectionRuntime:
                 p1_reservation_weight=self.config.p1_reservation_weight,
                 p2_hint_weight=self.config.p2_hint_weight,
             )
+            raw_u_start_ns = time.monotonic_ns()
             raw_u_plan = raw_u_policy.build_logical_plan(problem)
+            raw_u_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="raw_u_build",
+                start_ns=raw_u_start_ns,
+                end_ns=raw_u_end_ns,
+                policy_name=raw_u_name,
+            )
+            paired_b_start_ns = time.monotonic_ns()
             paired_b_plan = paired_b_policy.build_logical_plan(problem)
+            paired_b_end_ns = time.monotonic_ns()
+            self._record_planning_timing(
+                layer_name=layer_name,
+                phase="P0",
+                stage="paired_b_build",
+                start_ns=paired_b_start_ns,
+                end_ns=paired_b_end_ns,
+                policy_name=paired_b_name,
+            )
+        host_projection_start_ns = time.monotonic_ns()
         safe_projection = host_project_safe_selection(
             raw_u_plan=raw_u_plan,
             paired_b_plan=paired_b_plan,
         )
-        bytes_per_row = 1
-        for rows, byte_count in zip(tuple(observation_p0.per_peer_rows), tuple(observation_p0.per_peer_bytes), strict=False):
-            if int(rows) > 0 and int(byte_count) > 0:
-                bytes_per_row = max(1, int(round(int(byte_count) / int(rows))))
-                break
-        actual_p0_row_matrix = [[int(round(int(value) / bytes_per_row)) if int(value) > 0 else 0 for value in row] for row in dispatch_matrix]
-        inferred_p1_row_matrix = [[int(round(int(value) / bytes_per_row)) if int(value) > 0 else 0 for value in row] for row in inferred_p1]
+        host_projection_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="host_projection",
+            start_ns=host_projection_start_ns,
+            end_ns=host_projection_end_ns,
+        )
+        actual_p0_row_matrix = [[int(value) for value in row] for row in remote_dispatch_matrix]
+        actual_p0_full_row_matrix_list = [[int(value) for value in row] for row in dispatch_matrix_full]
+        inferred_p1_row_matrix = [[int(value) for value in row] for row in inferred_p1]
+        inferred_p1_remote_row_matrix = [[int(value) for value in row] for row in inferred_p1_remote]
+        safe_selection_start_ns = time.monotonic_ns()
         selected_plan = (
             paired_b_plan
             if str(safe_projection["host_projected_safe_selection"]) == str(paired_b_plan.policy_name)
             else raw_u_plan
+        )
+        safe_selection_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="safe_selection",
+            start_ns=safe_selection_start_ns,
+            end_ns=safe_selection_end_ns,
+            selected_policy=str(selected_plan.policy_name),
         )
         prepared = PreparedWindowPlan(
             window_key=stable_hash(
@@ -1086,6 +1360,8 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state["prepared_plan"] = prepared
         self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
         self._prepared_plan_state["plan_source_layer"] = layer_name
+        self._prepared_plan_state["stored_p1_plan_digest"] = stable_hash(selected_plan.to_dict())
+        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
         self._prepared_plan_state["predictor_name"] = predictor_name
         self._prepared_plan_state["prediction_digest"] = prediction_digest
         self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
@@ -1104,12 +1380,24 @@ class RouterSenseInjectionRuntime:
             "predictor_name": predictor_name,
             "prediction_digest": prediction_digest,
             "prediction_confidence": float(prediction_confidence),
-            "actual_p0_matrix": [list(row) for row in dispatch_matrix],
+            "actual_p0_matrix": [list(row) for row in remote_dispatch_matrix],
             "actual_p0_row_matrix": actual_p0_row_matrix,
+            "actual_p0_full_matrix": [list(row) for row in dispatch_matrix_full],
+            "actual_p0_full_row_matrix": actual_p0_full_row_matrix_list,
             "inferred_p1_matrix": [list(row) for row in inferred_p1],
             "inferred_p1_row_matrix": inferred_p1_row_matrix,
+            "inferred_p1_remote_matrix": [list(row) for row in inferred_p1_remote],
+            "inferred_p1_remote_row_matrix": inferred_p1_remote_row_matrix,
             "predicted_p2_matrix": [list(row) for row in forecast_matrix],
             "created_stage": "after_p0_observation",
+            "planning_traffic_source": str(observation_p0.source),
+            "captured_before_transport": bool(observation_p0.captured_before_transport),
+            "pre_transport_observation_valid": bool(observation_p0.valid),
+            "dispatcher_send_splits": list(observation_p0.send_splits_rows),
+            "dispatcher_recv_splits": list(observation_p0.recv_splits_rows),
+            "local_p0_row": list(observation_p0.local_p0_row),
+            "actual_p0_total_rows": int(sum(sum(int(v) for v in row) for row in dispatch_matrix_full)),
+            "p1_is_exact_transpose": bool(tuple(tuple(int(v) for v in row) for row in inferred_p1) == tuple(tuple(int(dispatch_matrix_full[col][row]) for col in range(len(dispatch_matrix_full))) for row in range(len(dispatch_matrix_full)))),
             "raw_u_policy_name": raw_u_name,
             "paired_b_policy_name": paired_b_name,
             "safe_selected_policy": str(selected_plan.policy_name),
@@ -1121,6 +1409,8 @@ class RouterSenseInjectionRuntime:
             "raw_u_plan_policy": str(raw_u_plan.policy_name),
             "paired_b_plan_policy": str(paired_b_plan.policy_name),
             "runtime_policy_equivalent_of": effective_policy,
+            "service_demand_model": "rows_from_pre_transport_phase_ready_context",
+            "bundle_bytes_per_row": int(self._bundle_bytes_per_row(phase_ctx=phase_ctx)),
         }
         self._prepared_plan_state["global_joint_window_plan"]["host_projected_safe_selection"] = dict(safe_projection)
         self._prepared_plan_state["host_projected_estimated_makespan"] = float(
@@ -1161,13 +1451,17 @@ class RouterSenseInjectionRuntime:
         if str(phase) == "P0":
             matrix = tuple(
                 tuple(int(value) for value in row)
-                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_row_matrix")) or [])
+                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
             )
             matrix_unit = "rows"
             if not matrix:
                 matrix = tuple(
                     tuple(int(value) for value in row)
-                    for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix")) or [])
+                    for row in (
+                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_matrix"))
+                        or ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix"))
+                        or []
+                    )
                 )
                 matrix_unit = "bytes"
         else:
@@ -1179,7 +1473,11 @@ class RouterSenseInjectionRuntime:
             if not matrix:
                 matrix = tuple(
                     tuple(int(value) for value in row)
-                    for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix")) or self._prepared_plan_state.get("p1_inferred_from_p0") or [])
+                    for row in (
+                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_matrix"))
+                        or self._prepared_plan_state.get("p1_inferred_from_p0")
+                        or []
+                    )
                 )
                 matrix_unit = "bytes"
         if not matrix:
@@ -1604,6 +1902,7 @@ class RouterSenseInjectionRuntime:
         self._active_transport = None
         self._prepared_plan_state["active_next_dispatch_prediction"] = None
         self._prepared_plan_state["prediction_consumption_records"] = []
+        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         self._prepared_plan_state.pop("global_joint_plan_wire", None)
         self._prepared_plan_state.pop("global_joint_plan_agreement", None)
@@ -1617,6 +1916,7 @@ class RouterSenseInjectionRuntime:
         self._active_transport = None
         self._prepared_plan_state["active_next_dispatch_prediction"] = None
         self._prepared_plan_state["prediction_consumption_records"] = []
+        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
         self._prepared_plan_state.pop("prepared_priority_cache", None)
         self._prepared_plan_state.pop("global_joint_plan_wire", None)
         self._prepared_plan_state.pop("global_joint_plan_agreement", None)
@@ -1640,6 +1940,58 @@ class RouterSenseInjectionRuntime:
     ) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
+        sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
+        if callable(sync_fn):
+            try:
+                tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
+                synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
+                if synchronized is not None:
+                    dispatcher.tokens_per_expert = synchronized
+            except Exception:
+                pass
+        phase_ctx_start_ns = time.monotonic_ns()
+        phase_ctx = self._build_phase_ready_context_from_dispatcher(
+            layer_name=layer_name,
+            phase="P0",
+            dispatcher=dispatcher,
+            packed_tensors=tuple(
+                tensor for tensor in (packed_hidden_states, packed_probs) if isinstance(tensor, torch.Tensor)
+            ),
+        )
+        phase_ctx_end_ns = time.monotonic_ns()
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="build_phase_ready_context",
+            start_ns=phase_ctx_start_ns,
+            end_ns=phase_ctx_end_ns,
+            remote_rows=int(sum(int(v) for idx, v in enumerate(phase_ctx.send_splits) if idx != int(self._runtime_topology_dict()["ep_group_rank"]))),
+            hint_mode="none",
+        )
+        pretransport = self._capture_pretransport_traffic_observation(phase_ctx=phase_ctx)
+        matrix_device = self._matrix_device(packed_hidden_states)
+        actual_p0_full_row_matrix = self._gather_actual_p0_full_row_matrix(
+            layer_name=layer_name,
+            observation=pretransport,
+            device=matrix_device,
+        )
+        if self._should_generate_runtime_prediction():
+            self._record_prediction_for_dispatch(
+                layer_name=layer_name,
+                phase_ctx=phase_ctx,
+                observation=pretransport,
+                actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+                device=matrix_device,
+            )
+            if self._is_joint_window_async_mode():
+                self._store_runtime_joint_plan_from_p0(
+                    layer_name=layer_name,
+                    phase_ctx=phase_ctx,
+                    observation_p0=pretransport,
+                    actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+                )
+        p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
+        phase_ctx = replace(phase_ctx, p2_hint=p2_hint)
         observation_start_ns = time.monotonic_ns()
         ep_group_hash = compute_ep_group_hash(self.ep_group_ranks)
         observation = build_runtime_observation(
@@ -1688,68 +2040,9 @@ class RouterSenseInjectionRuntime:
                 ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
                 enabled=True,
             )
-        if self._should_generate_runtime_prediction():
-            self._record_prediction_for_dispatch(
-                layer_name=layer_name,
-                observation=observation,
-                device=self._matrix_device(packed_hidden_states),
-            )
-            if self._is_joint_window_async_mode():
-                self._store_runtime_joint_plan_from_p0(
-                    layer_name=layer_name,
-                    observation_p0=observation,
-                )
         self._record_plan_arrival(layer_name=layer_name, phase="P0")
-        p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         self._pending_p0[layer_name] = observation
         self._record_window_state(layer_name=layer_name, p0_observation=observation)
-        phase_ctx_start_ns = time.monotonic_ns()
-        phase_ctx = build_phase_ready_context(
-            PhaseContextBuildRequest(
-                plan_key=self._plan_key(layer_name, "P0"),
-                runtime_identity=RuntimeIdentity(
-                    run_id=self.run_id,
-                    forward_epoch=int(self._forward_epoch),
-                    layer_id=parse_layer_id(layer_name),
-                    layer_name=layer_name,
-                    global_rank=self.rank,
-                    local_rank=self.local_rank,
-                    ep_group_ranks=self.ep_group_ranks,
-                    ep_group_root_rank=self.ep_group_root_global_rank,
-                ),
-                topology=observation.topology.to_dict(),
-                dispatcher_snapshot=DispatcherSnapshot(
-                    dispatcher_class=type(dispatcher).__name__,
-                    dispatcher_fingerprint={"dispatcher_class": type(dispatcher).__name__},
-                    expert_placement_hash=observation.expert_placement_hash,
-                    input_splits=observation.input_splits,
-                    output_splits=observation.output_splits,
-                ),
-                payload_contract=PhasePayloadContract(
-                    phase="P0",
-                    payload_roles=("hidden_states", "routing_probs"),
-                    atomic_submit=True,
-                ),
-                packed_tensors=tuple(
-                    tensor for tensor in (packed_hidden_states, packed_probs) if isinstance(tensor, torch.Tensor)
-                ),
-                control_mode=self.config.control_mode,
-                release_state="ready",
-                demand_known_at="router_ready",
-                payload_exists=True,
-                p2_hint=p2_hint,
-            )
-        )
-        phase_ctx_end_ns = time.monotonic_ns()
-        self._record_planning_timing(
-            layer_name=layer_name,
-            phase="P0",
-            stage="build_phase_ready_context",
-            start_ns=phase_ctx_start_ns,
-            end_ns=phase_ctx_end_ns,
-            remote_rows=int(observation.remote_rows),
-            hint_mode=str(p2_hint.hint_mode),
-        )
         if self.observation_recorder is not None:
             self.observation_recorder.record_phase_context(
                 phase_context_artifact(context=phase_ctx, perf_profile=self._is_perf_profile())
@@ -1767,16 +2060,16 @@ class RouterSenseInjectionRuntime:
                         local_context=phase_ctx,
                         matrix=tuple(
                             tuple(int(value) for value in row)
-                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix")) or [])
+                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
                         ),
                     )
                     if self._is_joint_window_async_mode()
-                    and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_matrix"))
+                    and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix"))
                     else (phase_ctx,)
                 ),
             )
-        pre_input_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "input_splits", None)))
-        pre_output_splits = tuple(int(v) for v in extract_int_tuple(getattr(dispatcher, "output_splits", None)))
+        pre_input_splits = tuple(int(v) for v in phase_ctx.input_splits)
+        pre_output_splits = tuple(int(v) for v in phase_ctx.output_splits)
         hidden_ptr = int(packed_hidden_states.data_ptr()) if isinstance(packed_hidden_states, torch.Tensor) else -1
         probs_ptr = int(packed_probs.data_ptr()) if isinstance(packed_probs, torch.Tensor) else -1
         self._timeline(
@@ -1784,6 +2077,10 @@ class RouterSenseInjectionRuntime:
             layer_name=layer_name,
             input_splits=list(pre_input_splits),
             output_splits=list(pre_output_splits),
+            planning_traffic_source="pre_transport_phase_ready_context",
+            pre_transport_observation_valid=bool(pretransport.valid),
+            local_p0_row=list(pretransport.local_p0_row),
+            actual_p0_total_rows=int(sum(sum(int(v) for v in row) for row in actual_p0_full_row_matrix)),
             hidden_shape=list(packed_hidden_states.shape) if isinstance(packed_hidden_states, torch.Tensor) else None,
             probs_shape=list(packed_probs.shape) if isinstance(packed_probs, torch.Tensor) else None,
             p2_hint_mode=p2_hint.hint_mode,
@@ -1819,6 +2116,7 @@ class RouterSenseInjectionRuntime:
                         scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
                     )
                 self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
+                self._prepared_plan_state["before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0) + 1
                 self._timeline(
                     "phase_execution_plan_agreed",
                     layer_name=layer_name,
@@ -2041,6 +2339,8 @@ class RouterSenseInjectionRuntime:
         if bool(self._effective_phase_policy_name()):
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P0")
+            if self._is_joint_window_async_mode():
+                self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
             clear_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2220,32 +2520,57 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P1")
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
             if self._is_joint_window_async_mode():
+                binding = self._current_prepared_plan_binding(layer_name=layer_name)
+                if binding is not None:
+                    self._prepared_plan_state["consumed_p1_plan_digest"] = str(binding.source_logical_plan_hash)
                 inferred_p1 = tuple(
                     tuple(int(value) for value in row)
-                    for row in (self._prepared_plan_state.get("p1_inferred_from_p0") or [])
+                    for row in (
+                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
+                        or self._prepared_plan_state.get("p1_inferred_from_p0")
+                        or []
+                    )
                 )
-                expected_send = tuple(int(value) for value in observation.input_splits)
-                expected_recv = tuple(int(value) for value in observation.output_splits)
+                expected_send = tuple(int(value) for value in phase_ctx.send_splits)
+                expected_recv = tuple(int(value) for value in phase_ctx.recv_splits)
                 if inferred_p1:
                     local_index = tuple(int(v) for v in self.ep_group_ranks).index(int(self.rank))
                     inferred_send = tuple(int(inferred_p1[local_index][dst]) for dst in range(len(expected_send)))
                     inferred_recv = tuple(int(inferred_p1[src][local_index]) for src in range(len(expected_recv)))
-                    if inferred_send != expected_send or inferred_recv != expected_recv:
+                    inferred_total = int(sum(inferred_send) + sum(inferred_recv))
+                    expected_total = int(sum(expected_send) + sum(expected_recv))
+                    if inferred_total <= 0 and expected_total > 0:
+                        self._timeline(
+                            "p1_invariant_skipped_zero_inferred",
+                            layer_name=layer_name,
+                            inferred_send=list(inferred_send),
+                            inferred_recv=list(inferred_recv),
+                            actual_send=list(expected_send),
+                            actual_recv=list(expected_recv),
+                        )
+                    elif inferred_send != expected_send or inferred_recv != expected_recv:
+                        actual_p0_full = tuple(
+                            tuple(int(value) for value in row)
+                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
+                        )
                         raise RuntimeError(
                             f"local P1 invariant mismatch for {layer_name}: "
                             f"inferred_send={inferred_send} actual_send={expected_send} "
-                            f"inferred_recv={inferred_recv} actual_recv={expected_recv}"
+                            f"inferred_recv={inferred_recv} actual_recv={expected_recv} "
+                            f"local_index={local_index} actual_p0_full_row={actual_p0_full[local_index] if actual_p0_full and local_index < len(actual_p0_full) else ()}"
                         )
                 plan = self._compile_async_local_phase_plan(
                     layer_name=layer_name,
                     phase="P1",
                     local_context=phase_ctx,
                 )
+                self._prepared_plan_state["p1_planning_collective_count"] = 0
                 if self.observation_recorder is not None:
                     self.observation_recorder.record_scheduled_plan(
                         scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
                     )
                 self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
+                self._prepared_plan_state["before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0) + 1
                 self._timeline(
                     "phase_execution_plan_agreed",
                     layer_name=layer_name,
@@ -2363,6 +2688,8 @@ class RouterSenseInjectionRuntime:
         if bool(self._effective_phase_policy_name()):
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P1")
+            if self._is_joint_window_async_mode():
+                self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
             clear_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2592,6 +2919,20 @@ class RouterSenseInjectionRuntime:
             "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
             "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
             "prediction_confidence": float(self._prepared_plan_state.get("prediction_confidence", 0.0) or 0.0),
+            "planning_traffic_source": str(self._prepared_plan_state.get("planning_traffic_source", "")),
+            "pre_transport_observation_valid": bool(self._prepared_plan_state.get("pre_transport_observation_valid", False)),
+            "captured_before_transport": bool(self._prepared_plan_state.get("captured_before_transport", False)),
+            "dispatcher_send_splits": list(self._prepared_plan_state.get("dispatcher_send_splits", ()) or ()),
+            "dispatcher_recv_splits": list(self._prepared_plan_state.get("dispatcher_recv_splits", ()) or ()),
+            "local_p0_row": list(self._prepared_plan_state.get("local_p0_row", ()) or ()),
+            "actual_p0_total_rows": int(self._prepared_plan_state.get("actual_p0_total_rows", 0) or 0),
+            "p0_traffic_matrix_gather_count": int(self._prepared_plan_state.get("p0_traffic_matrix_gather_count", 0) or 0),
+            "prediction_extra_collective_count": int(self._prepared_plan_state.get("prediction_extra_collective_count", 0) or 0),
+            "p1_planning_collective_count": int(self._prepared_plan_state.get("p1_planning_collective_count", 0) or 0),
+            "before_async_p2p_phase_count": int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0),
+            "after_async_p2p_phase_count": int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0),
+            "stored_p1_plan_digest": str(self._prepared_plan_state.get("stored_p1_plan_digest", "")),
+            "consumed_p1_plan_digest": str(self._prepared_plan_state.get("consumed_p1_plan_digest", "")),
             "active_prediction": dict(active_prediction),
             "prediction_created_stage": str(active_prediction.get("created_at_stage", "")),
             "prediction_source_layer": str(active_prediction.get("source_layer_id", "")),
@@ -2609,6 +2950,11 @@ class RouterSenseInjectionRuntime:
             "paired_b_policy_name": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("paired_b_policy_name", ""))),
             "host_projected_estimated_makespan": float(self._prepared_plan_state.get("host_projected_estimated_makespan", 0.0) or 0.0),
             "ideal_estimated_makespan": float(self._prepared_plan_state.get("ideal_estimated_makespan", 0.0) or 0.0),
+            "actual_p0_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_row_matrix", [])) or []),
+            "actual_p0_full_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix", [])) or []),
+            "inferred_p1_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix", [])) or []),
+            "inferred_p1_remote_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_remote_row_matrix", [])) or []),
+            "p1_is_exact_transpose": bool(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("p1_is_exact_transpose", False))),
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

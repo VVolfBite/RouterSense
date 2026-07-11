@@ -373,7 +373,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
         ("topology", "ep"): {"size"},
         ("topology", "network"): {"scope", "interface_hint"},
-        ("online_policy", "parameters"): {"p0_weight", "p1_reservation_weight", "p2_hint_weight"},
+        ("online_policy", "parameters"): {"p0_weight", "p1_reservation_weight", "p2_hint_weight", "online_p2_predictor"},
         ("online_policy", "p2"): {"mode", "artifact"},
         ("offline_study", "window"): {"sample_selector", "start_layer_selector"},
         ("execution", "schedule"): {"layer_selector", "phase_selector"},

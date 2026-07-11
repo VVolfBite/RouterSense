@@ -127,7 +127,7 @@ def main() -> int:
         world_size=int(args.world_size),
         native=False,
     )
-    candidate_proc = run_subprocess(candidate_cmd)
+    candidate_proc = run_subprocess(candidate_cmd, extra_env={"ROUTERSENSE_WARMUP_ITERS": "0", "ROUTERSENSE_MEASURE_ITERS": "2"})
     (output_dir / "candidate_stdout.log").write_text(candidate_proc.stdout, encoding="utf-8")
     (output_dir / "candidate_stderr.log").write_text(candidate_proc.stderr, encoding="utf-8")
     if candidate_proc.returncode != 0:
@@ -160,7 +160,7 @@ def main() -> int:
         world_size=int(args.world_size),
         native=True,
     )
-    reference_proc = run_subprocess(reference_cmd)
+    reference_proc = run_subprocess(reference_cmd, extra_env={"ROUTERSENSE_WARMUP_ITERS": "0", "ROUTERSENSE_MEASURE_ITERS": "2"})
     (output_dir / "reference_stdout.log").write_text(reference_proc.stdout, encoding="utf-8")
     (output_dir / "reference_stderr.log").write_text(reference_proc.stderr, encoding="utf-8")
     if reference_proc.returncode != 0:
@@ -175,9 +175,37 @@ def main() -> int:
         print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
         return int(reference_proc.returncode)
 
-    candidate_details = read_json(candidate_run_dir / "b2_candidate" / "summary.json").get("details", {})
+    candidate_summary_payload = read_json(candidate_run_dir / "b2_candidate" / "summary.json")
+    candidate_details = candidate_summary_payload.get("details", {})
     prepared = read_json(candidate_run_dir / "b2_candidate" / "rank0_prepared_plan_summary.json")
     rank0_summary = read_json(candidate_run_dir / "b2_candidate" / "rank0_summary.json")
+    phase_sync_fallback_count = int(rank0_summary.get("phase_sync_fallback_count", 0) or 0)
+    payload.update(
+        {
+            "stored_p1_plan_digest": prepared.get("stored_p1_plan_digest", ""),
+            "consumed_p1_plan_digest": prepared.get("consumed_p1_plan_digest", ""),
+            "planning_traffic_source": prepared.get("planning_traffic_source", ""),
+            "pre_transport_observation_valid": prepared.get("pre_transport_observation_valid", False),
+            "captured_before_transport": prepared.get("captured_before_transport", False),
+            "dispatcher_send_splits": prepared.get("dispatcher_send_splits", []),
+            "dispatcher_recv_splits": prepared.get("dispatcher_recv_splits", []),
+            "local_p0_row": prepared.get("local_p0_row", []),
+            "actual_p0_full_row_matrix": prepared.get("actual_p0_full_row_matrix", []),
+            "actual_p0_total_rows": prepared.get("actual_p0_total_rows", 0),
+            "inferred_p1_row_matrix": prepared.get("inferred_p1_row_matrix", []),
+            "p1_is_exact_transpose": prepared.get("p1_is_exact_transpose", False),
+            "prediction_extra_collective_count": rank0_summary.get("prediction_extra_collective_count", 0),
+            "p1_planning_collective_count": rank0_summary.get("p1_planning_collective_count", 0),
+            "async_executor_invocation_count": rank0_summary.get("async_executor_invocation_count", 0),
+            "batch_isend_irecv_call_count": rank0_summary.get("batch_isend_irecv_call_count", 0),
+            "real_send_op_count": rank0_summary.get("real_send_op_count", 0),
+            "real_recv_op_count": rank0_summary.get("real_recv_op_count", 0),
+            "local_copy_task_count": rank0_summary.get("local_copy_task_count", 0),
+            "before_async_p2p_phase_count": prepared.get("before_async_p2p_phase_count", 0),
+            "after_async_p2p_phase_count": prepared.get("after_async_p2p_phase_count", 0),
+            "phase_sync_fallback_count": phase_sync_fallback_count,
+        }
+    )
     payload.update(
         {
             "status": "executed",
@@ -197,19 +225,30 @@ def main() -> int:
             "host_projected_raw_u_makespan": rank0_summary.get("host_projected_raw_u_makespan"),
             "host_projected_paired_b_makespan": rank0_summary.get("host_projected_paired_b_makespan"),
             "safe_selected_policy": prepared.get("safe_selected_policy"),
-            "stored_p1_plan_digest": prepared.get("prediction_digest"),
-            "consumed_p1_plan_digest": prepared.get("prediction_digest"),
-            "p0_summary_gather_count": prepared.get("p2_matrix_gather_call_count"),
-            "prediction_extra_collective_count": rank0_summary.get("prediction_extra_collective_count", 0),
-            "p1_planning_collective_count": rank0_summary.get("p1_planning_collective_count", 0),
-            "async_executor_invocation_count": candidate_details.get("rank_summaries", [{}])[0].get("transport_execution_count", 0),
-            "batch_isend_irecv_call_count": rank0_summary.get("batch_isend_irecv_call_count", 0),
-            "fallback_count": rank0_summary.get("phase_sync_fallback_count", 0),
+            "p0_summary_gather_count": prepared.get("p0_traffic_matrix_gather_count"),
+            "fallback_count": phase_sync_fallback_count,
+            "forward_epochs_tested": len([row for row in (rank0_summary.get("repeat_records") or []) if not bool(row.get("warmup", False))]),
         }
     )
+    checks = {
+        "actual_p0_total_rows_nonzero": int(payload["actual_p0_total_rows"]) > 0,
+        "p1_exact_transpose": bool(payload["p1_is_exact_transpose"]),
+        "stored_equals_consumed": str(payload["stored_p1_plan_digest"]) == str(payload["consumed_p1_plan_digest"]) and bool(payload["stored_p1_plan_digest"]),
+        "p0_traffic_matrix_gather_once": int(payload["p0_summary_gather_count"]) == 1,
+        "prediction_extra_collective_zero": int(payload["prediction_extra_collective_count"]) == 0,
+        "p1_planning_collective_zero": int(payload["p1_planning_collective_count"]) == 0,
+        "async_executor_invoked": int(payload["async_executor_invocation_count"]) > 0,
+        "p2p_called": int(payload["batch_isend_irecv_call_count"]) > 0,
+        "real_send_recv_present": int(payload["real_send_op_count"]) > 0 and int(payload["real_recv_op_count"]) > 0,
+        "no_fallback": int(payload["phase_sync_fallback_count"]) == 0,
+        "two_forward_epochs": int(payload["forward_epochs_tested"]) >= 2,
+        "candidate_status_ready": str(candidate_summary_payload.get("status", "")) == "ready",
+    }
+    payload["checks"] = checks
+    payload["status"] = "passed" if all(bool(value) for value in checks.values()) else "failed"
     write_json(output_dir / "b2_runner_summary.json", payload)
     print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
-    return 0
+    return 0 if payload["status"] == "passed" else 1
 
 
 if __name__ == "__main__":

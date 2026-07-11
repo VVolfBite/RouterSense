@@ -45,11 +45,19 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def run_subprocess(cmd: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = child_env()
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
     return subprocess.run(
         cmd,
         cwd=str(cwd or REPO_ROOT),
-        env=child_env(),
+        env=env,
         text=True,
         capture_output=True,
         check=False,

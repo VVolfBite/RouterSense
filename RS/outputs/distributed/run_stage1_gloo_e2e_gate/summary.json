@@ -1,0 +1,15 @@
+{
+  "batch_isend_irecv_executed": true,
+  "dedicated_p2p_group_initialized": true,
+  "fallback_used": false,
+  "forward_epochs_tested": 2,
+  "layers_tested": 2,
+  "p2p_group_warmup_passed": true,
+  "per_peer_sequence_validated": true,
+  "records_per_rank": [
+    4,
+    4
+  ],
+  "sequence_key_count": 84,
+  "world_size": 2
+}

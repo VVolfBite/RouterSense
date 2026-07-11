@@ -120,6 +120,15 @@ def main(argv: list[str] | None = None) -> int:
                 **detail,
             }
         )
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return int(default)
+        try:
+            return int(raw)
+        except Exception:
+            return int(default)
     try:
         record_event("main_enter")
         ids = init_distributed(backend="nccl", timeout_seconds=300)
@@ -209,14 +218,58 @@ def main(argv: list[str] | None = None) -> int:
             )
         stage_barrier("model_load", ok=True, detail=type(model).__name__)
 
-        forward_start_ns = time.monotonic_ns()
-        record_event("forward_start")
-        policy_runtime.begin_forward(forward_epoch=0)
-        with torch.inference_mode():
-            logits = model(tokens, position_ids, None)
-        policy_runtime.end_forward()
-        forward_end_ns = time.monotonic_ns()
-        record_event("forward_end", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
+        warmup_iters = max(0, _env_int("ROUTERSENSE_WARMUP_ITERS", 0))
+        measure_iters = max(1, _env_int("ROUTERSENSE_MEASURE_ITERS", 1))
+        total_iters = warmup_iters + measure_iters
+        repeat_records: list[dict[str, object]] = []
+        logits = None
+        for iter_index in range(total_iters):
+            is_warmup = iter_index < warmup_iters
+            measure_index = -1 if is_warmup else (iter_index - warmup_iters)
+            forward_epoch = int(iter_index)
+            policy_runtime.step_id = f"forward-{forward_epoch}"
+            policy_runtime.microbatch_id = f"mb-{forward_epoch}"
+            record_event("forward_start", forward_epoch=forward_epoch, warmup=is_warmup, measure_index=measure_index)
+            host_start_ns = time.monotonic_ns()
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize(local_rank)
+            policy_runtime.begin_forward(forward_epoch=forward_epoch)
+            start_event.record()
+            with torch.inference_mode():
+                logits = model(tokens, position_ids, None)
+            end_event.record()
+            end_event.synchronize()
+            policy_runtime.end_forward()
+            host_end_ns = time.monotonic_ns()
+            local_forward_us = float(start_event.elapsed_time(end_event) * 1000.0)
+            local_host_forward_us = float((host_end_ns - host_start_ns) / 1000.0)
+            duration_tensor = torch.tensor([local_forward_us], device=tokens.device, dtype=torch.float64)
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(duration_tensor, op=torch.distributed.ReduceOp.MAX)
+            global_forward_us = float(duration_tensor.item())
+            repeat_record: dict[str, object] = {
+                "forward_epoch": int(forward_epoch),
+                "warmup": bool(is_warmup),
+                "measure_index": int(measure_index),
+                "local_forward_us": float(local_forward_us),
+                "local_host_forward_us": float(local_host_forward_us),
+                "global_max_forward_us": float(global_forward_us),
+                "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
+            }
+            if config.validation.save_logits and isinstance(logits, torch.Tensor) and not is_warmup:
+                repeat_logits_path = run_dir / f"{run_id}-rank{rank}-epoch{forward_epoch}-measure{measure_index}.pt"
+                torch.save(logits.detach().float().cpu(), repeat_logits_path)
+                repeat_record["logits_path"] = str(repeat_logits_path)
+            repeat_records.append(repeat_record)
+            record_event(
+                "forward_end",
+                forward_epoch=forward_epoch,
+                warmup=is_warmup,
+                measure_index=measure_index,
+                total_forward_us=float(global_forward_us),
+                local_forward_us=float(local_forward_us),
+            )
         stage_barrier("observer_forward", ok=isinstance(logits, torch.Tensor), detail=str(tuple(logits.shape)))
 
         rows = observer.export_rows()
@@ -242,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             "local_combine_rows": observer_summary["local_combine_rows"],
             "observer_warning_count": observer_summary["observer_warning_count"],
             "observer_phase_counts": observer_summary["observer_phase_counts"],
+            "repeat_records": repeat_records,
         }
         write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
         write_json(run_dir / f"rank{rank}_native_dispatch.json", rank_summary)
@@ -257,7 +311,16 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "ready",
                 "policy_name": "disabled",
                 "transport_mutation": False,
-                "total_forward_us": next((float(item.get("total_forward_us")) for item in reversed(experiment_timeline) if "total_forward_us" in item), 0.0),
+                "repeat_records": repeat_records,
+                "warmup_iters": int(warmup_iters),
+                "measure_iters": int(measure_iters),
+                "total_forward_us": (
+                    float(sorted(item["global_max_forward_us"] for item in repeat_records if not bool(item.get("warmup", False)) and "global_max_forward_us" in item)[
+                        len([item for item in repeat_records if not bool(item.get("warmup", False)) and "global_max_forward_us" in item]) // 2
+                    ])
+                    if any((not bool(item.get("warmup", False)) and "global_max_forward_us" in item) for item in repeat_records)
+                    else next((float(item.get("total_forward_us")) for item in reversed(experiment_timeline) if "total_forward_us" in item), 0.0)
+                ),
                 "remote_dispatch_exercised": any(int(item.get("remote_dispatch_rows", 0)) > 0 for item in gathered),
                 "remote_combine_exercised": any(int(item.get("remote_combine_rows", 0)) > 0 for item in gathered),
                 "rank_summaries": gathered,

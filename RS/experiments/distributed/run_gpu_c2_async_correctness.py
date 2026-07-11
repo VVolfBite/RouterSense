@@ -85,11 +85,17 @@ def _fallback(output_dir: Path, *, world_size: int, config: str, reference_strat
     return payload
 
 
-def _load_logits(run_dir: Path) -> dict[int, torch.Tensor]:
-    result: dict[int, torch.Tensor] = {}
+def _load_logits(run_dir: Path) -> dict[tuple[int, int], torch.Tensor]:
+    result: dict[tuple[int, int], torch.Tensor] = {}
+    for path in sorted(run_dir.glob("*-rank*-epoch*-measure*.pt")):
+        stem = path.stem
+        rank_str = stem.split("-rank")[-1].split("-")[0]
+        epoch_str = stem.split("-epoch")[-1].split("-")[0]
+        result[(int(rank_str), int(epoch_str))] = torch.load(path, map_location="cpu")
     for path in sorted(run_dir.glob("*-rank*-logits.pt")):
-        rank_str = path.stem.split("-rank")[-1].split("-")[0]
-        result[int(rank_str)] = torch.load(path, map_location="cpu")
+        stem = path.stem
+        rank_str = stem.split("-rank")[-1].split("-")[0]
+        result.setdefault((int(rank_str), 0), torch.load(path, map_location="cpu"))
     return result
 
 
@@ -159,7 +165,7 @@ def main() -> int:
             world_size=int(args.world_size),
             native=native,
         )
-        proc = run_subprocess(cmd)
+        proc = run_subprocess(cmd, extra_env={"ROUTERSENSE_WARMUP_ITERS": "0", "ROUTERSENSE_MEASURE_ITERS": str(int(args.forward_epochs))})
         (output_dir / f"{run_name}_stdout.log").write_text(proc.stdout, encoding="utf-8")
         (output_dir / f"{run_name}_stderr.log").write_text(proc.stderr, encoding="utf-8")
         if proc.returncode != 0:
@@ -173,37 +179,64 @@ def main() -> int:
     reference_logits = _load_logits(reference_run)
     candidate_logits = _load_logits(candidate_run)
     per_rank = []
-    for rank, ref_tensor in sorted(reference_logits.items()):
-        cand_tensor = candidate_logits[rank]
-        per_rank.append({"rank": rank, **_compare_tensors(ref_tensor, cand_tensor)})
+    compared_epochs: set[int] = set()
+    for key, ref_tensor in sorted(reference_logits.items()):
+        if key not in candidate_logits:
+            payload.update({"status": "candidate_missing_logits", "missing_key": list(key)})
+            write_json(output_dir / "c2_runner_summary.json", payload)
+            print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
+            return 1
+        rank, epoch = key
+        cand_tensor = candidate_logits[key]
+        compared_epochs.add(int(epoch))
+        per_rank.append({"rank": rank, "forward_epoch": epoch, **_compare_tensors(ref_tensor, cand_tensor)})
     max_abs = max((float(item["max_abs_error"]) for item in per_rank), default=0.0)
     max_rel = max((float(item["max_rel_error"]) for item in per_rank), default=0.0)
+    mean_abs = float(sum(float(item["max_abs_error"]) for item in per_rank) / len(per_rank)) if per_rank else 0.0
     mismatch_count = sum(int(item["mismatch_count"]) for item in per_rank)
     candidate_summary = read_json(candidate_run / "summary.json").get("details", {})
     candidate_rank_summary = read_json(candidate_run / "rank0_summary.json")
+    checks = {
+        "async_invocation_count": int(candidate_rank_summary.get("async_executor_invocation_count", 0)) > 0,
+        "p2p_call_count": int(candidate_rank_summary.get("batch_isend_irecv_call_count", 0)) > 0,
+        "real_send_op_count": int(candidate_rank_summary.get("real_send_op_count", 0)) > 0,
+        "real_recv_op_count": int(candidate_rank_summary.get("real_recv_op_count", 0)) > 0,
+        "fallback_count_zero": int(candidate_rank_summary.get("phase_sync_fallback_count", 0)) == 0,
+        "timeout_count_zero": True,
+        "shape_parity": all(bool(item["shape_parity"]) for item in per_rank),
+        "dtype_parity": all(bool(item["dtype_parity"]) for item in per_rank),
+        "nan_inf_zero": (sum(int(item["nan_count"]) for item in per_rank) == 0 and sum(int(item["inf_count"]) for item in per_rank) == 0),
+        "tolerance": max_abs <= 5e-3 and max_rel <= 5e-2 and mismatch_count == 0,
+        "two_forward_epochs": len(compared_epochs) >= 2,
+    }
     payload.update(
         {
-            "status": "executed",
+            "status": "passed" if all(bool(v) for v in checks.values()) else "failed",
             "reference_checksum": read_json(reference_run / "summary.json").get("details", {}).get("output_checksum"),
             "candidate_checksum": candidate_summary.get("output_checksum"),
             "max_abs_error": max_abs,
             "max_rel_error": max_rel,
+            "mean_abs_error": mean_abs,
             "mismatch_count": mismatch_count,
             "shape_parity": all(bool(item["shape_parity"]) for item in per_rank),
             "dtype_parity": all(bool(item["dtype_parity"]) for item in per_rank),
             "nan_count": sum(int(item["nan_count"]) for item in per_rank),
             "inf_count": sum(int(item["inf_count"]) for item in per_rank),
             "per_rank": per_rank,
-            "async_invocation_count": candidate_rank_summary.get("async_executor_invocation_count", 0),
+            "async_executor_invocation_count": candidate_rank_summary.get("async_executor_invocation_count", 0),
             "p2p_call_count": candidate_rank_summary.get("batch_isend_irecv_call_count", 0),
+            "real_send_op_count": candidate_rank_summary.get("real_send_op_count", 0),
+            "real_recv_op_count": candidate_rank_summary.get("real_recv_op_count", 0),
             "fallback_count": candidate_rank_summary.get("phase_sync_fallback_count", 0),
             "timeout_count": 0,
-            "parity_passed": max_abs <= 5e-3 and mismatch_count == 0,
+            "forward_epochs_compared": sorted(compared_epochs),
+            "parity_passed": bool(checks["tolerance"]),
+            "checks": checks,
         }
     )
     write_json(output_dir / "c2_runner_summary.json", payload)
     print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
-    return 0
+    return 0 if payload["status"] == "passed" else 1
 
 
 if __name__ == "__main__":

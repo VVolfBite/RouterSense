@@ -85,13 +85,15 @@ def _median(values: list[float]) -> float | None:
 def _pct(base: float | None, value: float | None) -> float | None:
     if base in (None, 0.0) or value is None:
         return None
-    return float((float(value) - float(base)) / float(base))
+    return float((float(base) - float(value)) / float(base))
 
 
 def _map_predictor_name(name: str) -> str:
     return {
         "fate_style_history": "history_ema",
         "fate_style_linear": "history_linear_trend",
+        "perfect_trace_oracle": "oracle_traffic",
+        "actual_trace_oracle": "oracle_traffic",
         "perfect_trace": "oracle_traffic",
         "actual_trace": "oracle_traffic",
     }.get(name, name)
@@ -129,15 +131,16 @@ def _summarize_predictors(
     *,
     allowed_predictors: set[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    online_rows = [
+    normalized_rows = [
         {
             **row,
             "predictor_track_name": _map_predictor_name(str(row["predictor_name"])),
             "split": next((name for name, ids in split.items() if str(row["source_layer_id"]) in ids), "test"),
         }
         for row in rows
-        if bool(row.get("evaluation_eligible")) and _map_predictor_name(str(row["predictor_name"])) in allowed_predictors
+        if bool(row.get("evaluation_eligible"))
     ]
+    online_rows = [row for row in normalized_rows if str(row["predictor_track_name"]) in allowed_predictors]
     per_predictor_split: dict[tuple[str, str], list[dict[str, Any]]] = {}
     per_layer_policy_best: dict[tuple[str, str, str], float] = {}
     for row in online_rows:
@@ -242,7 +245,7 @@ def _summarize_predictors(
         [row for row in table_rows if row["split"] == "test"],
         selection,
         taxonomy_rows,
-        online_rows,
+        normalized_rows,
     )
 
 
@@ -484,9 +487,8 @@ def main() -> None:
     predictor_selected_test = selection.get("held_out_test_metrics") or {}
     oracle_actual = [
         row
-        for row in prediction["rows"]
-        if _map_predictor_name(str(row["predictor_name"])) == "oracle_traffic"
-        and next((name for name, ids in split.items() if str(row["source_layer_id"]) in ids), "test") == "test"
+        for row in normalized_prediction_rows
+        if str(row["predictor_track_name"]) == "oracle_traffic" and str(row["split"]) == "test"
     ]
     selected_predictor = str(selection["selected_predictor"])
     selected_predictor_rows = [row for row in normalized_prediction_rows if str(row["predictor_track_name"]) == selected_predictor and str(row["split"]) == "test"]
@@ -504,8 +506,8 @@ def main() -> None:
         "joint_only_gain": [
             {
                 "heuristic_family": row["heuristic_family"],
-                "u_vs_b": row["relative_improvement_u_vs_b"],
-                "safe_vs_b": row["relative_improvement_safe_vs_b"],
+                "u_vs_b_makespan_reduction_percent": None if row["relative_improvement_u_vs_b"] is None else float(-row["relative_improvement_u_vs_b"]) * 100.0,
+                "safe_vs_b_makespan_reduction_percent": None if row["relative_improvement_safe_vs_b"] is None else float(-row["relative_improvement_safe_vs_b"]) * 100.0,
             }
             for row in shared_core_rows
         ],
@@ -514,19 +516,42 @@ def main() -> None:
             "main_safe_u_improvement_pct": replay.get("main_safe_u_improvement_pct"),
         },
         "oracle_gap": oracle_gap["oracle_gap_small_fixture_summary"],
+        "oracle_gap_reduction_percent": {
+            "O_joint_vs_O_local": None if oracle_gap["oracle_gap_small_fixture_summary"]["O_joint_vs_O_local_gap"] is None else float(-oracle_gap["oracle_gap_small_fixture_summary"]["O_joint_vs_O_local_gap"]) * 100.0,
+            "B_gap_to_O_local": None if oracle_gap["oracle_gap_small_fixture_summary"]["B_gap_to_O_local"] is None else float(oracle_gap["oracle_gap_small_fixture_summary"]["B_gap_to_O_local"]) * 100.0,
+            "raw_U_gap_to_O_joint": None if oracle_gap["oracle_gap_small_fixture_summary"]["raw_U_gap_to_O_joint"] is None else float(oracle_gap["oracle_gap_small_fixture_summary"]["raw_U_gap_to_O_joint"]) * 100.0,
+            "safe_U_gap_to_O_joint": None if oracle_gap["oracle_gap_small_fixture_summary"]["safe_U_gap_to_O_joint"] is None else float(oracle_gap["oracle_gap_small_fixture_summary"]["safe_U_gap_to_O_joint"]) * 100.0,
+        },
         "selected_predictor": selection["selected_predictor"],
         "selected_predictor_reason": selection["selection_reason"],
         "held_out_prediction_error": predictor_selected_test.get("mean_relative_l1"),
         "held_out_schedule_regret": predictor_selected_test.get("schedule_regret"),
-        "oracle_prediction_schedule_gain_vs_zero": None if zero_mean in (None, 0.0) or oracle_mean is None else float((oracle_mean - zero_mean) / zero_mean),
-        "selected_prediction_schedule_gain_vs_zero": None if zero_mean in (None, 0.0) or selected_mean is None else float((selected_mean - zero_mean) / zero_mean),
+        "oracle_prediction_schedule_gain_vs_zero": None if zero_mean in (None, 0.0) or oracle_mean is None else float((zero_mean - oracle_mean) / zero_mean),
+        "selected_prediction_schedule_gain_vs_zero": None if zero_mean in (None, 0.0) or selected_mean is None else float((zero_mean - selected_mean) / zero_mean),
         "prediction_failure_taxonomy": taxonomy_counts,
         "p2_signal_used": sensitivity["p2_signal_used"],
         "p2_signal_strength": sensitivity["p2_signal_strength"],
         "likely_reason_prediction_no_gain": sensitivity["likely_reason_prediction_no_gain"],
         "host_projection_gap": host_projection_rows,
+        "exact_oracle_sample_count": len(oracle_gap.get("small_fixture_rows", [])),
     }
     _write_json(output_dir / "final_offline_summary.json", final_summary)
+
+    fixture_paths = sorted(fixture_dir.glob("*.json"))
+    fixture_manifest = {
+        "fixture_dir": str(fixture_dir),
+        "fixture_file_count": len(fixture_paths),
+        "fixture_files": [
+            {
+                "path": str(path),
+                "size_bytes": int(path.stat().st_size),
+            }
+            for path in fixture_paths
+        ],
+        "replay_command": f"python experiments/offline/run_stage1_paper_closure.py --config {args.config}",
+        "config_path": str(Path(args.config)),
+    }
+    _write_json(output_dir / "fixture_manifest.json", fixture_manifest)
 
     baseline_lines = [
         "# Stage1 Paper Closure Tables",
@@ -538,7 +563,7 @@ def main() -> None:
         "## Shared-Core B/U",
     ]
     baseline_lines.extend(
-        f"- `{row['heuristic_family']}` joint-only gain (U vs B): `{100.0 * float(row['relative_improvement_u_vs_b']):.2f}%`"
+        f"- `{row['heuristic_family']}` joint-only gain (U vs B): `{(-100.0) * float(row['relative_improvement_u_vs_b']):.2f}%`"
         for row in shared_core_rows
     )
     baseline_lines.extend(
@@ -546,6 +571,7 @@ def main() -> None:
             "",
             "## Oracle Gap",
             f"- O_joint_vs_O_local_gap: `{oracle_gap['oracle_gap_small_fixture_summary']['O_joint_vs_O_local_gap']}`",
+            f"- O_joint_vs_O_local_makespan_reduction_percent: `{None if oracle_gap['oracle_gap_small_fixture_summary']['O_joint_vs_O_local_gap'] is None else (-100.0 * float(oracle_gap['oracle_gap_small_fixture_summary']['O_joint_vs_O_local_gap']))}`",
             "",
             "## Predictor Selection",
             f"- selected predictor: `{selection['selected_predictor']}`",

@@ -1,122 +1,67 @@
 {
-  "commit_base": "0a6c7d58a1f9beee74f9e7887cbeb2f0119e3bbb",
-  "items": {
-    "runtime_global_materialization": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "date": "2026-07-11",
+  "branch": "main",
+  "base_commit": "b38ad19d29b8879bec78e268a06320e7329af8af",
+  "items": [
+    {
+      "path": "src/rs/runtime/online/megatron_ep/lifecycle.py",
+      "status": "implemented_this_round",
       "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": false,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "local_copy_coverage": {
-      "status": "IMPLEMENTED_AND_TESTED_CPU",
-      "already_complete": false,
-      "implemented_this_round": true,
       "implemented_with_fallback": false,
       "tested_cpu": true,
       "tested_gloo": false,
-      "gpu_untested": true
+      "gpu_untested": true,
+      "summary": "planning moved behind PhaseReadyContext; pre-transport observation is now the sole planning traffic source"
     },
-    "ordered_sequence_digest": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+    {
+      "path": "src/rs/scheduling/phase_execution.py",
+      "status": "implemented_this_round",
       "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": false,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "multi_ep_subgroup_pair_index": {
-      "status": "IMPLEMENTED_AND_TESTED_CPU",
-      "already_complete": false,
-      "implemented_this_round": true,
       "implemented_with_fallback": false,
       "tested_cpu": true,
       "tested_gloo": false,
-      "gpu_untested": true
+      "gpu_untested": true,
+      "summary": "formal PreTransportTrafficObservation dataclass added"
     },
-    "zero_hint_async_joint_plan": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
-      "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": false,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "fifo_async_p2p": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
-      "already_complete": false,
-      "implemented_this_round": true,
+    {
+      "path": "experiments/distributed/run_stage1_gloo_e2e_gate.py",
+      "status": "already_complete",
+      "already_complete": true,
       "implemented_with_fallback": false,
       "tested_cpu": false,
       "tested_gloo": true,
-      "gpu_untested": true
+      "gpu_untested": true,
+      "summary": "low-level async P2P Gloo gate still passes after pre-transport observation fix"
     },
-    "greedy_async_p2p": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+    {
+      "path": "experiments/distributed/run_stage1_runtime_integrated_gloo_gate.py",
+      "status": "implemented_this_round",
       "already_complete": false,
-      "implemented_this_round": true,
       "implemented_with_fallback": false,
       "tested_cpu": false,
-      "tested_gloo": true,
-      "gpu_untested": true
+      "tested_gloo": false,
+      "gpu_untested": true,
+      "summary": "rewired to formal lifecycle hooks; current torchrun Gloo execution still exits by external SIGKILL before result emission"
     },
-    "birkhoff_async_p2p": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
+    {
+      "path": "experiments/distributed/run_gpu_b2_lifecycle.py",
+      "status": "implemented_this_round",
       "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": false,
-      "tested_cpu": false,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "predicted_joint_async_p2p": {
-      "status": "IMPLEMENTED_AND_TESTED_GLOO",
-      "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": false,
-      "tested_cpu": false,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "b2_runner_body": {
-      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
-      "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": true,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "c2_runner_body": {
-      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
-      "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": true,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "a2_runner_body": {
-      "status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
-      "already_complete": false,
-      "implemented_this_round": true,
-      "implemented_with_fallback": true,
-      "tested_cpu": true,
-      "tested_gloo": true,
-      "gpu_untested": true
-    },
-    "offline_stage1_paper_closure": {
-      "status": "IMPLEMENTED_AND_TESTED_CPU",
-      "already_complete": false,
-      "implemented_this_round": true,
       "implemented_with_fallback": false,
       "tested_cpu": true,
       "tested_gloo": false,
-      "gpu_untested": true
+      "gpu_untested": true,
+      "summary": "B2 runner now consumes real pre-transport/runtime counters and digest fields"
+    },
+    {
+      "path": "tests/contract/test_prepared_window_plan_online.py",
+      "status": "implemented_this_round",
+      "already_complete": false,
+      "implemented_with_fallback": false,
+      "tested_cpu": true,
+      "tested_gloo": false,
+      "gpu_untested": true,
+      "summary": "targeted tests updated for PhaseReadyContext-driven pre-transport planning and zero-matrix fail-fast"
     }
-  }
+  ]
 }

@@ -925,6 +925,30 @@ class PhaseReadyContext:
             p2_hint=FutureDemandHint.from_dict(payload.get("p2_hint", {})),
         )
 
+
+@dataclass(frozen=True)
+class PreTransportTrafficObservation:
+    run_id: str
+    forward_epoch: int
+    microbatch_id: str
+    layer_id: int
+    phase: str
+    global_rank: int
+    group_rank: int
+    group_global_ranks: tuple[int, ...]
+    send_splits_rows: tuple[int, ...]
+    recv_splits_rows: tuple[int, ...]
+    local_p0_row: tuple[int, ...]
+    local_send_rows: int
+    local_recv_rows: int
+    source: str
+    captured_before_transport: bool
+    valid: bool
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
     @classmethod
     def from_agreement_payload(cls, payload: dict[str, Any]) -> "PhaseReadyContext":
         def _payload_descriptors_from_specs(specs: list[dict[str, Any]]) -> tuple[PackedTensorDescriptor, ...]:

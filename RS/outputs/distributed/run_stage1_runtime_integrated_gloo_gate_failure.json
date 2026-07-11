@@ -1,0 +1,11 @@
+{
+  "status": "blocked_before_result_emission",
+  "command": "PYTHONPATH=src torchrun --standalone --nproc_per_node=2 experiments/distributed/run_stage1_runtime_integrated_gloo_gate.py",
+  "failure_mode": "torchrun child exits with SIGKILL before runtime-integrated summary is emitted",
+  "low_level_gloo_gate_passed": true,
+  "notes": [
+    "formal lifecycle path has been rewired to PhaseReadyContext -> PreTransportTrafficObservation",
+    "runtime-integrated gate currently does not produce startup logs before worker death in this environment",
+    "no silent fallback evidence was introduced by the code change itself"
+  ]
+}

@@ -236,6 +236,39 @@ def main(argv: list[str] | None = None) -> int:
                 **detail,
             }
         )
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return int(default)
+        try:
+            return int(raw)
+        except Exception:
+            return int(default)
+
+    def _snapshot_perf(runtime_obj: Any | None) -> dict[str, float]:
+        if runtime_obj is None:
+            return {}
+        counters = getattr(runtime_obj, "perf_counters", {}) or {}
+        return {str(stage): float((payload or {}).get("total_us", 0.0) or 0.0) for stage, payload in counters.items()}
+
+    def _delta_perf(after: dict[str, float], before: dict[str, float], stage: str) -> float:
+        return max(0.0, float(after.get(stage, 0.0) - before.get(stage, 0.0)))
+
+    def _snapshot_adapter(adapter_obj: Any | None) -> dict[str, int]:
+        if adapter_obj is None:
+            return {}
+        return {
+            "async_executor_invocation_count": int(getattr(adapter_obj, "async_executor_invocation_count", 0)),
+            "batch_isend_irecv_call_count": int(getattr(adapter_obj, "batch_isend_irecv_call_count", 0)),
+            "real_send_op_count": int(getattr(adapter_obj, "real_send_op_count", 0)),
+            "real_recv_op_count": int(getattr(adapter_obj, "real_recv_op_count", 0)),
+            "local_copy_task_count": int(getattr(adapter_obj, "local_copy_task_count", 0)),
+            "phase_sync_fallback_count": int(getattr(adapter_obj, "phase_sync_fallback_count", 0)),
+        }
+
+    def _delta_adapter(after: dict[str, int], before: dict[str, int], key: str) -> int:
+        return max(0, int(after.get(key, 0)) - int(before.get(key, 0)))
     try:
         record_event("main_enter")
         ids = init_distributed(backend="nccl", timeout_seconds=300)
@@ -315,22 +348,109 @@ def main(argv: list[str] | None = None) -> int:
             observer=None,
         )
 
+        warmup_iters = max(0, _env_int("ROUTERSENSE_WARMUP_ITERS", 0))
+        measure_iters = max(1, _env_int("ROUTERSENSE_MEASURE_ITERS", 1))
+        total_iters = warmup_iters + measure_iters
+        repeat_records: list[dict[str, Any]] = []
         partial_stop = False
-        try:
-            forward_start_ns = time.monotonic_ns()
-            record_event("forward_start")
-            runtime.begin_forward(forward_epoch=0)
-            with torch.inference_mode():
-                logits = model(tokens, position_ids, attention_mask)
-            runtime.end_forward()
-            forward_end_ns = time.monotonic_ns()
-            record_event("forward_end", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
-        except SelectedLayerStop:
-            partial_stop = True
-            logits = None
-            runtime.end_forward()
-            forward_end_ns = time.monotonic_ns()
-            record_event("forward_partial_stop", total_forward_us=(forward_end_ns - forward_start_ns) / 1000.0)
+        logits = None
+        for iter_index in range(total_iters):
+            is_warmup = iter_index < warmup_iters
+            measure_index = -1 if is_warmup else (iter_index - warmup_iters)
+            forward_epoch = int(iter_index)
+            runtime.step_id = f"forward-{forward_epoch}"
+            runtime.microbatch_id = f"mb-{forward_epoch}"
+            local_forward_us = 0.0
+            global_forward_us = 0.0
+            try:
+                adapter_before = _snapshot_adapter(getattr(runtime, "transport_adapter", None))
+                perf_before = _snapshot_perf(runtime)
+                record_event(
+                    "forward_start",
+                    forward_epoch=forward_epoch,
+                    warmup=is_warmup,
+                    measure_index=measure_index,
+                )
+                runtime.begin_forward(forward_epoch=forward_epoch)
+                host_start_ns = time.monotonic_ns()
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                torch.cuda.synchronize(local_rank)
+                start_event.record()
+                with torch.inference_mode():
+                    logits = model(tokens, position_ids, attention_mask)
+                end_event.record()
+                end_event.synchronize()
+                host_end_ns = time.monotonic_ns()
+                local_forward_us = float(start_event.elapsed_time(end_event) * 1000.0)
+                local_host_forward_us = float((host_end_ns - host_start_ns) / 1000.0)
+                duration_tensor = torch.tensor([local_forward_us], device=tokens.device, dtype=torch.float64)
+                if torch.distributed.is_available() and torch.distributed.is_initialized():
+                    torch.distributed.all_reduce(duration_tensor, op=torch.distributed.ReduceOp.MAX)
+                global_forward_us = float(duration_tensor.item())
+                runtime.end_forward()
+                adapter_after = _snapshot_adapter(getattr(runtime, "transport_adapter", None))
+                perf_after = _snapshot_perf(runtime)
+                repeat_record = {
+                    "forward_epoch": forward_epoch,
+                    "warmup": bool(is_warmup),
+                    "measure_index": int(measure_index),
+                    "local_forward_us": float(local_forward_us),
+                    "local_host_forward_us": float(local_host_forward_us),
+                    "global_max_forward_us": float(global_forward_us),
+                    "prediction_us": _delta_perf(perf_after, perf_before, "predict_next_dispatch"),
+                    "raw_u_build_us": _delta_perf(perf_after, perf_before, "raw_u_build"),
+                    "paired_b_build_us": _delta_perf(perf_after, perf_before, "paired_b_build"),
+                    "host_projection_us": _delta_perf(perf_after, perf_before, "host_projection"),
+                    "safe_selection_us": _delta_perf(perf_after, perf_before, "safe_selection"),
+                    "plan_agreement_us": _delta_perf(perf_after, perf_before, "agree_global_joint_plan_digest"),
+                    "local_materialization_us": _delta_perf(perf_after, perf_before, "activate_transport"),
+                    "dispatch_hook_path_us": _delta_perf(perf_after, perf_before, "hook_before_token_dispatch_total"),
+                    "combine_hook_path_us": _delta_perf(perf_after, perf_before, "hook_before_token_combine_total"),
+                    "preflight_us": _delta_perf(perf_after, perf_before, "activate_transport"),
+                    "async_executor_invocation_count": _delta_adapter(adapter_after, adapter_before, "async_executor_invocation_count"),
+                    "batch_isend_irecv_call_count": _delta_adapter(adapter_after, adapter_before, "batch_isend_irecv_call_count"),
+                    "real_send_op_count": _delta_adapter(adapter_after, adapter_before, "real_send_op_count"),
+                    "real_recv_op_count": _delta_adapter(adapter_after, adapter_before, "real_recv_op_count"),
+                    "local_copy_task_count": _delta_adapter(adapter_after, adapter_before, "local_copy_task_count"),
+                    "phase_sync_fallback_count": _delta_adapter(adapter_after, adapter_before, "phase_sync_fallback_count"),
+                    "logits_shape": list(logits.shape) if isinstance(logits, torch.Tensor) else None,
+                    "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
+                }
+                if config.validation.save_logits and isinstance(logits, torch.Tensor) and not is_warmup:
+                    repeat_logits_path = run_dir / f"{run_id}-rank{rank}-epoch{forward_epoch}-measure{measure_index}.pt"
+                    torch.save(logits.detach().float().cpu(), repeat_logits_path)
+                    repeat_record["logits_path"] = str(repeat_logits_path)
+                repeat_records.append(repeat_record)
+                record_event(
+                    "forward_end",
+                    forward_epoch=forward_epoch,
+                    warmup=is_warmup,
+                    measure_index=measure_index,
+                    total_forward_us=float(global_forward_us),
+                    local_forward_us=float(local_forward_us),
+                )
+            except SelectedLayerStop:
+                partial_stop = True
+                logits = None
+                runtime.end_forward()
+                repeat_records.append(
+                    {
+                        "forward_epoch": forward_epoch,
+                        "warmup": bool(is_warmup),
+                        "measure_index": int(measure_index),
+                        "partial_stop": True,
+                    }
+                )
+                record_event(
+                    "forward_partial_stop",
+                    forward_epoch=forward_epoch,
+                    warmup=is_warmup,
+                    measure_index=measure_index,
+                    total_forward_us=float(global_forward_us),
+                    local_forward_us=float(local_forward_us),
+                )
+                break
 
         native_dispatch_summary = summarize_native_dispatchers(model, rank=rank)
         local_expert_ids = collect_local_expert_ids(model)
@@ -382,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
             "dispatcher_rows": native_dispatch_summary["dispatcher_rows"],
             "transport_execution_count": len(transport_results),
             "execution_audit_status": audit_payload["status"],
+            "repeat_records": repeat_records,
         }
         rank_summary = write_rank_artifacts(
             run_dir=run_dir,
@@ -426,7 +547,16 @@ def main(argv: list[str] | None = None) -> int:
                 "transport_mutation": transport_mutation,
                 "rank_summaries": gathered,
                 "execution_audit_status": audit_payload["status"],
-                "total_forward_us": next((float(item.get("total_forward_us")) for item in reversed(experiment_timeline) if "total_forward_us" in item), 0.0),
+                "repeat_records": repeat_records,
+                "warmup_iters": int(warmup_iters),
+                "measure_iters": int(measure_iters),
+                "total_forward_us": (
+                    float(sorted(item["global_max_forward_us"] for item in repeat_records if not bool(item.get("warmup", False)) and "global_max_forward_us" in item)[
+                        len([item for item in repeat_records if not bool(item.get("warmup", False)) and "global_max_forward_us" in item]) // 2
+                    ])
+                    if any((not bool(item.get("warmup", False)) and "global_max_forward_us" in item) for item in repeat_records)
+                    else next((float(item.get("total_forward_us")) for item in reversed(experiment_timeline) if "total_forward_us" in item), 0.0)
+                ),
                 "experiment_timeline_event_count": len(experiment_timeline),
             }
             payload = NativeEPSummary(
@@ -452,6 +582,11 @@ def main(argv: list[str] | None = None) -> int:
         record_event("runtime_exception", exception=f"{type(exc).__name__}: {exc}")
         write_json(run_dir / f"rank{rank}_experiment_timeline.json", {"events": experiment_timeline})
         failure = failure_report(stage="phase_executor_runtime", exc=exc, rank=rank, local_rank=local_rank)
+        if runtime is not None:
+            try:
+                failure["prepared_plan_summary"] = runtime.export_prepared_plan_summary()
+            except Exception:
+                pass
         write_json(run_dir / "failure_report.json", failure)
         if rank == 0:
             payload = NativeEPSummary(
