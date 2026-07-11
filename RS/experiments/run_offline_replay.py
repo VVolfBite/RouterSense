@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ ROOT = ensure_src_on_path()
 import yaml
 
 from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
+from rs.experiments.output_schema import initialize_run_artifacts, update_status, write_json
 from rs.runtime.offline.replay_unified import CanonicalBucketizer, PlanningHint, ReplayEngine, ReplayWindow, _matrix
 from rs.scheduling.catalog import resolve_algorithm_id
 
@@ -26,6 +28,7 @@ from rs.scheduling.catalog import resolve_algorithm_id
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--output-dir")
     return parser.parse_args()
 
 
@@ -91,8 +94,15 @@ def main() -> None:
     config = canonical_offline_replay_payload(normalized)
     legacy_config = legacy_offline_replay_payload(normalized)
     replay_cfg = dict(config.get("replay", {}) or {})
-    output_dir = (ROOT / str(replay_cfg.get("output_dir", "outputs/offline/offline_replay_smoke"))).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    default_output_dir = ROOT / str(replay_cfg.get("output_dir", "outputs/offline/offline_replay_smoke"))
+    output_dir = (ROOT / str(args.output_dir)).resolve() if args.output_dir else default_output_dir.resolve()
+    layout = initialize_run_artifacts(
+        repo_root=ROOT,
+        output_dir=output_dir,
+        run_type="offline",
+        official_entrypoint="experiments/run_offline_replay.py",
+        config_snapshot=config,
+    )
     fixture_dir = (ROOT / str(replay_cfg["fixture_dir"])).resolve()
     evaluation = dict(config.get("evaluation", {}) or {})
     traffic = dict(config.get("traffic", {}) or {})
@@ -151,9 +161,20 @@ def main() -> None:
                     "input_task_digest": task_digest,
                 }
             )
-    (output_dir / "summary.json").write_text(json.dumps({"rows": rows, "invariants": invariant_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (output_dir / "config_snapshot.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    summary_payload = {"rows": rows, "invariants": invariant_rows}
+    write_json(output_dir / "summary.json", summary_payload)
+    write_json(layout.metrics_dir / "summary.json", summary_payload)
     (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
+    (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
+    update_status(
+        layout,
+        status="completed",
+        extra={
+            "row_count": len(rows),
+            "invariant_count": len(invariant_rows),
+            "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
 
 
 if __name__ == "__main__":
