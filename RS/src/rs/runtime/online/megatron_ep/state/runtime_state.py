@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, fields
+from typing import Any
+
+
+MatrixRows = tuple[tuple[int, ...], ...]
+
+
+@dataclass
+class RuntimeExecutionMetrics:
+    p0_traffic_matrix_gather_count: int = 0
+    prediction_extra_collective_count: int = 0
+    p1_planning_collective_count: int = 0
+
+    before_async_p2p_phase_count: int = 0
+    after_async_p2p_phase_count: int = 0
+    selected_layer_before_async_p2p_phase_count: int = 0
+    selected_layer_after_async_p2p_phase_count: int = 0
+    all_layer_async_phase_count: int = 0
+
+    compiler_id: str = ""
+    logical_plan_digest: str = ""
+    compiled_plan_digest: str = ""
+    legacy_secondary_policy_invocation_count: int = 0
+
+    dispatch_transport_start_ns: int = 0
+    dispatch_transport_end_ns: int = 0
+    rank_release_ns: int = 0
+    expert_compute_start_ns: int = 0
+    expert_compute_end_ns: int = 0
+    combine_transport_start_ns: int = 0
+    combine_transport_end_ns: int = 0
+    forward_start_ns: int = 0
+    forward_end_ns: int = 0
+
+
+@dataclass
+class PreparedWindowRuntimeState:
+    prepared_plan: Any | None = None
+    plan_source_layer: str = ""
+    plan_created_at_us: int = 0
+
+    stored_p1_plan_digest: str = ""
+    consumed_p1_plan_digest: str = ""
+
+    global_joint_window_plan: Any | None = None
+    global_joint_plan_wire: Any | None = None
+    global_joint_plan_agreement: Any | None = None
+    prepared_priority_cache: Any | None = None
+
+    actual_dispatch_by_layer: dict[str, Any] = field(default_factory=dict)
+    predicted_dispatch_by_layer: dict[str, Any] = field(default_factory=dict)
+
+    active_next_dispatch_prediction: Any | None = None
+    prediction_consumption_records: list[Any] = field(default_factory=list)
+
+    planning_traffic_source: str = ""
+    pre_transport_observation_valid: bool = False
+    captured_before_transport: bool = False
+
+    dispatcher_send_splits: tuple[int, ...] = ()
+    dispatcher_recv_splits: tuple[int, ...] = ()
+    local_p0_row: tuple[int, ...] = ()
+
+    p0_truth_rows: MatrixRows = ()
+    p1_truth_rows: MatrixRows = ()
+    actual_p0_total_rows: int = 0
+
+    metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def _field_names(self) -> set[str]:
+        return {item.name for item in fields(self)}
+
+    def _metric_names(self) -> set[str]:
+        return {item.name for item in fields(RuntimeExecutionMetrics)}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in self._field_names():
+            return getattr(self, key)
+        if key in self._metric_names():
+            return getattr(self.metrics, key)
+        return self.extras.get(key, default)
+
+    def read(self, key: str, default: Any = None) -> Any:
+        return self.get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        value = self.get(key, None)
+        if value is None and key not in self._field_names() and key not in self._metric_names() and key not in self.extras:
+            raise KeyError(key)
+        return value
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key in self._field_names():
+            setattr(self, key, value)
+            return
+        if key in self._metric_names():
+            setattr(self.metrics, key, value)
+            return
+        self.extras[key] = value
+
+    def write(self, key: str, value: Any) -> None:
+        self[key] = value
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        if key in self._field_names():
+            current = getattr(self, key)
+            setattr(self, key, default)
+            return current
+        if key in self._metric_names():
+            current = getattr(self.metrics, key)
+            setattr(self.metrics, key, default if default is not None else 0)
+            return current
+        return self.extras.pop(key, default)
+
+    def remove(self, key: str, default: Any = None) -> Any:
+        return self.pop(key, default)
+
+    def update(self, payload: dict[str, Any]) -> None:
+        for key, value in payload.items():
+            self[key] = value
+
+    def merge(self, payload: dict[str, Any]) -> None:
+        self.update(payload)
+
+    def to_legacy_artifact_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        metric_payload = payload.pop("metrics", {})
+        extras = payload.pop("extras", {})
+        return {
+            **payload,
+            **metric_payload,
+            **extras,
+        }

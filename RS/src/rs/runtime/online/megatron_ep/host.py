@@ -676,7 +676,7 @@ def attach_dispatch_facade(
                 ep_group_ranks=ep_group_ranks,
                 local_rank=local_rank,
             )
-            runtime._prepared_plan_state.update(p2p_status)
+            runtime._runtime_state.merge(p2p_status)
         transport_adapter = MegatronPhaseTransportAdapter(
             dispatcher_class=type(sample_dispatcher).__name__,
             dispatcher_module_sha256=None,

@@ -63,6 +63,7 @@ from rs.runtime.online.megatron_ep.compiler_facade import (
     PlanCompilationRequest,
     compile_schedule,
 )
+from rs.runtime.online.megatron_ep.state import PreparedWindowRuntimeState
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     PhaseContextBuildRequest,
@@ -119,45 +120,7 @@ class RouterSenseInjectionRuntime:
     completed: list[PolicyRuntimeRecord] = field(default_factory=list)
     _pending_p0: dict[str, RuntimeObservation] = field(default_factory=dict)
     _pending_p1: dict[str, RuntimeObservation] = field(default_factory=dict)
-    _prepared_plan_state: dict[str, Any] = field(
-        default_factory=lambda: {
-            "prepared_plan": None,
-            "plan_created_at_us": 0,
-            "plan_source_layer": "",
-            "stored_p1_plan_digest": "",
-            "consumed_p1_plan_digest": "",
-            "predicted_dispatch_by_layer": {},
-            "actual_dispatch_by_layer": {},
-            "active_next_dispatch_prediction": None,
-            "prediction_consumption_records": [],
-            "prepared_priority_mode": "mapped_p2_tiebreak",
-            "has_real_p1_reservation": False,
-            "planning_traffic_source": "",
-            "pre_transport_observation_valid": False,
-            "captured_before_transport": False,
-            "dispatcher_send_splits": (),
-            "dispatcher_recv_splits": (),
-            "local_p0_row": (),
-            "actual_p0_total_rows": 0,
-            "p0_traffic_matrix_gather_count": 0,
-            "prediction_extra_collective_count": 0,
-            "p1_planning_collective_count": 0,
-            "before_async_p2p_phase_count": 0,
-            "after_async_p2p_phase_count": 0,
-            "selected_layer_before_async_p2p_phase_count": 0,
-            "selected_layer_after_async_p2p_phase_count": 0,
-            "all_layer_async_phase_count": 0,
-            "dispatch_transport_start_ns": 0,
-            "dispatch_transport_end_ns": 0,
-            "rank_release_ns": 0,
-            "expert_compute_start_ns": 0,
-            "expert_compute_end_ns": 0,
-            "combine_transport_start_ns": 0,
-            "combine_transport_end_ns": 0,
-            "forward_start_ns": 0,
-            "forward_end_ns": 0,
-        }
-    )
+    _runtime_state: PreparedWindowRuntimeState = field(default_factory=PreparedWindowRuntimeState)
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
     window_state_records: list[dict[str, Any]] = field(default_factory=list)
     prepared_plan_bindings: list[dict[str, Any]] = field(default_factory=list)
@@ -200,7 +163,7 @@ class RouterSenseInjectionRuntime:
         if self.config.p2_hint_mode == "calibrated_artifact":
             self._p2_hint_provider = build_p2_hint_provider(
                 self.config.p2_hint_mode,
-                shared_state=self._prepared_plan_state,
+                shared_state=self._runtime_state,
             )
 
     def _artifact_profile(self) -> str:
@@ -263,7 +226,7 @@ class RouterSenseInjectionRuntime:
             raise UnsupportedSchedulerMode("multiphase_pending_window requires a resolved phase policy name")
         if self._pending_window_adapter_instance is None:
             self._pending_window_adapter_instance = MultiphasePendingWindowAdapter(
-                shared_state=self._prepared_plan_state,
+                shared_state=self._runtime_state,
                 phase_policy_name=phase_policy_name,
                 bucket_rows=self.config.bucket_rows,
                 p0_weight=self.config.p0_weight,
@@ -608,15 +571,15 @@ class RouterSenseInjectionRuntime:
             matrix = tuple(local_row for _ in range(len(local_row)))
             gather_count = 0
         matrix_total = int(sum(sum(int(v) for v in row) for row in matrix))
-        self._prepared_plan_state["planning_traffic_source"] = "pre_transport_phase_ready_context"
-        self._prepared_plan_state["pre_transport_observation_valid"] = bool(observation.valid)
-        self._prepared_plan_state["captured_before_transport"] = bool(observation.captured_before_transport)
-        self._prepared_plan_state["dispatcher_send_splits"] = tuple(int(v) for v in observation.send_splits_rows)
-        self._prepared_plan_state["dispatcher_recv_splits"] = tuple(int(v) for v in observation.recv_splits_rows)
-        self._prepared_plan_state["local_p0_row"] = local_row
-        self._prepared_plan_state["actual_p0_total_rows"] = int(matrix_total)
-        self._prepared_plan_state["p0_traffic_matrix_gather_count"] = int(gather_count)
-        self._prepared_plan_state["prediction_extra_collective_count"] = 0
+        self._runtime_state.write("planning_traffic_source", "pre_transport_phase_ready_context")
+        self._runtime_state.write("pre_transport_observation_valid", bool(observation.valid))
+        self._runtime_state.write("captured_before_transport", bool(observation.captured_before_transport))
+        self._runtime_state.write("dispatcher_send_splits", tuple(int(v) for v in observation.send_splits_rows))
+        self._runtime_state.write("dispatcher_recv_splits", tuple(int(v) for v in observation.recv_splits_rows))
+        self._runtime_state.write("local_p0_row", local_row)
+        self._runtime_state.write("actual_p0_total_rows", int(matrix_total))
+        self._runtime_state.write("p0_traffic_matrix_gather_count", int(gather_count))
+        self._runtime_state.write("prediction_extra_collective_count", 0)
         if (int(sum(observation.send_splits_rows)) > 0 or int(sum(observation.recv_splits_rows)) > 0) and matrix_total <= 0:
             self._write_traffic_source_mismatch(
                 layer_name=layer_name,
@@ -705,7 +668,7 @@ class RouterSenseInjectionRuntime:
         world_size = int(len(self.ep_group_ranks) or len(observation.local_p0_row) or 1)
         full_matrix = tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix)
         remote_matrix = canonicalize_remote_matrix(full_matrix)
-        actual_dispatch_by_layer = dict(self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {})
+        actual_dispatch_by_layer = dict(self._runtime_state.read("actual_dispatch_by_layer", {}) or {})
         actual_dispatch_by_layer[str(layer_id)] = {
             "matrix": [list(row) for row in remote_matrix],
             "full_matrix": [list(row) for row in full_matrix],
@@ -716,9 +679,9 @@ class RouterSenseInjectionRuntime:
             "total_bytes": int(matrix_remote_bytes(remote_matrix)),
             "nonzero_edge_count": int(matrix_nonzero_remote_edge_count(remote_matrix)),
         }
-        self._prepared_plan_state["actual_dispatch_by_layer"] = actual_dispatch_by_layer
+        self._runtime_state.write("actual_dispatch_by_layer", actual_dispatch_by_layer)
 
-        predicted_dispatch_by_layer = dict(self._prepared_plan_state.get("predicted_dispatch_by_layer", {}) or {})
+        predicted_dispatch_by_layer = dict(self._runtime_state.read("predicted_dispatch_by_layer", {}) or {})
         existing_prediction = predicted_dispatch_by_layer.get(str(layer_id))
         audit_start_ns = time.monotonic_ns()
         if isinstance(existing_prediction, dict) and existing_prediction:
@@ -779,7 +742,7 @@ class RouterSenseInjectionRuntime:
         predicted = predictor.predict(prediction_input=prediction_input, current_dispatch_matrix=remote_matrix)
         prediction_end_ns = time.monotonic_ns()
         predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
-        self._prepared_plan_state["predicted_dispatch_by_layer"] = predicted_dispatch_by_layer
+        self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
         active_prediction = ActiveNextDispatchPrediction(
             source_layer_id=str(layer_id),
             target_layer_id=str(next_layer_id),
@@ -796,16 +759,19 @@ class RouterSenseInjectionRuntime:
             valid=bool(predicted.valid),
             error=str(predicted.error),
         )
-        self._prepared_plan_state["active_next_dispatch_prediction"] = active_prediction.to_dict()
-        self._prepared_plan_state["latest_predictor_name"] = predicted.predictor_name
-        self._prepared_plan_state["latest_prediction_digest"] = predicted.matrix_digest
-        self._prepared_plan_state["latest_prediction_target_layer_id"] = str(next_layer_id)
-        self._prepared_plan_state["latest_prediction_matrix_source"] = "pre_transport_phase_ready_context"
-        self._prepared_plan_state["latest_prediction_row_sums"] = [int(sum(row)) for row in predicted.matrix]
-        self._prepared_plan_state["latest_prediction_col_sums"] = [
+        self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
+        self._runtime_state.write("latest_predictor_name", predicted.predictor_name)
+        self._runtime_state.write("latest_prediction_digest", predicted.matrix_digest)
+        self._runtime_state.write("latest_prediction_target_layer_id", str(next_layer_id))
+        self._runtime_state.write("latest_prediction_matrix_source", "pre_transport_phase_ready_context")
+        self._runtime_state.write("latest_prediction_row_sums", [int(sum(row)) for row in predicted.matrix])
+        self._runtime_state.write(
+            "latest_prediction_col_sums",
+            [
             int(sum(predicted.matrix[row_idx][col_idx] for row_idx in range(len(predicted.matrix))))
             for col_idx in range(len(predicted.matrix[0]) if predicted.matrix else 0)
-        ]
+            ],
+        )
         stage_end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -836,7 +802,7 @@ class RouterSenseInjectionRuntime:
             if self._p2_hint_provider is None:
                 self._p2_hint_provider = build_p2_hint_provider(
                     self.config.p2_hint_mode,
-                    shared_state=self._prepared_plan_state,
+                    shared_state=self._runtime_state,
                 )
             provider = self._p2_hint_provider
         else:
@@ -865,9 +831,9 @@ class RouterSenseInjectionRuntime:
 
     def _record_plan_arrival(self, *, layer_name: str, phase: str) -> None:
         now_us = int(time.time() * 1e6)
-        plan = self._prepared_plan_state.get("prepared_plan")
-        plan_created_at = int(self._prepared_plan_state.get("plan_created_at_us", 0) or 0)
-        source_layer = str(self._prepared_plan_state.get("plan_source_layer", ""))
+        plan = self._runtime_state.read("prepared_plan")
+        plan_created_at = int(self._runtime_state.read("plan_created_at_us", 0) or 0)
+        source_layer = str(self._runtime_state.read("plan_source_layer", ""))
         if plan is None:
             arrival_status = "none"
             plan_age_us = 0
@@ -901,7 +867,7 @@ class RouterSenseInjectionRuntime:
         )
 
     def _current_prepared_plan_binding(self, *, layer_name: str) -> PreparedPlanBinding | None:
-        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        prepared_plan = self._runtime_state.read("prepared_plan")
         if prepared_plan is None:
             return None
         source_logical_plan_hash = ""
@@ -911,7 +877,7 @@ class RouterSenseInjectionRuntime:
         return bind_prepared_plan(
             layer_name=layer_name,
             prepared_plan=prepared_plan,
-            source_layer_name=str(self._prepared_plan_state.get("plan_source_layer", "")),
+            source_layer_name=str(self._runtime_state.read("plan_source_layer", "")),
             source_logical_plan_hash=source_logical_plan_hash,
         )
 
@@ -931,7 +897,7 @@ class RouterSenseInjectionRuntime:
             local_rank=self.local_rank,
             p0_observation=p0_observation if p0_observation is not None else (None if existing is None else existing.p0_observation),
             p1_observation=p1_observation if p1_observation is not None else (None if existing is None else existing.p1_observation),
-            prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+            prepared_plan=self._runtime_state.read("prepared_plan"),
             prepared_plan_binding=self._current_prepared_plan_binding(layer_name=layer_name),
             release_state=release_state,
         )
@@ -977,7 +943,7 @@ class RouterSenseInjectionRuntime:
                 local_rank=self.local_rank,
                 p0_observation=None,
                 p1_observation=None,
-                prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+                prepared_plan=self._runtime_state.read("prepared_plan"),
                 prepared_plan_binding=self._current_prepared_plan_binding(layer_name=layer_name),
                 release_state=WindowReleaseState(),
             )
@@ -1008,7 +974,7 @@ class RouterSenseInjectionRuntime:
         if not self._allow_shadow_artifacts():
             return
         start_ns = time.monotonic_ns()
-        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        prepared_plan = self._runtime_state.read("prepared_plan")
         if prepared_plan is None:
             end_ns = time.monotonic_ns()
             self._record_planning_timing(
@@ -1065,7 +1031,7 @@ class RouterSenseInjectionRuntime:
                         debug_trace=not self._is_perf_profile(),
                     ),
                     prepared_plan=prepared_plan,
-                    prepared_priority_cache=self._prepared_plan_state.get("prepared_priority_cache"),
+                    prepared_priority_cache=self._runtime_state.read("prepared_priority_cache"),
                     legacy_phase_policy_name=str(phase_policy_name),
                 )
             )
@@ -1174,8 +1140,8 @@ class RouterSenseInjectionRuntime:
             "window_key": str(wire.window_key),
             "policy_name": str(wire.policy_name),
         }
-        self._prepared_plan_state["global_joint_plan_wire"] = wire
-        self._prepared_plan_state["global_joint_plan_agreement"] = agreement
+        self._runtime_state.write("global_joint_plan_wire", wire)
+        self._runtime_state.write("global_joint_plan_agreement", agreement)
         self._timeline(
             "global_joint_plan_digest_agreed" if valid else "global_joint_plan_digest_mismatch",
             layer_name=layer_name,
@@ -1219,7 +1185,7 @@ class RouterSenseInjectionRuntime:
             tuple(int(remote_dispatch_matrix[col_idx][row_idx]) for col_idx in range(num_peers))
             for row_idx in range(num_peers)
         )
-        active_prediction = dict(self._prepared_plan_state.get("active_next_dispatch_prediction") or {})
+        active_prediction = dict(self._runtime_state.read("active_next_dispatch_prediction") or {})
         forecast_matrix = tuple(
             tuple(int(value) for value in row)
             for row in active_prediction.get("forecast_matrix", ())
@@ -1400,23 +1366,28 @@ class RouterSenseInjectionRuntime:
             execution_capability_required="multiphase_pending_window",
             forecast_matrix=forecast_matrix,
         )
-        self._prepared_plan_state["prepared_plan"] = prepared
-        self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
-        self._prepared_plan_state["plan_source_layer"] = layer_name
-        self._prepared_plan_state["stored_p1_plan_digest"] = stable_hash(selected_plan.to_dict())
-        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
-        self._prepared_plan_state["predictor_name"] = predictor_name
-        self._prepared_plan_state["prediction_digest"] = prediction_digest
-        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
-        self._prepared_plan_state["predicted_row_sums"] = [int(sum(row)) for row in forecast_matrix]
-        self._prepared_plan_state["predicted_col_sums"] = [
+        self._runtime_state.write("prepared_plan", prepared)
+        self._runtime_state.write("plan_created_at_us", int(time.time() * 1e6))
+        self._runtime_state.write("plan_source_layer", layer_name)
+        self._runtime_state.write("stored_p1_plan_digest", stable_hash(selected_plan.to_dict()))
+        self._runtime_state.write("consumed_p1_plan_digest", "")
+        self._runtime_state.write("predictor_name", predictor_name)
+        self._runtime_state.write("prediction_digest", prediction_digest)
+        self._runtime_state.write("prediction_confidence", float(prediction_confidence))
+        self._runtime_state.write("predicted_row_sums", [int(sum(row)) for row in forecast_matrix])
+        self._runtime_state.write(
+            "predicted_col_sums",
+            [
             int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))
             for col_idx in range(len(forecast_matrix[0]) if forecast_matrix else 0)
-        ]
-        self._prepared_plan_state["p2_matrix_source"] = "active_next_dispatch_prediction" if active_prediction else "zero_hint"
-        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(sum(int(v) for v in row) for row in forecast_matrix))
-        self._prepared_plan_state["p1_inferred_from_p0"] = [list(row) for row in inferred_p1]
-        self._prepared_plan_state["global_joint_window_plan"] = {
+            ],
+        )
+        self._runtime_state.write("p2_matrix_source", "active_next_dispatch_prediction" if active_prediction else "zero_hint")
+        self._runtime_state.write("p2_matrix_total_bytes", int(sum(sum(int(v) for v in row) for row in forecast_matrix)))
+        self._runtime_state.write("p1_inferred_from_p0", [list(row) for row in inferred_p1])
+        self._runtime_state.write(
+            "global_joint_window_plan",
+            {
             "window_key": str(prepared.window_key),
             "source_layer_id": str(layer_id),
             "target_layer_id": str(next_layer_id),
@@ -1454,14 +1425,19 @@ class RouterSenseInjectionRuntime:
             "runtime_policy_equivalent_of": effective_policy,
             "service_demand_model": "rows_from_pre_transport_phase_ready_context",
             "bundle_bytes_per_row": int(self._bundle_bytes_per_row(phase_ctx=phase_ctx)),
-        }
-        self._prepared_plan_state["global_joint_window_plan"]["host_projected_safe_selection"] = dict(safe_projection)
-        self._prepared_plan_state["ideal_raw_u_makespan"] = float(safe_projection["ideal_raw_u_estimated_makespan"])
-        self._prepared_plan_state["ideal_paired_b_makespan"] = float(safe_projection["ideal_paired_b_estimated_makespan"])
-        self._prepared_plan_state["host_projected_raw_u_makespan"] = float(safe_projection["host_projected_raw_u_estimated_makespan"])
-        self._prepared_plan_state["host_projected_paired_b_makespan"] = float(safe_projection["host_projected_paired_b_estimated_makespan"])
-        self._prepared_plan_state["prediction_consumption_records"] = [
-            {
+            },
+        )
+        global_joint_window_plan = dict(self._runtime_state.read("global_joint_window_plan") or {})
+        global_joint_window_plan["host_projected_safe_selection"] = dict(safe_projection)
+        self._runtime_state.write("global_joint_window_plan", global_joint_window_plan)
+        self._runtime_state.write("ideal_raw_u_makespan", float(safe_projection["ideal_raw_u_estimated_makespan"]))
+        self._runtime_state.write("ideal_paired_b_makespan", float(safe_projection["ideal_paired_b_estimated_makespan"]))
+        self._runtime_state.write("host_projected_raw_u_makespan", float(safe_projection["host_projected_raw_u_estimated_makespan"]))
+        self._runtime_state.write("host_projected_paired_b_makespan", float(safe_projection["host_projected_paired_b_estimated_makespan"]))
+        self._runtime_state.write(
+            "prediction_consumption_records",
+            [
+                {
                 "prediction_first_consumed_stage": "during_p0_joint_planning",
                 "consumer_layer": str(layer_id),
                 "consumer_phase": "P1",
@@ -1473,19 +1449,27 @@ class RouterSenseInjectionRuntime:
                 "prediction_confidence": float(prediction_confidence),
                 "prediction_matrix_total": int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
                 "consumed_during_p0_joint_planning": True,
-            }
-        ]
-        self._prepared_plan_state["host_projected_estimated_makespan"] = float(
+                }
+            ],
+        )
+        self._runtime_state.write(
+            "host_projected_estimated_makespan",
+            float(
             safe_projection["host_projected_paired_b_estimated_makespan"]
             if str(selected_plan.policy_name) == str(paired_b_plan.policy_name)
             else safe_projection["host_projected_raw_u_estimated_makespan"]
+            ),
         )
-        self._prepared_plan_state["ideal_estimated_makespan"] = float(
+        self._runtime_state.write(
+            "ideal_estimated_makespan",
+            float(
             safe_projection["ideal_paired_b_estimated_makespan"]
             if str(selected_plan.policy_name) == str(paired_b_plan.policy_name)
             else safe_projection["ideal_raw_u_estimated_makespan"]
+            ),
         )
-        self._prepared_plan_state.pop("prepared_priority_cache", None)
+        self._runtime_state.remove("prepared_priority_cache", None)
+        global_joint_window_plan = dict(self._runtime_state.read("global_joint_window_plan") or {})
         self._timeline(
             "runtime_joint_window_plan_stored",
             layer_name=layer_name,
@@ -1496,19 +1480,19 @@ class RouterSenseInjectionRuntime:
             pre_transport_observation_valid=bool(observation_p0.valid),
             actual_p0_total_rows=int(sum(sum(int(v) for v in row) for row in dispatch_matrix_full)),
             actual_p0_matrix_unit="rows",
-            p1_is_exact_transpose=bool(self._prepared_plan_state["global_joint_window_plan"]["p1_is_exact_transpose"]),
+            p1_is_exact_transpose=bool(global_joint_window_plan.get("p1_is_exact_transpose", False)),
             prediction_digest=prediction_digest,
             prediction_confidence=float(prediction_confidence),
             predictor_name=predictor_name or "zero_hint",
             prediction_matrix_total=int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
-            stored_p1_plan_digest=str(self._prepared_plan_state["stored_p1_plan_digest"]),
+            stored_p1_plan_digest=str(self._runtime_state.read("stored_p1_plan_digest", "")),
             consumed_during_p0_joint_planning=True,
             ideal_raw_u_makespan=float(safe_projection["ideal_raw_u_estimated_makespan"]),
             ideal_paired_b_makespan=float(safe_projection["ideal_paired_b_estimated_makespan"]),
             host_projected_raw_u_makespan=float(safe_projection["host_projected_raw_u_estimated_makespan"]),
             host_projected_paired_b_makespan=float(safe_projection["host_projected_paired_b_estimated_makespan"]),
-            host_projected_estimated_makespan=float(self._prepared_plan_state["host_projected_estimated_makespan"]),
-            ideal_estimated_makespan=float(self._prepared_plan_state["ideal_estimated_makespan"]),
+            host_projected_estimated_makespan=float(self._runtime_state.read("host_projected_estimated_makespan", 0.0)),
+            ideal_estimated_makespan=float(self._runtime_state.read("ideal_estimated_makespan", 0.0)),
             safe_selected_policy=str(selected_plan.policy_name),
             raw_u_policy_name=raw_u_name,
             paired_b_policy_name=paired_b_name,
@@ -1521,25 +1505,25 @@ class RouterSenseInjectionRuntime:
         phase: str,
         local_context: PhaseReadyContext,
     ) -> PhaseExecutionPlan:
-        prepared_plan = self._prepared_plan_state.get("prepared_plan")
+        prepared_plan = self._runtime_state.read("prepared_plan")
         if prepared_plan is None:
             raise RuntimeError(f"missing prepared runtime joint plan for {layer_name} {phase}")
         if str(phase) == "P0":
             matrix = tuple(
                 tuple(int(value) for value in row)
-                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
+                for row in (((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
             )
             matrix_unit = "rows"
         else:
             matrix = tuple(
                 tuple(int(value) for value in row)
-                for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
+                for row in (((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
             )
             matrix_unit = "rows"
             if not matrix:
                 matrix = tuple(
                     tuple(int(value) for value in row)
-                    for row in (self._prepared_plan_state.get("p1_inferred_from_p0") or [])
+                    for row in (self._runtime_state.read("p1_inferred_from_p0") or [])
                 )
         if not matrix:
             raise RuntimeError(f"missing global row matrix for async local materialization {layer_name} {phase}")
@@ -1572,16 +1556,17 @@ class RouterSenseInjectionRuntime:
                     debug_trace=not self._is_perf_profile(),
                 ),
                 prepared_plan=prepared_plan,
-                prepared_priority_cache=self._prepared_plan_state.get("prepared_priority_cache"),
+                prepared_priority_cache=self._runtime_state.read("prepared_priority_cache"),
                 legacy_phase_policy_name=str(self._effective_phase_policy_name() or "routersense_p0p1p2_hint"),
             )
         )
         compiled = compilation.execution_plan
-        self._prepared_plan_state["compiler_id"] = str(compilation.audit.compiler_id)
-        self._prepared_plan_state["logical_plan_digest"] = str(compilation.audit.logical_plan_digest)
-        self._prepared_plan_state["compiled_plan_digest"] = str(compilation.audit.compiled_plan_digest)
-        self._prepared_plan_state["legacy_secondary_policy_invocation_count"] = int(
-            compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0
+        self._runtime_state.write("compiler_id", str(compilation.audit.compiler_id))
+        self._runtime_state.write("logical_plan_digest", str(compilation.audit.logical_plan_digest))
+        self._runtime_state.write("compiled_plan_digest", str(compilation.audit.compiled_plan_digest))
+        self._runtime_state.write(
+            "legacy_secondary_policy_invocation_count",
+            int(compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0),
         )
         return replace(
             compiled,
@@ -1622,15 +1607,15 @@ class RouterSenseInjectionRuntime:
         )
         layer_id = parse_layer_id(layer_name)
         next_layer_id = self._next_layer_id(layer_name)
-        actual_dispatch_by_layer = dict(self._prepared_plan_state.get("actual_dispatch_by_layer", {}) or {})
+        actual_dispatch_by_layer = dict(self._runtime_state.read("actual_dispatch_by_layer", {}) or {})
         dispatch_entry = actual_dispatch_by_layer.get(str(layer_id), {})
         dispatch_matrix = tuple(
             tuple(int(value) for value in row)
             for row in dispatch_entry.get("matrix", p1_bundle.matrix)
         )
-        predicted_dispatch_by_layer = dict(self._prepared_plan_state.get("predicted_dispatch_by_layer", {}) or {})
+        predicted_dispatch_by_layer = dict(self._runtime_state.read("predicted_dispatch_by_layer", {}) or {})
         prediction_entry = predicted_dispatch_by_layer.get(str(next_layer_id))
-        active_prediction = self._prepared_plan_state.get("active_next_dispatch_prediction")
+        active_prediction = self._runtime_state.read("active_next_dispatch_prediction")
         predictor_name = ""
         prediction_digest = ""
         prediction_confidence = 0.0
@@ -1762,36 +1747,36 @@ class RouterSenseInjectionRuntime:
             applies_from_layer_id=applies_from_layer_id,
         )
         build_end_ns = time.monotonic_ns()
-        self._prepared_plan_state["prepared_plan"] = prepared
-        self._prepared_plan_state["plan_created_at_us"] = int(time.time() * 1e6)
-        self._prepared_plan_state["plan_source_layer"] = layer_name
-        self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
-        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = False
-        self._prepared_plan_state["predictor_name"] = predictor_name
-        self._prepared_plan_state["prediction_digest"] = prediction_digest
-        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
-        self._prepared_plan_state["predicted_row_sums"] = row_sums
-        self._prepared_plan_state["predicted_col_sums"] = col_sums
-        self._prepared_plan_state["p2_matrix_source"] = p2_matrix_source
-        self._prepared_plan_state["p2_matrix_total_bytes"] = int(sum(row_sums))
-        self._prepared_plan_state["p2_matrix_row_sums"] = row_sums
-        self._prepared_plan_state["p2_matrix_col_sums"] = col_sums
-        self._prepared_plan_state["p2_matrix_is_replicated_local_row"] = False
-        self._prepared_plan_state["p2_matrix_shape"] = [num_peers, num_peers]
-        self._prepared_plan_state["p2_matrix_gather_time_us"] = float(p1_bundle.gather_time_us)
-        self._prepared_plan_state["p2_matrix_gather_status"] = str(p1_bundle.matrix_source)
-        self._prepared_plan_state["p2_matrix_gather_call_count"] = int(p1_bundle.gather_call_count)
-        self._prepared_plan_state["prepared_priority_mode"] = "mapped_p2_tiebreak"
-        self._prepared_plan_state["has_real_p1_reservation"] = False
-        self._prepared_plan_state["p1_reservation_row_sums"] = []
-        self._prepared_plan_state["p1_reservation_col_sums"] = []
-        self._prepared_plan_state["predictor_name"] = predictor_name
-        self._prepared_plan_state["prediction_digest"] = prediction_digest
-        self._prepared_plan_state["prediction_confidence"] = float(prediction_confidence)
-        self._prepared_plan_state.pop("prepared_priority_cache", None)
+        self._runtime_state.write("prepared_plan", prepared)
+        self._runtime_state.write("plan_created_at_us", int(time.time() * 1e6))
+        self._runtime_state.write("plan_source_layer", layer_name)
+        self._runtime_state.write("p2_matrix_source", p2_matrix_source)
+        self._runtime_state.write("p2_matrix_is_replicated_local_row", False)
+        self._runtime_state.write("predictor_name", predictor_name)
+        self._runtime_state.write("prediction_digest", prediction_digest)
+        self._runtime_state.write("prediction_confidence", float(prediction_confidence))
+        self._runtime_state.write("predicted_row_sums", row_sums)
+        self._runtime_state.write("predicted_col_sums", col_sums)
+        self._runtime_state.write("p2_matrix_source", p2_matrix_source)
+        self._runtime_state.write("p2_matrix_total_bytes", int(sum(row_sums)))
+        self._runtime_state.write("p2_matrix_row_sums", row_sums)
+        self._runtime_state.write("p2_matrix_col_sums", col_sums)
+        self._runtime_state.write("p2_matrix_is_replicated_local_row", False)
+        self._runtime_state.write("p2_matrix_shape", [num_peers, num_peers])
+        self._runtime_state.write("p2_matrix_gather_time_us", float(p1_bundle.gather_time_us))
+        self._runtime_state.write("p2_matrix_gather_status", str(p1_bundle.matrix_source))
+        self._runtime_state.write("p2_matrix_gather_call_count", int(p1_bundle.gather_call_count))
+        self._runtime_state.write("prepared_priority_mode", "mapped_p2_tiebreak")
+        self._runtime_state.write("has_real_p1_reservation", False)
+        self._runtime_state.write("p1_reservation_row_sums", [])
+        self._runtime_state.write("p1_reservation_col_sums", [])
+        self._runtime_state.write("predictor_name", predictor_name)
+        self._runtime_state.write("prediction_digest", prediction_digest)
+        self._runtime_state.write("prediction_confidence", float(prediction_confidence))
+        self._runtime_state.remove("prepared_priority_cache", None)
         cache_build_start_ns = time.monotonic_ns()
         _, _, cache_build_time_us = get_or_build_prepared_priority_cache(
-            shared_state=self._prepared_plan_state,
+            shared_state=self._runtime_state,
             prepared_plan=prepared,
         )
         cache_build_end_ns = time.monotonic_ns()
@@ -1851,13 +1836,13 @@ class RouterSenseInjectionRuntime:
             "pending_window_p2_total_bytes": int(metrics.get("pending_window_p2_total_bytes", 0) or 0),
             "pending_window_p1_matrix_source": str(metrics.get("pending_window_p1_matrix_source", "")),
             "pending_window_p2_matrix_source": str(metrics.get("pending_window_p2_matrix_source", "")),
-            "p2_matrix_source": str(self._prepared_plan_state.get("p2_matrix_source", "")),
-            "p2_matrix_total_bytes": int(self._prepared_plan_state.get("p2_matrix_total_bytes", 0) or 0),
-            "p2_matrix_row_sums": list(self._prepared_plan_state.get("p2_matrix_row_sums", []) or []),
-            "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
-            "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
-            "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
-            "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
+            "p2_matrix_source": str(self._runtime_state.read("p2_matrix_source", "")),
+            "p2_matrix_total_bytes": int(self._runtime_state.read("p2_matrix_total_bytes", 0) or 0),
+            "p2_matrix_row_sums": list(self._runtime_state.read("p2_matrix_row_sums", []) or []),
+            "p2_matrix_col_sums": list(self._runtime_state.read("p2_matrix_col_sums", []) or []),
+            "p2_matrix_is_replicated_local_row": bool(self._runtime_state.read("p2_matrix_is_replicated_local_row", False)),
+            "predictor_name": str(self._runtime_state.read("predictor_name", "")),
+            "prediction_digest": str(self._runtime_state.read("prediction_digest", "")),
             "prepared_window_key": str(metrics.get("prepared_window_key", "")),
             "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
             "wave_count": len(plan.waves),
@@ -1971,30 +1956,30 @@ class RouterSenseInjectionRuntime:
         self._pending_p0.clear()
         self._pending_p1.clear()
         self._active_transport = None
-        self._prepared_plan_state["active_next_dispatch_prediction"] = None
-        self._prepared_plan_state["prediction_consumption_records"] = []
-        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
-        self._prepared_plan_state.pop("prepared_priority_cache", None)
-        self._prepared_plan_state.pop("global_joint_plan_wire", None)
-        self._prepared_plan_state.pop("global_joint_plan_agreement", None)
-        self._prepared_plan_state.pop("global_joint_window_plan", None)
-        self._prepared_plan_state["forward_start_ns"] = int(time.monotonic_ns())
-        self._prepared_plan_state["forward_end_ns"] = 0
+        self._runtime_state.write("active_next_dispatch_prediction", None)
+        self._runtime_state.write("prediction_consumption_records", [])
+        self._runtime_state.write("consumed_p1_plan_digest", "")
+        self._runtime_state.remove("prepared_priority_cache", None)
+        self._runtime_state.remove("global_joint_plan_wire", None)
+        self._runtime_state.remove("global_joint_plan_agreement", None)
+        self._runtime_state.remove("global_joint_window_plan", None)
+        self._runtime_state.write("forward_start_ns", int(time.monotonic_ns()))
+        self._runtime_state.write("forward_end_ns", 0)
 
     def end_forward(self) -> dict[str, Any]:
         active_transport = self._active_transport is not None
-        has_active_prediction = bool(self._prepared_plan_state.get("active_next_dispatch_prediction"))
-        self._prepared_plan_state["forward_end_ns"] = int(time.monotonic_ns())
+        has_active_prediction = bool(self._runtime_state.read("active_next_dispatch_prediction"))
+        self._runtime_state.write("forward_end_ns", int(time.monotonic_ns()))
         self._pending_p0.clear()
         self._pending_p1.clear()
         self._active_transport = None
-        self._prepared_plan_state["active_next_dispatch_prediction"] = None
-        self._prepared_plan_state["prediction_consumption_records"] = []
-        self._prepared_plan_state["consumed_p1_plan_digest"] = ""
-        self._prepared_plan_state.pop("prepared_priority_cache", None)
-        self._prepared_plan_state.pop("global_joint_plan_wire", None)
-        self._prepared_plan_state.pop("global_joint_plan_agreement", None)
-        self._prepared_plan_state.pop("global_joint_window_plan", None)
+        self._runtime_state.write("active_next_dispatch_prediction", None)
+        self._runtime_state.write("prediction_consumption_records", [])
+        self._runtime_state.write("consumed_p1_plan_digest", "")
+        self._runtime_state.remove("prepared_priority_cache", None)
+        self._runtime_state.remove("global_joint_plan_wire", None)
+        self._runtime_state.remove("global_joint_plan_agreement", None)
+        self._runtime_state.remove("global_joint_window_plan", None)
         return {
             "forward_epoch": int(self._forward_epoch),
             "active_transport_cleared": bool(active_transport),
@@ -2134,12 +2119,12 @@ class RouterSenseInjectionRuntime:
                         local_context=phase_ctx,
                         matrix=tuple(
                             tuple(int(value) for value in row)
-                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
+                            for row in (((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
                         ),
                         matrix_unit="rows",
                     )
                     if self._is_joint_window_async_mode()
-                    and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix"))
+                    and ((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix"))
                     else (phase_ctx,)
                 ),
             )
@@ -2168,7 +2153,7 @@ class RouterSenseInjectionRuntime:
                 agreement = self._agree_joint_plan_digest(
                     layer_name=layer_name,
                     phase="P0",
-                    prepared_plan=self._prepared_plan_state.get("prepared_plan"),
+                    prepared_plan=self._runtime_state.read("prepared_plan"),
                 )
                 if not bool(agreement.get("valid", False)):
                     raise RuntimeError(f"global joint plan digest mismatch for {layer_name} P0")
@@ -2191,7 +2176,7 @@ class RouterSenseInjectionRuntime:
                         scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
                     )
                 self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
-                self._prepared_plan_state["before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0) + 1
+                self._runtime_state.write("before_async_p2p_phase_count", int(self._runtime_state.read("before_async_p2p_phase_count", 0) or 0) + 1)
                 self._timeline(
                     "phase_execution_plan_agreed",
                     layer_name=layer_name,
@@ -2415,14 +2400,14 @@ class RouterSenseInjectionRuntime:
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P0")
             if self._is_joint_window_async_mode():
-                self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
-                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                self._runtime_state.write("after_async_p2p_phase_count", int(self._runtime_state.read("after_async_p2p_phase_count", 0) or 0) + 1)
+                self._runtime_state.write("all_layer_async_phase_count", int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0) + 1)
                 if self._layer_selected(layer_name):
-                    self._prepared_plan_state["selected_layer_after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1
+                    self._runtime_state.write("selected_layer_after_async_p2p_phase_count", int(self._runtime_state.read("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1)
             clear_end_ns = time.monotonic_ns()
-            self._prepared_plan_state["dispatch_transport_end_ns"] = int(clear_end_ns)
-            self._prepared_plan_state["rank_release_ns"] = int(clear_end_ns)
-            self._prepared_plan_state["expert_compute_start_ns"] = int(clear_end_ns)
+            self._runtime_state.write("dispatch_transport_end_ns", int(clear_end_ns))
+            self._runtime_state.write("rank_release_ns", int(clear_end_ns))
+            self._runtime_state.write("expert_compute_start_ns", int(clear_end_ns))
             self._record_planning_timing(
                 layer_name=layer_name,
                 phase="P0",
@@ -2490,7 +2475,7 @@ class RouterSenseInjectionRuntime:
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
-        self._prepared_plan_state["expert_compute_end_ns"] = int(hook_start_ns)
+        self._runtime_state.write("expert_compute_end_ns", int(hook_start_ns))
         observation_start_ns = time.monotonic_ns()
         observation = build_runtime_observation(
             run_id=self.run_id,
@@ -2585,12 +2570,12 @@ class RouterSenseInjectionRuntime:
                     local_context=phase_ctx,
                     matrix=tuple(
                         tuple(int(value) for value in row)
-                        for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
+                        for row in (((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_row_matrix")) or [])
                     ),
                     matrix_unit="rows",
                 )
                 if self._is_joint_window_async_mode()
-                and ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
+                and ((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
                 else (phase_ctx,)
             ),
         )
@@ -2604,24 +2589,24 @@ class RouterSenseInjectionRuntime:
         if self._should_schedule_phase(layer_name=layer_name, phase="P1"):
             if self._is_joint_window_async_mode():
                 binding = self._current_prepared_plan_binding(layer_name=layer_name)
-                stored_digest = str(self._prepared_plan_state.get("stored_p1_plan_digest", "") or "")
+                stored_digest = str(self._runtime_state.read("stored_p1_plan_digest", "") or "")
                 if stored_digest:
-                    self._prepared_plan_state["consumed_p1_plan_digest"] = stored_digest
+                    self._runtime_state.write("consumed_p1_plan_digest", stored_digest)
                 elif binding is not None:
-                    self._prepared_plan_state["consumed_p1_plan_digest"] = str(binding.source_logical_plan_hash)
+                    self._runtime_state.write("consumed_p1_plan_digest", str(binding.source_logical_plan_hash))
                 self._timeline(
                     "prepared_p1_plan_consumed",
                     layer_name=layer_name,
                     stored_p1_plan_digest=str(stored_digest),
-                    consumed_p1_plan_digest=str(self._prepared_plan_state.get("consumed_p1_plan_digest", "") or ""),
+                    consumed_p1_plan_digest=str(self._runtime_state.read("consumed_p1_plan_digest", "") or ""),
                     p1_plan_source_window=str(binding.window_key) if binding is not None else "",
                     p1_plan_consumed_once=True,
                 )
                 inferred_p1 = tuple(
                     tuple(int(value) for value in row)
                     for row in (
-                        ((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
-                        or self._prepared_plan_state.get("p1_inferred_from_p0")
+                        ((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_row_matrix"))
+                        or self._runtime_state.read("p1_inferred_from_p0")
                         or []
                     )
                 )
@@ -2645,7 +2630,7 @@ class RouterSenseInjectionRuntime:
                     elif inferred_send != expected_send or inferred_recv != expected_recv:
                         actual_p0_full = tuple(
                             tuple(int(value) for value in row)
-                            for row in (((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
+                            for row in (((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix")) or [])
                         )
                         raise RuntimeError(
                             f"local P1 invariant mismatch for {layer_name}: "
@@ -2658,17 +2643,17 @@ class RouterSenseInjectionRuntime:
                     phase="P1",
                     local_context=phase_ctx,
                 )
-                self._prepared_plan_state["p1_planning_collective_count"] = 0
+                self._runtime_state.write("p1_planning_collective_count", 0)
                 if self.observation_recorder is not None:
                     self.observation_recorder.record_scheduled_plan(
                         scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
                     )
                 self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
-                self._prepared_plan_state["before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0) + 1
-                self._prepared_plan_state["combine_transport_start_ns"] = int(time.monotonic_ns())
-                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                self._runtime_state.write("before_async_p2p_phase_count", int(self._runtime_state.read("before_async_p2p_phase_count", 0) or 0) + 1)
+                self._runtime_state.write("combine_transport_start_ns", int(time.monotonic_ns()))
+                self._runtime_state.write("all_layer_async_phase_count", int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0) + 1)
                 if self._layer_selected(layer_name):
-                    self._prepared_plan_state["selected_layer_before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_before_async_p2p_phase_count", 0) or 0) + 1
+                    self._runtime_state.write("selected_layer_before_async_p2p_phase_count", int(self._runtime_state.read("selected_layer_before_async_p2p_phase_count", 0) or 0) + 1)
                 self._timeline(
                     "phase_execution_plan_agreed",
                     layer_name=layer_name,
@@ -2787,11 +2772,11 @@ class RouterSenseInjectionRuntime:
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P1")
             if self._is_joint_window_async_mode():
-                self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
-                self._prepared_plan_state["combine_transport_end_ns"] = int(time.monotonic_ns())
-                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                self._runtime_state.write("after_async_p2p_phase_count", int(self._runtime_state.read("after_async_p2p_phase_count", 0) or 0) + 1)
+                self._runtime_state.write("combine_transport_end_ns", int(time.monotonic_ns()))
+                self._runtime_state.write("all_layer_async_phase_count", int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0) + 1)
                 if self._layer_selected(layer_name):
-                    self._prepared_plan_state["selected_layer_after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1
+                    self._runtime_state.write("selected_layer_after_async_p2p_phase_count", int(self._runtime_state.read("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1)
             clear_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2804,8 +2789,8 @@ class RouterSenseInjectionRuntime:
             if observation_p1 is not None and self.config.p2_hint_mode == "calibrated_artifact" and not self._is_joint_window_async_mode():
                 self._store_prepared_plan(layer_name=layer_name, observation_p1=observation_p1)
             if self._is_joint_window_async_mode():
-                self._prepared_plan_state["prepared_plan"] = None
-                self._prepared_plan_state.pop("prepared_priority_cache", None)
+                self._runtime_state.write("prepared_plan", None)
+                self._runtime_state.remove("prepared_priority_cache", None)
             if observation_p1 is not None:
                 self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
@@ -3003,56 +2988,56 @@ class RouterSenseInjectionRuntime:
         return dict(self.assertion_state)
 
     def export_prepared_plan_summary(self) -> dict[str, Any]:
-        active_prediction = self._prepared_plan_state.get("active_next_dispatch_prediction") or {}
-        consumption_records = list(self._prepared_plan_state.get("prediction_consumption_records", []) or [])
+        active_prediction = self._runtime_state.read("active_next_dispatch_prediction") or {}
+        consumption_records = list(self._runtime_state.read("prediction_consumption_records", []) or [])
         return {
-            "has_prepared_plan": bool(self._prepared_plan_state.get("prepared_plan") is not None),
-            "plan_source_layer": str(self._prepared_plan_state.get("plan_source_layer", "")),
-            "plan_created_at_us": int(self._prepared_plan_state.get("plan_created_at_us", 0) or 0),
-            "p2_matrix_source": str(self._prepared_plan_state.get("p2_matrix_source", "")),
-            "p2_matrix_total_bytes": int(self._prepared_plan_state.get("p2_matrix_total_bytes", 0) or 0),
-            "p2_matrix_row_sums": list(self._prepared_plan_state.get("p2_matrix_row_sums", []) or []),
-            "p2_matrix_col_sums": list(self._prepared_plan_state.get("p2_matrix_col_sums", []) or []),
-            "p2_matrix_is_replicated_local_row": bool(self._prepared_plan_state.get("p2_matrix_is_replicated_local_row", False)),
-            "p2_matrix_shape": list(self._prepared_plan_state.get("p2_matrix_shape", []) or []),
-            "p2_matrix_gather_time_us": float(self._prepared_plan_state.get("p2_matrix_gather_time_us", 0.0) or 0.0),
-            "p2_matrix_gather_status": str(self._prepared_plan_state.get("p2_matrix_gather_status", "")),
-            "p2_matrix_gather_call_count": int(self._prepared_plan_state.get("p2_matrix_gather_call_count", 0) or 0),
-            "predictor_name": str(self._prepared_plan_state.get("predictor_name", "")),
-            "prediction_digest": str(self._prepared_plan_state.get("prediction_digest", "")),
-            "prediction_confidence": float(self._prepared_plan_state.get("prediction_confidence", 0.0) or 0.0),
-            "planning_traffic_source": str(self._prepared_plan_state.get("planning_traffic_source", "")),
-            "pre_transport_observation_valid": bool(self._prepared_plan_state.get("pre_transport_observation_valid", False)),
-            "captured_before_transport": bool(self._prepared_plan_state.get("captured_before_transport", False)),
-            "dispatcher_send_splits": list(self._prepared_plan_state.get("dispatcher_send_splits", ()) or ()),
-            "dispatcher_recv_splits": list(self._prepared_plan_state.get("dispatcher_recv_splits", ()) or ()),
-            "local_p0_row": list(self._prepared_plan_state.get("local_p0_row", ()) or ()),
-            "actual_p0_total_rows": int(self._prepared_plan_state.get("actual_p0_total_rows", 0) or 0),
-            "p0_traffic_matrix_gather_count": int(self._prepared_plan_state.get("p0_traffic_matrix_gather_count", 0) or 0),
-            "prediction_extra_collective_count": int(self._prepared_plan_state.get("prediction_extra_collective_count", 0) or 0),
-            "p1_planning_collective_count": int(self._prepared_plan_state.get("p1_planning_collective_count", 0) or 0),
-            "before_async_p2p_phase_count": int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0),
-            "after_async_p2p_phase_count": int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0),
-            "selected_layer_before_async_p2p_phase_count": int(self._prepared_plan_state.get("selected_layer_before_async_p2p_phase_count", 0) or 0),
-            "selected_layer_after_async_p2p_phase_count": int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0),
-            "all_layer_async_phase_count": int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0),
-            "stored_p1_plan_digest": str(self._prepared_plan_state.get("stored_p1_plan_digest", "")),
-            "consumed_p1_plan_digest": str(self._prepared_plan_state.get("consumed_p1_plan_digest", "")),
-            "compiler_id": str(self._prepared_plan_state.get("compiler_id", "")),
-            "logical_plan_digest": str(self._prepared_plan_state.get("logical_plan_digest", "")),
-            "compiled_plan_digest": str(self._prepared_plan_state.get("compiled_plan_digest", "")),
+            "has_prepared_plan": bool(self._runtime_state.read("prepared_plan") is not None),
+            "plan_source_layer": str(self._runtime_state.read("plan_source_layer", "")),
+            "plan_created_at_us": int(self._runtime_state.read("plan_created_at_us", 0) or 0),
+            "p2_matrix_source": str(self._runtime_state.read("p2_matrix_source", "")),
+            "p2_matrix_total_bytes": int(self._runtime_state.read("p2_matrix_total_bytes", 0) or 0),
+            "p2_matrix_row_sums": list(self._runtime_state.read("p2_matrix_row_sums", []) or []),
+            "p2_matrix_col_sums": list(self._runtime_state.read("p2_matrix_col_sums", []) or []),
+            "p2_matrix_is_replicated_local_row": bool(self._runtime_state.read("p2_matrix_is_replicated_local_row", False)),
+            "p2_matrix_shape": list(self._runtime_state.read("p2_matrix_shape", []) or []),
+            "p2_matrix_gather_time_us": float(self._runtime_state.read("p2_matrix_gather_time_us", 0.0) or 0.0),
+            "p2_matrix_gather_status": str(self._runtime_state.read("p2_matrix_gather_status", "")),
+            "p2_matrix_gather_call_count": int(self._runtime_state.read("p2_matrix_gather_call_count", 0) or 0),
+            "predictor_name": str(self._runtime_state.read("predictor_name", "")),
+            "prediction_digest": str(self._runtime_state.read("prediction_digest", "")),
+            "prediction_confidence": float(self._runtime_state.read("prediction_confidence", 0.0) or 0.0),
+            "planning_traffic_source": str(self._runtime_state.read("planning_traffic_source", "")),
+            "pre_transport_observation_valid": bool(self._runtime_state.read("pre_transport_observation_valid", False)),
+            "captured_before_transport": bool(self._runtime_state.read("captured_before_transport", False)),
+            "dispatcher_send_splits": list(self._runtime_state.read("dispatcher_send_splits", ()) or ()),
+            "dispatcher_recv_splits": list(self._runtime_state.read("dispatcher_recv_splits", ()) or ()),
+            "local_p0_row": list(self._runtime_state.read("local_p0_row", ()) or ()),
+            "actual_p0_total_rows": int(self._runtime_state.read("actual_p0_total_rows", 0) or 0),
+            "p0_traffic_matrix_gather_count": int(self._runtime_state.read("p0_traffic_matrix_gather_count", 0) or 0),
+            "prediction_extra_collective_count": int(self._runtime_state.read("prediction_extra_collective_count", 0) or 0),
+            "p1_planning_collective_count": int(self._runtime_state.read("p1_planning_collective_count", 0) or 0),
+            "before_async_p2p_phase_count": int(self._runtime_state.read("before_async_p2p_phase_count", 0) or 0),
+            "after_async_p2p_phase_count": int(self._runtime_state.read("after_async_p2p_phase_count", 0) or 0),
+            "selected_layer_before_async_p2p_phase_count": int(self._runtime_state.read("selected_layer_before_async_p2p_phase_count", 0) or 0),
+            "selected_layer_after_async_p2p_phase_count": int(self._runtime_state.read("selected_layer_after_async_p2p_phase_count", 0) or 0),
+            "all_layer_async_phase_count": int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0),
+            "stored_p1_plan_digest": str(self._runtime_state.read("stored_p1_plan_digest", "")),
+            "consumed_p1_plan_digest": str(self._runtime_state.read("consumed_p1_plan_digest", "")),
+            "compiler_id": str(self._runtime_state.read("compiler_id", "")),
+            "logical_plan_digest": str(self._runtime_state.read("logical_plan_digest", "")),
+            "compiled_plan_digest": str(self._runtime_state.read("compiled_plan_digest", "")),
             "legacy_secondary_policy_invocation_count": int(
-                self._prepared_plan_state.get("legacy_secondary_policy_invocation_count", 0) or 0
+                self._runtime_state.read("legacy_secondary_policy_invocation_count", 0) or 0
             ),
-            "dispatch_transport_start_ns": int(self._prepared_plan_state.get("dispatch_transport_start_ns", 0) or 0),
-            "dispatch_transport_end_ns": int(self._prepared_plan_state.get("dispatch_transport_end_ns", 0) or 0),
-            "rank_release_ns": int(self._prepared_plan_state.get("rank_release_ns", 0) or 0),
-            "expert_compute_start_ns": int(self._prepared_plan_state.get("expert_compute_start_ns", 0) or 0),
-            "expert_compute_end_ns": int(self._prepared_plan_state.get("expert_compute_end_ns", 0) or 0),
-            "combine_transport_start_ns": int(self._prepared_plan_state.get("combine_transport_start_ns", 0) or 0),
-            "combine_transport_end_ns": int(self._prepared_plan_state.get("combine_transport_end_ns", 0) or 0),
-            "forward_start_ns": int(self._prepared_plan_state.get("forward_start_ns", 0) or 0),
-            "forward_end_ns": int(self._prepared_plan_state.get("forward_end_ns", 0) or 0),
+            "dispatch_transport_start_ns": int(self._runtime_state.read("dispatch_transport_start_ns", 0) or 0),
+            "dispatch_transport_end_ns": int(self._runtime_state.read("dispatch_transport_end_ns", 0) or 0),
+            "rank_release_ns": int(self._runtime_state.read("rank_release_ns", 0) or 0),
+            "expert_compute_start_ns": int(self._runtime_state.read("expert_compute_start_ns", 0) or 0),
+            "expert_compute_end_ns": int(self._runtime_state.read("expert_compute_end_ns", 0) or 0),
+            "combine_transport_start_ns": int(self._runtime_state.read("combine_transport_start_ns", 0) or 0),
+            "combine_transport_end_ns": int(self._runtime_state.read("combine_transport_end_ns", 0) or 0),
+            "forward_start_ns": int(self._runtime_state.read("forward_start_ns", 0) or 0),
+            "forward_end_ns": int(self._runtime_state.read("forward_end_ns", 0) or 0),
             "rank_release_lead_us": None,
             "expert_compute_start_lead_us": None,
             "communication_compute_overlap_us": None,
@@ -3071,18 +3056,18 @@ class RouterSenseInjectionRuntime:
             "consumer_layer": str(consumption_records[0].get("consumer_layer", "")) if consumption_records else "",
             "consumer_phase": str(consumption_records[0].get("consumer_phase", "")) if consumption_records else "",
             "consumed_before_p1": bool(consumption_records[0].get("consumed_before_p1", False)) if consumption_records else False,
-            "safe_selected_policy": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("safe_selected_policy", ""))),
-            "raw_u_policy_name": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("raw_u_policy_name", ""))),
-            "paired_b_policy_name": str(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("paired_b_policy_name", ""))),
-            "host_projected_estimated_makespan": float(self._prepared_plan_state.get("host_projected_estimated_makespan", 0.0) or 0.0),
-            "ideal_estimated_makespan": float(self._prepared_plan_state.get("ideal_estimated_makespan", 0.0) or 0.0),
-            "actual_p0_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_row_matrix", [])) or []),
-            "actual_p0_full_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix", [])) or []),
+            "safe_selected_policy": str(((self._runtime_state.read("global_joint_window_plan") or {}).get("safe_selected_policy", ""))),
+            "raw_u_policy_name": str(((self._runtime_state.read("global_joint_window_plan") or {}).get("raw_u_policy_name", ""))),
+            "paired_b_policy_name": str(((self._runtime_state.read("global_joint_window_plan") or {}).get("paired_b_policy_name", ""))),
+            "host_projected_estimated_makespan": float(self._runtime_state.read("host_projected_estimated_makespan", 0.0) or 0.0),
+            "ideal_estimated_makespan": float(self._runtime_state.read("ideal_estimated_makespan", 0.0) or 0.0),
+            "actual_p0_row_matrix": list(((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_row_matrix", [])) or []),
+            "actual_p0_full_row_matrix": list(((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix", [])) or []),
             "actual_p0_matrix_unit": "rows",
-            "inferred_p1_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_row_matrix", [])) or []),
-            "inferred_p1_remote_row_matrix": list(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("inferred_p1_remote_row_matrix", [])) or []),
+            "inferred_p1_row_matrix": list(((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_row_matrix", [])) or []),
+            "inferred_p1_remote_row_matrix": list(((self._runtime_state.read("global_joint_window_plan") or {}).get("inferred_p1_remote_row_matrix", [])) or []),
             "inferred_p1_matrix_unit": "rows",
-            "p1_is_exact_transpose": bool(((self._prepared_plan_state.get("global_joint_window_plan") or {}).get("p1_is_exact_transpose", False))),
+            "p1_is_exact_transpose": bool(((self._runtime_state.read("global_joint_window_plan") or {}).get("p1_is_exact_transpose", False))),
         }
 
     def export_phase_contexts(self) -> list[dict[str, Any]]:

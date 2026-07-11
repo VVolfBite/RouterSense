@@ -218,7 +218,7 @@ def main() -> None:
                 p2_hint_mode=p2_hint_mode,
                 online_p2_predictor=online_p2_predictor,
             )
-            runtime._prepared_plan_state.update(p2p_status)  # noqa: SLF001
+            runtime._runtime_state.merge(p2p_status)  # noqa: SLF001
             runtime.transport_adapter = adapter
             adapter.timeline_hook = lambda event, **detail: runtime._timeline(
                 event,
