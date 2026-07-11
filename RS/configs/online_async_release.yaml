@@ -1,0 +1,24 @@
+model:
+  path: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  ep_size: 4
+workload:
+  prompts: configs/workload/comparison_64_prompts.json
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+  line: async_release
+  output_mode: paper
+execution:
+  schedule_layer_selector: selected
+  schedule_phase_selector: both
+  p0_weight: 1.0
+  p1_reservation_weight: 1.0
+  p2_hint_weight: 1.0
+strategies:
+  - fifo_async_p2p
+  - greedy_async_p2p
+  - birkhoff_phase_local_async_p2p
+  - routersense_joint_zero_hint_async_p2p
+  - routersense_joint_predicted_async_p2p
+  - routersense_safe_joint_async

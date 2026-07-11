@@ -23,7 +23,7 @@ def _reshape(values: list[float], *, rows: int, cols: int) -> Matrix:
 @dataclass
 class FATEStyleLinearTrafficPredictor:
     ridge_lambda: float = 1e-3
-    predictor_name: str = "fate_style_linear"
+    predictor_name: str = "ridge_linear_trace_predictor"
     predictor_version: str = "v1"
     _weight: torch.Tensor | None = None
     _bias: torch.Tensor | None = None

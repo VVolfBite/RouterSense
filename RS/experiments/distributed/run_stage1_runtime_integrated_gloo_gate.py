@@ -81,7 +81,7 @@ def _runtime(rank: int, local_rank: int, *, policy_name: str, p2_hint_mode: str,
             p2_hint_weight=1.0,
             observation_profile="execution",
             online_p2_predictor=online_p2_predictor,
-            executor_heartbeat_path=str(RUN_DIR),
+            executor_heartbeat_path=str(RUN_DIR) if os.environ.get("RS_GLOO_GATE_HEARTBEAT", "").strip() == "1" else "",
         ),
         rank=rank,
         local_rank=local_rank,
@@ -193,6 +193,15 @@ def main() -> None:
             ("routersense_joint_zero_hint_async_p2p", "routersense_p0p1p2_hint", "none", "none", (1,), 2),
             ("routersense_joint_predicted_async_p2p", "routersense_p0p1p2_hint", "calibrated_artifact", "copy_current_dispatch", (1, 2), 2),
         ]
+        selected_strategies = {
+            item.strip()
+            for item in os.environ.get("RS_GLOO_GATE_STRATEGIES", "").split(",")
+            if item.strip()
+        }
+        if selected_strategies:
+            strategy_specs = [item for item in strategy_specs if item[0] in selected_strategies]
+            if not strategy_specs:
+                raise SystemExit("RS_GLOO_GATE_STRATEGIES filtered out all strategies")
         strategy_summaries: list[dict[str, Any]] = []
         for strategy_name, policy_name, p2_hint_mode, online_p2_predictor, forward_epochs, layer_count in strategy_specs:
             stage = f"{strategy_name}:setup"

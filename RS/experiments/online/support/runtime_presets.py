@@ -43,8 +43,6 @@ def validate_public_runtime_surface(comparison: dict[str, Any]) -> None:
         raise ValueError(f"unsupported runtime.line {line!r}")
     if output_mode not in PUBLIC_OUTPUT_MODES:
         raise ValueError(f"unsupported runtime.output_mode {output_mode!r}")
-    if line == "async_release":
-        raise ValueError("async_release runtime_line has a shadow-only skeleton but no online executor integration yet")
     execution = dict(comparison.get("execution", {}) or {})
     forbidden_execution = {"bucket_rows"}
     forbidden_runtime = {
@@ -111,8 +109,8 @@ def public_runtime_defaults(*, output_mode: str) -> dict[str, Any]:
 
 
 def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[str, Any]:
-    if runtime_line == "async_release":
-        raise ValueError("async_release runtime_line has a shadow-only skeleton but no online executor integration yet")
+    if runtime_line not in PUBLIC_RUNTIME_LINES:
+        raise ValueError(f"unsupported runtime_line {runtime_line!r}")
     if strategy_name in {"disabled", "native"}:
         return {
             "policy": "",
@@ -127,7 +125,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
         return {
             "policy": "birkhoff_phase_local",
             "run_kind": "online_policy_correctness",
-            "execution_mode": "phase_sync_wave",
+            "execution_mode": "joint_window_async_p2p" if runtime_line == "async_release" else "phase_sync_wave",
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
@@ -177,7 +175,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
         return {
             "policy": "routersense_p0p1p2_hint",
             "run_kind": "online_policy_correctness",
-            "execution_mode": "multiphase_pending_window",
+            "execution_mode": "joint_window_async_p2p" if runtime_line == "async_release" else "multiphase_pending_window",
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,

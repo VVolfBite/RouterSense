@@ -42,6 +42,10 @@ class NativePassthroughPolicy:
 
 
 def _parse_policy_name(policy_name: str) -> tuple[str, str | None]:
+    if policy_name == "birkhoff_bucket_phase_local":
+        return "birkhoff_phase_local", None
+    if policy_name == "birkhoff_fluid_reference":
+        return "birkhoff_von_neumann_fluid", None
     if policy_name.startswith("routersense_multiphase_lookahead:"):
         return "routersense_multiphase_lookahead", policy_name.split(":", 1)[1]
     return policy_name, None

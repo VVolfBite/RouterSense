@@ -22,8 +22,8 @@ def _blend(left: Matrix, right: Matrix, alpha: float) -> Matrix:
 
 @dataclass
 class FATEStyleHistoryPredictor:
-    alpha: float = 0.7
-    predictor_name: str = "fate_style_history"
+    alpha: float = 0.5
+    predictor_name: str = "history_ema"
     predictor_version: str = "v1"
     _historical_mean: Matrix | None = None
 

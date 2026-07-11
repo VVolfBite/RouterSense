@@ -77,18 +77,28 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
         elif predictor_name == "copy_current_dispatch":
             predicted = sample.current_dispatch_matrix
             records.append(compare_prediction(predictor_name="copy_current_dispatch", predictor_version="v1", sample=sample, predicted=predicted, confidence=1.0))
-        elif predictor_name == "fate_style_history":
+        elif predictor_name in {"history_ema", "fate_style_history"}:
             if not history:
                 predicted = sample.current_dispatch_matrix
-                records.append(compare_prediction(predictor_name="fate_style_history", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.25))
+                records.append(compare_prediction(predictor_name="history_ema", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.25))
             else:
-                predictor = FATEStyleHistoryPredictor().fit(history)
-                predicted = predictor.predict_matrix(sample)
+                previous_matrix = history[-1].current_dispatch_matrix
+                alpha = 0.5
+                predicted = canonicalize_remote_matrix(
+                    tuple(
+                        tuple(
+                            int(round(alpha * int(cur) + (1.0 - alpha) * int(prev)))
+                            for cur, prev in zip(current_row, previous_row, strict=True)
+                        )
+                        for current_row, previous_row in zip(sample.current_dispatch_matrix, previous_matrix, strict=True)
+                    )
+                )
+                predictor = FATEStyleHistoryPredictor(alpha=alpha)
                 records.append(compare_prediction(predictor_name=predictor.predictor_name, predictor_version=predictor.predictor_version, sample=sample, predicted=predicted, confidence=0.75))
-        elif predictor_name == "fate_style_linear":
+        elif predictor_name in {"ridge_linear_trace_predictor", "fate_style_linear", "history_linear_trend"}:
             if len(history) < 2:
                 predicted = sample.current_dispatch_matrix
-                records.append(compare_prediction(predictor_name="fate_style_linear", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.2))
+                records.append(compare_prediction(predictor_name="ridge_linear_trace_predictor", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.2))
             else:
                 predictor = FATEStyleLinearTrafficPredictor().fit(history)
                 predicted = predictor.predict_matrix(sample)

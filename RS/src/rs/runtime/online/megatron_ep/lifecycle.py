@@ -138,6 +138,18 @@ class RouterSenseInjectionRuntime:
             "p1_planning_collective_count": 0,
             "before_async_p2p_phase_count": 0,
             "after_async_p2p_phase_count": 0,
+            "selected_layer_before_async_p2p_phase_count": 0,
+            "selected_layer_after_async_p2p_phase_count": 0,
+            "all_layer_async_phase_count": 0,
+            "dispatch_transport_start_ns": 0,
+            "dispatch_transport_end_ns": 0,
+            "rank_release_ns": 0,
+            "expert_compute_start_ns": 0,
+            "expert_compute_end_ns": 0,
+            "combine_transport_start_ns": 0,
+            "combine_transport_end_ns": 0,
+            "forward_start_ns": 0,
+            "forward_end_ns": 0,
         }
     )
     plan_arrival_records: list[dict[str, Any]] = field(default_factory=list)
@@ -1919,10 +1931,13 @@ class RouterSenseInjectionRuntime:
         self._prepared_plan_state.pop("global_joint_plan_wire", None)
         self._prepared_plan_state.pop("global_joint_plan_agreement", None)
         self._prepared_plan_state.pop("global_joint_window_plan", None)
+        self._prepared_plan_state["forward_start_ns"] = int(time.monotonic_ns())
+        self._prepared_plan_state["forward_end_ns"] = 0
 
     def end_forward(self) -> dict[str, Any]:
         active_transport = self._active_transport is not None
         has_active_prediction = bool(self._prepared_plan_state.get("active_next_dispatch_prediction"))
+        self._prepared_plan_state["forward_end_ns"] = int(time.monotonic_ns())
         self._pending_p0.clear()
         self._pending_p1.clear()
         self._active_transport = None
@@ -2354,7 +2369,13 @@ class RouterSenseInjectionRuntime:
             self.clear_transport(layer_name=layer_name, phase="P0")
             if self._is_joint_window_async_mode():
                 self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
+                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                if self._layer_selected(layer_name):
+                    self._prepared_plan_state["selected_layer_after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1
             clear_end_ns = time.monotonic_ns()
+            self._prepared_plan_state["dispatch_transport_end_ns"] = int(clear_end_ns)
+            self._prepared_plan_state["rank_release_ns"] = int(clear_end_ns)
+            self._prepared_plan_state["expert_compute_start_ns"] = int(clear_end_ns)
             self._record_planning_timing(
                 layer_name=layer_name,
                 phase="P0",
@@ -2422,6 +2443,7 @@ class RouterSenseInjectionRuntime:
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        self._prepared_plan_state["expert_compute_end_ns"] = int(hook_start_ns)
         observation_start_ns = time.monotonic_ns()
         observation = build_runtime_observation(
             run_id=self.run_id,
@@ -2596,6 +2618,10 @@ class RouterSenseInjectionRuntime:
                     )
                 self._activate_transport(layer_name=layer_name, phase="P1", context=phase_ctx, plan=plan)
                 self._prepared_plan_state["before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0) + 1
+                self._prepared_plan_state["combine_transport_start_ns"] = int(time.monotonic_ns())
+                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                if self._layer_selected(layer_name):
+                    self._prepared_plan_state["selected_layer_before_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_before_async_p2p_phase_count", 0) or 0) + 1
                 self._timeline(
                     "phase_execution_plan_agreed",
                     layer_name=layer_name,
@@ -2715,6 +2741,10 @@ class RouterSenseInjectionRuntime:
             self.clear_transport(layer_name=layer_name, phase="P1")
             if self._is_joint_window_async_mode():
                 self._prepared_plan_state["after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0) + 1
+                self._prepared_plan_state["combine_transport_end_ns"] = int(time.monotonic_ns())
+                self._prepared_plan_state["all_layer_async_phase_count"] = int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0) + 1
+                if self._layer_selected(layer_name):
+                    self._prepared_plan_state["selected_layer_after_async_p2p_phase_count"] = int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0) + 1
             clear_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2956,8 +2986,26 @@ class RouterSenseInjectionRuntime:
             "p1_planning_collective_count": int(self._prepared_plan_state.get("p1_planning_collective_count", 0) or 0),
             "before_async_p2p_phase_count": int(self._prepared_plan_state.get("before_async_p2p_phase_count", 0) or 0),
             "after_async_p2p_phase_count": int(self._prepared_plan_state.get("after_async_p2p_phase_count", 0) or 0),
+            "selected_layer_before_async_p2p_phase_count": int(self._prepared_plan_state.get("selected_layer_before_async_p2p_phase_count", 0) or 0),
+            "selected_layer_after_async_p2p_phase_count": int(self._prepared_plan_state.get("selected_layer_after_async_p2p_phase_count", 0) or 0),
+            "all_layer_async_phase_count": int(self._prepared_plan_state.get("all_layer_async_phase_count", 0) or 0),
             "stored_p1_plan_digest": str(self._prepared_plan_state.get("stored_p1_plan_digest", "")),
             "consumed_p1_plan_digest": str(self._prepared_plan_state.get("consumed_p1_plan_digest", "")),
+            "dispatch_transport_start_ns": int(self._prepared_plan_state.get("dispatch_transport_start_ns", 0) or 0),
+            "dispatch_transport_end_ns": int(self._prepared_plan_state.get("dispatch_transport_end_ns", 0) or 0),
+            "rank_release_ns": int(self._prepared_plan_state.get("rank_release_ns", 0) or 0),
+            "expert_compute_start_ns": int(self._prepared_plan_state.get("expert_compute_start_ns", 0) or 0),
+            "expert_compute_end_ns": int(self._prepared_plan_state.get("expert_compute_end_ns", 0) or 0),
+            "combine_transport_start_ns": int(self._prepared_plan_state.get("combine_transport_start_ns", 0) or 0),
+            "combine_transport_end_ns": int(self._prepared_plan_state.get("combine_transport_end_ns", 0) or 0),
+            "forward_start_ns": int(self._prepared_plan_state.get("forward_start_ns", 0) or 0),
+            "forward_end_ns": int(self._prepared_plan_state.get("forward_end_ns", 0) or 0),
+            "rank_release_lead_us": None,
+            "expert_compute_start_lead_us": None,
+            "communication_compute_overlap_us": None,
+            "phase_barrier_wait_avoided_us": None,
+            "critical_path_rank": None,
+            "critical_path_forward_us": None,
             "active_prediction": dict(active_prediction),
             "prediction_created_stage": str(active_prediction.get("created_at_stage", "")),
             "prediction_source_layer": str(active_prediction.get("source_layer_id", "")),

@@ -405,6 +405,7 @@ def execute_async_phase_tensor(
 
     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
     local_copy_rows = 0
+    local_copy_task_count = 0
     for bundle in context.transport_bundles:
         segment = bundle.outgoing_segment
         if not segment.is_local or int(segment.row_count) <= 0:
@@ -420,6 +421,7 @@ def execute_async_phase_tensor(
             rows=int(segment.row_count),
         )
         local_copy_rows += int(segment.row_count)
+        local_copy_task_count += 1
 
     recv_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
     send_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
@@ -548,6 +550,8 @@ def execute_async_phase_tensor(
             "work_handle_count": len(work_handles),
             "coalescing_enabled": False,
             "coalesced_task_count": 0,
+            "local_copy_task_count": int(local_copy_task_count),
+            "local_copy_row_count": int(local_copy_rows),
         }
     )
 

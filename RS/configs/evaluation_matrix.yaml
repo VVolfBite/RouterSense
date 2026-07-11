@@ -1,0 +1,28 @@
+bucket_rows:
+  - 128
+  - 256
+  - 512
+  - 1024
+  - 2048
+predictors:
+  online_eligible:
+    - zero_hint
+    - copy_current_dispatch
+    - history_ema
+  offline_only:
+    - ridge_linear_trace_predictor
+    - perfect_trace_hint
+    - shuffled_control
+policies:
+  deployable:
+    - phase_barrier_fifo
+    - greedy_ready_set
+    - islip_round_robin
+    - birkhoff_bucket_phase_local
+    - paired_b_barrier_criticality
+    - joint_u_barrier_criticality
+    - runtime_safe_u
+  reference:
+    - birkhoff_fluid_reference
+    - exact_small_instance_oracle
+    - posthoc_best_of_u_and_b

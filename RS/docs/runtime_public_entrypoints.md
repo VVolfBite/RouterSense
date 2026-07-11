@@ -7,17 +7,16 @@
 当前对外只保留两条 runtime line：
 
 - `phase_sync`
-  - 当前唯一已实现、已验证的 online 主线
+  - 当前保守同步线
   - 表示 phase barrier 下的计划生成、计划下发和 wave 执行
   - 当前 `birkhoff_phase_local` 和 `routersense_p0p1p2_hint` 都运行在这条线上
 
 - `async_release`
-  - 论文目标里的未来主线
-  - 表示不依赖强 barrier、允许 rank 提前 release 的版本
-  - 当前只有 shadow-only skeleton
-  - 如果用户配置 `runtime.line=async_release`，入口必须直接报错：
-    `async_release runtime_line has a shadow-only skeleton but no online executor integration yet`
-  - 不能偷偷 fallback 到 `phase_sync`
+  - 当前正式 async P2P 线
+  - 表示使用 `joint_window_async_p2p` 执行模式与真实 `batch_isend_irecv`
+  - 已通过 B2 lifecycle gate
+  - 当前仍需后续 GPU 会话完成 C2 correctness 和 A2 performance
+  - 不允许偷偷 fallback 到 `phase_sync`
 
 ## Online Output Modes
 
@@ -68,17 +67,27 @@
 - internal execution mode: `native_passthrough`
 - internal control mode: `none`
 
-### `birkhoff_phase_local`
+### `birkhoff_bucket_phase_local`
 
 - internal run kind: `online_policy_correctness`
-- internal execution mode: `phase_sync_wave`
+- internal policy alias: `birkhoff_phase_local`
+- `phase_sync` line -> `phase_sync_wave`
+- `async_release` line -> `joint_window_async_p2p`
 - internal control mode: `sync_before_phase`
 - internal P2 mode: `none`
 
-### `routersense_p0p1p2_hint`
+### `routersense_joint_zero_hint_async_p2p`
+
+- internal policy: `routersense_p0p1p2_hint`
+- internal execution mode: `joint_window_async_p2p`
+- internal control mode: `sync_before_phase`
+- internal P2 mode: `none`
+
+### `routersense_joint_predicted_async_p2p`
 
 - internal run kind: `online_policy_correctness`
-- internal execution mode: `multiphase_pending_window`
+- internal policy: `routersense_p0p1p2_hint`
+- internal execution mode: `joint_window_async_p2p`
 - internal control mode: `sync_before_phase`
 - internal P2 mode: `calibrated_artifact`
 
@@ -92,11 +101,12 @@
 ## 与论文证据链的关系
 
 - `phase_sync`
-  - 当前真实可执行的 online 保守线
-  - 用于证明 runtime 可复现、可审计、可 replay
+  - 当前同步参考线
+  - 用于 C2/A2 的 reference 和 backend 对照
 - `async_release`
-  - 当前只表达未来联合 release 语义
-  - 还不能拿来声称 full joint online 已经实现
+  - 当前真实 async P2P 线
+  - B2 已确认信息链和 transport 接入
+  - C2/A2 仍待完成 correctness/performance
 
 离线证据入口：
 

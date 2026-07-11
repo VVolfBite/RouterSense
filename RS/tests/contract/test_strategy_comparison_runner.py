@@ -204,7 +204,7 @@ def test_strategy_comparison_dry_run_public_debug_replay_maps_trace_outputs(tmp_
     assert generated["observation"]["capture_enabled"] is False
 
 
-def test_async_release_public_runtime_line_fails_cleanly(tmp_path: Path) -> None:
+def test_async_release_public_runtime_line_dry_run_passes(tmp_path: Path) -> None:
     config_path = tmp_path / "comparison.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -218,7 +218,7 @@ def test_async_release_public_runtime_line_fails_cleanly(tmp_path: Path) -> None
                     "dispatcher": "alltoall",
                 },
                 "workload": {"prompts": "configs/workload/smoke_prompts.json"},
-                "strategies": [{"name": "disabled"}],
+                "strategies": [{"name": "birkhoff_phase_local_async_p2p"}],
                 "execution": {"repetitions": 1},
             },
             sort_keys=False,
@@ -243,10 +243,10 @@ def test_async_release_public_runtime_line_fails_cleanly(tmp_path: Path) -> None
         text=True,
         check=False,
     )
-    assert proc.returncode != 0
-    assert "async_release runtime_line has a shadow-only skeleton but no online executor integration yet" in (
-        proc.stderr + proc.stdout
-    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    generated = yaml.safe_load((output_dir / "generated_configs" / "birkhoff_phase_local_async_p2p_rep0.yaml").read_text(encoding="utf-8"))
+    assert generated["execution"]["mode"] == "joint_window_async_p2p"
+    assert generated["runtime"]["control_mode"] == "sync_before_phase"
 
 
 def test_recommended_config_does_not_expose_legacy_low_level_fields() -> None:

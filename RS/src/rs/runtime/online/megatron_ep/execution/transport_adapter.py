@@ -54,6 +54,7 @@ class MegatronPhaseTransportAdapter:
         self.real_send_op_count = 0
         self.real_recv_op_count = 0
         self.local_copy_task_count = 0
+        self.local_copy_row_count = 0
         self.phase_sync_fallback_count = 0
 
     def activate(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
@@ -168,7 +169,8 @@ class MegatronPhaseTransportAdapter:
                 self.batch_isend_irecv_call_count += 1 if (int(summary_entry.get("send_op_count", 0)) + int(summary_entry.get("recv_op_count", 0))) > 0 else 0
                 self.real_send_op_count += int(summary_entry.get("send_op_count", 0) or 0)
                 self.real_recv_op_count += int(summary_entry.get("recv_op_count", 0) or 0)
-                self.local_copy_task_count += int(result.local_copy_rows)
+                self.local_copy_task_count += int(summary_entry.get("local_copy_task_count", 0) or 0)
+                self.local_copy_row_count += int(summary_entry.get("local_copy_row_count", int(result.local_copy_rows)) or 0)
                 execution_entries.append(
                     {
                         "record_type": "async_preflight_summary",
@@ -219,6 +221,7 @@ class MegatronPhaseTransportAdapter:
                 "real_send_op_count": int(self.real_send_op_count),
                 "real_recv_op_count": int(self.real_recv_op_count),
                 "local_copy_task_count": int(self.local_copy_task_count),
+                "local_copy_row_count": int(self.local_copy_row_count),
                 "phase_sync_fallback_count": int(self.phase_sync_fallback_count),
                 "use_nccl_stream_requested": bool(use_nccl_stream),
                 "use_nccl_stream_effective": bool(use_nccl_stream),

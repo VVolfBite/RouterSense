@@ -46,7 +46,7 @@ def build_dispatch_forecast(
         matrix = _scale_matrix(current, scale=scale)
         oracle = False
         evaluation_eligible = True
-    elif mode == "perfect_trace":
+    elif mode in {"perfect_trace", "perfect_trace_hint"}:
         matrix = actual_next
         oracle = True
         evaluation_eligible = False
@@ -54,7 +54,7 @@ def build_dispatch_forecast(
         matrix = canonicalize_remote_matrix(tuple(tuple(0 for _ in row) for row in current))
         oracle = False
         evaluation_eligible = True
-    elif mode == "shuffled_hint":
+    elif mode in {"shuffled_hint", "shuffled_control"}:
         matrix = _shuffle_matrix(actual_next)
         oracle = False
         evaluation_eligible = False
