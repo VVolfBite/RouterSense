@@ -36,6 +36,7 @@ def run_global_matching_scheduler(
     price_clip: float,
     iteration_budget: int,
     atomic: bool,
+    prediction_matrix: list[list[int]] | None = None,
     base_score_lookup: dict[str, float] | None = None,
     base_priority_weight: float = 0.0,
     collect_debug_trace: bool = False,
@@ -52,10 +53,11 @@ def run_global_matching_scheduler(
                 release_time[(phase, gpu)] = expert_compute_delay if prev_phase == 0 else 0.0
     barrier_done = {(phase, gpu): 0.0 for phase in range(3) for gpu in range(num_gpus)}
     ready_since: dict[str, float] = {}
+    planning_prediction_matrix = next_dispatch_matrix if prediction_matrix is None else prediction_matrix
     downstream_load = outbound_loads(
         dispatch_matrix,
         combine_matrix,
-        next_dispatch_matrix,
+        planning_prediction_matrix,
         mode=mode,
         prediction_confidence=prediction_confidence,
     )
@@ -203,7 +205,9 @@ def run_global_matching_scheduler(
         scheduler_name=strategy,
         planning_time_ms=planning_time_ms,
         reported_makespan=makespan,
-        prediction_used=prediction_confidence > 0.0 and mode == RUNTIME_LOOKAHEAD_MODE,
+        prediction_used=prediction_confidence > 0.0 and any(
+            float(value) > 0.0 for row in planning_prediction_matrix for value in row
+        ),
     )
     if residual_nonzero and solver_status == "max_wave_limit_exceeded":
         audit = {

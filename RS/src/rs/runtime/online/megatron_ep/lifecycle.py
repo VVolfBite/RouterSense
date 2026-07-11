@@ -658,11 +658,16 @@ class RouterSenseInjectionRuntime:
 
     def _build_online_predictor(self):
         name = self._online_p2_predictor_name()
-        if name == "none":
+        if name in {"none", "zero_hint"}:
             return ZeroHintPredictor()
         if name == "history_ema":
             return HistoryEMATrafficPredictor(alpha=0.5)
-        return CopyCurrentDispatchPredictor()
+        if name == "copy_current_dispatch":
+            return CopyCurrentDispatchPredictor()
+        raise ValueError(
+            "unsupported online_p2_predictor "
+            f"{name!r}; expected one of ('none', 'zero_hint', 'copy_current_dispatch', 'history_ema')"
+        )
 
     def _should_generate_runtime_prediction(self) -> bool:
         return self._is_joint_window_async_mode() or self.config.p2_hint_mode == "calibrated_artifact"

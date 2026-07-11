@@ -7,6 +7,7 @@ from typing import Any
 
 from rs.scheduling.contracts import LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem, PreparedWindowPlan
 from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
+from rs.scheduling.traffic_matrix import canonicalize_remote_matrix
 
 from ..capabilities import PolicyCapabilities
 from .scheduler_state import run_global_matching_scheduler
@@ -202,6 +203,15 @@ class RouterSenseMultiphaseLookaheadPolicy:
         prediction_weight = self.p2_hint_weight if self.information_mode == "p0_p1_p2" else 0.0
         if self.information_mode != "p0_p1_p2":
             prediction_confidence = 0.0
+        prediction_matrix = None
+        if problem.forecast is not None:
+            metadata = dict(problem.forecast.metadata or {})
+            hint = metadata.get("planning_hint_matrix")
+            prediction_matrix = (
+                [list(row) for row in problem.forecast.matrix]
+                if hint is None
+                else [list(row) for row in canonicalize_remote_matrix(hint)]
+            )
         result = run_global_matching_scheduler(
             [list(row) for row in problem.p0_dispatch_matrix],
             [list(row) for row in problem.p1_return_matrix],
@@ -224,6 +234,7 @@ class RouterSenseMultiphaseLookaheadPolicy:
             price_clip=0.0,
             iteration_budget=1,
             atomic=False,
+            prediction_matrix=prediction_matrix,
         )
         return _scheduler_result_to_logical_plan(
             policy_name=self.policy_name,

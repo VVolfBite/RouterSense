@@ -158,6 +158,14 @@ def _build_u_policy(
     if spec.exact_matching and linear_sum_assignment is None:
         return _unsupported_exact_backend_plan(problem, spec)
     started = time.perf_counter()
+    prediction_matrix = None
+    if problem.forecast is not None:
+        metadata = dict(problem.forecast.metadata or {})
+        hint = metadata.get("planning_hint_matrix")
+        if hint is None:
+            prediction_matrix = [list(row) for row in problem.forecast.matrix]
+        else:
+            prediction_matrix = [list(row) for row in canonicalize_remote_matrix(hint)]
     result = run_global_matching_scheduler(
         [list(row) for row in problem.p0_dispatch_matrix],
         [list(row) for row in problem.p1_return_matrix],
@@ -180,6 +188,7 @@ def _build_u_policy(
         price_clip=spec.price_clip,
         iteration_budget=spec.iteration_budget,
         atomic=spec.atomic,
+        prediction_matrix=prediction_matrix,
         collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
     )
     planning_time_ms = float(result.get("solve_time_ms", (time.perf_counter() - started) * 1000.0))
