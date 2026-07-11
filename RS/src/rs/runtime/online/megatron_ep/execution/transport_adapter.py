@@ -18,7 +18,7 @@ from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyCo
 
 from .async_p2p_executor import validate_async_phase_preflight
 from .executor_facade import ExecutionRequest, execute_transport
-from .sync_wave_executor import PhaseExecutionResult, execute_scheduled_phase_tensor
+from .sync_wave_executor import PhaseExecutionResult
 
 
 class HostAPIDriftError(RuntimeError):
@@ -127,14 +127,24 @@ class MegatronPhaseTransportAdapter:
                 mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
             )
             if not preflight.all_ranks_ok:
-                output, result, execution_entries = execute_scheduled_phase_tensor(
-                    context=state.context,
-                    plan=replace(state.plan, execution_mode="phase_sync_wave"),
-                    tensor_role=tensor_role,
-                    input_tensor=input_tensor,
-                    group=group,
-                    timeline_hook=getattr(self, "timeline_hook", None),
+                facade_result = execute_transport(
+                    ExecutionRequest(
+                        execution_plan=replace(state.plan, execution_mode="phase_sync_wave"),
+                        phase_context=state.context,
+                        tensor_role=tensor_role,
+                        input_tensor=input_tensor,
+                        process_group=group,
+                        rank_context={
+                            "global_rank": int(state.context.global_rank),
+                            "local_rank": int(state.context.local_rank),
+                        },
+                        event_sink=getattr(self, "timeline_hook", None),
+                    ),
+                    backend="phase_sync",
                 )
+                output = facade_result.output_tensor
+                result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
+                execution_entries = list(facade_result.execution_entries)
                 self.phase_sync_fallback_count += 1
                 execution_entries = list(execution_entries) + [
                     {
