@@ -8,6 +8,7 @@ claim per-bucket compute overlap; completion is rank-local and phase-scoped.
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,32 @@ class AsyncPhasePreflightResult:
     local_recv_count: int
     send_digest: int
     recv_digest: int
+    collective_count: int
+    preflight_mode: str
+
+
+def _dtype_code(dtype: str) -> int:
+    mapping = {
+        "torch.float16": 1,
+        "torch.bfloat16": 2,
+        "torch.float32": 3,
+        "torch.int64": 4,
+        "torch.int32": 5,
+    }
+    return int(mapping.get(str(dtype), 255))
+
+
+def _shape_suffix_digest(shape_suffix: tuple[int, ...]) -> int:
+    digest = hashlib.blake2b(digest_size=8)
+    for value in shape_suffix:
+        digest.update(int(value).to_bytes(8, "little", signed=True))
+    return int.from_bytes(digest.digest(), "little", signed=False) & 0x7FFFFFFFFFFFFFFF
+
+
+def _global_group_maps(ep_group_ranks: tuple[int, ...]) -> tuple[dict[int, int], dict[int, int]]:
+    global_to_group = {int(rank): idx for idx, rank in enumerate(ep_group_ranks)}
+    group_to_global = {idx: int(rank) for idx, rank in enumerate(ep_group_ranks)}
+    return global_to_group, group_to_global
 
 
 def _sequence_key(
@@ -74,12 +101,58 @@ def _sequence_key(
 
 
 def _digest_sequence_items(items: list[tuple[int, ...]]) -> int:
-    acc = 1469598103934665603
+    digest = hashlib.blake2b(digest_size=16)
     for item in items:
         for value in item:
-            acc ^= int(value) & 0xFFFFFFFFFFFFFFFF
-            acc = (acc * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return int(acc & 0x7FFFFFFFFFFFFFFF)
+            digest.update(int(value).to_bytes(8, "little", signed=True))
+    return int.from_bytes(digest.digest()[:8], "little", signed=False) & 0x7FFFFFFFFFFFFFFF
+
+
+def _sequence_entry(
+    *,
+    context: PhaseReadyContext,
+    phase: str,
+    tensor_role: str,
+    wave_id: int,
+    task: BucketTask,
+    row_count: int,
+    dtype: str,
+    shape_suffix: tuple[int, ...],
+) -> tuple[int, ...]:
+    base = _sequence_key(
+        context=context,
+        phase=phase,
+        tensor_role=tensor_role,
+        wave_id=wave_id,
+        task=task,
+    )
+    return (
+        *base,
+        int(row_count),
+        int(_dtype_code(dtype)),
+        int(_shape_suffix_digest(shape_suffix)),
+    )
+
+
+def _pair_index(*, src_rank: int, dst_rank: int, ep_group_ranks: tuple[int, ...]) -> int:
+    global_to_group, _ = _global_group_maps(ep_group_ranks)
+    if int(src_rank) not in global_to_group or int(dst_rank) not in global_to_group:
+        raise ValueError(
+            f"pair ranks must be members of ep_group_ranks: src={src_rank} dst={dst_rank} group={ep_group_ranks}"
+        )
+    src_group = int(global_to_group[int(src_rank)])
+    dst_group = int(global_to_group[int(dst_rank)])
+    group_size = int(len(ep_group_ranks))
+    return int(src_group) * group_size + int(dst_group)
+
+
+def _mark_coverage(coverage: list[int], *, start: int, row_count: int) -> str | None:
+    end = int(start) + int(row_count)
+    if int(start) < 0 or end > len(coverage):
+        return "recv_offset_out_of_bounds"
+    for idx in range(int(start), end):
+        coverage[idx] += 1
+    return None
 
 
 def validate_async_phase_preflight(
@@ -89,11 +162,13 @@ def validate_async_phase_preflight(
     tensor_role: str,
     process_group: dist.ProcessGroup | None,
     rank_context: dict[str, int],
+    mode: str = "full",
 ) -> AsyncPhasePreflightResult:
     world_group = process_group if process_group is not None else dist.group.WORLD
     rank = int(rank_context["global_rank"])
     world_size = int(len(context.ep_group_ranks) or 1)
     local_reason = ""
+    collective_count = 1
 
     expected_rows = int(sum(context.recv_splits))
     coverage = [0] * max(expected_rows, 0)
@@ -104,25 +179,29 @@ def validate_async_phase_preflight(
             payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
             if payload is None or int(payload.row_count) <= 0:
                 continue
-            if int(task.src_rank) != int(task.dst_rank) and int(task.dst_rank) == rank:
-                start = int(payload.receiver_offset_rows)
-                end = start + int(payload.row_count)
-                if start < 0 or end > len(coverage):
-                    local_reason = "recv_offset_out_of_bounds"
+            if int(task.dst_rank) == rank:
+                reason = _mark_coverage(
+                    coverage,
+                    start=int(payload.receiver_offset_rows),
+                    row_count=int(payload.row_count),
+                )
+                if reason:
+                    local_reason = reason
                     break
-                for idx in range(start, end):
-                    coverage[idx] += 1
-            seq = _sequence_key(
+            seq = _sequence_entry(
                 context=context,
                 phase=str(context.phase),
                 tensor_role=str(tensor_role),
                 wave_id=int(wave.wave_id),
                 task=task,
+                row_count=int(payload.row_count),
+                dtype=str(payload.dtype),
+                shape_suffix=tuple(int(v) for v in payload.shape_suffix),
             )
             if int(task.src_rank) == rank and int(task.src_rank) != int(task.dst_rank):
-                local_send_items.append(tuple(int(v) for v in seq if not isinstance(v, str)))
+                local_send_items.append(tuple(int(v) for v in seq))
             if int(task.dst_rank) == rank and int(task.src_rank) != int(task.dst_rank):
-                local_recv_items.append(tuple(int(v) for v in seq if not isinstance(v, str)))
+                local_recv_items.append(tuple(int(v) for v in seq))
         if local_reason:
             break
     if not local_reason and coverage and any(value != 1 for value in coverage):
@@ -139,28 +218,56 @@ def validate_async_phase_preflight(
     recv_rows = torch.zeros(world_size * world_size, dtype=torch.long, device=device)
     send_digest = torch.zeros(world_size * world_size, dtype=torch.long, device=device)
     recv_digest = torch.zeros(world_size * world_size, dtype=torch.long, device=device)
+    role_digest_send = torch.zeros(world_size * world_size, dtype=torch.long, device=device)
+    role_digest_recv = torch.zeros(world_size * world_size, dtype=torch.long, device=device)
+    per_pair_send_sequences: dict[int, list[tuple[int, ...]]] = {}
+    per_pair_recv_sequences: dict[int, list[tuple[int, ...]]] = {}
+    per_pair_send_roles: dict[int, list[tuple[int, ...]]] = {}
+    per_pair_recv_roles: dict[int, list[tuple[int, ...]]] = {}
     for wave in plan.waves:
         for task in wave.bucket_tasks:
             payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
             if payload is None or int(payload.row_count) <= 0 or int(task.src_rank) == int(task.dst_rank):
                 continue
-            index = int(task.src_rank) * world_size + int(task.dst_rank)
-            seq = _sequence_key(
+            index = _pair_index(
+                src_rank=int(task.src_rank),
+                dst_rank=int(task.dst_rank),
+                ep_group_ranks=tuple(int(v) for v in context.ep_group_ranks),
+            )
+            seq = _sequence_entry(
                 context=context,
                 phase=str(context.phase),
                 tensor_role=str(tensor_role),
                 wave_id=int(wave.wave_id),
                 task=task,
+                row_count=int(payload.row_count),
+                dtype=str(payload.dtype),
+                shape_suffix=tuple(int(v) for v in payload.shape_suffix),
             )
-            seq_digest = _digest_sequence_items([tuple(int(v) for v in seq if not isinstance(v, str))])
+            role_tuple = (
+                int(payload.row_count),
+                int(_dtype_code(str(payload.dtype))),
+                int(_shape_suffix_digest(tuple(int(v) for v in payload.shape_suffix))),
+            )
             if int(task.src_rank) == rank:
                 send_count[index] += 1
                 send_rows[index] += int(payload.row_count)
-                send_digest[index] ^= int(seq_digest)
+                per_pair_send_sequences.setdefault(index, []).append(tuple(int(v) for v in seq))
+                per_pair_send_roles.setdefault(index, []).append(role_tuple)
             if int(task.dst_rank) == rank:
                 recv_count[index] += 1
                 recv_rows[index] += int(payload.row_count)
-                recv_digest[index] ^= int(seq_digest)
+                per_pair_recv_sequences.setdefault(index, []).append(tuple(int(v) for v in seq))
+                per_pair_recv_roles.setdefault(index, []).append(role_tuple)
+
+    for index, items in per_pair_send_sequences.items():
+        send_digest[index] = int(_digest_sequence_items(items))
+    for index, items in per_pair_recv_sequences.items():
+        recv_digest[index] = int(_digest_sequence_items(items))
+    for index, items in per_pair_send_roles.items():
+        role_digest_send[index] = int(_digest_sequence_items(items))
+    for index, items in per_pair_recv_roles.items():
+        role_digest_recv[index] = int(_digest_sequence_items(items))
 
     local_ok = 1 if not local_reason else 0
     local_flags = torch.tensor([local_ok], dtype=torch.long, device=device)
@@ -169,24 +276,58 @@ def validate_async_phase_preflight(
     all_ranks_ok = all(int(item.item()) == 1 for item in gathered_flags)
 
     if all_ranks_ok:
-        send_count_g = [torch.empty_like(send_count) for _ in range(world_size)]
-        recv_count_g = [torch.empty_like(recv_count) for _ in range(world_size)]
-        send_rows_g = [torch.empty_like(send_rows) for _ in range(world_size)]
-        recv_rows_g = [torch.empty_like(recv_rows) for _ in range(world_size)]
-        send_digest_g = [torch.empty_like(send_digest) for _ in range(world_size)]
-        recv_digest_g = [torch.empty_like(recv_digest) for _ in range(world_size)]
-        dist.all_gather(send_count_g, send_count, group=world_group)
-        dist.all_gather(recv_count_g, recv_count, group=world_group)
-        dist.all_gather(send_rows_g, send_rows, group=world_group)
-        dist.all_gather(recv_rows_g, recv_rows, group=world_group)
-        dist.all_gather(send_digest_g, send_digest, group=world_group)
-        dist.all_gather(recv_digest_g, recv_digest, group=world_group)
-        send_count_sum = torch.stack(send_count_g).sum(dim=0)
-        recv_count_sum = torch.stack(recv_count_g).sum(dim=0)
-        send_rows_sum = torch.stack(send_rows_g).sum(dim=0)
-        recv_rows_sum = torch.stack(recv_rows_g).sum(dim=0)
-        send_digest_sum = torch.stack(send_digest_g).sum(dim=0)
-        recv_digest_sum = torch.stack(recv_digest_g).sum(dim=0)
+        if str(mode) == "compact":
+            packed = torch.stack(
+                [
+                    send_count,
+                    recv_count,
+                    send_rows,
+                    recv_rows,
+                    send_digest,
+                    recv_digest,
+                    role_digest_send,
+                    role_digest_recv,
+                ],
+                dim=0,
+            )
+            gathered = [torch.empty_like(packed) for _ in range(world_size)]
+            dist.all_gather(gathered, packed, group=world_group)
+            collective_count += 1
+            stacked = torch.stack(gathered, dim=0)
+            send_count_sum = stacked[:, 0, :].sum(dim=0)
+            recv_count_sum = stacked[:, 1, :].sum(dim=0)
+            send_rows_sum = stacked[:, 2, :].sum(dim=0)
+            recv_rows_sum = stacked[:, 3, :].sum(dim=0)
+            send_digest_sum = stacked[:, 4, :].sum(dim=0)
+            recv_digest_sum = stacked[:, 5, :].sum(dim=0)
+            role_send_sum = stacked[:, 6, :].sum(dim=0)
+            role_recv_sum = stacked[:, 7, :].sum(dim=0)
+        else:
+            send_count_g = [torch.empty_like(send_count) for _ in range(world_size)]
+            recv_count_g = [torch.empty_like(recv_count) for _ in range(world_size)]
+            send_rows_g = [torch.empty_like(send_rows) for _ in range(world_size)]
+            recv_rows_g = [torch.empty_like(recv_rows) for _ in range(world_size)]
+            send_digest_g = [torch.empty_like(send_digest) for _ in range(world_size)]
+            recv_digest_g = [torch.empty_like(recv_digest) for _ in range(world_size)]
+            role_digest_send_g = [torch.empty_like(role_digest_send) for _ in range(world_size)]
+            role_digest_recv_g = [torch.empty_like(role_digest_recv) for _ in range(world_size)]
+            dist.all_gather(send_count_g, send_count, group=world_group)
+            dist.all_gather(recv_count_g, recv_count, group=world_group)
+            dist.all_gather(send_rows_g, send_rows, group=world_group)
+            dist.all_gather(recv_rows_g, recv_rows, group=world_group)
+            dist.all_gather(send_digest_g, send_digest, group=world_group)
+            dist.all_gather(recv_digest_g, recv_digest, group=world_group)
+            dist.all_gather(role_digest_send_g, role_digest_send, group=world_group)
+            dist.all_gather(role_digest_recv_g, role_digest_recv, group=world_group)
+            collective_count += 8
+            send_count_sum = torch.stack(send_count_g).sum(dim=0)
+            recv_count_sum = torch.stack(recv_count_g).sum(dim=0)
+            send_rows_sum = torch.stack(send_rows_g).sum(dim=0)
+            recv_rows_sum = torch.stack(recv_rows_g).sum(dim=0)
+            send_digest_sum = torch.stack(send_digest_g).sum(dim=0)
+            recv_digest_sum = torch.stack(recv_digest_g).sum(dim=0)
+            role_send_sum = torch.stack(role_digest_send_g).sum(dim=0)
+            role_recv_sum = torch.stack(role_digest_recv_g).sum(dim=0)
         if not torch.equal(send_count_sum, recv_count_sum):
             local_reason = "send_recv_count_mismatch"
             all_ranks_ok = False
@@ -195,6 +336,9 @@ def validate_async_phase_preflight(
             all_ranks_ok = False
         elif not torch.equal(send_digest_sum, recv_digest_sum):
             local_reason = "send_recv_sequence_mismatch"
+            all_ranks_ok = False
+        elif not torch.equal(role_send_sum, role_recv_sum):
+            local_reason = "send_recv_role_shape_mismatch"
             all_ranks_ok = False
 
     return AsyncPhasePreflightResult(
@@ -205,6 +349,8 @@ def validate_async_phase_preflight(
         local_recv_count=len(local_recv_items),
         send_digest=_digest_sequence_items(local_send_items),
         recv_digest=_digest_sequence_items(local_recv_items),
+        collective_count=int(collective_count),
+        preflight_mode=str(mode),
     )
 
 
@@ -222,6 +368,7 @@ def execute_async_phase_tensor(
     rank = int(rank_context["global_rank"])
     total_recv_rows = int(sum(context.recv_splits))
     output = _empty_like_rows(input_tensor, total_recv_rows)
+    emit_detailed_artifacts = bool((plan.metrics or {}).get("emit_detailed_task_artifacts", True))
 
     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
     local_copy_rows = 0
@@ -252,12 +399,15 @@ def execute_async_phase_tensor(
             payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
             if payload is None or int(payload.row_count) <= 0:
                 continue
-            seq = _sequence_key(
+            seq = _sequence_entry(
                 context=context,
                 phase=str(context.phase),
                 tensor_role=str(tensor_role),
                 wave_id=int(wave.wave_id),
                 task=task,
+                row_count=int(payload.row_count),
+                dtype=str(payload.dtype),
+                shape_suffix=tuple(int(v) for v in payload.shape_suffix),
             )
             base_entry = {
                 "phase": str(context.phase),
@@ -274,7 +424,8 @@ def execute_async_phase_tensor(
                 "record_type": "task",
                 "execution_mode": "joint_window_async_p2p",
             }
-            execution_entries.append(dict(base_entry))
+            if emit_detailed_artifacts:
+                execution_entries.append(dict(base_entry))
             if int(task.src_rank) == int(task.dst_rank):
                 continue
             active_wave_ids.add(int(wave.wave_id))
@@ -304,7 +455,8 @@ def execute_async_phase_tensor(
     ops: list[Any] = []
     for seq, entry in recv_specs:
         recv_tensor = output.narrow(0, int(entry["receiver_offset_rows"]), int(entry["row_count"]))
-        ordered_entries.append({**entry, "op_kind": "recv"})
+        if emit_detailed_artifacts:
+            ordered_entries.append({**entry, "op_kind": "recv"})
         retained_tensors.append(recv_tensor)
         ops.append(
             dist.P2POp(
@@ -316,7 +468,8 @@ def execute_async_phase_tensor(
         )
     for seq, entry in send_specs:
         send_tensor = input_tensor.narrow(0, int(entry["sender_offset_rows"]), int(entry["row_count"]))
-        ordered_entries.append({**entry, "op_kind": "send"})
+        if emit_detailed_artifacts:
+            ordered_entries.append({**entry, "op_kind": "send"})
         retained_tensors.append(send_tensor)
         ops.append(
             dist.P2POp(

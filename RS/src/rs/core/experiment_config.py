@@ -250,8 +250,18 @@ def validate_run_config(config: RunConfig) -> None:
             raise ValueError("online_policy_correctness requires sync_before_phase control mode")
         if config.offline_study.policies:
             raise ValueError("online_policy_correctness must not declare offline_study.policies")
-        if config.execution.mode in {"multiphase_pending_window", "joint_window_async_p2p"} and config.online_policy.name != "routersense_p0p1p2_hint":
-            raise ValueError("multiphase_pending_window and joint_window_async_p2p currently support online_policy.name=routersense_p0p1p2_hint only")
+        if config.execution.mode == "multiphase_pending_window" and config.online_policy.name != "routersense_p0p1p2_hint":
+            raise ValueError("multiphase_pending_window currently supports online_policy.name=routersense_p0p1p2_hint only")
+        if config.execution.mode == "joint_window_async_p2p" and config.online_policy.name not in {
+            "bucketed_fifo",
+            "greedy_ready_set",
+            "birkhoff_phase_local",
+            "routersense_p0p1p2_hint",
+        }:
+            raise ValueError(
+                "joint_window_async_p2p supports online_policy.name in "
+                "{bucketed_fifo, greedy_ready_set, birkhoff_phase_local, routersense_p0p1p2_hint}"
+            )
     if config.online_policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
         raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
     _assert_no_credential_fields(config.to_dict())

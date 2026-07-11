@@ -45,16 +45,23 @@ def _init() -> tuple[int, int, int]:
     return rank, world_size, local_rank
 
 
-def _runtime(rank: int, local_rank: int) -> RouterSenseInjectionRuntime:
+def _runtime(
+    rank: int,
+    local_rank: int,
+    *,
+    policy_name: str,
+    p2_hint_mode: str,
+    online_p2_predictor: str,
+) -> RouterSenseInjectionRuntime:
     return RouterSenseInjectionRuntime(
         config=RouterSenseInjectionConfig(
-            policy="routersense_p0p1p2_hint",
+            policy=policy_name,
             execution_mode="joint_window_async_p2p",
             control_mode="sync_before_phase",
-            p2_hint_mode="calibrated_artifact",
+            p2_hint_mode=p2_hint_mode,
             p2_hint_weight=1.0,
             observation_profile="execution",
-            online_p2_predictor="copy_current_dispatch",
+            online_p2_predictor=online_p2_predictor,
         ),
         rank=rank,
         local_rank=local_rank,
@@ -243,82 +250,107 @@ def main() -> None:
     rank, world_size, local_rank = _init()
     if world_size != 2:
         raise SystemExit("run_stage1_runtime_integrated_gloo_gate.py requires world_size=2")
-    runtime = _runtime(rank, local_rank)
     p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(ep_group_ranks=(0, 1), local_rank=local_rank)
-    runtime._prepared_plan_state.update(p2p_status)  # noqa: SLF001
-    adapter = MegatronPhaseTransportAdapter(
-        dispatcher_class="SyntheticDispatcher",
-        dispatcher_module_sha256=None,
-        p2p_group=p2p_group,
-    )
-    last_safe_selected_policy = ""
-
+    strategy_specs = [
+        ("fifo_async_p2p", "bucketed_fifo", "none", "none", (1,), 1),
+        ("greedy_async_p2p", "greedy_ready_set", "none", "none", (1,), 1),
+        ("birkhoff_phase_local_async_p2p", "birkhoff_phase_local", "none", "none", (1,), 1),
+        ("routersense_joint_zero_hint_async_p2p", "routersense_p0p1p2_hint", "none", "none", (1,), 1),
+        ("routersense_joint_predicted_async_p2p", "routersense_p0p1p2_hint", "calibrated_artifact", "copy_current_dispatch", (1, 2), 2),
+    ]
     layer_matrices = [
         ((0, 2), (1, 0)),
         ((0, 1), (3, 0)),
     ]
-    for forward_epoch in (1, 2):
-        runtime.begin_forward(forward_epoch=forward_epoch)
-        for layer_index, p0_rows in enumerate(layer_matrices):
-            layer_name = f"model.layers.{layer_index}.mlp"
-            layer_id = str(layer_index)
-            runtime._record_prediction_for_dispatch(  # noqa: SLF001
-                layer_name=layer_name,
-                observation=_observation(rank=rank, layer_name=layer_name, phase="P0", per_peer_bytes=(0, 16) if layer_index == 0 else (0, 8)),
-                device=torch.device("cpu"),
-            )
-            runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
-                layer_name=layer_name,
-                observation_p0=_observation(rank=rank, layer_name=layer_name, phase="P0", per_peer_bytes=(0, 16) if layer_index == 0 else (0, 8)),
-            )
-            last_safe_selected_policy = str(runtime.export_prepared_plan_summary().get("safe_selected_policy", ""))
-            p0_contexts_and_inputs = _contexts_from_matrix(matrix=p0_rows, phase="P0", layer_id=layer_id, forward_epoch=forward_epoch)
-            local_p0_context, local_p0_inputs = p0_contexts_and_inputs[rank]
-            p0_plan = _materialize_from_runtime_prepared_plan(
-                runtime=runtime,
-                local_context=local_p0_context,
-                global_contexts=tuple(item[0] for item in p0_contexts_and_inputs),
-            )
-            _execute_plan(
-                adapter=adapter,
-                layer_name=layer_name,
-                phase="P0",
-                context=local_p0_context,
-                plan=p0_plan,
-                packed_inputs=local_p0_inputs,
-            )
-            p1_rows = tuple(tuple(int(p0_rows[col][row]) if row != col else 0 for col in range(world_size)) for row in range(world_size))
-            p1_contexts_and_inputs = _contexts_from_matrix(matrix=p1_rows, phase="P1", layer_id=layer_id, forward_epoch=forward_epoch)
-            local_p1_context, local_p1_inputs = p1_contexts_and_inputs[rank]
-            p1_plan = _materialize_from_runtime_prepared_plan(
-                runtime=runtime,
-                local_context=local_p1_context,
-                global_contexts=tuple(item[0] for item in p1_contexts_and_inputs),
-            )
-            _execute_plan(
-                adapter=adapter,
-                layer_name=layer_name,
-                phase="P1",
-                context=local_p1_context,
-                plan=p1_plan,
-                packed_inputs=local_p1_inputs,
-            )
-        runtime.end_forward()
-
-    rows = adapter.export_results()
-    result_rows = [row for row in rows if row.get("record_type") == "result_summary"]
+    strategy_summaries: list[dict[str, Any]] = []
+    for strategy_name, policy_name, p2_hint_mode, online_p2_predictor, forward_epochs, layer_count in strategy_specs:
+        runtime = _runtime(
+            rank,
+            local_rank,
+            policy_name=policy_name,
+            p2_hint_mode=p2_hint_mode,
+            online_p2_predictor=online_p2_predictor,
+        )
+        runtime._prepared_plan_state.update(p2p_status)  # noqa: SLF001
+        adapter = MegatronPhaseTransportAdapter(
+            dispatcher_class="SyntheticDispatcher",
+            dispatcher_module_sha256=None,
+            p2p_group=p2p_group,
+        )
+        last_safe_selected_policy = ""
+        for forward_epoch in forward_epochs:
+            runtime.begin_forward(forward_epoch=forward_epoch)
+            for layer_index, p0_rows in enumerate(layer_matrices[:layer_count]):
+                layer_name = f"model.layers.{layer_index}.mlp"
+                layer_id = str(layer_index)
+                observation = _observation(rank=rank, layer_name=layer_name, phase="P0", per_peer_bytes=(0, 16) if layer_index == 0 else (0, 8))
+                runtime._record_prediction_for_dispatch(  # noqa: SLF001
+                    layer_name=layer_name,
+                    observation=observation,
+                    device=torch.device("cpu"),
+                )
+                runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+                    layer_name=layer_name,
+                    observation_p0=observation,
+                )
+                last_safe_selected_policy = str(runtime.export_prepared_plan_summary().get("safe_selected_policy", ""))
+                p0_contexts_and_inputs = _contexts_from_matrix(matrix=p0_rows, phase="P0", layer_id=layer_id, forward_epoch=forward_epoch)
+                local_p0_context, local_p0_inputs = p0_contexts_and_inputs[rank]
+                p0_plan = _materialize_from_runtime_prepared_plan(
+                    runtime=runtime,
+                    local_context=local_p0_context,
+                    global_contexts=tuple(item[0] for item in p0_contexts_and_inputs),
+                )
+                _execute_plan(
+                    adapter=adapter,
+                    layer_name=layer_name,
+                    phase="P0",
+                    context=local_p0_context,
+                    plan=p0_plan,
+                    packed_inputs=local_p0_inputs,
+                )
+                p1_rows = tuple(tuple(int(p0_rows[col][row]) if row != col else 0 for col in range(world_size)) for row in range(world_size))
+                p1_contexts_and_inputs = _contexts_from_matrix(matrix=p1_rows, phase="P1", layer_id=layer_id, forward_epoch=forward_epoch)
+                local_p1_context, local_p1_inputs = p1_contexts_and_inputs[rank]
+                p1_plan = _materialize_from_runtime_prepared_plan(
+                    runtime=runtime,
+                    local_context=local_p1_context,
+                    global_contexts=tuple(item[0] for item in p1_contexts_and_inputs),
+                )
+                _execute_plan(
+                    adapter=adapter,
+                    layer_name=layer_name,
+                    phase="P1",
+                    context=local_p1_context,
+                    plan=p1_plan,
+                    packed_inputs=local_p1_inputs,
+                )
+            runtime.end_forward()
+        rows = adapter.export_results()
+        result_rows = [row for row in rows if row.get("record_type") == "result_summary"]
+        strategy_summaries.append(
+            {
+                "strategy": strategy_name,
+                "policy_name": policy_name,
+                "p2_hint_mode": p2_hint_mode,
+                "online_p2_predictor": online_p2_predictor,
+                "forward_epochs_tested": list(forward_epochs),
+                "layer_count_tested": int(layer_count),
+                "async_executor_invocation_count": int(adapter.async_executor_invocation_count),
+                "batch_isend_irecv_call_count": int(adapter.batch_isend_irecv_call_count),
+                "real_send_op_count": int(adapter.real_send_op_count),
+                "real_recv_op_count": int(adapter.real_recv_op_count),
+                "phase_sync_fallback_count": int(adapter.phase_sync_fallback_count),
+                "safe_selected_policy": str(last_safe_selected_policy),
+                "prediction_extra_collective_count": 0,
+                "p1_planning_collective_count": 0,
+                "result_summary_count": len(result_rows),
+            }
+        )
     summary = {
-        "runtime_integrated_gloo_passed": True,
-        "async_executor_invocation_count": int(adapter.async_executor_invocation_count),
-        "batch_isend_irecv_call_count": int(adapter.batch_isend_irecv_call_count),
-        "real_send_op_count": int(adapter.real_send_op_count),
-        "real_recv_op_count": int(adapter.real_recv_op_count),
-        "phase_sync_fallback_count": int(adapter.phase_sync_fallback_count),
-        "safe_selected_policy": str(last_safe_selected_policy),
-        "prediction_extra_collective_count": 0,
-        "p1_planning_collective_count": 0,
-        "result_summary_count": len(result_rows),
+        "runtime_integrated_gloo_passed": all(int(item["batch_isend_irecv_call_count"]) > 0 and int(item["phase_sync_fallback_count"]) == 0 for item in strategy_summaries),
         "dedicated_p2p_group_initialized": bool(p2p_status.get("dedicated_p2p_group_initialized", False)),
+        "strategies": strategy_summaries,
     }
     out_dir = Path("outputs/distributed/run_stage1_runtime_integrated_gloo_gate")
     if rank == 0:
@@ -330,10 +362,7 @@ def main() -> None:
                     "# Stage1 Runtime-Integrated Gloo Gate",
                     "",
                     f"- runtime_integrated_gloo_passed: {str(summary['runtime_integrated_gloo_passed']).lower()}",
-                    f"- async_executor_invocation_count: {summary['async_executor_invocation_count']}",
-                    f"- batch_isend_irecv_call_count: {summary['batch_isend_irecv_call_count']}",
-                    f"- phase_sync_fallback_count: {summary['phase_sync_fallback_count']}",
-                    f"- safe_selected_policy: {summary['safe_selected_policy']}",
+                    f"- strategy_count: {len(strategy_summaries)}",
                 ]
             ),
             encoding="utf-8",

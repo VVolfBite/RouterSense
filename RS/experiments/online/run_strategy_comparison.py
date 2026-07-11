@@ -112,6 +112,7 @@ def _single_strategy_config(
         is_native_baseline = not policy_name
         p2_mode = str(strategy_runtime["p2_hint_mode"])
         calibrated_p2 = bool(strategy_runtime["calibrated_p2"])
+        online_p2_predictor = str(strategy_runtime.get("online_p2_predictor", "copy_current_dispatch"))
         control_mode = str(strategy_runtime["control_mode"])
         execution_mode = str(strategy_runtime["execution_mode"])
         run_kind = str(strategy_runtime["run_kind"])
@@ -122,6 +123,7 @@ def _single_strategy_config(
         is_native_baseline = not policy_name
         p2_mode = str(strategy.get("p2_hint_mode", "none"))
         calibrated_p2 = bool(strategy.get("calibrated_p2", False))
+        online_p2_predictor = str(strategy.get("online_p2_predictor", "copy_current_dispatch"))
         control_mode = "none" if is_native_baseline else str(strategy.get("control_mode", "sync_before_phase"))
         execution_mode = "native_passthrough" if is_native_baseline else str(strategy.get("execution_mode", "phase_sync_wave"))
         run_kind = "online_observe" if is_native_baseline else "online_policy_correctness"
@@ -154,6 +156,7 @@ def _single_strategy_config(
                 "p0_weight": float(execution.get("p0_weight", 1.0)),
                 "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
                 "p2_hint_weight": p2_hint_weight,
+                "online_p2_predictor": online_p2_predictor,
             },
             "p2": {"mode": p2_mode, "artifact": ""},
         },

@@ -20,9 +20,12 @@ Goal:
 Template:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 experiments/online/run_policy_correctness.py \
+python experiments/distributed/run_gpu_b2_lifecycle.py \
+  --config configs/comparison/natural_256x128_4gpu.yaml \
   --strategy routersense_joint_predicted_async_p2p \
   --profile execution \
+  --selected-layers all \
+  --world-size 4 \
   --output-dir outputs/distributed/run_b2_p2_lifecycle_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -45,12 +48,14 @@ Goal:
 Template:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 experiments/online/run_policy_correctness.py \
-  --strategy routersense_joint_predicted_async_p2p \
+python experiments/distributed/run_gpu_c2_async_correctness.py \
+  --config configs/comparison/natural_256x128_4gpu.yaml \
+  --reference-strategy birkhoff_phase_local_sync \
+  --candidate-strategy routersense_joint_predicted_async_p2p \
   --profile execution \
-  --enable-real-collectives \
   --selected-layers 2 \
   --forward-epochs 2 \
+  --world-size 4 \
   --output-dir outputs/distributed/run_c2_ar1_correctness_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -82,22 +87,26 @@ Template:
 
 ```bash
 for strategy in \
-  native \
-  fifo_async_p2p \
-  greedy_async_p2p \
-  birkhoff_phase_local_sync \
-  birkhoff_phase_local_async_p2p \
-  routersense_joint_phase_sync \
-  routersense_joint_zero_hint_async_p2p \
+  native fifo_async_p2p greedy_async_p2p \
+  birkhoff_phase_local_sync birkhoff_phase_local_async_p2p \
+  routersense_joint_phase_sync routersense_joint_zero_hint_async_p2p \
   routersense_joint_predicted_async_p2p
-do
-  torchrun --standalone --nproc_per_node=4 experiments/online/run_policy_correctness.py \
-    --strategy "$strategy" \
-    --profile perf \
-    --warmup-iters 3 \
-    --measure-iters 7 \
-    --output-dir "outputs/distributed/run_a2_${strategy}_$(date +%Y%m%d_%H%M%S)"
-done
+do :; done
+
+python experiments/distributed/run_gpu_a2_strategy_compare.py \
+  --config configs/comparison/natural_256x128_4gpu.yaml \
+  --strategies \
+    native fifo_async_p2p greedy_async_p2p \
+    birkhoff_phase_local_sync birkhoff_phase_local_async_p2p \
+    routersense_joint_phase_sync routersense_joint_zero_hint_async_p2p \
+    routersense_joint_predicted_async_p2p \
+  --warmup-iters 3 \
+  --measure-iters 7 \
+  --selected-layers all \
+  --profile perf \
+  --preflight-mode compact \
+  --world-size 4 \
+  --output-dir outputs/distributed/run_a2_strategy_compare_$(date +%Y%m%d_%H%M%S)
 ```
 
 Interpretation:

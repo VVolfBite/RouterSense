@@ -122,6 +122,7 @@ class MegatronPhaseTransportAdapter:
                     "global_rank": int(state.context.global_rank),
                     "local_rank": int(state.context.local_rank),
                 },
+                mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
             )
             if not preflight.all_ranks_ok:
                 output, result, execution_entries = execute_scheduled_phase_tensor(
@@ -139,6 +140,8 @@ class MegatronPhaseTransportAdapter:
                         "fallback_before_p2p": True,
                         "preflight_failure_reason": str(preflight.reason),
                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
+                        "preflight_collective_count": int(preflight.collective_count),
+                        "preflight_mode": str(preflight.preflight_mode),
                     }
                 ]
             else:
@@ -166,6 +169,14 @@ class MegatronPhaseTransportAdapter:
                 self.real_send_op_count += int(summary_entry.get("send_op_count", 0) or 0)
                 self.real_recv_op_count += int(summary_entry.get("recv_op_count", 0) or 0)
                 self.local_copy_task_count += int(result.local_copy_rows)
+                execution_entries.append(
+                    {
+                        "record_type": "async_preflight_summary",
+                        "preflight_mode": str(preflight.preflight_mode),
+                        "preflight_collective_count": int(preflight.collective_count),
+                        "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
+                    }
+                )
         else:
             output, result, execution_entries = execute_scheduled_phase_tensor(
                 context=state.context,
@@ -206,8 +217,9 @@ class MegatronPhaseTransportAdapter:
                 "real_send_op_count": int(self.real_send_op_count),
                 "real_recv_op_count": int(self.real_recv_op_count),
                 "local_copy_task_count": int(self.local_copy_task_count),
-                    "phase_sync_fallback_count": int(self.phase_sync_fallback_count),
-                    "use_nccl_stream_effective": bool(use_nccl_stream),
+                "phase_sync_fallback_count": int(self.phase_sync_fallback_count),
+                "use_nccl_stream_requested": bool(use_nccl_stream),
+                "use_nccl_stream_effective": bool(use_nccl_stream),
             }
         )
         return output

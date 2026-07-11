@@ -449,6 +449,9 @@ class RouterSenseInjectionRuntime:
             return HistoryEMATrafficPredictor(alpha=0.5)
         return CopyCurrentDispatchPredictor()
 
+    def _should_generate_runtime_prediction(self) -> bool:
+        return self._is_joint_window_async_mode() or self.config.p2_hint_mode == "calibrated_artifact"
+
     def _record_prediction_for_dispatch(
         self,
         *,
@@ -1012,23 +1015,38 @@ class RouterSenseInjectionRuntime:
             p1_return_matrix=inferred_p1,
             p2_next_dispatch_forecast_matrix=forecast_matrix,
         )
-        raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
-        raw_u_policy = resolve_policy(
-            policy_name=raw_u_name,
-            bucket_rows=self.config.bucket_rows,
-            p0_weight=self.config.p0_weight,
-            p1_reservation_weight=self.config.p1_reservation_weight,
-            p2_hint_weight=self.config.p2_hint_weight,
-        )
-        paired_b_policy = resolve_policy(
-            policy_name=paired_b_name,
-            bucket_rows=self.config.bucket_rows,
-            p0_weight=self.config.p0_weight,
-            p1_reservation_weight=self.config.p1_reservation_weight,
-            p2_hint_weight=self.config.p2_hint_weight,
-        )
-        raw_u_plan = raw_u_policy.build_logical_plan(problem)
-        paired_b_plan = paired_b_policy.build_logical_plan(problem)
+        effective_policy = str(self._effective_phase_policy_name() or "")
+        phase_local_async_policies = {"bucketed_fifo", "greedy_ready_set", "birkhoff_phase_local", "phase_barrier_fifo"}
+        if effective_policy in phase_local_async_policies:
+            phase_local_policy = resolve_policy(
+                policy_name=effective_policy,
+                bucket_rows=self.config.bucket_rows,
+                p0_weight=self.config.p0_weight,
+                p1_reservation_weight=self.config.p1_reservation_weight,
+                p2_hint_weight=self.config.p2_hint_weight,
+            )
+            raw_u_name = effective_policy
+            paired_b_name = effective_policy
+            raw_u_plan = phase_local_policy.build_logical_plan(problem)
+            paired_b_plan = raw_u_plan
+        else:
+            raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
+            raw_u_policy = resolve_policy(
+                policy_name=raw_u_name,
+                bucket_rows=self.config.bucket_rows,
+                p0_weight=self.config.p0_weight,
+                p1_reservation_weight=self.config.p1_reservation_weight,
+                p2_hint_weight=self.config.p2_hint_weight,
+            )
+            paired_b_policy = resolve_policy(
+                policy_name=paired_b_name,
+                bucket_rows=self.config.bucket_rows,
+                p0_weight=self.config.p0_weight,
+                p1_reservation_weight=self.config.p1_reservation_weight,
+                p2_hint_weight=self.config.p2_hint_weight,
+            )
+            raw_u_plan = raw_u_policy.build_logical_plan(problem)
+            paired_b_plan = paired_b_policy.build_logical_plan(problem)
         safe_projection = host_project_safe_selection(
             raw_u_plan=raw_u_plan,
             paired_b_plan=paired_b_plan,
@@ -1089,9 +1107,10 @@ class RouterSenseInjectionRuntime:
                 safe_projection["host_projected_paired_b_estimated_makespan"]
                 - safe_projection["host_projected_raw_u_estimated_makespan"]
             ),
-            "safe_comparison_is_strict_common_core": False,
+            "safe_comparison_is_strict_common_core": bool(raw_u_name == paired_b_name),
             "raw_u_plan_policy": str(raw_u_plan.policy_name),
             "paired_b_plan_policy": str(paired_b_plan.policy_name),
+            "runtime_policy_equivalent_of": effective_policy,
         }
         self._prepared_plan_state["global_joint_window_plan"]["host_projected_safe_selection"] = dict(safe_projection)
         self._prepared_plan_state["host_projected_estimated_makespan"] = float(
@@ -1147,6 +1166,8 @@ class RouterSenseInjectionRuntime:
                 "joint_window_async_local_materialization": True,
                 "p1_planning_collective_count": 0 if str(phase) == "P1" else int(compiled.metrics.get("p1_planning_collective_count", 0) or 0),
                 "prediction_extra_collective_count": 0,
+                "preflight_mode": "compact" if self._is_perf_profile() else "full",
+                "emit_detailed_task_artifacts": not self._is_perf_profile(),
             },
         )
 
@@ -1611,7 +1632,7 @@ class RouterSenseInjectionRuntime:
                 ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
                 enabled=True,
             )
-        if self.config.p2_hint_mode == "calibrated_artifact":
+        if self._should_generate_runtime_prediction():
             self._record_prediction_for_dispatch(
                 layer_name=layer_name,
                 observation=observation,

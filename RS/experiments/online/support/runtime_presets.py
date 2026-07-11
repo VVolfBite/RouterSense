@@ -121,6 +121,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "none",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "birkhoff_phase_local":
         return {
@@ -130,6 +131,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "birkhoff_phase_local_sync":
         return {
@@ -139,6 +141,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "birkhoff_phase_local_async_p2p":
         return {
@@ -148,6 +151,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "fifo_async_p2p":
         return {
@@ -157,6 +161,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "greedy_async_p2p":
         return {
@@ -166,6 +171,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "routersense_p0p1p2_hint":
         return {
@@ -175,6 +181,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
+            "online_p2_predictor": "copy_current_dispatch",
         }
     if strategy_name == "routersense_joint_priority_phase_sync":
         return {
@@ -184,6 +191,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
+            "online_p2_predictor": "copy_current_dispatch",
         }
     if strategy_name == "routersense_joint_phase_sync":
         return {
@@ -193,6 +201,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
+            "online_p2_predictor": "copy_current_dispatch",
         }
     if strategy_name == "routersense_joint_zero_hint_async_p2p":
         return {
@@ -202,6 +211,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "none",
             "calibrated_p2": False,
+            "online_p2_predictor": "none",
         }
     if strategy_name == "routersense_joint_predicted_async_p2p":
         return {
@@ -211,6 +221,7 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
+            "online_p2_predictor": "copy_current_dispatch",
         }
     if strategy_name == "routersense_safe_joint_async":
         return {
@@ -220,5 +231,6 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "control_mode": "sync_before_phase",
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
+            "online_p2_predictor": "copy_current_dispatch",
         }
     raise ValueError(f"unsupported strategy {strategy_name!r}")
