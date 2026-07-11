@@ -15,14 +15,15 @@ predictors:
     - shuffled_control
 policies:
   deployable:
-    - phase_barrier_fifo
-    - greedy_ready_set
-    - islip_round_robin
+    - fifo_bucket
+    - greedy_bucket
+    - islip_bucket
     - birkhoff_bucket_phase_local
-    - paired_b_barrier_criticality
-    - joint_u_barrier_criticality
-    - runtime_safe_u
+    - barrier_criticality_phase_local
+    - barrier_criticality_joint
+    - barrier_criticality_runtime_safe
   reference:
     - birkhoff_fluid_reference
-    - exact_small_instance_oracle
-    - posthoc_best_of_u_and_b
+    - oracle_joint_cp_sat
+    - oracle_local_cp_sat
+    - barrier_criticality_posthoc_best

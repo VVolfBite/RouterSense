@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rs.scheduling.base import RouterSensePhasePolicy, SchedulingPolicy
+from rs.scheduling.catalog import algorithm_specs, phase_local_algorithm_specs, resolve_algorithm_id
 
 from .phase_local.aurora_fixed import AuroraOrderFixedPolicy
 from .phase_local.birkhoff_phase_local import BirkhoffPhaseLocalPolicy
@@ -42,10 +43,11 @@ class NativePassthroughPolicy:
 
 
 def _parse_policy_name(policy_name: str) -> tuple[str, str | None]:
-    if policy_name == "birkhoff_bucket_phase_local":
-        return "birkhoff_phase_local", None
-    if policy_name == "birkhoff_fluid_reference":
-        return "birkhoff_von_neumann_fluid", None
+    try:
+        resolved = resolve_algorithm_id(policy_name)
+        return resolved.builder_key, None
+    except ValueError:
+        pass
     if policy_name.startswith("routersense_multiphase_lookahead:"):
         return "routersense_multiphase_lookahead", policy_name.split(":", 1)[1]
     return policy_name, None
@@ -193,7 +195,8 @@ def resolve_phase_policy(
 
 
 def supported_phase_policies() -> tuple[str, ...]:
-    return (
+    public = tuple(spec.canonical_id for spec in phase_local_algorithm_specs())
+    legacy = (
         "phase_barrier_fifo",
         "bucketed_fifo",
         "greedy_ready_set",
@@ -207,30 +210,21 @@ def supported_phase_policies() -> tuple[str, ...]:
         "routersense_p0p1p2_hint",
         "routersense_joint_priority_phase_sync",
     )
+    ordered: list[str] = []
+    for name in (*public, *legacy):
+        if name not in ordered:
+            ordered.append(name)
+    return tuple(ordered)
 
 
 def supported_policies() -> tuple[str, ...]:
-    return (
-        "native_passthrough",
-        "phase_barrier_fifo",
-        "bucketed_fifo",
-        "greedy_ready_set",
-        "islip_round_robin",
+    ordered: list[str] = ["native_passthrough"]
+    for spec in algorithm_specs():
+        for name in (spec.canonical_id, spec.builder_key, *spec.aliases, *spec.deprecated_aliases):
+            if name not in ordered:
+                ordered.append(name)
+    for name in (
         "power_of_two_choices",
-        "birkhoff_phase_local",
-        "B_gated_greedy_maximal",
-        "B_gated_maxweight_matching",
-        "B_barrier_criticality_matching",
-        "B_barrier_price_adaptive_matching",
-        "B_lagrangian_phase_local",
-        "RS_safe_gated_greedy",
-        "RS_safe_gated_maxweight",
-        "RS_safe_barrier_criticality",
-        "RS_safe_barrier_price",
-        "RS_safe_lagrangian",
-        "RS_safe_ibbr",
-        "birkhoff_von_neumann_fluid",
-        "exact_small_instance_reference",
         "trivial_reverse_bucket",
         "aurora_order_fixed",
         "fast_bvn_single_tier",
@@ -240,19 +234,27 @@ def supported_policies() -> tuple[str, ...]:
         "routersense_multiphase_lookahead:p0_only",
         "routersense_multiphase_lookahead:p0_p1",
         "routersense_multiphase_lookahead:p0_p1_p2",
+        "B_gated_greedy_maximal",
+        "B_gated_maxweight_matching",
+        "B_barrier_price_adaptive_matching",
+        "B_lagrangian_phase_local",
         "U_gated_greedy_maximal",
         "U_gated_greedy_maximal_atomic",
+        "U_gated_maxweight_matching",
+        "U_gated_maxweight_matching_atomic",
         "U_ibbr",
         "U_barrier_price_adaptive_matching",
         "U_barrier_price_adaptive_matching_atomic",
         "RS_safe_gated_greedy",
         "RS_safe_gated_maxweight",
-        "RS_safe_barrier_criticality",
         "RS_safe_barrier_price",
         "RS_safe_lagrangian",
         "RS_safe_ibbr",
         *TIER1_ALGORITHM_IDS,
-    )
+    ):
+        if name not in ordered:
+            ordered.append(name)
+    return tuple(ordered)
 
 
 class ExactSmallInstanceReferencePolicy:

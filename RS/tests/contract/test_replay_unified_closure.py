@@ -7,10 +7,11 @@ from pathlib import Path
 import yaml
 
 from rs.runtime.offline.prediction.evaluation import rolling_predictor_records
-from rs.runtime.offline.replay_unified import CanonicalBucketizer, PlanningHint, ReplayWindow, build_execution_truth, build_planning_problem
+from rs.runtime.offline.replay_unified import CanonicalBucketizer, PlanningHint, ReplayEngine, ReplayWindow, build_execution_truth, build_planning_problem
 from rs.runtime.online.megatron_ep.prediction.contracts import PredictionInput
 from rs.runtime.online.megatron_ep.prediction.simple_predictors import HistoryEMATrafficPredictor
 from rs.scheduling.traffic_matrix import matrix_digest_remote, matrix_nonzero_remote_edge_count, matrix_remote_bytes
+from rs.scheduling.catalog import resolve_algorithm_id
 from rs.scheduling.public_catalog import deployable_policies, reference_policies, resolve_public_policy_name
 
 
@@ -71,7 +72,26 @@ def test_public_policy_catalog_converges_birkhoff_and_reference_split() -> None:
     assert fluid.internal_policy_name == "birkhoff_von_neumann_fluid"
     assert fluid.reference_only is True
     assert len(deployable_policies()) == 7
-    assert len(reference_policies()) == 3
+    assert len(reference_policies()) == 4
+
+
+def test_legacy_and_canonical_algorithm_names_produce_identical_plan_digest() -> None:
+    window = _window()
+    hint = PlanningHint(
+        hint_type="zero_hint",
+        p2_hint_rows=((0, 0), (0, 0)),
+        confidence=0.0,
+        source_layer=None,
+        target_layer=2,
+    )
+    engine = ReplayEngine(scheduling_mode="execution_window", expert_compute_delay=0.0, bucket_rows=2)
+    legacy = resolve_algorithm_id("birkhoff_phase_local")
+    canonical = resolve_algorithm_id("birkhoff_bucket_phase_local")
+    legacy_result = engine.execute(replay_window=window, planning_hint=hint, policy_name=legacy.builder_key)
+    canonical_result = engine.execute(replay_window=window, planning_hint=hint, policy_name=canonical.builder_key)
+    assert legacy_result["input_task_digest"] == canonical_result["input_task_digest"]
+    assert legacy_result["logical_plan_digest"] == canonical_result["logical_plan_digest"]
+    assert legacy_result["makespan"] == canonical_result["makespan"]
 
 
 def test_history_ema_offline_matches_online_formula() -> None:
@@ -117,4 +137,4 @@ def test_public_entrypoints_help_and_async_release_config_parse(tmp_path: Path) 
         assert proc.returncode == 0, proc.stderr + proc.stdout
     payload = yaml.safe_load((REPO_ROOT / "configs/online_async_release.yaml").read_text(encoding="utf-8"))
     assert payload["runtime"]["line"] == "async_release"
-    assert "routersense_joint_predicted_async_p2p" in payload["strategies"]
+    assert any(item["name"] == "routersense_joint_predicted_async_p2p" for item in payload["strategies"])
