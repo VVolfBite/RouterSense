@@ -1,0 +1,40 @@
+schema_version: 1
+run:
+  kind: online_strategy_comparison
+  name: online_phase_sync
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  ep_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/comparison_64_prompts.json
+runtime:
+  line: phase_sync
+  output_mode: paper
+  precision: fp16
+  dispatcher: alltoall
+  selected_layers: selected
+traffic:
+  matrix_unit: rows
+  bucket_rows: 1024
+policy:
+  options:
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 1.0
+prediction: {}
+evaluation:
+  repeats: 1
+  warmup: 0
+  metrics: []
+  baseline_strategy: native
+  phase_selector: both
+replay: {}
+oracle: {}
+regime_analysis: {}
+strategies:
+  - name: native
+  - name: birkhoff_phase_local_sync
+  - name: routersense_joint_phase_sync
+

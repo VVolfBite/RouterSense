@@ -1,0 +1,11 @@
+launcher:
+  kind: torchrun
+  nnodes: 1
+  nproc_per_node: 4
+  standalone: true
+ep:
+  size: 4
+network:
+  scope: single_node
+  interface_hint: ""
+
