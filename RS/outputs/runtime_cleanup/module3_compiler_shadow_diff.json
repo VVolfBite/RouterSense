@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "shadow_status": [
+    "ok",
+    "ok"
+  ],
+  "shadow_execution_order_matches_legacy": [
+    true,
+    true
+  ],
+  "shadow_plan_hash_matches_legacy": [
+    true,
+    true
+  ]
+}
