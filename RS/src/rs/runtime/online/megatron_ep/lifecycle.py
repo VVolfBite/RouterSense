@@ -1413,6 +1413,25 @@ class RouterSenseInjectionRuntime:
             "bundle_bytes_per_row": int(self._bundle_bytes_per_row(phase_ctx=phase_ctx)),
         }
         self._prepared_plan_state["global_joint_window_plan"]["host_projected_safe_selection"] = dict(safe_projection)
+        self._prepared_plan_state["ideal_raw_u_makespan"] = float(safe_projection["ideal_raw_u_estimated_makespan"])
+        self._prepared_plan_state["ideal_paired_b_makespan"] = float(safe_projection["ideal_paired_b_estimated_makespan"])
+        self._prepared_plan_state["host_projected_raw_u_makespan"] = float(safe_projection["host_projected_raw_u_estimated_makespan"])
+        self._prepared_plan_state["host_projected_paired_b_makespan"] = float(safe_projection["host_projected_paired_b_estimated_makespan"])
+        self._prepared_plan_state["prediction_consumption_records"] = [
+            {
+                "prediction_first_consumed_stage": "during_p0_joint_planning",
+                "consumer_layer": str(layer_id),
+                "consumer_phase": "P1",
+                "consumed_before_p1": True,
+                "source_layer_id": str(active_prediction.get("source_layer_id", "")) if active_prediction else str(layer_id),
+                "target_layer_id": str(active_prediction.get("target_layer_id", "")) if active_prediction else str(next_layer_id),
+                "predictor_name": predictor_name,
+                "prediction_digest": prediction_digest,
+                "prediction_confidence": float(prediction_confidence),
+                "prediction_matrix_total": int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
+                "consumed_during_p0_joint_planning": True,
+            }
+        ]
         self._prepared_plan_state["host_projected_estimated_makespan"] = float(
             safe_projection["host_projected_paired_b_estimated_makespan"]
             if str(selected_plan.policy_name) == str(paired_b_plan.policy_name)
@@ -1429,8 +1448,22 @@ class RouterSenseInjectionRuntime:
             layer_name=layer_name,
             source_layer_id=str(layer_id),
             target_layer_id=str(next_layer_id),
+            planning_traffic_source=str(observation_p0.source),
+            captured_before_transport=bool(observation_p0.captured_before_transport),
+            pre_transport_observation_valid=bool(observation_p0.valid),
+            actual_p0_total_rows=int(sum(sum(int(v) for v in row) for row in dispatch_matrix_full)),
+            actual_p0_matrix_unit="rows",
+            p1_is_exact_transpose=bool(self._prepared_plan_state["global_joint_window_plan"]["p1_is_exact_transpose"]),
             prediction_digest=prediction_digest,
             prediction_confidence=float(prediction_confidence),
+            predictor_name=predictor_name or "zero_hint",
+            prediction_matrix_total=int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
+            stored_p1_plan_digest=str(self._prepared_plan_state["stored_p1_plan_digest"]),
+            consumed_during_p0_joint_planning=True,
+            ideal_raw_u_makespan=float(safe_projection["ideal_raw_u_estimated_makespan"]),
+            ideal_paired_b_makespan=float(safe_projection["ideal_paired_b_estimated_makespan"]),
+            host_projected_raw_u_makespan=float(safe_projection["host_projected_raw_u_estimated_makespan"]),
+            host_projected_paired_b_makespan=float(safe_projection["host_projected_paired_b_estimated_makespan"]),
             host_projected_estimated_makespan=float(self._prepared_plan_state["host_projected_estimated_makespan"]),
             ideal_estimated_makespan=float(self._prepared_plan_state["ideal_estimated_makespan"]),
             safe_selected_policy=str(selected_plan.policy_name),
@@ -2502,6 +2535,14 @@ class RouterSenseInjectionRuntime:
                     self._prepared_plan_state["consumed_p1_plan_digest"] = stored_digest
                 elif binding is not None:
                     self._prepared_plan_state["consumed_p1_plan_digest"] = str(binding.source_logical_plan_hash)
+                self._timeline(
+                    "prepared_p1_plan_consumed",
+                    layer_name=layer_name,
+                    stored_p1_plan_digest=str(stored_digest),
+                    consumed_p1_plan_digest=str(self._prepared_plan_state.get("consumed_p1_plan_digest", "") or ""),
+                    p1_plan_source_window=str(binding.window_key) if binding is not None else "",
+                    p1_plan_consumed_once=True,
+                )
                 inferred_p1 = tuple(
                     tuple(int(value) for value in row)
                     for row in (

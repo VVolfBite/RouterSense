@@ -223,6 +223,9 @@ def main(argv: list[str] | None = None) -> int:
         total_iters = warmup_iters + measure_iters
         repeat_records: list[dict[str, object]] = []
         logits = None
+        final_output_checksum: float | None = None
+        final_output_shape: list[int] | None = None
+        final_logits_available = False
         for iter_index in range(total_iters):
             is_warmup = iter_index < warmup_iters
             measure_index = -1 if is_warmup else (iter_index - warmup_iters)
@@ -248,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
             if torch.distributed.is_available() and torch.distributed.is_initialized():
                 torch.distributed.all_reduce(duration_tensor, op=torch.distributed.ReduceOp.MAX)
             global_forward_us = float(duration_tensor.item())
+            output_checksum = float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None
+            output_shape = list(logits.shape) if isinstance(logits, torch.Tensor) else None
+            final_output_checksum = output_checksum
+            final_output_shape = output_shape
+            final_logits_available = isinstance(logits, torch.Tensor)
             repeat_record: dict[str, object] = {
                 "forward_epoch": int(forward_epoch),
                 "warmup": bool(is_warmup),
@@ -255,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                 "local_forward_us": float(local_forward_us),
                 "local_host_forward_us": float(local_host_forward_us),
                 "global_max_forward_us": float(global_forward_us),
-                "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
+                "output_checksum": output_checksum,
             }
             if config.validation.save_logits and isinstance(logits, torch.Tensor) and not is_warmup:
                 repeat_logits_path = run_dir / f"{run_id}-rank{rank}-epoch{forward_epoch}-measure{measure_index}.pt"
@@ -270,7 +278,11 @@ def main(argv: list[str] | None = None) -> int:
                 total_forward_us=float(global_forward_us),
                 local_forward_us=float(local_forward_us),
             )
-        stage_barrier("observer_forward", ok=isinstance(logits, torch.Tensor), detail=str(tuple(logits.shape)))
+            if not config.validation.save_logits:
+                logits = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        stage_barrier("observer_forward", ok=bool(final_logits_available), detail=str(tuple(final_output_shape or [])))
 
         rows = observer.export_rows()
         observer_summary = summarize_observer_rows(rows, rank=rank)
@@ -288,7 +300,9 @@ def main(argv: list[str] | None = None) -> int:
             "dispatcher": config.runtime.dispatcher,
             "precision": config.runtime.precision,
             "trace_row_count": len(rows),
-            "output_checksum": float(logits.float().sum().item()),
+            "output_checksum": final_output_checksum,
+            "output_shape": final_output_shape,
+            "forward_completed": bool(final_logits_available),
             "remote_dispatch_rows": observer_summary["remote_dispatch_rows"],
             "remote_combine_rows": observer_summary["remote_combine_rows"],
             "local_dispatch_rows": observer_summary["local_dispatch_rows"],

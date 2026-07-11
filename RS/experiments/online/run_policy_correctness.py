@@ -87,6 +87,7 @@ def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
             p2_hint_mode=config.online_policy.p2.mode,
             p2_hint_artifact=config.online_policy.p2.artifact,
             calibrated_p2_enabled=config.online_policy.p2.mode == "calibrated_artifact",
+            online_p2_predictor=config.online_policy.parameters.online_p2_predictor,
         ),
         observation=config.observation.to_dict(),
         validation=OnlineValidationConfig(
@@ -354,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
         repeat_records: list[dict[str, Any]] = []
         partial_stop = False
         logits = None
+        final_output_checksum: float | None = None
+        final_output_shape: list[int] | None = None
+        final_logits_available = False
         for iter_index in range(total_iters):
             is_warmup = iter_index < warmup_iters
             measure_index = -1 if is_warmup else (iter_index - warmup_iters)
@@ -391,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
                 runtime.end_forward()
                 adapter_after = _snapshot_adapter(getattr(runtime, "transport_adapter", None))
                 perf_after = _snapshot_perf(runtime)
+                output_shape = list(logits.shape) if isinstance(logits, torch.Tensor) else None
+                output_checksum = float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None
+                final_output_shape = output_shape
+                final_output_checksum = output_checksum
+                final_logits_available = isinstance(logits, torch.Tensor)
                 repeat_record = {
                     "forward_epoch": forward_epoch,
                     "warmup": bool(is_warmup),
@@ -414,8 +423,8 @@ def main(argv: list[str] | None = None) -> int:
                     "real_recv_op_count": _delta_adapter(adapter_after, adapter_before, "real_recv_op_count"),
                     "local_copy_task_count": _delta_adapter(adapter_after, adapter_before, "local_copy_task_count"),
                     "phase_sync_fallback_count": _delta_adapter(adapter_after, adapter_before, "phase_sync_fallback_count"),
-                    "logits_shape": list(logits.shape) if isinstance(logits, torch.Tensor) else None,
-                    "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
+                    "logits_shape": output_shape,
+                    "output_checksum": output_checksum,
                 }
                 if config.validation.save_logits and isinstance(logits, torch.Tensor) and not is_warmup:
                     repeat_logits_path = run_dir / f"{run_id}-rank{rank}-epoch{forward_epoch}-measure{measure_index}.pt"
@@ -430,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
                     total_forward_us=float(global_forward_us),
                     local_forward_us=float(local_forward_us),
                 )
+                if not config.validation.save_logits:
+                    logits = None
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
             except SelectedLayerStop:
                 partial_stop = True
                 logits = None
@@ -472,11 +485,11 @@ def main(argv: list[str] | None = None) -> int:
             "dispatcher_type": config.runtime.dispatcher,
             "local_expert_ids": local_expert_ids,
             "number_of_local_experts": len(local_expert_ids),
-            "forward_completed": bool(logits is not None),
+            "forward_completed": bool(final_logits_available),
             "forward_partial_stop": partial_stop,
-            "logits_status": "not_applicable" if partial_stop else ("produced" if isinstance(logits, torch.Tensor) else "missing"),
-            "output_checksum": float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None,
-            "output_shape": list(logits.shape) if isinstance(logits, torch.Tensor) else None,
+            "logits_status": "not_applicable" if partial_stop else ("produced" if final_logits_available else "missing"),
+            "output_checksum": final_output_checksum,
+            "output_shape": final_output_shape,
             "remote_dispatch_rows": phase_stats["p0_remote_rows"],
             "remote_combine_rows": phase_stats["p1_remote_rows"],
             "local_dispatch_rows": native_dispatch_summary["local_dispatch_rows"],
@@ -508,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir=run_dir,
             run_id=run_id,
             rank=rank,
-            logits=logits,
+            logits=logits if config.validation.save_logits else None,
             runtime=runtime,
             native_dispatch_summary=native_dispatch_summary,
             rank_summary=rank_summary,

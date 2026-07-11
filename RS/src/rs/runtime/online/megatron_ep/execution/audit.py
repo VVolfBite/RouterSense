@@ -70,12 +70,15 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     native_fallback_events = sum(1 for row in transport_events if row.get("event") == "native_fallback")
     contract_violation_events = sum(1 for row in transport_events if row.get("event") == "contract_violation")
     execution_entries = [row for row in transport_events if row.get("record_type") != "result_summary"]
+    task_entries = [row for row in execution_entries if row.get("record_type") == "task"]
+    logical_task_entries = [row for row in task_entries if "op_kind" not in row]
+    audited_task_entries = logical_task_entries if logical_task_entries else task_entries
     task_id_none_event_count = 0
     raw_executed_task_ids: list[str] = []
     payload_roles_by_task: dict[str, set[str]] = defaultdict(set)
     duplicate_payload_keys: list[tuple[str, str]] = []
     seen_payload_keys: set[tuple[str, str]] = set()
-    for row in execution_entries:
+    for row in audited_task_entries:
         task_id = str(row.get("task_id") or row.get("bucket_id") or "")
         if not task_id:
             task_id_none_event_count += 1
@@ -96,7 +99,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
 
     unique_task_rows: dict[str, int] = {}
     unique_task_bytes: dict[str, int] = {}
-    for row in execution_entries:
+    for row in audited_task_entries:
         task_id = str(row.get("task_id") or row.get("bucket_id") or "")
         if not task_id:
             continue
@@ -107,14 +110,14 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     executed_wave_count = len(
         {
             int(row.get("wave_id", -1))
-            for row in execution_entries
+            for row in audited_task_entries
             if "wave_id" in row and (row.get("task_id") or row.get("bucket_id"))
         }
     )
     actual_local_rows = 0
     actual_remote_rows = 0
     classified_tasks: set[str] = set()
-    for row in execution_entries:
+    for row in audited_task_entries:
         task_id = str(row.get("task_id") or row.get("bucket_id") or "")
         if not task_id or task_id in classified_tasks:
             continue
@@ -140,7 +143,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     p0_bundle_atomicity_preserved = True
     if phase == "P0":
         grouped: dict[tuple[int, str], list[str]] = {}
-        for row in execution_entries:
+        for row in audited_task_entries:
             key = (int(row.get("wave_id", -1)), str(row.get("task_id") or row.get("bucket_id") or ""))
             grouped.setdefault(key, []).append(str(row.get("tensor_role", "")))
         p0_bundle_atomicity_preserved = all(tuple(roles) == ("hidden_states", "routing_probs") for roles in grouped.values())
@@ -149,7 +152,8 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     remote_flow_coverage_passed = not missing and not unexpected
     metrics = plan_dict.get("metrics", {}) or {}
     compiled_from_prepared_plan = bool(metrics.get("compiled_from_prepared_plan", False))
-    prepared_plan_order_preserved = bool(metrics.get("prepared_plan_order_preserved", False)) if compiled_from_prepared_plan else True
+    prepared_plan_order_preserved_metric = bool(metrics.get("prepared_plan_order_preserved", False)) if compiled_from_prepared_plan else True
+    prepared_plan_order_preserved = bool(prepared_plan_order_preserved_metric or not order_mismatches)
     p2_matrix_source = str(metrics.get("pending_window_p2_matrix_source", metrics.get("p2_matrix_source", "")))
     p2_matrix_is_replicated_local_row = bool(metrics.get("p2_matrix_is_replicated_local_row", False))
     multi_payload_task_count = sum(1 for roles in payload_roles_by_task.values() if len(roles) > 1)
@@ -215,8 +219,10 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             "task_id_none_event_count": task_id_none_event_count,
             "multi_payload_task_count": multi_payload_task_count,
             "payload_roles_by_first_5_task_ids": payload_roles_by_first_5_task_ids,
+            "audited_task_entry_source": "logical_task_entries" if logical_task_entries else "task_entries",
             "compiled_from_prepared_plan": compiled_from_prepared_plan,
             "prepared_plan_order_preserved": prepared_plan_order_preserved,
+            "prepared_plan_order_preserved_metric": prepared_plan_order_preserved_metric,
             "prepared_window_key": str(metrics.get("prepared_window_key", "")),
             "source_logical_plan_hash": str(metrics.get("source_logical_plan_hash", "")),
             "hint_edges_consumed": int(metrics.get("hint_edges_consumed", 0) or 0),

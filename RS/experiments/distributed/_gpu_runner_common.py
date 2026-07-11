@@ -104,6 +104,8 @@ def build_policy_correctness_config(
 
     strategy_runtime = resolve_strategy_runtime(strategy_name=strategy_name, runtime_line=str(runtime.get("line", "phase_sync")))
     is_native = not bool(strategy_runtime["policy"])
+    p2_hint_mode = str(strategy_runtime["p2_hint_mode"])
+    p2_hint_weight = 0.0 if p2_hint_mode == "none" else float(execution.get("p2_hint_weight", 1.0))
     return {
         "run": {"kind": str(strategy_runtime["run_kind"]), "name": run_name},
         "model": {
@@ -132,10 +134,10 @@ def build_policy_correctness_config(
             "parameters": {
                 "p0_weight": float(execution.get("p0_weight", 1.0)),
                 "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
-                "p2_hint_weight": float(execution.get("p2_hint_weight", 1.0)),
+                "p2_hint_weight": float(p2_hint_weight),
                 "online_p2_predictor": str(strategy_runtime.get("online_p2_predictor", "none")),
             },
-            "p2": {"mode": str(strategy_runtime["p2_hint_mode"]), "artifact": ""},
+            "p2": {"mode": p2_hint_mode, "artifact": ""},
         },
         "offline_study": {"policies": []},
         "execution": {
