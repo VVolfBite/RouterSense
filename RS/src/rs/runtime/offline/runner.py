@@ -22,9 +22,9 @@ from rs.scheduling import (
     LogicalTopology,
     MultiPhaseSchedulingProblem,
     ReleaseConstraint,
-    resolve_policy,
 )
 from rs.scheduling.multiphase.global_ready_set import replay_and_audit_schedule
+from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 
 
 @dataclass(frozen=True)
@@ -176,14 +176,20 @@ def build_policy_logical_plan(
     p1_reservation_weight: float = 1.0,
     p2_hint_weight: float = 1.0,
 ) -> LogicalSchedulePlan:
-    policy = resolve_policy(
-        policy_name=policy_name,
-        bucket_rows=bucket_rows,
-        p0_weight=p0_weight,
-        p1_reservation_weight=p1_reservation_weight,
-        p2_hint_weight=p2_hint_weight,
+    request = build_request_from_problem(
+        request_id=f"offline:{policy_name}",
+        problem=problem,
+        bucket_rows=int(bucket_rows),
+        policy_options=PolicyOptions(
+            p0_weight=float(p0_weight),
+            p1_weight=float(p1_reservation_weight),
+            p2_hint_weight=float(p2_hint_weight),
+        ),
+        hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
+        confidence=float(problem.options.prediction_confidence),
     )
-    return policy.build_logical_plan(problem)
+    policy = build_policy(policy_name, request.policy_options)
+    return policy.plan(request)
 
 
 def schedule_global_ready_set(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:

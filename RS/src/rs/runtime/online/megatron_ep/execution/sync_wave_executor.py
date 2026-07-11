@@ -39,6 +39,19 @@ class PhaseExecutionResult:
             "output_shape": list(self.output_shape),
         }
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PhaseExecutionResult":
+        return cls(
+            phase=str(payload["phase"]),
+            tensor_role=str(payload["tensor_role"]),
+            wave_count=int(payload["wave_count"]),
+            bucket_count=int(payload["bucket_count"]),
+            active_wave_count=int(payload["active_wave_count"]),
+            local_copy_rows=int(payload["local_copy_rows"]),
+            remote_copy_rows=int(payload["remote_copy_rows"]),
+            output_shape=tuple(int(v) for v in payload["output_shape"]),
+        )
+
 
 def _empty_like_rows(reference: torch.Tensor, rows: int) -> torch.Tensor:
     if reference.ndim == 1:

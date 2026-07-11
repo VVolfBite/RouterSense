@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
+from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_replay_window
 from rs.scheduling.validation import stable_hash
 from rs.scheduling import (
     FlowDemand,
@@ -14,7 +15,6 @@ from rs.scheduling import (
     LogicalTopology,
     MultiPhaseSchedulingProblem,
     ReleaseConstraint,
-    resolve_policy,
 )
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_digest_remote, matrix_remote_bytes
 
@@ -271,8 +271,20 @@ class ReplayEngine:
             scheduling_mode=self.scheduling_mode,
             expert_compute_delay=self.expert_compute_delay,
         )
-        policy = resolve_policy(policy_name=str(policy_name), bucket_rows=self.bucket_rows)
-        logical_plan = policy.build_logical_plan(problem)
+        request = build_request_from_replay_window(
+            replay_window=replay_window,
+            p2_hint_rows=planning_hint.p2_hint_rows,
+            hint_type=str(planning_hint.hint_type),
+            confidence=float(planning_hint.confidence),
+            bucket_rows=int(self.bucket_rows),
+            policy_options=PolicyOptions(
+                p0_weight=1.0,
+                p1_weight=1.0,
+                p2_hint_weight=float(planning_hint.confidence),
+            ),
+        )
+        policy = build_policy(str(policy_name), request.policy_options)
+        logical_plan = policy.plan(request)
         audit = replay_and_audit_logical_plan(problem, logical_plan)
         canonical_tasks = CanonicalBucketizer(bucket_rows=self.bucket_rows).bucketize(replay_window)
         return {
