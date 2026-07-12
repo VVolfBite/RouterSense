@@ -741,17 +741,24 @@ class RouterSenseInjectionRuntime:
         predictor_name = self._online_p2_predictor_name()
         has_prediction = predictor_name not in {"none", "zero_hint"}
         is_joint_window = self._is_joint_window_async_mode()
+        resolved_name = str(resolved.canonical_name)
+        supports_target_preplanning = bool(
+            has_prediction
+            and is_joint_window
+            and base.uses_p2_forecast
+            and resolved_name != "barrier_criticality_runtime_safe"
+        )
         return base.with_runtime_flags(
             supports_current_window_joint_planning=bool(
                 is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
             ),
             supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
             supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
-            supports_target_layer_preplanning=bool(has_prediction and is_joint_window and base.uses_p2_forecast),
+            supports_target_layer_preplanning=bool(supports_target_preplanning),
             supports_p1_plan_reuse=bool(
                 is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
             ),
-            supports_late_suffix_splice=bool(has_prediction and is_joint_window and base.uses_p2_forecast),
+            supports_late_suffix_splice=bool(supports_target_preplanning),
             supports_rank_release_batch=bool(is_joint_window),
         )
 
