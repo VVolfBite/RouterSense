@@ -177,13 +177,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _fallback(output_dir: Path, *, world_size: int, config: str, strategy: str, profile: str, selected_layers: str, dry_run: bool) -> dict:
-    gate_cmd = [
-        "torchrun",
-        "--standalone",
-        "--nproc_per_node=2",
-        "experiments/distributed/run_stage1_runtime_integrated_gloo_gate.py",
-    ]
-    proc = run_subprocess(gate_cmd)
+    cuda_count = available_cuda_count()
     payload = {
         "runner": "run_gpu_b2_lifecycle",
         "config": str(config),
@@ -196,13 +190,17 @@ def _fallback(output_dir: Path, *, world_size: int, config: str, strategy: str, 
         "result_eligible_for_performance_comparison": False,
         "fallback_used": True,
         "fallback_reason": "gpu_environment_insufficient_world_size",
-        "fallback_command": gate_cmd,
-        "fallback_returncode": int(proc.returncode),
+        "fallback_command": [],
+        "fallback_returncode": 247,
+        "cuda_device_count": int(cuda_count),
         "fallback_stdout_path": str(output_dir / "fallback_stdout.log"),
         "fallback_stderr_path": str(output_dir / "fallback_stderr.log"),
     }
-    (output_dir / "fallback_stdout.log").write_text(proc.stdout, encoding="utf-8")
-    (output_dir / "fallback_stderr.log").write_text(proc.stderr, encoding="utf-8")
+    (output_dir / "fallback_stdout.log").write_text("", encoding="utf-8")
+    (output_dir / "fallback_stderr.log").write_text(
+        f"cuda_device_count={cuda_count} world_size={world_size} strict_gpu_run_blocked\n",
+        encoding="utf-8",
+    )
     return payload
 
 

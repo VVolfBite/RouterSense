@@ -76,8 +76,9 @@ def _parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode for suites that support real execution.")
     mode.add_argument("--execute", action="store_true", help="Force real execution for suites that support it.")
-    parser.add_argument("passthrough", nargs=argparse.REMAINDER)
-    return parser.parse_args()
+    args, passthrough = parser.parse_known_args()
+    args.passthrough = passthrough
+    return args
 
 
 def main() -> None:

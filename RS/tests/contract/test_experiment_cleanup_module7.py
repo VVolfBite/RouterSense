@@ -87,6 +87,26 @@ def test_validation_entry_execute_removes_dry_run(monkeypatch) -> None:
     assert "--dry-run" not in cmd
 
 
+def test_validation_entry_execute_after_suite_is_not_swallowed(monkeypatch) -> None:
+    from experiments.dev import run_validation
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd, cwd=None, env=None, check=False):
+        captured["cmd"] = list(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(run_validation.subprocess, "run", _fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_validation.py", "--suite", "c2", "--execute"])
+    try:
+        run_validation.main()
+    except SystemExit as exc:
+        assert int(exc.code or 0) == 0
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert "--dry-run" not in cmd
+
+
 def test_unified_report_builder_reads_structured_metrics(tmp_path: Path) -> None:
     run_dir = tmp_path / "offline_run"
     (run_dir / "metrics").mkdir(parents=True)

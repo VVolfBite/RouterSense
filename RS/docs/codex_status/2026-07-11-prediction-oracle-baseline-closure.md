@@ -1,6 +1,6 @@
 # Prediction / Oracle / Baseline Closure
 
-- commit: `e790c6fbc661a0e445e8e1a29bea3dd7d28af914`
+- commit: `a3abe86457e772ff61de1ef82af0aac4eec964b4`
 - cached: `False`
 - selected_predictor: `history_linear_trend`
 
@@ -31,14 +31,14 @@
     - safe_copy_current_optimality_gap_to_O_joint: mean gap 3.33%, median 0.00%.
     - safe_perfect_trace_hint_optimality_gap_to_O_joint: mean gap 1.41%, median 0.00%.
 11. safe-U 的 median/p90/p99 CPU 开销？
-    - gated_maxweight_matching: median 5476.0 us, p90 66368.3 us, p99 83301.2 us.
-    - barrier_criticality_matching: median 5691.8 us, p90 66360.1 us, p99 86354.1 us.
+    - gated_maxweight_matching: median 5290.8 us, p90 69506.7 us, p99 85293.1 us.
+    - barrier_criticality_matching: median 5376.7 us, p90 66235.3 us, p99 78304.0 us.
 12. safe-U 选择 U 和 B 的比例？
    gated_maxweight_matching: U=75.0%, B=25.0%; barrier_criticality_matching: U=93.8%, B=6.2%.
 13. safe-U 在执行真值下是否真的避免退化？
    yes; projection-based safe selection avoided raw-U regression 100 times in total and produced 0 recorded wrong selections in this closure.
 14. 预测准确度与调度收益是否相关？
-   only weakly; Pearson(relative L1, regret)=0.058955650809424644, Spearman(relative L1, regret)=0.044418609139054654.
+   only weakly; Pearson(relative L1, regret)=0.0764245160590777, Spearman(relative L1, regret)=0.04192428559500989.
 15. 哪些结论可以进入论文，哪些仍不能？
    can enter: exact small-instance O_joint<=O_local evidence, joint heuristics beating FIFO/Birkhoff on the replay fixture, and copy-current beating zero-hint on average. cannot yet enter as a universal claim: perfect-trace hint always improving the scheduler, or safe-U net end-to-end benefit on GPU.
 
