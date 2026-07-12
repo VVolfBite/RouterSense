@@ -16,6 +16,10 @@ PUBLIC_STRATEGIES = {
     "routersense_p0p1p2_hint",
     "routersense_joint_priority_phase_sync",
     "routersense_joint_phase_sync",
+    "routersense_joint_zero_raw_async",
+    "routersense_joint_predicted_raw_async",
+    "routersense_joint_zero_safe_async",
+    "routersense_joint_predicted_safe_async",
     "routersense_joint_zero_hint_async_p2p",
     "routersense_joint_predicted_async_p2p",
     "routersense_safe_joint_async",
@@ -87,7 +91,9 @@ def public_runtime_defaults(*, output_mode: str) -> dict[str, Any]:
                 "replay_trace_enabled": False,
             },
             "execution": {
+                "bucket_mode": "dynamic_current",
                 "bucket_rows": 0,
+                "safe_projection_mode": "host_select",
             },
         }
     if output_mode == "debug_replay":
@@ -102,7 +108,9 @@ def public_runtime_defaults(*, output_mode: str) -> dict[str, Any]:
                 "replay_trace_enabled": True,
             },
             "execution": {
+                "bucket_mode": "dynamic_current",
                 "bucket_rows": 0,
+                "safe_projection_mode": "host_select",
             },
         }
     raise ValueError(f"unsupported output_mode {output_mode!r}")
@@ -202,6 +210,12 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "online_p2_predictor": "copy_current_dispatch",
         }
     if strategy_name == "routersense_joint_zero_hint_async_p2p":
+        strategy_name = "routersense_joint_zero_raw_async"
+    if strategy_name == "routersense_joint_predicted_async_p2p":
+        strategy_name = "routersense_joint_predicted_raw_async"
+    if strategy_name == "routersense_safe_joint_async":
+        strategy_name = "routersense_joint_predicted_safe_async"
+    if strategy_name == "routersense_joint_zero_raw_async":
         return {
             "policy": "routersense_p0p1p2_hint",
             "run_kind": "online_policy_correctness",
@@ -210,8 +224,9 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "p2_hint_mode": "none",
             "calibrated_p2": False,
             "online_p2_predictor": "none",
+            "safe_projection_mode": "disabled",
         }
-    if strategy_name == "routersense_joint_predicted_async_p2p":
+    if strategy_name == "routersense_joint_predicted_raw_async":
         return {
             "policy": "routersense_p0p1p2_hint",
             "run_kind": "online_policy_correctness",
@@ -220,8 +235,20 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
             "online_p2_predictor": "copy_current_dispatch",
+            "safe_projection_mode": "disabled",
         }
-    if strategy_name == "routersense_safe_joint_async":
+    if strategy_name == "routersense_joint_zero_safe_async":
+        return {
+            "policy": "routersense_p0p1p2_hint",
+            "run_kind": "online_policy_correctness",
+            "execution_mode": "joint_window_async_p2p",
+            "control_mode": "sync_before_phase",
+            "p2_hint_mode": "none",
+            "calibrated_p2": False,
+            "online_p2_predictor": "none",
+            "safe_projection_mode": "host_select",
+        }
+    if strategy_name == "routersense_joint_predicted_safe_async":
         return {
             "policy": "routersense_p0p1p2_hint",
             "run_kind": "online_policy_correctness",
@@ -230,5 +257,6 @@ def resolve_strategy_runtime(*, strategy_name: str, runtime_line: str) -> dict[s
             "p2_hint_mode": "calibrated_artifact",
             "calibrated_p2": True,
             "online_p2_predictor": "copy_current_dispatch",
+            "safe_projection_mode": "host_select",
         }
     raise ValueError(f"unsupported strategy {strategy_name!r}")

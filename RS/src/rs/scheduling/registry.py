@@ -60,6 +60,10 @@ def resolve_policy(
     p0_weight: float = 1.0,
     p1_reservation_weight: float = 1.0,
     p2_hint_weight: float = 1.0,
+    residual_weight: float | None = None,
+    barrier_weight: float | None = None,
+    age_weight: float | None = None,
+    prediction_weight: float | None = None,
     p2_hint_artifact: str = "",
 ) -> SchedulingPolicy:
     base_name, mode = _parse_policy_name(policy_name)
@@ -87,6 +91,10 @@ def resolve_policy(
             p0_weight=p0_weight,
             p1_reservation_weight=p1_reservation_weight,
             p2_hint_weight=p2_hint_weight,
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
             p2_hint_artifact=p2_hint_artifact,
         )
         paired_b_policy = resolve_policy(
@@ -95,6 +103,10 @@ def resolve_policy(
             p0_weight=p0_weight,
             p1_reservation_weight=p1_reservation_weight,
             p2_hint_weight=p2_hint_weight,
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
             p2_hint_artifact=p2_hint_artifact,
         )
         return SafeJointPolicy(
@@ -105,7 +117,13 @@ def resolve_policy(
             paired_b_policy=paired_b_policy,
         )
     if is_tier1_algorithm(base_name):
-        return resolve_tier1_policy(base_name)
+        return resolve_tier1_policy(
+            base_name,
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
+        )
     if is_recovered_candidate(base_name):
         return resolve_recovered_candidate(base_name)
     if base_name == "phase_barrier_fifo":

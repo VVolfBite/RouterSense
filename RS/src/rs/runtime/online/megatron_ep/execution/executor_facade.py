@@ -47,6 +47,8 @@ class ExecutionResult:
     preflight_passed: bool = True
     fallback_reason: str = ""
     all_work_completed: bool = True
+    timing_us: dict[str, float] | None = None
+    phase_metrics: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.executed_backend_id and self.backend_id:
@@ -104,6 +106,16 @@ class PhaseSyncTransportExecutor:
             fallback_reason="",
             timeout=False,
             all_work_completed=True,
+            timing_us={
+                "submit_us": 0.0,
+                "wait_us": 0.0,
+                "communication_us": float((end_ns - start_ns) / 1000.0),
+                "total_forward_us": float((end_ns - start_ns) / 1000.0),
+            },
+            phase_metrics={
+                "wave_count": int(len(request.execution_plan.waves)),
+                "collective_count": int(len(request.execution_plan.waves)),
+            },
             raw_summary=summary.to_dict(),
             execution_entries=tuple(entries),
         )
@@ -142,6 +154,16 @@ class AsyncReleaseTransportExecutor:
             fallback_reason="",
             timeout=False,
             all_work_completed=True,
+            timing_us={
+                "batch_submit_us": float(summary_row.get("enqueue_us", 0.0) or 0.0),
+                "work_wait_us": float(summary_row.get("wait_us", 0.0) or 0.0),
+                "communication_us": float(summary_row.get("total_us", 0.0) or 0.0),
+                "total_forward_us": float(summary_row.get("total_us", 0.0) or 0.0),
+            },
+            phase_metrics={
+                "task_count": int(sum(len(wave.bucket_tasks) for wave in request.execution_plan.waves)),
+                "p2p_op_count": int(summary_row.get("send_op_count", 0) or 0) + int(summary_row.get("recv_op_count", 0) or 0),
+            },
             raw_summary=result.summary.to_dict(),
             execution_entries=tuple(result.execution_entries),
         )

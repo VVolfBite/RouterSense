@@ -116,8 +116,10 @@ def _single_strategy_config(
         control_mode = str(strategy_runtime["control_mode"])
         execution_mode = str(strategy_runtime["execution_mode"])
         run_kind = str(strategy_runtime["run_kind"])
+        safe_projection_mode = str(strategy_runtime.get("safe_projection_mode", runtime_defaults["execution"].get("safe_projection_mode", "host_select")))
         effective_observation = dict(runtime_defaults["observation"])
         effective_observation["invariant_mode"] = str(runtime.get("invariant_mode", "diagnostic"))
+        effective_execution_bucket_mode = str(runtime_defaults["execution"].get("bucket_mode", "dynamic_current"))
         effective_execution_bucket_rows = int(runtime_defaults["execution"]["bucket_rows"])
     else:
         policy_name = str(strategy.get("policy", ""))
@@ -125,6 +127,7 @@ def _single_strategy_config(
         p2_mode = str(strategy.get("p2_hint_mode", "none"))
         calibrated_p2 = bool(strategy.get("calibrated_p2", False))
         online_p2_predictor = str(strategy.get("online_p2_predictor", "copy_current_dispatch"))
+        safe_projection_mode = str(strategy.get("safe_projection_mode", execution.get("safe_projection_mode", "host_select")))
         control_mode = "none" if is_native_baseline else str(strategy.get("control_mode", "sync_before_phase"))
         execution_mode = "native_passthrough" if is_native_baseline else str(strategy.get("execution_mode", "phase_sync_wave"))
         run_kind = "online_observe" if is_native_baseline else "online_policy_correctness"
@@ -138,6 +141,7 @@ def _single_strategy_config(
             "replay_trace_enabled": bool(observation.get("replay_trace_enabled", False)),
             "invariant_mode": str(observation.get("invariant_mode", runtime.get("invariant_mode", "diagnostic"))),
         }
+        effective_execution_bucket_mode = str(execution.get("bucket_mode", "dynamic_current"))
         effective_execution_bucket_rows = 0 if is_native_baseline else int(execution.get("bucket_rows", 0))
     p2_hint_weight = float(execution.get("p2_hint_weight", 1.0))
     if p2_mode in {"none", "deterministic_stub"} and not calibrated_p2:
@@ -158,6 +162,10 @@ def _single_strategy_config(
                 "p0_weight": float(execution.get("p0_weight", 1.0)),
                 "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
                 "p2_hint_weight": p2_hint_weight,
+                "residual_weight": float(execution.get("residual_weight", 0.75)),
+                "barrier_weight": float(execution.get("barrier_weight", 1.75)),
+                "age_weight": float(execution.get("age_weight", 0.15)),
+                "prediction_weight": float(execution.get("prediction_weight", 0.35)),
                 "online_p2_predictor": online_p2_predictor,
             },
             "p2": {"mode": p2_mode, "artifact": ""},
@@ -165,7 +173,9 @@ def _single_strategy_config(
         "offline_study": {"policies": []},
         "execution": {
             "mode": execution_mode,
+            "bucket_mode": effective_execution_bucket_mode,
             "bucket_rows": effective_execution_bucket_rows,
+            "safe_projection_mode": safe_projection_mode,
             "schedule": {
                 "layer_selector": str(execution.get("schedule_layer_selector", "all")),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),

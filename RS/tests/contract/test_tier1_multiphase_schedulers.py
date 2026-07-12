@@ -108,6 +108,27 @@ def test_tier1_atomic_and_fluid_service_models_are_isolated() -> None:
     assert validate_logical_plan(fluid, expected_flows=_expected_flows(problem), mode=RUNTIME_LOOKAHEAD_MODE)["valid"]
 
 
+def test_tier1_weight_overrides_are_consumed_and_can_change_plan_digest() -> None:
+    problem = _build_problem(
+        _fixture("p2_local_release_witness_4rank"),
+        mode=RUNTIME_LOOKAHEAD_MODE,
+        p2_source="copy_current_dispatch",
+        expert_compute_delay=1.0,
+    )
+    base = resolve_policy(policy_name="U_barrier_criticality_global_matching", bucket_rows=0).build_logical_plan(problem)
+    weighted = resolve_policy(
+        policy_name="U_barrier_criticality_global_matching",
+        bucket_rows=0,
+        residual_weight=0.0,
+        barrier_weight=0.0,
+        age_weight=0.0,
+        prediction_weight=10.0,
+    ).build_logical_plan(problem)
+    assert weighted.diagnostics["effective_weights"]["prediction_weight"] == 10.0
+    assert weighted.diagnostics["consumed_weights"]["prediction_weight"] == 10.0
+    assert stable_hash(base.to_dict()) != stable_hash(weighted.to_dict())
+
+
 def test_tier1_policies_are_offline_only() -> None:
     for algorithm_id in TIER1_ALGORITHM_IDS:
         policy = resolve_policy(policy_name=algorithm_id, bucket_rows=0)

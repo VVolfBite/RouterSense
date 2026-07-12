@@ -93,6 +93,10 @@ class OnlinePolicyParameters:
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 0.0
+    residual_weight: float = 0.75
+    barrier_weight: float = 1.75
+    age_weight: float = 0.15
+    prediction_weight: float = 0.35
     online_p2_predictor: str = "copy_current_dispatch"
 
 
@@ -132,7 +136,9 @@ class ExecutionScheduleConfig:
 @dataclass(frozen=True)
 class ExecutionConfig:
     mode: str = "native_passthrough"
+    bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
+    safe_projection_mode: str = "host_select"
     schedule: ExecutionScheduleConfig = field(default_factory=ExecutionScheduleConfig)
 
 
@@ -262,6 +268,18 @@ def validate_run_config(config: RunConfig) -> None:
                 "joint_window_async_p2p supports online_policy.name in "
                 "{bucketed_fifo, greedy_ready_set, birkhoff_phase_local, routersense_p0p1p2_hint}"
             )
+    if config.execution.bucket_mode not in {"dynamic_current", "fixed_rows"}:
+        raise ValueError(f"unsupported execution.bucket_mode {config.execution.bucket_mode!r}")
+    if config.execution.safe_projection_mode not in {"disabled", "host_select"}:
+        raise ValueError(f"unsupported execution.safe_projection_mode {config.execution.safe_projection_mode!r}")
+    if config.execution.bucket_mode == "dynamic_current" and int(config.execution.bucket_rows) != 0:
+        raise ValueError("dynamic_current requires execution.bucket_rows=0")
+    if config.execution.bucket_mode == "fixed_rows":
+        bucket_rows = int(config.execution.bucket_rows)
+        if bucket_rows <= 0:
+            raise ValueError("fixed_rows requires execution.bucket_rows > 0")
+        if (bucket_rows & (bucket_rows - 1)) != 0:
+            raise ValueError("fixed_rows requires execution.bucket_rows to be a power of two")
     if config.online_policy.name == "fast_bvn_single_tier" and int(config.topology.ep_size) > 8:
         raise ValueError("fast_bvn_single_tier supports EP size <= 8 only")
     _assert_no_credential_fields(config.to_dict())
@@ -355,7 +373,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "runtime": {"precision", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
         "online_policy": {"name", "parameters", "p2"},
         "offline_study": {"policies", "reference_policies", "p2_source", "window"},
-        "execution": {"mode", "bucket_rows", "schedule"},
+        "execution": {"mode", "bucket_mode", "bucket_rows", "safe_projection_mode", "schedule"},
         "observation": {
             "profile",
             "capture_enabled",
@@ -373,7 +391,16 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
         ("topology", "ep"): {"size"},
         ("topology", "network"): {"scope", "interface_hint"},
-        ("online_policy", "parameters"): {"p0_weight", "p1_reservation_weight", "p2_hint_weight", "online_p2_predictor"},
+        ("online_policy", "parameters"): {
+            "p0_weight",
+            "p1_reservation_weight",
+            "p2_hint_weight",
+            "residual_weight",
+            "barrier_weight",
+            "age_weight",
+            "prediction_weight",
+            "online_p2_predictor",
+        },
         ("online_policy", "p2"): {"mode", "artifact"},
         ("offline_study", "window"): {"sample_selector", "start_layer_selector"},
         ("execution", "schedule"): {"layer_selector", "phase_selector"},
@@ -470,6 +497,10 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
                 p0_weight=float(online_policy.get("parameters", {}).get("p0_weight", 1.0)),
                 p1_reservation_weight=float(online_policy.get("parameters", {}).get("p1_reservation_weight", 1.0)),
                 p2_hint_weight=float(online_policy.get("parameters", {}).get("p2_hint_weight", 0.0)),
+                residual_weight=float(online_policy.get("parameters", {}).get("residual_weight", 0.75)),
+                barrier_weight=float(online_policy.get("parameters", {}).get("barrier_weight", 1.75)),
+                age_weight=float(online_policy.get("parameters", {}).get("age_weight", 0.15)),
+                prediction_weight=float(online_policy.get("parameters", {}).get("prediction_weight", 0.35)),
                 online_p2_predictor=str(online_policy.get("parameters", {}).get("online_p2_predictor", "copy_current_dispatch")),
             ),
             p2=OnlinePolicyP2Config(
@@ -488,7 +519,9 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
         ),
         execution=ExecutionConfig(
             mode=str(execution.get("mode", "native_passthrough")),
+            bucket_mode=str(execution.get("bucket_mode", "dynamic_current")),
             bucket_rows=int(execution.get("bucket_rows", 0)),
+            safe_projection_mode=str(execution.get("safe_projection_mode", "host_select")),
             schedule=ExecutionScheduleConfig(
                 layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
                 phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),

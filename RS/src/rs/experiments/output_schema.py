@@ -15,6 +15,7 @@ import yaml
 
 from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_dirty_git, normalize_invariant_mode, require_invariant
 from rs.scheduling.catalog import resolve_algorithm_id
+from rs.scheduling.bucketizer import BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS
 
 
 ARTIFACT_SCHEMA_VERSION = 1
@@ -88,30 +89,53 @@ def validate_official_entrypoint_config(
             expected=expected_runtime_line,
             actual=runtime.get("line", ""),
         )
-    bucket_rows = traffic.get("bucket_rows", 0)
+    raw_bucket_rows = traffic.get("bucket_rows", 0)
+    bucket_mode_default = (
+        BUCKET_MODE_DYNAMIC_CURRENT
+        if ((isinstance(raw_bucket_rows, list) and all(int(item) == 0 for item in raw_bucket_rows)) or int(raw_bucket_rows or 0) == 0)
+        else BUCKET_MODE_FIXED_ROWS
+    )
+    bucket_mode = str(traffic.get("bucket_mode", bucket_mode_default))
+    require_invariant(
+        bucket_mode in {BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS},
+        context=InvariantContext(stage="startup", error_code="RS-CONFIG-002"),
+        message="bucket_mode must be canonical",
+        expected=[BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS],
+        actual=bucket_mode,
+    )
+    bucket_rows = raw_bucket_rows
     bucket_values = bucket_rows if isinstance(bucket_rows, list) else [bucket_rows]
     for value in bucket_values:
         ivalue = int(value)
-        require_invariant(
-            ivalue > 0,
-            context=InvariantContext(stage="startup", error_code="RS-CONFIG-002"),
-            message="bucket_rows must be positive",
-            expected="> 0",
-            actual=ivalue,
-        )
-        require_invariant(
-            (ivalue & (ivalue - 1)) == 0,
-            context=InvariantContext(stage="startup", error_code="RS-CONFIG-003"),
-            message="bucket_rows must be a power of two",
-            expected="power_of_two",
-            actual=ivalue,
-        )
+        if bucket_mode == BUCKET_MODE_DYNAMIC_CURRENT:
+            require_invariant(
+                ivalue == 0,
+                context=InvariantContext(stage="startup", error_code="RS-CONFIG-003"),
+                message="dynamic_current requires bucket_rows=0",
+                expected=0,
+                actual=ivalue,
+            )
+        else:
+            require_invariant(
+                ivalue > 0,
+                context=InvariantContext(stage="startup", error_code="RS-CONFIG-004"),
+                message="fixed_rows bucket_rows must be positive",
+                expected="> 0",
+                actual=ivalue,
+            )
+            require_invariant(
+                (ivalue & (ivalue - 1)) == 0,
+                context=InvariantContext(stage="startup", error_code="RS-CONFIG-005"),
+                message="fixed_rows bucket_rows must be a power of two",
+                expected="power_of_two",
+                actual=ivalue,
+            )
     policy_name = str(policy.get("name", "") or online_policy.get("name", "")).strip()
     if policy_name and policy_name != "disabled":
         resolved = resolve_algorithm_id(policy_name)
         require_invariant(
             resolved.requested_name == resolved.canonical_name,
-            context=InvariantContext(stage="startup", error_code="RS-CONFIG-004"),
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-006"),
             message="policy name must be canonical in official configs",
             expected=resolved.canonical_name,
             actual=policy_name,
@@ -119,7 +143,7 @@ def validate_official_entrypoint_config(
         if expected_runtime_line in {"phase_sync", "async_release"}:
             require_invariant(
                 bool(resolved.spec.online_eligible) and not bool(resolved.spec.reference_only),
-                context=InvariantContext(stage="startup", error_code="RS-CONFIG-006"),
+                context=InvariantContext(stage="startup", error_code="RS-CONFIG-007"),
                 message="online official config requested a non-deployable policy",
                 expected="online_eligible canonical policy",
                 actual=policy_name,
@@ -129,7 +153,7 @@ def validate_official_entrypoint_config(
         allowed_predictors = _CANONICAL_OFFLINE_PREDICTORS if expected_runtime_line == "offline_replay" else _CANONICAL_ONLINE_PREDICTORS
         require_invariant(
             predictor_name in allowed_predictors,
-            context=InvariantContext(stage="startup", error_code="RS-CONFIG-005"),
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-008"),
             message="predictor name must be canonical and eligible for this entrypoint",
             expected=sorted(allowed_predictors),
             actual=predictor_name,
@@ -219,6 +243,7 @@ def initialize_run_artifacts(
         "runtime_line": str((config_snapshot.get("runtime", {}) or {}).get("line", "")),
         "policy_id": str((config_snapshot.get("policy", {}) or {}).get("name", "")),
         "predictor_id": str((config_snapshot.get("prediction", {}) or {}).get("name", "")),
+        "bucket_mode": str((config_snapshot.get("traffic", {}) or {}).get("bucket_mode", "")),
         "bucket_rows": (config_snapshot.get("traffic", {}) or {}).get("bucket_rows", []),
         "model": config_snapshot.get("model", {}),
         "topology": config_snapshot.get("topology", {}),

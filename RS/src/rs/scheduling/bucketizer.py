@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
+BUCKET_MODE_DYNAMIC_CURRENT = "dynamic_current"
+BUCKET_MODE_FIXED_ROWS = "fixed_rows"
+
+
 @dataclass(frozen=True)
 class CanonicalBucketTask:
     phase: str
@@ -77,7 +81,42 @@ class CanonicalBucketizer:
         return digest.hexdigest()
 
 
+def bucket_mode_for_rows(bucket_rows: int) -> str:
+    return BUCKET_MODE_DYNAMIC_CURRENT if int(bucket_rows) <= 0 else BUCKET_MODE_FIXED_ROWS
+
+
+def summarize_bucket_tasks(tasks: tuple[CanonicalBucketTask, ...]) -> dict[str, Any]:
+    by_edge: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        edge_key = f"{task.phase}:{int(task.src_group_rank)}->{int(task.dst_group_rank)}"
+        row_sizes = by_edge.setdefault(
+            edge_key,
+            {
+                "phase": str(task.phase),
+                "src_group_rank": int(task.src_group_rank),
+                "dst_group_rank": int(task.dst_group_rank),
+                "task_count": 0,
+                "total_rows": 0,
+                "bucket_rows": [],
+                "row_offsets": [],
+            },
+        )
+        row_sizes["task_count"] += 1
+        row_sizes["total_rows"] += int(task.row_count)
+        row_sizes["bucket_rows"].append(int(task.row_count))
+        row_sizes["row_offsets"].append(int(task.row_offset))
+    return {
+        "task_count": int(len(tasks)),
+        "total_rows": int(sum(int(task.row_count) for task in tasks)),
+        "per_edge": [by_edge[key] for key in sorted(by_edge)],
+    }
+
+
 __all__ = [
+    "BUCKET_MODE_DYNAMIC_CURRENT",
+    "BUCKET_MODE_FIXED_ROWS",
     "CanonicalBucketTask",
     "CanonicalBucketizer",
+    "bucket_mode_for_rows",
+    "summarize_bucket_tasks",
 ]

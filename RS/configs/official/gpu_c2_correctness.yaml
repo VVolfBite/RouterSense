@@ -14,7 +14,9 @@ runtime:
   invariant_mode: evaluation_strict
 traffic:
   matrix_unit: rows
-  bucket_rows:
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+  calibration_bucket_rows:
     - 512
     - 1024
     - 2048
@@ -31,7 +33,7 @@ oracle: {}
 regime_analysis: {}
 suite: c2
 reference_strategy: birkhoff_phase_local_sync
-candidate_strategy: routersense_joint_predicted_async_p2p
+candidate_strategy: routersense_joint_predicted_raw_async
 selected_layers: selected
 forward_epochs: 2
 profile: execution

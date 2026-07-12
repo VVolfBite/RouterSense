@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from rs.scheduling.capabilities import PolicyCapabilities
@@ -109,12 +109,26 @@ class Tier1MultiphasePolicy:
         evaluation_eligible=True,
     )
 
-    def __init__(self, algorithm_id: str) -> None:
+    def __init__(
+        self,
+        algorithm_id: str,
+        *,
+        residual_weight: float | None = None,
+        barrier_weight: float | None = None,
+        age_weight: float | None = None,
+        prediction_weight: float | None = None,
+    ) -> None:
         if algorithm_id not in TIER1_ALGORITHM_IDS:
             raise ValueError(f"unknown Tier 1 algorithm {algorithm_id!r}")
         self.algorithm_id = algorithm_id
         self.policy_name = algorithm_id
         self.collect_debug_trace = False
+        self._requested_weight_overrides = {
+            "residual_weight": residual_weight,
+            "barrier_weight": barrier_weight,
+            "age_weight": age_weight,
+            "prediction_weight": prediction_weight,
+        }
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
         if self.algorithm_id == "B_birkhoff":
@@ -123,15 +137,37 @@ class Tier1MultiphasePolicy:
             return _build_b_birkhoff_wave(problem)
         if self.algorithm_id == "U_lagrangian":
             return _build_lagrangian(problem)
-        return _build_u_policy(problem, _U_SPECS[self.algorithm_id], policy=self)
+        spec = _U_SPECS[self.algorithm_id]
+        if self.algorithm_id in _U_SPECS:
+            spec = replace(
+                spec,
+                residual_weight=spec.residual_weight if self._requested_weight_overrides["residual_weight"] is None else float(self._requested_weight_overrides["residual_weight"]),
+                barrier_weight=spec.barrier_weight if self._requested_weight_overrides["barrier_weight"] is None else float(self._requested_weight_overrides["barrier_weight"]),
+                age_weight=spec.age_weight if self._requested_weight_overrides["age_weight"] is None else float(self._requested_weight_overrides["age_weight"]),
+                prediction_weight=spec.prediction_weight if self._requested_weight_overrides["prediction_weight"] is None else float(self._requested_weight_overrides["prediction_weight"]),
+            )
+        return _build_u_policy(problem, spec, policy=self)
 
 
 def is_tier1_algorithm(policy_name: str) -> bool:
     return policy_name in TIER1_ALGORITHM_IDS
 
 
-def resolve_tier1_policy(policy_name: str) -> Tier1MultiphasePolicy:
-    return Tier1MultiphasePolicy(policy_name)
+def resolve_tier1_policy(
+    policy_name: str,
+    *,
+    residual_weight: float | None = None,
+    barrier_weight: float | None = None,
+    age_weight: float | None = None,
+    prediction_weight: float | None = None,
+) -> Tier1MultiphasePolicy:
+    return Tier1MultiphasePolicy(
+        policy_name,
+        residual_weight=residual_weight,
+        barrier_weight=barrier_weight,
+        age_weight=age_weight,
+        prediction_weight=prediction_weight,
+    )
 
 
 def tier1_inventory() -> tuple[dict[str, Any], ...]:
@@ -211,6 +247,25 @@ def _build_u_policy(
                 "age_weight": spec.age_weight,
                 "prediction_weight": spec.prediction_weight,
                 "adaptive_prices": spec.adaptive_prices,
+            },
+            "default_weights": {
+                "residual_weight": _U_SPECS[spec.algorithm_id].residual_weight if spec.algorithm_id in _U_SPECS else spec.residual_weight,
+                "barrier_weight": _U_SPECS[spec.algorithm_id].barrier_weight if spec.algorithm_id in _U_SPECS else spec.barrier_weight,
+                "age_weight": _U_SPECS[spec.algorithm_id].age_weight if spec.algorithm_id in _U_SPECS else spec.age_weight,
+                "prediction_weight": _U_SPECS[spec.algorithm_id].prediction_weight if spec.algorithm_id in _U_SPECS else spec.prediction_weight,
+            },
+            "requested_weights": dict(getattr(policy, "_requested_weight_overrides", {})),
+            "effective_weights": {
+                "residual_weight": spec.residual_weight,
+                "barrier_weight": spec.barrier_weight,
+                "age_weight": spec.age_weight,
+                "prediction_weight": spec.prediction_weight,
+            },
+            "consumed_weights": {
+                "residual_weight": spec.residual_weight,
+                "barrier_weight": spec.barrier_weight,
+                "age_weight": spec.age_weight,
+                "prediction_weight": spec.prediction_weight,
             },
             "scheduler_debug_trace": list(result.get("debug_trace", [])),
             "scheduler_debug_trace_collected": bool(getattr(policy, "collect_debug_trace", False)),

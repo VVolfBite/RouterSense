@@ -267,6 +267,8 @@ class MegatronPhaseTransportAdapter:
                 "fallback_used": bool(facade_result.fallback_used),
                 "fallback_reason": str(facade_result.fallback_reason),
                 "timeout": bool(facade_result.timeout),
+                "timing_us": dict(facade_result.timing_us or {}),
+                "phase_metrics": dict(facade_result.phase_metrics or {}),
                 "use_nccl_stream_requested": bool(use_nccl_stream),
                 "use_nccl_stream_effective": bool(use_nccl_stream),
             }

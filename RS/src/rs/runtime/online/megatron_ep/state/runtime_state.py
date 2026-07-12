@@ -108,6 +108,10 @@ class PreparedWindowRuntimeState:
     host_projected_paired_b_makespan: float = 0.0
     host_projected_estimated_makespan: float = 0.0
     ideal_estimated_makespan: float = 0.0
+    requested_bucket_mode: str = ""
+    effective_bucket_mode: str = ""
+    requested_bucket_rows: int = 0
+    effective_bucket_rows: int = 0
     canonical_task_digest: str = ""
     canonical_task_count: int = 0
     canonical_task_total_rows: int = 0

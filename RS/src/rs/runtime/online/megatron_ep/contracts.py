@@ -32,6 +32,7 @@ AssertionStatus = Literal["passed", "failed", "not_applicable"]
 class ExecutionSelection:
     layer_selector: str = "all"
     phase_selector: str = "both"
+    bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,10 +44,15 @@ class OnlinePolicyParameters:
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 0.0
+    residual_weight: float = 0.75
+    barrier_weight: float = 1.75
+    age_weight: float = 0.15
+    prediction_weight: float = 0.35
     p2_hint_mode: str = "none"
     p2_hint_artifact: str = ""
     calibrated_p2_enabled: bool = False
     online_p2_predictor: str = "copy_current_dispatch"
+    safe_projection_mode: str = "host_select"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -96,12 +102,18 @@ class RouterSenseInjectionConfig:
     control_mode: str = "default_continue"
     policy_version: str = "v1"
     shadow_command_arrival: str = "none"
+    bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 1.0
+    residual_weight: float = 0.75
+    barrier_weight: float = 1.75
+    age_weight: float = 0.15
+    prediction_weight: float = 0.35
     p2_hint_artifact: str = ""
     online_p2_predictor: str = "copy_current_dispatch"
+    safe_projection_mode: str = "host_select"
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
     capture_phase_tensors: bool = False

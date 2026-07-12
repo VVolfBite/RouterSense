@@ -43,8 +43,11 @@ class PolicyOptions:
     p0_weight: float = 1.0
     p1_weight: float = 1.0
     p2_hint_weight: float = 1.0
+    residual_weight: float = 0.75
+    barrier_weight: float = 1.75
+    age_weight: float = 0.15
+    prediction_weight: float = 0.35
     criticality_weight: float = 0.0
-    barrier_weight: float = 0.0
     maxweight_enabled: bool = False
     pricing: dict[str, Any] | None = None
     iteration_budget: int | None = None
@@ -180,6 +183,10 @@ class LegacyLogicalPolicyAdapter:
             p0_weight=float(self._options.p0_weight),
             p1_reservation_weight=float(self._options.p1_weight),
             p2_hint_weight=float(self._options.p2_hint_weight),
+            residual_weight=float(self._options.residual_weight),
+            barrier_weight=float(self._options.barrier_weight),
+            age_weight=float(self._options.age_weight),
+            prediction_weight=float(self._options.prediction_weight),
         )
         plan = legacy_policy.build_logical_plan(legacy_problem)
         diagnostics = dict(getattr(plan, "diagnostics", {}) or {})
