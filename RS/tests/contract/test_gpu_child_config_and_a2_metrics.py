@@ -127,6 +127,7 @@ def test_official_gpu_first_bringup_config_uses_selected_layers_and_core_strateg
     payload = load_official_config(REPO_ROOT / "configs/official/gpu_first_bringup.yaml")
     assert payload["selected_layers"] == "0,1"
     assert payload["evaluation"]["selected_layer_ids"] == [0, 1]
+    assert payload["workload"]["prompts"] == "configs/components/workloads/bringup_2_short_prompts.json"
     assert payload["strategies"] == [
         "native",
         "birkhoff_phase_local_sync",
@@ -136,3 +137,40 @@ def test_official_gpu_first_bringup_config_uses_selected_layers_and_core_strateg
         "routersense_u_core_predicted_raw_async",
         "routersense_u_core_predicted_safe_async",
     ]
+
+
+def test_gpu_hotpath_iteration_config_uses_compact_preflight_and_three_strategies() -> None:
+    payload = load_official_config(REPO_ROOT / "configs/official/gpu_hotpath_iteration.yaml")
+    assert payload["preflight_mode"] == "compact"
+    assert payload["workload"]["prompts"] == "configs/components/workloads/comparison_8x16_prompts.json"
+    assert payload["strategies"] == [
+        "native",
+        "routersense_b_core_independent_async",
+        "routersense_u_core_zero_raw_async",
+    ]
+
+
+def test_child_config_carries_requested_and_effective_preflight_mode() -> None:
+    base = {
+        "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+        "topology": {"world_size": 4, "ep_size": 4},
+        "runtime": {"line": "async_release", "invariant_mode": "evaluation_strict", "precision": "bf16", "dispatcher": "alltoall"},
+        "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+        "policy": {"options": {}},
+        "workload": {"prompts": "configs/workload/smoke_prompts.json"},
+        "execution": {"schedule_phase_selector": "both"},
+        "evaluation": {"selected_layer_ids": [0, 1]},
+    }
+    cfg = build_policy_correctness_config(
+        base_comparison=base,
+        strategy_name="routersense_b_core_independent_async",
+        run_name="preflight",
+        output_root=Path("/tmp/preflight"),
+        profile="perf",
+        selected_layers="selected",
+        save_logits=False,
+        preflight_mode="compact",
+    )
+    assert cfg["execution"]["preflight_mode"] == "compact"
+    assert cfg["requested_preflight_mode"] == "compact"
+    assert cfg["effective_preflight_mode"] == "compact"

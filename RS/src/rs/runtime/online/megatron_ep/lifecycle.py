@@ -171,6 +171,17 @@ class RouterSenseInjectionRuntime:
     target_plan_store: TargetPlanStore | None = None
     target_planner_service: TargetLayerPlannerService | None = None
     target_plan_control_group: Any | None = None
+    _available_moe_layer_ids: tuple[str, ...] = ()
+    _resolved_schedule_selector: Any | None = None
+    _selected_layer_id_set: frozenset[str] = field(default_factory=frozenset)
+    _prediction_source_layer_id_set: frozenset[str] = field(default_factory=frozenset)
+    _none_layer_id_set: frozenset[str] = field(default_factory=frozenset)
+    _effective_phase_policy_name_cache: str = ""
+    _resolved_policy_capabilities_cache: Any | None = None
+    _joint_window_enabled_cache: bool = False
+    _cross_layer_prediction_enabled_cache: bool = False
+    _target_preplanning_enabled_cache: bool = False
+    _current_plan_build_keys: set[tuple[int, int, str, str, str]] = field(default_factory=set)
 
     # Configuration and policy selection
 
@@ -195,7 +206,142 @@ class RouterSenseInjectionRuntime:
                 self.config.p2_hint_mode,
                 shared_state=self._runtime_state,
             )
+        self._refresh_policy_caches()
         self._ensure_target_planner_runtime()
+
+    def _refresh_policy_caches(self) -> None:
+        resolved = resolve_online_policy_config(self.config)
+        if resolved is None:
+            self._effective_phase_policy_name_cache = ""
+            self._resolved_policy_capabilities_cache = None
+            self._joint_window_enabled_cache = False
+            self._cross_layer_prediction_enabled_cache = False
+            self._target_preplanning_enabled_cache = False
+            return
+        self._effective_phase_policy_name_cache = str(resolved.builder_key)
+        policy = build_policy(
+            str(resolved.canonical_name),
+            PolicyOptions(
+                p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
+                p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
+                p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
+                residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
+                barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
+                age_weight=float(getattr(self.config, "age_weight", 0.15)),
+                prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
+            ),
+        )
+        base = getattr(policy, "capabilities", None)
+        if base is None:
+            self._resolved_policy_capabilities_cache = None
+            self._joint_window_enabled_cache = False
+            self._cross_layer_prediction_enabled_cache = False
+            self._target_preplanning_enabled_cache = False
+            return
+        predictor_name = self._online_p2_predictor_name()
+        has_prediction = predictor_name not in {"none", "zero_hint"}
+        is_joint_window = str(self.config.execution_mode) == "joint_window_async_p2p"
+        safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
+        supports_target_preplanning = bool(
+            has_prediction
+            and is_joint_window
+            and base.uses_p2_forecast
+            and (safe_projection_mode == "disabled" or safe_projection_mode == "host_select")
+        )
+        self._resolved_policy_capabilities_cache = base.with_runtime_flags(
+            supports_current_window_joint_planning=bool(
+                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+            ),
+            supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
+            supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
+            supports_target_layer_preplanning=bool(supports_target_preplanning),
+            supports_p1_plan_reuse=bool(
+                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+            ),
+            supports_late_suffix_splice=bool(supports_target_preplanning),
+            supports_rank_release_batch=bool(is_joint_window),
+        )
+        self._joint_window_enabled_cache = bool(
+            self._resolved_policy_capabilities_cache.supports_current_window_joint_planning
+        )
+        self._cross_layer_prediction_enabled_cache = bool(
+            self._resolved_policy_capabilities_cache.supports_cross_layer_prediction
+        )
+        self._target_preplanning_enabled_cache = bool(
+            self._resolved_policy_capabilities_cache.supports_target_layer_preplanning
+        )
+        self._runtime_state.write("effective_policy_name", str(self._effective_phase_policy_name_cache))
+        self._runtime_state.write("requested_preflight_mode", str(getattr(self.config, "preflight_mode", "full")))
+        self._runtime_state.write("effective_preflight_mode", str(getattr(self.config, "preflight_mode", "full")))
+
+    def configure_hook_scope(self, *, available_layer_names: tuple[str, ...]) -> None:
+        available_layer_ids: list[str] = []
+        for layer_name in available_layer_names:
+            layer_id = str(parse_layer_id(layer_name))
+            if layer_id not in available_layer_ids:
+                available_layer_ids.append(layer_id)
+        self._available_moe_layer_ids = tuple(available_layer_ids)
+        resolved = resolve_layer_selector(
+            str(self.config.schedule_layer_selector),
+            selected_layer_ids=tuple(str(item) for item in getattr(self.config, "selected_layer_ids", ()) or ()),
+            available_layer_ids=self._available_moe_layer_ids,
+            invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+        )
+        self._resolved_schedule_selector = resolved
+        if resolved.matches_all:
+            selected = frozenset(self._available_moe_layer_ids)
+        else:
+            selected = frozenset(str(item) for item in resolved.resolved_layer_ids)
+        prediction_source: set[str] = set()
+        if self._target_preplanning_enabled_cache:
+            for layer_id in selected:
+                if str(layer_id).isdigit() and int(layer_id) > 0:
+                    candidate = str(int(layer_id) - 1)
+                    if candidate not in selected:
+                        prediction_source.add(candidate)
+        self._selected_layer_id_set = selected
+        self._prediction_source_layer_id_set = frozenset(prediction_source)
+        self._none_layer_id_set = frozenset(
+            layer_id
+            for layer_id in self._available_moe_layer_ids
+            if layer_id not in self._selected_layer_id_set and layer_id not in self._prediction_source_layer_id_set
+        )
+        self._runtime_state.write("total_model_moe_layers", int(len(self._available_moe_layer_ids)))
+        self._runtime_state.write("selected_layer_ids", list(self._selected_layer_id_set))
+        self._runtime_state.write("prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
+        self._runtime_state.write("none_layer_ids", list(self._none_layer_id_set))
+
+    def layer_role_for_name(self, layer_name: str) -> str:
+        layer_id = str(parse_layer_id(layer_name))
+        if self._resolved_schedule_selector is None:
+            fallback_selector = resolve_layer_selector(
+                str(self.config.schedule_layer_selector),
+                selected_layer_ids=tuple(str(item) for item in getattr(self.config, "selected_layer_ids", ()) or ()),
+                invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+            )
+            if fallback_selector.matches_all or layer_selected(layer_id, selector=fallback_selector):
+                self._selected_layer_matches_seen.add(layer_id)
+                self._runtime_state.metrics.selected_layer_match_count = int(len(self._selected_layer_matches_seen))
+                return "selected"
+            return "none"
+        if layer_id in self._selected_layer_id_set:
+            self._selected_layer_matches_seen.add(layer_id)
+            self._runtime_state.metrics.selected_layer_match_count = int(len(self._selected_layer_matches_seen))
+            return "selected"
+        if layer_id in self._prediction_source_layer_id_set:
+            return "prediction_source"
+        return "none"
+
+    def _layer_id_selected(self, layer_id: str) -> bool:
+        normalized = str(layer_id)
+        if self._resolved_schedule_selector is None:
+            fallback_selector = resolve_layer_selector(
+                str(self.config.schedule_layer_selector),
+                selected_layer_ids=tuple(str(item) for item in getattr(self.config, "selected_layer_ids", ()) or ()),
+                invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+            )
+            return bool(fallback_selector.matches_all or layer_selected(normalized, selector=fallback_selector))
+        return normalized in self._selected_layer_id_set
 
     @property
     def _prepared_plan_state(self) -> PreparedWindowRuntimeState:
@@ -230,10 +376,7 @@ class RouterSenseInjectionRuntime:
         )
 
     def _effective_phase_policy_name(self) -> str:
-        resolved = resolve_online_policy_config(self.config)
-        if resolved is None:
-            return ""
-        return str(resolved.builder_key)
+        return str(self._effective_phase_policy_name_cache)
 
     def _phase_policy(self):
         phase_policy_name = self._effective_phase_policy_name()
@@ -273,16 +416,10 @@ class RouterSenseInjectionRuntime:
         return self._pending_window_adapter_instance
 
     def _layer_selected(self, layer_name: str) -> bool:
-        resolved = resolve_layer_selector(
-            str(self.config.schedule_layer_selector),
-            selected_layer_ids=tuple(str(item) for item in getattr(self.config, "selected_layer_ids", ()) or ()),
-            invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
-        )
-        matched = layer_selected(parse_layer_id(layer_name), selector=resolved)
-        if matched:
-            self._selected_layer_matches_seen.add(parse_layer_id(layer_name))
-            self._runtime_state.metrics.selected_layer_match_count = int(len(self._selected_layer_matches_seen))
-        return matched
+        return self.layer_role_for_name(layer_name) == "selected"
+
+    def _layer_is_prediction_source(self, layer_name: str) -> bool:
+        return self.layer_role_for_name(layer_name) == "prediction_source"
 
     def _phase_selected(self, phase: str) -> bool:
         selector = str(self.config.schedule_phase_selector).lower()
@@ -292,15 +429,15 @@ class RouterSenseInjectionRuntime:
 
     def _should_schedule_phase(self, *, layer_name: str, phase: str) -> bool:
         return (
-            bool(self._effective_phase_policy_name())
+            bool(self._effective_phase_policy_name_cache)
             and self.config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             and self.config.control_mode == "sync_before_phase"
-            and self._layer_selected(layer_name)
+            and self.layer_role_for_name(layer_name) == "selected"
             and self._phase_selected(phase)
         )
 
     def _is_joint_window_async_mode(self) -> bool:
-        return str(self.config.execution_mode) == "joint_window_async_p2p"
+        return bool(self._joint_window_enabled_cache)
 
     def _runtime_safe_joint_pair(self) -> tuple[str, str]:
         policy_name = str(self.config.policy or "")
@@ -493,6 +630,79 @@ class RouterSenseInjectionRuntime:
             start_ns=start_ns,
             end_ns=end_ns,
             **detail,
+        )
+
+    def _increment_state_counter_map(self, key: str, item: str) -> None:
+        payload = dict(self._runtime_state.read(key, {}) or {})
+        payload[str(item)] = int(payload.get(str(item), 0) or 0) + 1
+        self._runtime_state.write(key, payload)
+
+    def _register_current_plan_build(self, *, layer_name: str, phase: str, plan_origin: str) -> None:
+        build_key = (
+            int(self.rank),
+            int(self._forward_epoch),
+            str(parse_layer_id(layer_name)),
+            str(phase),
+            str(plan_origin),
+        )
+        if build_key in self._current_plan_build_keys:
+            raise RuntimeError(f"duplicate current plan build detected for {build_key}")
+        self._current_plan_build_keys.add(build_key)
+
+    def before_prediction_source_dispatch(
+        self,
+        *,
+        layer_name: str,
+        dispatcher: Any,
+        packed_hidden_states: Any,
+        packed_probs: Any,
+    ) -> None:
+        hook_start_ns = time.monotonic_ns()
+        if self.layer_role_for_name(layer_name) != "prediction_source":
+            return
+        self._runtime_state.metrics.prediction_source_p0_hook_count = int(
+            self._runtime_state.metrics.prediction_source_p0_hook_count
+        ) + 1
+        sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
+        if callable(sync_fn):
+            try:
+                tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
+                synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
+                if synchronized is not None:
+                    dispatcher.tokens_per_expert = synchronized
+            except Exception:
+                pass
+        phase_ctx = self._build_phase_ready_context_from_dispatcher(
+            layer_name=layer_name,
+            phase="P0",
+            dispatcher=dispatcher,
+            packed_tensors=tuple(
+                tensor for tensor in (packed_hidden_states, packed_probs) if isinstance(tensor, torch.Tensor)
+            ),
+        )
+        pretransport = self._capture_pretransport_traffic_observation(phase_ctx=phase_ctx)
+        actual_p0_full_row_matrix = self._gather_actual_p0_full_row_matrix(
+            layer_name=layer_name,
+            observation=pretransport,
+            device=self._matrix_device(packed_hidden_states),
+        )
+        if self._should_generate_runtime_prediction():
+            self._record_prediction_for_dispatch(
+                layer_name=layer_name,
+                phase_ctx=phase_ctx,
+                observation=pretransport,
+                actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+                device=self._matrix_device(packed_hidden_states),
+            )
+        hook_end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase="P0",
+            hook_name="before_token_dispatch_total",
+            start_ns=hook_start_ns,
+            end_ns=hook_end_ns,
+            scheduled=False,
+            reason="prediction_source_only",
         )
 
     def _matrix_device(self, candidate: Any) -> torch.device:
@@ -720,63 +930,19 @@ class RouterSenseInjectionRuntime:
         return str(getattr(resolved.spec, "family", ""))
 
     def _resolved_online_policy_capabilities(self):
-        resolved = resolve_online_policy_config(self.config)
-        if resolved is None:
-            return None
-        policy = build_policy(
-            str(resolved.canonical_name),
-            PolicyOptions(
-                p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
-                p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
-                p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
-                residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
-                barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
-                age_weight=float(getattr(self.config, "age_weight", 0.15)),
-                prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
-            ),
-        )
-        base = getattr(policy, "capabilities", None)
-        if base is None:
-            return None
-        predictor_name = self._online_p2_predictor_name()
-        has_prediction = predictor_name not in {"none", "zero_hint"}
-        is_joint_window = self._is_joint_window_async_mode()
-        resolved_name = str(resolved.canonical_name)
-        safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
-        supports_target_preplanning = bool(
-            has_prediction
-            and is_joint_window
-            and base.uses_p2_forecast
-            and (safe_projection_mode == "disabled" or safe_projection_mode == "host_select")
-        )
-        return base.with_runtime_flags(
-            supports_current_window_joint_planning=bool(
-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
-            ),
-            supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
-            supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
-            supports_target_layer_preplanning=bool(supports_target_preplanning),
-            supports_p1_plan_reuse=bool(
-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
-            ),
-            supports_late_suffix_splice=bool(supports_target_preplanning),
-            supports_rank_release_batch=bool(is_joint_window),
-        )
+        return self._resolved_policy_capabilities_cache
 
     def _policy_supports_runtime_prediction(self) -> bool:
-        capabilities = self._resolved_online_policy_capabilities()
-        return bool(capabilities is not None and capabilities.supports_cross_layer_prediction)
+        return bool(self._cross_layer_prediction_enabled_cache)
 
     def _policy_uses_joint_window_plan(self) -> bool:
-        capabilities = self._resolved_online_policy_capabilities()
-        return bool(capabilities is not None and capabilities.supports_current_window_joint_planning)
+        return bool(self._joint_window_enabled_cache)
 
     def _should_generate_runtime_prediction(self) -> bool:
         return self._policy_supports_runtime_prediction()
 
     def _policy_supports_target_layer_preplanning(self) -> bool:
-        capabilities = self._resolved_online_policy_capabilities()
-        return bool(capabilities is not None and capabilities.supports_target_layer_preplanning)
+        return bool(self._target_preplanning_enabled_cache)
 
     def _target_plan_key(self, *, layer_name: str) -> TargetPlanKey:
         return TargetPlanKey(
@@ -1112,6 +1278,7 @@ class RouterSenseInjectionRuntime:
         prediction_end_ns = time.monotonic_ns()
         predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
         self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
+        self._increment_state_counter_map("predict_count_by_layer", str(layer_id))
         active_prediction = ActiveNextDispatchPrediction(
             source_layer_id=str(layer_id),
             target_layer_id=str(next_layer_id),
@@ -1162,7 +1329,7 @@ class RouterSenseInjectionRuntime:
             audit_time_us=max(0.0, float(audit_end_ns - audit_start_ns) / 1000.0),
             prediction_audit_emitted=bool(existing_prediction is not None),
         )
-        if self._policy_supports_target_layer_preplanning():
+        if self._policy_supports_target_layer_preplanning() and self._layer_id_selected(str(next_layer_id)):
             self._ensure_target_planner_runtime()
             previous_matrix = None
             previous_record = actual_dispatch_by_layer.get(str(int(layer_id) - 1)) if str(layer_id).isdigit() else None
@@ -1201,6 +1368,10 @@ class RouterSenseInjectionRuntime:
                         paired_b_policy_id=str(paired_b_name),
                         safe_projection_mode=str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select"),
                     )
+                )
+                self._increment_state_counter_map(
+                    "target_plan_enqueue_count_by_source_target",
+                    f"{layer_id}->{next_layer_id}",
                 )
 
     # Hint, shadow, and pending-window state
@@ -1312,6 +1483,7 @@ class RouterSenseInjectionRuntime:
         )
         self._window_states[layer_name] = state
         self.window_state_records.append(record)
+        self._increment_state_counter_map("window_state_count_by_layer", str(parse_layer_id(layer_name)))
         if state.prepared_plan_binding is not None:
             self.prepared_plan_bindings.append(
                 {
@@ -1482,6 +1654,7 @@ class RouterSenseInjectionRuntime:
                 "hint_match_rate": float(compiled.metrics.get("hint_match_rate", 0.0) or 0.0),
             }
         )
+        self._increment_state_counter_map("shadow_plan_count_by_layer", str(parse_layer_id(layer_name)))
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -1565,6 +1738,7 @@ class RouterSenseInjectionRuntime:
         phase_ctx: PhaseReadyContext,
         observation_p0: PreTransportTrafficObservation,
         actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
+        plan_origin: str = "current_raw_u",
     ) -> None:
         from rs.scheduling.contracts import (
             FlowWindow,
@@ -1577,6 +1751,7 @@ class RouterSenseInjectionRuntime:
         from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
 
         self._assert_bucket_mode_consistency()
+        self._register_current_plan_build(layer_name=layer_name, phase="P0", plan_origin=plan_origin)
         layer_id = parse_layer_id(layer_name)
         dispatch_matrix_full = tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix)
         dispatch_matrix = canonicalize_remote_matrix(dispatch_matrix_full)
@@ -1680,6 +1855,7 @@ class RouterSenseInjectionRuntime:
                 end_ns=raw_u_end_ns,
                 policy_name=raw_u_name,
             )
+            self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
             consumed_weights = dict((raw_u_plan.diagnostics or {}).get("consumed_weights", {}))
             requested_weights = {
                 "residual_weight": float(policy_options.residual_weight),
@@ -1702,6 +1878,7 @@ class RouterSenseInjectionRuntime:
                 end_ns=paired_b_end_ns,
                 policy_name=paired_b_name,
             )
+            self._increment_state_counter_map("paired_b_build_count_by_layer", str(layer_id))
         else:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
             safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
@@ -1725,6 +1902,7 @@ class RouterSenseInjectionRuntime:
                 end_ns=raw_u_end_ns,
                 policy_name=raw_u_name,
             )
+            self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
             paired_b_start_ns = time.monotonic_ns()
             if safe_projection_mode == "disabled":
                 paired_b_plan = raw_u_plan
@@ -1741,6 +1919,8 @@ class RouterSenseInjectionRuntime:
                 policy_name=paired_b_name,
                 skipped=bool(safe_projection_mode == "disabled"),
             )
+            if safe_projection_mode != "disabled":
+                self._increment_state_counter_map("paired_b_build_count_by_layer", str(layer_id))
         safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
         if safe_projection_mode == "disabled":
             host_projection_start_ns = time.monotonic_ns()
@@ -2077,6 +2257,7 @@ class RouterSenseInjectionRuntime:
             phase_ctx=phase_ctx,
             observation_p0=observation_p0,
             actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+            plan_origin="provisional_current_plan",
         )
         prepared_plan = self._runtime_state.read("prepared_plan")
         if prepared_plan is None:
@@ -2302,7 +2483,7 @@ class RouterSenseInjectionRuntime:
                 "joint_window_async_local_materialization": True,
                 "p1_planning_collective_count": 0 if str(phase) == "P1" else int(compiled.metrics.get("p1_planning_collective_count", 0) or 0),
                 "prediction_extra_collective_count": 0,
-                "preflight_mode": "compact" if self._is_perf_profile() else "full",
+                "preflight_mode": str(getattr(self.config, "preflight_mode", "full")),
                 "emit_detailed_task_artifacts": not self._is_perf_profile(),
             },
         )
@@ -2737,9 +2918,32 @@ class RouterSenseInjectionRuntime:
         packed_probs: Any,
     ) -> None:
         hook_start_ns = time.monotonic_ns()
-        if self._layer_selected(layer_name):
+        layer_role = self.layer_role_for_name(layer_name)
+        if layer_role == "selected":
             self._runtime_state.metrics.selected_p0_hook_count = int(self._runtime_state.metrics.selected_p0_hook_count) + 1
         self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
+        if layer_role == "none":
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="before_token_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=False,
+                reason="layer_role_none",
+            )
+            self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
+            return
+        if layer_role == "prediction_source":
+            self.before_prediction_source_dispatch(
+                layer_name=layer_name,
+                dispatcher=dispatcher,
+                packed_hidden_states=packed_hidden_states,
+                packed_probs=packed_probs,
+            )
+            self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
+            return
         sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
         if callable(sync_fn):
             try:
@@ -2782,13 +2986,6 @@ class RouterSenseInjectionRuntime:
                 observation=pretransport,
                 actual_p0_full_row_matrix=actual_p0_full_row_matrix,
                 device=matrix_device,
-            )
-        if self._policy_uses_joint_window_plan():
-            self._store_runtime_joint_plan_from_p0(
-                layer_name=layer_name,
-                phase_ctx=phase_ctx,
-                observation_p0=pretransport,
-                actual_p0_full_row_matrix=actual_p0_full_row_matrix,
             )
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         phase_ctx = replace(phase_ctx, p2_hint=p2_hint)
@@ -3132,7 +3329,8 @@ class RouterSenseInjectionRuntime:
     def after_token_dispatch(self, *, layer_name: str) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("after_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
-        if bool(self._effective_phase_policy_name()):
+        active_transport = self.current_transport()
+        if self.layer_role_for_name(layer_name) == "selected" and active_transport is not None and str(active_transport.get("layer_name")) == str(layer_name) and str(active_transport.get("phase")) == "P0":
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P0")
             if self._is_joint_window_async_mode() and self.target_plan_store is not None:
@@ -3217,9 +3415,23 @@ class RouterSenseInjectionRuntime:
 
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
-        if self._layer_selected(layer_name):
+        layer_role = self.layer_role_for_name(layer_name)
+        if layer_role == "selected":
             self._runtime_state.metrics.selected_p1_hook_count = int(self._runtime_state.metrics.selected_p1_hook_count) + 1
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        if layer_role != "selected":
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="before_token_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                scheduled=False,
+                reason="layer_role_not_selected",
+            )
+            self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
+            return
         self._runtime_state.write("expert_compute_end_ns", int(hook_start_ns))
         observation_start_ns = time.monotonic_ns()
         observation = build_runtime_observation(
@@ -3518,7 +3730,8 @@ class RouterSenseInjectionRuntime:
     def after_token_combine(self, *, layer_name: str) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
-        if bool(self._effective_phase_policy_name()):
+        active_transport = self.current_transport()
+        if self.layer_role_for_name(layer_name) == "selected" and active_transport is not None and str(active_transport.get("layer_name")) == str(layer_name) and str(active_transport.get("phase")) == "P1":
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P1")
             if self._is_joint_window_async_mode():
@@ -3571,7 +3784,7 @@ class RouterSenseInjectionRuntime:
     # Shadow-only native observation hooks
 
     def on_dispatch(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or bool(self._effective_phase_policy_name()):
+        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or self.layer_role_for_name(layer_name) != "selected":
             return
         observation = build_runtime_observation(
             run_id=self.run_id,
@@ -3592,7 +3805,7 @@ class RouterSenseInjectionRuntime:
         self._pending_p0[layer_name] = observation
 
     def on_combine(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or bool(self._effective_phase_policy_name()):
+        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or self.layer_role_for_name(layer_name) != "selected":
             return
         if layer_name not in self._pending_p0:
             return

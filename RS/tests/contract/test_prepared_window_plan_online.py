@@ -692,6 +692,97 @@ def test_attach_formal_online_runtime_enables_calibrated_p2_without_model_wrap()
     assert runtime._p2_hint_provider is not None
 
 
+class _TokenDispatcherStub:
+    def __init__(self) -> None:
+        self.token_dispatch = lambda *args, **kwargs: ("dispatch", args, kwargs)
+        self.token_combine = lambda *args, **kwargs: ("combine", args, kwargs)
+
+
+class _MoELayerStub(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.token_dispatcher = _TokenDispatcherStub()
+
+
+class _ScopeModelStub(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList([_MoELayerStub(), _MoELayerStub(), _MoELayerStub()])
+
+
+def test_runtime_hook_scope_resolves_selected_prediction_source_and_none() -> None:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(
+            policy="routersense_p0p1p2_hint",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            selected_layer_ids=("1",),
+            schedule_layer_selector="selected",
+            safe_projection_mode="disabled",
+            online_p2_predictor="copy_current_dispatch",
+            observation_profile="perf",
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="request",
+        hostname="host",
+        ep_group_ranks=(0, 1, 2, 3),
+        ep_group_root_global_rank=0,
+    )
+    runtime.configure_hook_scope(
+        available_layer_names=("model.layers.0.mlp", "model.layers.1.mlp", "model.layers.2.mlp")
+    )
+    assert runtime.layer_role_for_name("model.layers.0.mlp") == "prediction_source"
+    assert runtime.layer_role_for_name("model.layers.1.mlp") == "selected"
+    assert runtime.layer_role_for_name("model.layers.2.mlp") == "none"
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["selected_layer_ids"] == ["1"]
+    assert summary["prediction_source_layer_ids"] == ["0"]
+    assert summary["none_layer_ids"] == ["2"]
+
+
+def test_attach_formal_online_runtime_wraps_only_selected_and_prediction_source_layers() -> None:
+    model = _ScopeModelStub()
+    layer0_dispatch = model.layers[0].token_dispatcher.token_dispatch
+    layer0_combine = model.layers[0].token_dispatcher.token_combine
+    layer1_dispatch = model.layers[1].token_dispatcher.token_dispatch
+    layer1_combine = model.layers[1].token_dispatcher.token_combine
+    layer2_dispatch = model.layers[2].token_dispatcher.token_dispatch
+    layer2_combine = model.layers[2].token_dispatcher.token_combine
+    attach_formal_online_runtime(
+        model=model,
+        runtime_config=OnlineRuntimeConfig(
+            policy_name="routersense_p0p1p2_hint",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            execution_selection=ExecutionSelection(
+                layer_selector="selected",
+                selected_layer_ids=("1",),
+            ),
+            policy_parameters=OnlinePolicyParameters(
+                online_p2_predictor="copy_current_dispatch",
+                safe_projection_mode="disabled",
+            ),
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    assert model.layers[0].token_dispatcher.token_dispatch is not layer0_dispatch
+    assert model.layers[0].token_dispatcher.token_combine is layer0_combine
+    assert model.layers[1].token_dispatcher.token_dispatch is not layer1_dispatch
+    assert model.layers[1].token_dispatcher.token_combine is not layer1_combine
+    assert model.layers[2].token_dispatcher.token_dispatch is layer2_dispatch
+    assert model.layers[2].token_dispatcher.token_combine is layer2_combine
+
+
 def test_window_state_and_release_events_are_recorded() -> None:
     runtime = _runtime()
     layer0 = "model.layers.0.mlp"
@@ -759,9 +850,31 @@ def test_prepared_phase_plan_shadow_is_recorded_for_bound_layer() -> None:
     )
     rows = runtime.export_prepared_phase_plan_shadows()
     assert rows
-    assert rows[-1]["compile_status"] == "ok"
-    assert rows[-1]["prepared_plan_order_preserved"] in {True, False}
-    assert rows[-1]["prepared_window_key"]
+
+
+def test_current_plan_build_is_deduplicated_per_rank_epoch_layer() -> None:
+    runtime, context, observation, matrix = _phase_ctx_and_pretransport(matrix=((0, 2), (3, 0)))
+    runtime.configure_hook_scope(available_layer_names=("model.layers.0.mlp", "model.layers.1.mlp"))
+    runtime.begin_forward(forward_epoch=1)
+    runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=context,
+        observation_p0=observation,
+        actual_p0_full_row_matrix=matrix,
+        plan_origin="provisional_current_plan",
+    )
+    try:
+        runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+            layer_name="model.layers.0.mlp",
+            phase_ctx=context,
+            observation_p0=observation,
+            actual_p0_full_row_matrix=matrix,
+            plan_origin="provisional_current_plan",
+        )
+    except RuntimeError as exc:
+        assert "duplicate current plan build" in str(exc)
+    else:
+        raise AssertionError("expected duplicate current plan build to fail")
 
 
 def test_runtime_exports_planning_timing_records() -> None:

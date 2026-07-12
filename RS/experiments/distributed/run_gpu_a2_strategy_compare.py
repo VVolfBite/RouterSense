@@ -316,6 +316,8 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     metrics["host_projection_count"] = int(rank0_summary.get("host_projection_count", 0) or 0)
     metrics["execution_origin"] = str(rank0_summary.get("execution_origin", ""))
     metrics["c2_passed"] = bool(c2_passed)
+    metrics["requested_preflight_mode"] = str(rank0_summary.get("requested_preflight_mode", ""))
+    metrics["effective_preflight_mode"] = str(rank0_summary.get("effective_preflight_mode", ""))
     expected = resolve_strategy_runtime(strategy_name=str(strategy), runtime_line="async_release" if "async" in str(strategy) else "phase_sync")
     expected_policy_name = str(expected.get("policy", ""))
     observed_policy_name = str(rank0_summary.get("policy_name", ""))
@@ -365,6 +367,10 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
                 and int(metrics["paired_b_build_count"]) > 0
                 and int(metrics["host_projection_count"]) > 0
             )
+        ),
+        "preflight_mode_matches": (
+            str(metrics["requested_preflight_mode"]) != ""
+            and str(metrics["requested_preflight_mode"]) == str(metrics["effective_preflight_mode"])
         ),
         "c2_passed": bool(c2_passed),
     }
@@ -465,6 +471,7 @@ def main() -> int:
             profile=str(resolved_profile),
             selected_layers=str(resolved_selected_layers),
             save_logits=False,
+            preflight_mode=str(resolved_preflight_mode),
         )
         config_path = generated_dir / f"{strategy}.yaml"
         dump_yaml(config_path, strategy_config)

@@ -705,9 +705,17 @@ def attach_dispatch_facade(
         token_dispatcher_mod.all_to_all = wrapped_all_to_all
         runtime.transport_adapter = transport_adapter
         runtime.original_all_to_all = original_all_to_all
+    dispatcher_layer_names: list[str] = []
+    for name, module in model.named_modules():
+        if getattr(module, "token_dispatcher", None) is not None:
+            dispatcher_layer_names.append(str(name))
+    runtime.configure_hook_scope(available_layer_names=tuple(dispatcher_layer_names))
     for name, module in model.named_modules():
         dispatcher = getattr(module, "token_dispatcher", None)
         if dispatcher is None or getattr(dispatcher, "_routersense_facade_wrapped", False):
+            continue
+        layer_role = runtime.layer_role_for_name(str(name))
+        if layer_role == "none":
             continue
 
         dispatch_facade = RouterSenseDispatcherFacade.from_config(
@@ -719,15 +727,18 @@ def attach_dispatch_facade(
             config=config,
         )
 
-        def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, **kwargs: Any):
+        def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, _role=layer_role, **kwargs: Any):
             hidden_states = args[0] if args else None
             probs = args[1] if len(args) > 1 else None
-            runtime.before_token_dispatch(
-                layer_name=_name,
-                dispatcher=_dispatcher,
-                packed_hidden_states=hidden_states,
-                packed_probs=probs,
-            )
+            if _role == "prediction_source":
+                runtime.before_prediction_source_dispatch(
+                    layer_name=_name,
+                    dispatcher=_dispatcher,
+                    packed_hidden_states=hidden_states,
+                    packed_probs=probs,
+                )
+                return _facade.dispatch(*args, **kwargs)
+            runtime.before_token_dispatch(layer_name=_name, dispatcher=_dispatcher, packed_hidden_states=hidden_states, packed_probs=probs)
             runtime.mark_token_dispatch_committed(layer_name=_name)
             result = _facade.dispatch(*args, **kwargs)
             runtime.capture_phase_transport_output(layer_name=_name, phase="P0", result=result, dispatcher=_dispatcher)
@@ -745,7 +756,8 @@ def attach_dispatch_facade(
             return result
 
         dispatcher.token_dispatch = wrapped_dispatch
-        dispatcher.token_combine = wrapped_combine
+        if layer_role == "selected":
+            dispatcher.token_combine = wrapped_combine
         dispatcher._routersense_facade_wrapped = True
     return runtime
 
@@ -804,6 +816,7 @@ def attach_formal_online_runtime(
         heartbeat_enabled=bool(runtime_config.observation.get("heartbeat_enabled", False)),
         per_wave_timing_enabled=bool(runtime_config.observation.get("per_wave_timing_enabled", False)),
         replay_trace_enabled=bool(runtime_config.observation.get("replay_trace_enabled", False)),
+        preflight_mode=str(getattr(runtime_config.validation, "preflight_mode", "full")),
     )
     return attach_dispatch_facade(
         model=model,

@@ -101,6 +101,7 @@ def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
             stop_after_selected_layer=bool(config.validation.stop_after_selected_layer),
             executor_heartbeat_path=str(config.artifact.output_root),
             executor_phase_timeout_sec=120,
+            preflight_mode=str(config.execution.preflight_mode),
         ),
     )
 

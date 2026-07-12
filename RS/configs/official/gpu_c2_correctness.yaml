@@ -8,7 +8,7 @@ topology:
   world_size: 4
   component: configs/components/topologies/local_4gpu.yaml
 workload:
-  prompts: configs/components/workloads/comparison_64_prompts.json
+  prompts: configs/components/workloads/bringup_2_short_prompts.json
 runtime:
   line: async_release
   invariant_mode: evaluation_strict

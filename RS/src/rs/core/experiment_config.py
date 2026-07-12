@@ -143,6 +143,7 @@ class ExecutionConfig:
     bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
     safe_projection_mode: str = "host_select"
+    preflight_mode: str = "full"
     schedule: ExecutionScheduleConfig = field(default_factory=ExecutionScheduleConfig)
 
 
@@ -378,7 +379,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "runtime": {"line", "precision", "invariant_mode", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
         "online_policy": {"name", "parameters", "p2"},
         "offline_study": {"policies", "reference_policies", "p2_source", "window"},
-        "execution": {"mode", "bucket_mode", "bucket_rows", "safe_projection_mode", "schedule"},
+        "execution": {"mode", "bucket_mode", "bucket_rows", "safe_projection_mode", "preflight_mode", "schedule"},
         "evaluation": {"selected_layer_ids"},
         "observation": {
             "profile",
@@ -533,6 +534,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             bucket_mode=str(execution.get("bucket_mode", "dynamic_current")),
             bucket_rows=int(execution.get("bucket_rows", 0)),
             safe_projection_mode=str(execution.get("safe_projection_mode", "host_select")),
+            preflight_mode=str(execution.get("preflight_mode", "full")),
             schedule=ExecutionScheduleConfig(
                 layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
                 phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),

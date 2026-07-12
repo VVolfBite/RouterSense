@@ -14,6 +14,8 @@ class RuntimeExecutionMetrics:
     selected_layer_match_count: int = 0
     selected_p0_hook_count: int = 0
     selected_p1_hook_count: int = 0
+    prediction_source_p0_hook_count: int = 0
+    none_heavy_hook_count: int = 0
     selected_transport_execution_count: int = 0
 
     p0_traffic_matrix_gather_count: int = 0
@@ -147,6 +149,19 @@ class PreparedWindowRuntimeState:
     prepared_target_selected_variant: str = ""
     prepared_target_safe_projection_mode: str = ""
     provisional_plan_digest: str = ""
+    total_model_moe_layers: int = 0
+    selected_layer_ids: list[str] = field(default_factory=list)
+    prediction_source_layer_ids: list[str] = field(default_factory=list)
+    none_layer_ids: list[str] = field(default_factory=list)
+    effective_policy_name: str = ""
+    requested_preflight_mode: str = ""
+    effective_preflight_mode: str = ""
+    raw_u_build_count_by_layer: dict[str, int] = field(default_factory=dict)
+    paired_b_build_count_by_layer: dict[str, int] = field(default_factory=dict)
+    predict_count_by_layer: dict[str, int] = field(default_factory=dict)
+    target_plan_enqueue_count_by_source_target: dict[str, int] = field(default_factory=dict)
+    window_state_count_by_layer: dict[str, int] = field(default_factory=dict)
+    shadow_plan_count_by_layer: dict[str, int] = field(default_factory=dict)
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
     extras: dict[str, Any] = field(default_factory=dict)

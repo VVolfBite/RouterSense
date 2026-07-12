@@ -102,6 +102,7 @@ def build_policy_correctness_config(
     profile: str,
     selected_layers: str,
     save_logits: bool,
+    preflight_mode: str = "full",
 ) -> dict[str, Any]:
     from rs.core.layer_selection import resolve_layer_selector
 
@@ -212,6 +213,7 @@ def build_policy_correctness_config(
             "bucket_mode": requested_bucket_mode,
             "bucket_rows": requested_bucket_rows,
             "safe_projection_mode": effective_safe_projection_mode,
+            "preflight_mode": str(preflight_mode),
             "schedule": {
                 "layer_selector": str(selected_layers),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),
@@ -238,6 +240,8 @@ def build_policy_correctness_config(
         "requested_layer_selector": str(selected_layers),
         "resolved_layer_selector": str(resolved_layer_selector.resolved_selector),
         "resolved_layer_ids": list(resolved_layer_selector.resolved_layer_ids),
+        "requested_preflight_mode": str(preflight_mode),
+        "effective_preflight_mode": str(preflight_mode),
     }
 
 

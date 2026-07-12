@@ -64,6 +64,7 @@ class OnlineValidationConfig:
     stop_after_selected_layer: bool = False
     executor_heartbeat_path: str = ""
     executor_phase_timeout_sec: int = 0
+    preflight_mode: str = "full"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -131,6 +132,7 @@ class RouterSenseInjectionConfig:
     stop_after_selected_layer: bool = False
     executor_heartbeat_path: str = ""
     executor_phase_timeout_sec: int = 0
+    preflight_mode: str = "full"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
