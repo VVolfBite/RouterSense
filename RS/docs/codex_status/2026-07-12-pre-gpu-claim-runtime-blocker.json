@@ -1,6 +1,6 @@
 {
   "starting_sha": "d76a5221ade3c714bda89739c4c196bd15178f3a",
-  "current_sha": "PENDING_FINAL_SHA",
+  "current_sha": "ef042342900dcefe8e3a5f3dc13baacd14893730",
   "status": "PRE_GPU_SEMANTIC_BLOCKER",
   "cpu_gloo_closure": {
     "selected_layer_resolution_closed": true,

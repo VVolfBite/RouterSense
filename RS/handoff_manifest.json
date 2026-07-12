@@ -1,7 +1,7 @@
 {
-  "starting_sha": "6e555201efa900e4db0217ef6e989846e0e6d61f",
-  "final_sha": "6e555201efa900e4db0217ef6e989846e0e6d61f",
-  "git_dirty": true,
+  "starting_sha": "d76a5221ade3c714bda89739c4c196bd15178f3a",
+  "final_sha": "ef042342900dcefe8e3a5f3dc13baacd14893730",
+  "git_dirty": false,
   "included_artifacts": [
     "outputs/closure/runtime_measurement_semantics",
     "outputs/closure/pre_gpu_claim_runtime",
