@@ -46,7 +46,10 @@ def resolve_online_policy_config(config: RouterSenseInjectionConfig) -> Resolved
         requested_name = scheduler_mode
     if not requested_name or requested_name == "disabled":
         return None
-    resolved = resolve_algorithm_id(requested_name)
+    try:
+        resolved = resolve_algorithm_id(requested_name)
+    except ValueError as exc:
+        raise UnsupportedSchedulerMode(f"Unsupported scheduler_mode={requested_name!r}") from exc
     if not resolved.spec.online_eligible:
         raise UnsupportedSchedulerMode(
             f"Algorithm {requested_name!r} resolves to {resolved.canonical_name!r}, which is not online-eligible"

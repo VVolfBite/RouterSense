@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
 from rs.scheduling.contracts import (
@@ -17,11 +17,29 @@ from rs.scheduling.contracts import (
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_digest_remote, matrix_remote_bytes
 from rs.scheduling.registry import resolve_policy
 
-if TYPE_CHECKING:
-    from rs.runtime.offline.replay_unified import ReplayWindow
-
 
 MatrixRows = tuple[tuple[int, ...], ...]
+
+
+class ReplayWindowLike(Protocol):
+    fixture_id: str
+    window_id: str
+    layer_id: int
+    p0_truth_rows: MatrixRows
+    p1_truth_rows: MatrixRows
+    p2_truth_rows: MatrixRows
+    group_size: int
+
+
+@dataclass(frozen=True)
+class _BucketizerReplayWindow:
+    fixture_id: str
+    window_id: str
+    layer_id: int
+    p0_truth_rows: MatrixRows
+    p1_truth_rows: MatrixRows
+    p2_truth_rows: MatrixRows
+    group_size: int
 
 
 @dataclass(frozen=True)
@@ -223,7 +241,7 @@ def build_policy(policy_id: str, options: PolicyOptions) -> SchedulingPolicy:
 
 def build_request_from_replay_window(
     *,
-    replay_window: "ReplayWindow",
+    replay_window: ReplayWindowLike,
     p2_hint_rows: MatrixRows,
     hint_type: str,
     confidence: float,
@@ -274,19 +292,14 @@ def build_request_from_problem(
     layer_id: int | None = None,
     hint_metadata: dict[str, Any] | None = None,
 ) -> SchedulingRequest:
-    from rs.runtime.offline.replay_unified import ReplayWindow
-
-    replay_window = ReplayWindow(
+    replay_window = _BucketizerReplayWindow(
         fixture_id=str(fixture_id or "runtime"),
         window_id=str(window_id or request_id),
         layer_id=int(0 if layer_id is None else layer_id),
         p0_truth_rows=_matrix(problem.p0_dispatch_matrix),
         p1_truth_rows=_matrix(problem.p1_return_matrix),
         p2_truth_rows=_matrix(problem.p2_next_dispatch_forecast_matrix),
-        matrix_unit="rows",
         group_size=int(problem.topology.num_gpus),
-        payload_row_bytes_by_phase={},
-        metadata={},
     )
     tasks = CanonicalBucketizer(bucket_rows=int(bucket_rows)).bucketize(replay_window)
     return SchedulingRequest(

@@ -197,6 +197,8 @@ def resolve_phase_policy(
     p2_hint_weight: float = 1.0,
     p2_hint_artifact: str = "",
 ) -> RouterSensePhasePolicy:
+    if policy_name == "bucketed_fifo":
+        return BucketedFIFOPolicy(bucket_rows=bucket_rows)
     if policy_name == "routersense_p0p1_reservation":
         return RouterSenseP0P1ReservationPolicy(
             bucket_rows=bucket_rows,
