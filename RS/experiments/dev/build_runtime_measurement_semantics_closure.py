@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from experiments._bootstrap import ensure_src_on_path
 
