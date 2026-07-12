@@ -122,6 +122,8 @@ def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> d
     return {
         "run_id": run_id,
         "run_kind": config.run.kind,
+        "runtime_line": str(config.runtime.line),
+        "invariant_mode": str(config.runtime.invariant_mode),
         "policy_name": config.online_policy.name,
         "execution_mode": config.execution.mode,
         "bucket_mode": str(config.execution.bucket_mode),
@@ -278,6 +280,88 @@ def main(argv: list[str] | None = None) -> int:
 
     def _delta_adapter(after: dict[str, int], before: dict[str, int], key: str) -> int:
         return max(0, int(after.get(key, 0)) - int(before.get(key, 0)))
+
+    def _snapshot_transport_index(runtime_obj: Any | None) -> int:
+        if runtime_obj is None:
+            return 0
+        adapter_obj = getattr(runtime_obj, "transport_adapter", None)
+        if adapter_obj is None:
+            return 0
+        return len(adapter_obj.export_results())
+
+    def _aggregate_transport_results(runtime_obj: Any | None, start_index: int) -> dict[str, float | int | bool]:
+        if runtime_obj is None:
+            return {}
+        adapter_obj = getattr(runtime_obj, "transport_adapter", None)
+        if adapter_obj is None:
+            return {}
+        rows = list(adapter_obj.export_results())[int(start_index):]
+        result_rows = [row for row in rows if str(row.get("record_type", "")) == "result_summary"]
+        if not result_rows:
+            return {}
+        dispatch_transport_us = 0.0
+        return_transport_us = 0.0
+        local_copy_us = 0.0
+        op_build_us = 0.0
+        batch_submit_us = 0.0
+        wait_us = 0.0
+        wave_concat_us = 0.0
+        wave_collective_us = 0.0
+        wave_scatter_us = 0.0
+        idle_barrier_wait_us = 0.0
+        task_count = 0
+        p2p_op_count = 0
+        wave_count = 0
+        collective_count = 0
+        batch_isend_irecv_count = 0
+        preflight_collective_count = 0
+        all_work_completed = True
+        timeout_observed = False
+        for row in result_rows:
+            phase = str(row.get("phase", "")).upper()
+            timing_us = dict(row.get("timing_us", {}) or {})
+            phase_metrics = dict(row.get("phase_metrics", {}) or {})
+            communication_total = float(timing_us.get("communication_us", timing_us.get("total_forward_us", 0.0)) or 0.0)
+            if phase == "P0":
+                dispatch_transport_us += communication_total
+            elif phase == "P1":
+                return_transport_us += communication_total
+            local_copy_us += float(timing_us.get("local_copy_us", 0.0) or 0.0)
+            op_build_us += float(timing_us.get("op_build_us", 0.0) or 0.0)
+            batch_submit_us += float(timing_us.get("batch_submit_us", timing_us.get("submit_us", 0.0)) or 0.0)
+            wait_us += float(timing_us.get("work_wait_us", timing_us.get("wait_us", 0.0)) or 0.0)
+            wave_concat_us += float(timing_us.get("wave_concat_us", 0.0) or 0.0)
+            wave_collective_us += float(timing_us.get("wave_collective_us", 0.0) or 0.0)
+            wave_scatter_us += float(timing_us.get("wave_scatter_us", 0.0) or 0.0)
+            idle_barrier_wait_us += float(timing_us.get("idle_barrier_wait_us", 0.0) or 0.0)
+            task_count += int(phase_metrics.get("task_count", 0) or 0)
+            p2p_op_count += int(phase_metrics.get("p2p_op_count", 0) or 0)
+            wave_count += int(phase_metrics.get("wave_count", 0) or 0)
+            collective_count += int(phase_metrics.get("collective_count", 0) or 0)
+            batch_isend_irecv_count += int(row.get("batch_isend_irecv_call_count", 0) or 0)
+            preflight_collective_count += int(row.get("preflight_collective_count", 0) or 0)
+            all_work_completed = all_work_completed and bool(row.get("all_work_completed", True))
+            timeout_observed = timeout_observed or bool(row.get("timeout", False))
+        return {
+            "dispatch_transport_us": dispatch_transport_us,
+            "return_transport_us": return_transport_us,
+            "local_copy_us": local_copy_us,
+            "op_build_us": op_build_us,
+            "batch_submit_us": batch_submit_us,
+            "wait_us": wait_us,
+            "wave_concat_us": wave_concat_us,
+            "wave_collective_us": wave_collective_us,
+            "wave_scatter_us": wave_scatter_us,
+            "idle_barrier_wait_us": idle_barrier_wait_us,
+            "task_count": task_count,
+            "p2p_op_count": p2p_op_count,
+            "wave_count": wave_count,
+            "collective_count": collective_count,
+            "batch_isend_irecv_count": batch_isend_irecv_count,
+            "preflight_collective_count": preflight_collective_count,
+            "all_work_completed": all_work_completed,
+            "timeout_observed": timeout_observed,
+        }
     try:
         record_event("main_enter")
         ids = init_distributed(backend="nccl", timeout_seconds=300)
@@ -376,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
             global_forward_us = 0.0
             try:
                 adapter_before = _snapshot_adapter(getattr(runtime, "transport_adapter", None))
+                transport_before_index = _snapshot_transport_index(runtime)
                 perf_before = _snapshot_perf(runtime)
                 record_event(
                     "forward_start",
@@ -402,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                 global_forward_us = float(duration_tensor.item())
                 runtime.end_forward()
                 adapter_after = _snapshot_adapter(getattr(runtime, "transport_adapter", None))
+                transport_timing = _aggregate_transport_results(runtime, transport_before_index)
                 perf_after = _snapshot_perf(runtime)
                 output_shape = list(logits.shape) if isinstance(logits, torch.Tensor) else None
                 output_checksum = float(logits.float().sum().item()) if isinstance(logits, torch.Tensor) else None
@@ -430,14 +516,53 @@ def main(argv: list[str] | None = None) -> int:
                     "dispatch_hook_path_us": _delta_perf(perf_after, perf_before, "hook_before_token_dispatch_total"),
                     "combine_hook_path_us": _delta_perf(perf_after, perf_before, "hook_before_token_combine_total"),
                     "preflight_us": _delta_perf(perf_after, perf_before, "activate_transport"),
-                    "local_copy_us": 0.0,
-                    "op_build_us": 0.0,
-                    "submit_us": 0.0,
-                    "wait_us": 0.0,
-                    "expert_compute_us": 0.0,
-                    "combine_us": 0.0,
+                    "dispatch_transport_us": float(transport_timing.get("dispatch_transport_us", 0.0) or 0.0),
+                    "return_transport_us": float(transport_timing.get("return_transport_us", 0.0) or 0.0),
+                    "all_rank_transport_span_us": float((transport_timing.get("dispatch_transport_us", 0.0) or 0.0) + (transport_timing.get("return_transport_us", 0.0) or 0.0)),
+                    "local_copy_us": float(transport_timing.get("local_copy_us", 0.0) or 0.0),
+                    "op_build_us": float(transport_timing.get("op_build_us", 0.0) or 0.0),
+                    "submit_us": float(transport_timing.get("batch_submit_us", 0.0) or 0.0),
+                    "batch_submit_us": float(transport_timing.get("batch_submit_us", 0.0) or 0.0),
+                    "wait_us": float(transport_timing.get("wait_us", 0.0) or 0.0),
+                    "expert_compute_us": max(
+                        0.0,
+                        float(local_forward_us)
+                        - (
+                            float(_delta_perf(perf_after, perf_before, "hook_before_token_dispatch_total"))
+                            + float(_delta_perf(perf_after, perf_before, "hook_before_token_combine_total"))
+                        ),
+                    ),
+                    "combine_us": float(_delta_perf(perf_after, perf_before, "hook_before_token_combine_total")),
                     "artifact_hot_path_us": 0.0,
-                    "unattributed_us": 0.0,
+                    "wave_concat_us": float(transport_timing.get("wave_concat_us", 0.0) or 0.0),
+                    "wave_collective_us": float(transport_timing.get("wave_collective_us", 0.0) or 0.0),
+                    "wave_scatter_us": float(transport_timing.get("wave_scatter_us", 0.0) or 0.0),
+                    "idle_barrier_wait_us": float(transport_timing.get("idle_barrier_wait_us", 0.0) or 0.0),
+                    "task_count": int(transport_timing.get("task_count", 0) or 0),
+                    "p2p_op_count": int(transport_timing.get("p2p_op_count", 0) or 0),
+                    "wave_count": int(transport_timing.get("wave_count", 0) or 0),
+                    "collective_count": int(transport_timing.get("collective_count", 0) or 0),
+                    "batch_isend_irecv_count": int(transport_timing.get("batch_isend_irecv_count", 0) or 0),
+                    "preflight_collective_count": int(transport_timing.get("preflight_collective_count", 0) or 0),
+                    "all_work_completed": bool(transport_timing.get("all_work_completed", True)),
+                    "timeout_observed": bool(transport_timing.get("timeout_observed", False)),
+                    "unattributed_us": max(
+                        0.0,
+                        float(global_forward_us)
+                        - (
+                            float(_delta_perf(perf_after, perf_before, "build_runtime_observation"))
+                            + float(_delta_perf(perf_after, perf_before, "after_p0_observation"))
+                            + float(_delta_perf(perf_after, perf_before, "predict_next_dispatch"))
+                            + float(_delta_perf(perf_after, perf_before, "raw_u_build"))
+                            + float(_delta_perf(perf_after, perf_before, "paired_b_build"))
+                            + float(_delta_perf(perf_after, perf_before, "host_projection"))
+                            + float(_delta_perf(perf_after, perf_before, "safe_selection"))
+                            + float(_delta_perf(perf_after, perf_before, "activate_transport"))
+                            + float(_delta_perf(perf_after, perf_before, "agree_global_joint_plan_digest"))
+                            + float(transport_timing.get("dispatch_transport_us", 0.0) or 0.0)
+                            + float(transport_timing.get("return_transport_us", 0.0) or 0.0)
+                        ),
+                    ),
                     "async_executor_invocation_count": _delta_adapter(adapter_after, adapter_before, "async_executor_invocation_count"),
                     "batch_isend_irecv_call_count": _delta_adapter(adapter_after, adapter_before, "batch_isend_irecv_call_count"),
                     "real_send_op_count": _delta_adapter(adapter_after, adapter_before, "real_send_op_count"),
@@ -536,6 +661,8 @@ def main(argv: list[str] | None = None) -> int:
             "schedule_layer_selector": online_runtime_config.execution_selection.layer_selector,
             "schedule_phase_selector": online_runtime_config.execution_selection.phase_selector,
             "precision": config.runtime.precision,
+            "runtime_line": str(config.runtime.line),
+            "invariant_mode": str(config.runtime.invariant_mode),
             "transport_mutation": bool(
                 policy_name and online_runtime_config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
             ),
@@ -590,6 +717,8 @@ def main(argv: list[str] | None = None) -> int:
                 "p2_hint_mode": online_runtime_config.policy_parameters.p2_hint_mode,
                 "schedule_layer_selector": online_runtime_config.execution_selection.layer_selector,
                 "schedule_phase_selector": online_runtime_config.execution_selection.phase_selector,
+                "runtime_line": str(config.runtime.line),
+                "invariant_mode": str(config.runtime.invariant_mode),
                 "transport_mutation": transport_mutation,
                 "rank_summaries": gathered,
                 "execution_audit_status": audit_payload["status"],

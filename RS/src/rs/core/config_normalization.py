@@ -40,7 +40,7 @@ class CanonicalRunConfig:
 
 
 _COMPONENT_ALLOWED_OVERRIDE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
-    ("model",): frozenset({"component", "path"}),
+    ("model",): frozenset({"component", "path", "local_path"}),
     ("topology",): frozenset({"component"}),
     ("workload",): frozenset({"component"}),
     ("runtime",): frozenset({"component"}),
@@ -122,11 +122,16 @@ def resolve_config_components(
         if isinstance(resolved.get("component"), str) and str(resolved["component"]).strip():
             component_key = "component"
             component_ref = str(resolved["component"]).strip()
-        elif path == ("model",) and isinstance(resolved.get("path"), str):
-            model_path = str(resolved["path"]).strip()
-            if model_path.endswith((".yaml", ".yml")):
-                component_key = "path"
-                component_ref = model_path
+        elif path == ("model",):
+            for candidate_key in ("path", "local_path"):
+                candidate_value = resolved.get(candidate_key)
+                if not isinstance(candidate_value, str):
+                    continue
+                candidate_ref = str(candidate_value).strip()
+                if candidate_ref.endswith((".yaml", ".yml")):
+                    component_key = candidate_key
+                    component_ref = candidate_ref
+                    break
 
         if component_key is not None and component_ref is not None:
             allowed = _COMPONENT_ALLOWED_OVERRIDE_FIELDS.get(path, frozenset({"component"}))
@@ -144,7 +149,10 @@ def resolve_config_components(
             overrides = {key: value for key, value in resolved.items() if key != component_key}
             if component_key == "path":
                 overrides.pop("component", None)
-            resolved = _deep_merge(component_payload, overrides)
+            if component_key == "local_path":
+                resolved = _deep_merge(overrides, component_payload)
+            else:
+                resolved = _deep_merge(component_payload, overrides)
 
         for key, value in tuple(resolved.items()):
             if isinstance(value, dict):

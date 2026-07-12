@@ -32,21 +32,23 @@ DEFAULT_STRATEGIES = (
     "birkhoff_phase_local_sync",
     "birkhoff_phase_local_async_p2p",
     "routersense_joint_phase_sync",
-    "routersense_joint_zero_hint_async_p2p",
-    "routersense_joint_predicted_async_p2p",
+    "routersense_joint_zero_raw_async",
+    "routersense_joint_predicted_raw_async",
+    "routersense_joint_zero_safe_async",
+    "routersense_joint_predicted_safe_async",
 )
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the 4GPU A2 comparison body with one torchrun process per strategy.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--strategies", nargs="*", default=list(DEFAULT_STRATEGIES))
-    parser.add_argument("--warmup-iters", type=int, default=3)
-    parser.add_argument("--measure-iters", type=int, default=10)
-    parser.add_argument("--selected-layers", default="all")
-    parser.add_argument("--profile", default="perf", choices=("debug", "execution", "perf"))
-    parser.add_argument("--preflight-mode", default="compact", choices=("full", "compact"))
-    parser.add_argument("--world-size", type=int, default=4)
+    parser.add_argument("--strategies", nargs="*", default=None)
+    parser.add_argument("--warmup-iters", type=int, default=None)
+    parser.add_argument("--measure-iters", type=int, default=None)
+    parser.add_argument("--selected-layers", default=None)
+    parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf"))
+    parser.add_argument("--preflight-mode", default=None, choices=("full", "compact"))
+    parser.add_argument("--world-size", type=int, default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -117,32 +119,9 @@ def _safe_gain(by_name: dict[str, dict], left: str, right: str) -> float | None:
     return float((float(right_value) - float(left_value)) / float(right_value))
 
 
-def _load_transport_epoch_metrics(run_dir: Path) -> dict[int, dict[str, float]]:
-    path = run_dir / "rank0_transport_execution.jsonl"
-    if not path.exists():
-        return {}
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    result: dict[int, dict[str, float]] = {}
-    for row in rows:
-        if str(row.get("record_type", "")) != "async_phase_summary":
-            continue
-        epoch = int(row.get("forward_epoch", 0))
-        phase = str(row.get("phase", "")).upper()
-        bucket = result.setdefault(epoch, {"dispatch_transport_us": 0.0, "return_transport_us": 0.0, "p2p_enqueue_us": 0.0, "p2p_wait_us": 0.0})
-        enqueue_us = max(0.0, float(row.get("enqueue_end_ns", 0) - row.get("enqueue_start_ns", 0)) / 1000.0)
-        wait_us = max(0.0, float(row.get("wait_end_ns", 0) - row.get("wait_start_ns", 0)) / 1000.0)
-        bucket["p2p_enqueue_us"] += enqueue_us
-        bucket["p2p_wait_us"] += wait_us
-        if phase == "P0":
-            bucket["dispatch_transport_us"] += enqueue_us + wait_us
-        elif phase == "P1":
-            bucket["return_transport_us"] += enqueue_us + wait_us
-    return result
-
-
 def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]:
+    del run_dir
     repeat_records = [row for row in list(rank0_summary.get("repeat_records") or []) if not bool(row.get("warmup", False))]
-    transport_by_epoch = _load_transport_epoch_metrics(run_dir)
     metrics: dict[str, list[float]] = {
         "total_forward_us": [],
         "dispatch_transport_us": [],
@@ -162,16 +141,10 @@ def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]
         "scheduling_overhead_us": [],
     }
     for row in repeat_records:
-        epoch = int(row.get("forward_epoch", 0))
-        transport = transport_by_epoch.get(epoch, {})
-        dispatch_transport_us = float(transport.get("dispatch_transport_us", 0.0) or 0.0)
-        return_transport_us = float(transport.get("return_transport_us", 0.0) or 0.0)
-        p2p_enqueue_us = float(transport.get("p2p_enqueue_us", 0.0) or 0.0)
-        p2p_wait_us = float(transport.get("p2p_wait_us", 0.0) or 0.0)
-        if dispatch_transport_us <= 0.0:
-            dispatch_transport_us = float(row.get("dispatch_hook_path_us", 0.0) or 0.0)
-        if return_transport_us <= 0.0:
-            return_transport_us = float(row.get("combine_hook_path_us", 0.0) or 0.0)
+        dispatch_transport_us = float(row.get("dispatch_transport_us", 0.0) or 0.0)
+        return_transport_us = float(row.get("return_transport_us", 0.0) or 0.0)
+        p2p_enqueue_us = float(row.get("batch_submit_us", row.get("submit_us", 0.0)) or 0.0)
+        p2p_wait_us = float(row.get("wait_us", 0.0) or 0.0)
         control_overhead_us = sum(
             float(row.get(key, 0.0) or 0.0)
             for key in (
@@ -232,16 +205,23 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     copy_config(Path(args.config), output_dir)
     base = load_official_config(Path(args.config))
+    resolved_strategies = list(args.strategies) if args.strategies is not None else list(base.get("strategies") or DEFAULT_STRATEGIES)
+    resolved_warmup = int(args.warmup_iters if args.warmup_iters is not None else (base.get("evaluation", {}) or {}).get("warmup", 3))
+    resolved_measure = int(args.measure_iters if args.measure_iters is not None else (base.get("evaluation", {}) or {}).get("repeats", 10))
+    resolved_selected_layers = str(args.selected_layers if args.selected_layers is not None else base.get("selected_layers", "all"))
+    resolved_profile = str(args.profile if args.profile is not None else base.get("profile", "perf"))
+    resolved_preflight_mode = str(args.preflight_mode if args.preflight_mode is not None else base.get("preflight_mode", "compact"))
+    resolved_world_size = int(args.world_size if args.world_size is not None else base.get("world_size", (base.get("topology", {}) or {}).get("world_size", 4)))
     payload = {
         "runner": "run_gpu_a2_strategy_compare",
         "config": str(args.config),
-        "strategies": list(args.strategies),
-        "warmup_iters": int(args.warmup_iters),
-        "measure_iters": int(args.measure_iters),
-        "selected_layers": str(args.selected_layers),
-        "profile": str(args.profile),
-        "preflight_mode": str(args.preflight_mode),
-        "world_size": int(args.world_size),
+        "strategies": list(resolved_strategies),
+        "warmup_iters": int(resolved_warmup),
+        "measure_iters": int(resolved_measure),
+        "selected_layers": str(resolved_selected_layers),
+        "profile": str(resolved_profile),
+        "preflight_mode": str(resolved_preflight_mode),
+        "world_size": int(resolved_world_size),
         "dry_run": bool(args.dry_run),
     }
     if args.dry_run:
@@ -249,17 +229,17 @@ def main() -> int:
         write_json(output_dir / "a2_runner_summary.json", payload)
         print((output_dir / "a2_runner_summary.json").read_text(encoding="utf-8"))
         return 0
-    if available_cuda_count() < int(args.world_size):
+    if available_cuda_count() < int(resolved_world_size):
         payload = _fallback(
             output_dir,
-            world_size=int(args.world_size),
+            world_size=int(resolved_world_size),
             config=str(args.config),
-            strategies=list(args.strategies),
-            warmup_iters=int(args.warmup_iters),
-            measure_iters=int(args.measure_iters),
-            selected_layers=str(args.selected_layers),
-            profile=str(args.profile),
-            preflight_mode=str(args.preflight_mode),
+            strategies=list(resolved_strategies),
+            warmup_iters=int(resolved_warmup),
+            measure_iters=int(resolved_measure),
+            selected_layers=str(resolved_selected_layers),
+            profile=str(resolved_profile),
+            preflight_mode=str(resolved_preflight_mode),
             dry_run=bool(args.dry_run),
         )
         write_json(output_dir / "a2_runner_summary.json", payload)
@@ -269,7 +249,7 @@ def main() -> int:
     generated_dir = output_dir / "generated_configs"
     generated_dir.mkdir(parents=True, exist_ok=True)
     strategy_results: list[dict] = []
-    for strategy in args.strategies:
+    for strategy in resolved_strategies:
         strategy_root = output_dir / "per_strategy" / str(strategy)
         run_name = f"a2_{strategy}"
         strategy_config = build_policy_correctness_config(
@@ -277,8 +257,8 @@ def main() -> int:
             strategy_name=str(strategy),
             run_name=run_name,
             output_root=strategy_root,
-            profile=str(args.profile),
-            selected_layers=str(args.selected_layers),
+            profile=str(resolved_profile),
+            selected_layers=str(resolved_selected_layers),
             save_logits=False,
         )
         config_path = generated_dir / f"{strategy}.yaml"
@@ -288,14 +268,14 @@ def main() -> int:
             config_path=config_path,
             run_id=run_name,
             output_dir=strategy_root,
-            world_size=int(args.world_size),
+            world_size=int(resolved_world_size),
             native=native,
         )
         proc = run_subprocess(
             cmd,
             extra_env={
-                "ROUTERSENSE_WARMUP_ITERS": str(int(args.warmup_iters)),
-                "ROUTERSENSE_MEASURE_ITERS": str(int(args.measure_iters)),
+                "ROUTERSENSE_WARMUP_ITERS": str(int(resolved_warmup)),
+                "ROUTERSENSE_MEASURE_ITERS": str(int(resolved_measure)),
             },
         )
         (output_dir / f"{strategy}_stdout.log").write_text(proc.stdout, encoding="utf-8")
@@ -314,10 +294,14 @@ def main() -> int:
         {
             "status": "executed",
             "strategies": strategy_results,
-            "p2p_backend_gain": _safe_gain(by_name, "birkhoff_phase_local_async_p2p", "birkhoff_phase_local_sync"),
-            "joint_gain": _safe_gain(by_name, "routersense_joint_zero_hint_async_p2p", "birkhoff_phase_local_async_p2p"),
-            "prediction_gain": _safe_gain(by_name, "routersense_joint_predicted_async_p2p", "routersense_joint_zero_hint_async_p2p"),
-            "full_system_gain": _safe_gain(by_name, "routersense_joint_predicted_async_p2p", "birkhoff_phase_local_sync"),
+            "backend_gain": _safe_gain(by_name, "birkhoff_phase_local_async_p2p", "birkhoff_phase_local_sync"),
+            "phase_sync_joint_gain": _safe_gain(by_name, "routersense_joint_phase_sync", "birkhoff_phase_local_sync"),
+            "async_raw_joint_gain": _safe_gain(by_name, "routersense_joint_zero_raw_async", "birkhoff_phase_local_async_p2p"),
+            "raw_prediction_gain": _safe_gain(by_name, "routersense_joint_predicted_raw_async", "routersense_joint_zero_raw_async"),
+            "safe_prediction_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "routersense_joint_zero_safe_async"),
+            "safe_zero_gain": _safe_gain(by_name, "routersense_joint_zero_safe_async", "routersense_joint_zero_raw_async"),
+            "safe_predicted_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "routersense_joint_predicted_raw_async"),
+            "full_system_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "native"),
         }
     )
     write_json(output_dir / "a2_runner_summary.json", payload)

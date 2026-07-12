@@ -29,7 +29,12 @@ oracle: {}
 regime_analysis: {}
 suite: c2
 reference_strategy: birkhoff_phase_local_sync
-candidate_strategy: routersense_joint_predicted_raw_async
+candidate_strategies:
+  - birkhoff_phase_local_async_p2p
+  - routersense_joint_zero_raw_async
+  - routersense_joint_predicted_raw_async
+  - routersense_joint_zero_safe_async
+  - routersense_joint_predicted_safe_async
 selected_layers: selected
 forward_epochs: 2
 profile: execution

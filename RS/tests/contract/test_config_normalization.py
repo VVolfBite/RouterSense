@@ -162,6 +162,55 @@ def test_v1_component_references_are_resolved_recursively(tmp_path: Path) -> Non
     assert normalized.topology["launcher"]["nproc_per_node"] == 4
 
 
+def test_model_component_can_recurse_through_local_path_yaml(tmp_path: Path) -> None:
+    concrete_model = tmp_path / "concrete-model.yaml"
+    concrete_model.write_text(
+        "\n".join(
+            (
+                "model_id: nested_fixture_model",
+                "local_path: /models/nested-fixture",
+                "trust_remote_code: false",
+            )
+        ),
+        encoding="utf-8",
+    )
+    model_component = tmp_path / "model-component.yaml"
+    model_component.write_text(
+        "\n".join(
+            (
+                "model_id: model_component",
+                f"local_path: {concrete_model.name}",
+                "trust_remote_code: false",
+            )
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "official.yaml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "run: {kind: online_strategy_comparison, name: nested}",
+                f"model: {{path: {model_component.name}}}",
+                "topology: {}",
+                "workload: {}",
+                "runtime: {line: phase_sync}",
+                "traffic: {matrix_unit: rows, bucket_rows: 1024}",
+                "policy: {}",
+                "prediction: {}",
+                "evaluation: {}",
+                "replay: {}",
+                "oracle: {}",
+                "regime_analysis: {}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    normalized = normalize_run_config(yaml_like(config_path), source_path=config_path)
+    assert normalized.model["model_id"] == "nested_fixture_model"
+    assert normalized.model["local_path"] == "/models/nested-fixture"
+
+
 def test_component_reference_cycle_raises(tmp_path: Path) -> None:
     a = tmp_path / "a.yaml"
     b = tmp_path / "b.yaml"

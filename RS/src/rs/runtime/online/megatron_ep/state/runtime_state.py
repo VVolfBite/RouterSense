@@ -108,6 +108,11 @@ class PreparedWindowRuntimeState:
     host_projected_paired_b_makespan: float = 0.0
     host_projected_estimated_makespan: float = 0.0
     ideal_estimated_makespan: float = 0.0
+    raw_plan_digest: str = ""
+    paired_b_plan_digest: str = ""
+    selected_plan_digest: str = ""
+    paired_b_build_count: int = 0
+    host_projection_count: int = 0
     requested_bucket_mode: str = ""
     effective_bucket_mode: str = ""
     requested_bucket_rows: int = 0

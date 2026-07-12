@@ -40,3 +40,7 @@ def test_u_weight_tuning_cli(tmp_path: Path) -> None:
     )
     assert "policies" in payload
     assert "U_barrier_criticality_global_matching" in payload["policies"]
+    policy = payload["policies"]["U_barrier_criticality_global_matching"]
+    assert float(policy["train_mean_makespan"]) > 0.0
+    assert float(policy["eval_mean_makespan"]) > 0.0
+    assert isinstance(policy["invalid_parameter_sets"], list)

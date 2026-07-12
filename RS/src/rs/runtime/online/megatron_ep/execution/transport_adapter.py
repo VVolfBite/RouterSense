@@ -148,6 +148,9 @@ class MegatronPhaseTransportAdapter:
                     fallback_used=True,
                     fallback_reason=str(preflight.reason),
                     requested_backend_id="async_release",
+                    preflight_collective_count=int(preflight.collective_count),
+                    preflight_passed=bool(preflight.all_ranks_ok),
+                    all_work_completed=bool(facade_result.all_work_completed),
                 )
                 output = facade_result.output_tensor
                 result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
@@ -185,6 +188,11 @@ class MegatronPhaseTransportAdapter:
                         requested_backend_id="async_release",
                     ),
                     backend="async_release",
+                )
+                facade_result = replace(
+                    facade_result,
+                    preflight_collective_count=int(preflight.collective_count),
+                    preflight_passed=bool(preflight.all_ranks_ok),
                 )
                 output = facade_result.output_tensor
                 result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
@@ -267,6 +275,9 @@ class MegatronPhaseTransportAdapter:
                 "fallback_used": bool(facade_result.fallback_used),
                 "fallback_reason": str(facade_result.fallback_reason),
                 "timeout": bool(facade_result.timeout),
+                "preflight_collective_count": int(facade_result.preflight_collective_count),
+                "preflight_passed": bool(facade_result.preflight_passed),
+                "all_work_completed": bool(facade_result.all_work_completed),
                 "timing_us": dict(facade_result.timing_us or {}),
                 "phase_metrics": dict(facade_result.phase_metrics or {}),
                 "use_nccl_stream_requested": bool(use_nccl_stream),

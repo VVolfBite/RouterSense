@@ -15,9 +15,9 @@ ROOT = ensure_src_on_path()
 
 from experiments.offline.replay_fixture_policy_study import _build_problem
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
-from rs.scheduling.multiphase.tier1 import Tier1PolicySpec, _build_u_policy
-from rs.scheduling.multiphase.recovered_candidates import RecoveredCandidateSpec, _raw_schedule_to_plan, run_global_matching_scheduler
+from rs.scheduling.multiphase.recovered_candidates import _raw_schedule_to_plan, run_global_matching_scheduler
 from rs.scheduling import resolve_policy
+from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 
 
 def _parse_args() -> argparse.Namespace:
@@ -37,35 +37,59 @@ def _split(fixtures: list[Path]) -> tuple[list[Path], list[Path]]:
 
 def _score_plan(problem, plan) -> float:
     audit = replay_and_audit_logical_plan(problem, plan)
+    if not bool(audit.get("valid", False)):
+        return float("inf")
     return float(audit.get("makespan", plan.diagnostics.get("makespan", 0.0)))
 
 
+def _build_tuned_policy_plan(
+    problem,
+    *,
+    policy_name: str,
+    residual_weight: float,
+    barrier_weight: float,
+    age_weight: float,
+    prediction_weight: float,
+):
+    request = build_request_from_problem(
+        request_id=f"tune:{policy_name}",
+        problem=problem,
+        bucket_rows=0,
+        policy_options=PolicyOptions(
+            p0_weight=float(problem.options.p0_weight),
+            p1_weight=float(problem.options.p1_reservation_weight),
+            p2_hint_weight=float(problem.options.p2_hint_weight),
+            residual_weight=float(residual_weight),
+            barrier_weight=float(barrier_weight),
+            age_weight=float(age_weight),
+            prediction_weight=float(prediction_weight),
+        ),
+        hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
+        confidence=float(problem.options.prediction_confidence),
+    )
+    return build_policy(policy_name, request.policy_options).plan(request)
+
+
 def _tune_barrier_criticality(problem, residual_weight: float, barrier_weight: float, age_weight: float, prediction_weight: float):
-    spec = Tier1PolicySpec(
-        algorithm_id="U_barrier_criticality_global_matching",
-        service_model="fluid_wave",
-        exact_matching=True,
-        atomic=False,
+    return _build_tuned_policy_plan(
+        problem,
+        policy_name="U_barrier_criticality_global_matching",
         residual_weight=residual_weight,
         barrier_weight=barrier_weight,
         age_weight=age_weight,
         prediction_weight=prediction_weight,
     )
-    return _build_u_policy(problem, spec)
 
 
 def _tune_gated_maxweight(problem, residual_weight: float, barrier_weight: float, age_weight: float, prediction_weight: float):
-    spec = Tier1PolicySpec(
-        algorithm_id="U_gated_maxweight_matching",
-        service_model="fluid_wave",
-        exact_matching=True,
-        atomic=False,
+    return _build_tuned_policy_plan(
+        problem,
+        policy_name="U_gated_maxweight_matching",
         residual_weight=residual_weight,
         barrier_weight=barrier_weight,
         age_weight=age_weight,
         prediction_weight=prediction_weight,
     )
-    return _build_u_policy(problem, spec)
 
 
 def _tune_gated_greedy(problem, residual_weight: float, barrier_weight: float, age_weight: float, prediction_weight: float):
@@ -178,16 +202,27 @@ def run_u_weight_tuning(
     for raw_policy in selected_policies:
         builder = BUILDERS[raw_policy]
         best_train = None
+        invalid_parameter_sets: list[dict[str, Any]] = []
         for params in grid:
             train_scores = []
+            params_valid = True
             for path in train_paths:
                 fixture = json.loads(path.read_text(encoding="utf-8"))
                 problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="copy_current_dispatch", expert_compute_delay=0.0)
                 plan = builder(problem, **params)
-                train_scores.append(_score_plan(problem, plan))
+                score = _score_plan(problem, plan)
+                if score == float("inf"):
+                    params_valid = False
+                    break
+                train_scores.append(score)
+            if not params_valid:
+                invalid_parameter_sets.append({"params": dict(params), "reason": "invalid_or_incomplete_plan"})
+                continue
             train_mean = statistics.mean(train_scores)
             if best_train is None or train_mean < best_train["train_mean"]:
                 best_train = {"params": params, "train_mean": train_mean}
+        if best_train is None:
+            raise ValueError(f"no valid parameter set found for {raw_policy}")
         eval_scores = []
         safe_eval_scores = []
         fallback_count = 0
@@ -195,9 +230,15 @@ def run_u_weight_tuning(
             fixture = json.loads(path.read_text(encoding="utf-8"))
             problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="copy_current_dispatch", expert_compute_delay=0.0)
             tuned_plan = builder(problem, **best_train["params"])
-            eval_scores.append(_score_plan(problem, tuned_plan))
+            tuned_score = _score_plan(problem, tuned_plan)
+            if tuned_score == float("inf"):
+                raise ValueError(f"selected tuned plan became invalid for {raw_policy}")
+            eval_scores.append(tuned_score)
             safe_plan = resolve_policy(policy_name=SAFE_BY_RAW[raw_policy], bucket_rows=0).build_logical_plan(problem)
-            safe_eval_scores.append(_score_plan(problem, safe_plan))
+            safe_score = _score_plan(problem, safe_plan)
+            if safe_score == float("inf"):
+                raise ValueError(f"safe plan became invalid for {raw_policy}")
+            safe_eval_scores.append(safe_score)
             fallback_count += int(bool(safe_plan.diagnostics.get("fallback_to_paired_b", False)))
         eval_mean = statistics.mean(eval_scores)
         safe_eval_mean = statistics.mean(safe_eval_scores)
@@ -206,6 +247,7 @@ def run_u_weight_tuning(
             "train_mean_makespan": best_train["train_mean"],
             "eval_mean_makespan": eval_mean,
             "safe_eval_mean_makespan": safe_eval_mean,
+            "invalid_parameter_sets": invalid_parameter_sets,
             "fallback_ratio": fallback_count / max(1, len(eval_paths)),
             "overfit_warning": eval_mean > best_train["train_mean"],
             "family_quality_label": (

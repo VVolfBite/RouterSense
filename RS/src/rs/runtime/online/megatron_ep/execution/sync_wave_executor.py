@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -74,6 +75,7 @@ def execute_scheduled_phase_tensor(
     group: dist.ProcessGroup | None,
     timeline_hook: Any | None = None,
 ) -> tuple[torch.Tensor, PhaseExecutionResult, list[dict[str, Any]]]:
+    total_start_ns = time.monotonic_ns()
     world_group = group if group is not None else dist.group.WORLD
     peer_count = len(context.ep_group_ranks)
     rank = int(context.global_rank)
@@ -83,6 +85,7 @@ def execute_scheduled_phase_tensor(
 
     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
     local_copy_rows = 0
+    local_copy_start_ns = time.monotonic_ns()
     for bundle in context.transport_bundles:
         segment = bundle.outgoing_segment
         if not segment.is_local or int(segment.row_count) <= 0:
@@ -98,10 +101,14 @@ def execute_scheduled_phase_tensor(
             rows=int(segment.row_count),
         )
         local_copy_rows += int(segment.row_count)
+    local_copy_end_ns = time.monotonic_ns()
 
     remote_copy_rows = 0
     active_wave_count = 0
     execution_entries: list[dict[str, Any]] = []
+    wave_concat_ns = 0
+    wave_collective_ns = 0
+    wave_scatter_ns = 0
     for wave in plan.waves:
         if callable(timeline_hook):
             timeline_hook(
@@ -116,6 +123,7 @@ def execute_scheduled_phase_tensor(
         send_slices: list[torch.Tensor] = []
         recv_task = None
         outgoing = None
+        concat_start_ns = time.monotonic_ns()
         for task in wave.bucket_tasks:
             if int(task.src_rank) == rank:
                 outgoing = task
@@ -133,6 +141,8 @@ def execute_scheduled_phase_tensor(
             active_wave_count += 1
             input_buffer = send_slices[0] if len(send_slices) == 1 else (torch.cat(send_slices, dim=0) if send_slices else _empty_like_rows(input_tensor, 0))
             output_buffer = _empty_like_rows(input_tensor, int(sum(recv_splits)))
+        concat_end_ns = time.monotonic_ns()
+        wave_concat_ns += int(concat_end_ns - concat_start_ns)
         if callable(timeline_hook):
             timeline_hook(
                 "before_payload_collective",
@@ -162,6 +172,7 @@ def execute_scheduled_phase_tensor(
                     "plan_hash": plan.plan_hash,
                 }
             )
+        collective_start_ns = time.monotonic_ns()
         dist.all_to_all_single(
             output_buffer,
             input_buffer,
@@ -169,6 +180,8 @@ def execute_scheduled_phase_tensor(
             input_split_sizes=send_splits,
             group=world_group,
         )
+        collective_end_ns = time.monotonic_ns()
+        wave_collective_ns += int(collective_end_ns - collective_start_ns)
         if callable(timeline_hook):
             timeline_hook(
                 "after_payload_collective",
@@ -179,6 +192,7 @@ def execute_scheduled_phase_tensor(
                 output_split_sizes=list(recv_splits),
                 plan_hash=plan.plan_hash,
             )
+        scatter_start_ns = time.monotonic_ns()
         if recv_task is not None and int(sum(recv_splits)) > 0:
             payload = next(payload for payload in recv_task.payload_slices if payload.tensor_role == tensor_role)
             _copy_segment(
@@ -189,6 +203,8 @@ def execute_scheduled_phase_tensor(
                 rows=int(payload.row_count),
             )
             remote_copy_rows += int(payload.row_count)
+        scatter_end_ns = time.monotonic_ns()
+        wave_scatter_ns += int(scatter_end_ns - scatter_start_ns)
         if callable(timeline_hook):
             timeline_hook(
                 "after_wave",
@@ -216,4 +232,23 @@ def execute_scheduled_phase_tensor(
             tensor_role=tensor_role,
             plan_hash=plan.plan_hash,
         )
+    total_end_ns = time.monotonic_ns()
+    execution_entries.append(
+        {
+            "record_type": "phase_sync_summary",
+            "phase": str(context.phase),
+            "tensor_role": str(tensor_role),
+            "execution_mode": "phase_sync_wave",
+            "local_copy_task_count": int(sum(1 for bundle in context.transport_bundles if bool(bundle.outgoing_segment.is_local) and int(bundle.outgoing_segment.row_count) > 0)),
+            "local_copy_row_count": int(local_copy_rows),
+            "wave_count": int(len(plan.waves)),
+            "collective_count": int(len(plan.waves)),
+            "wave_concat_us": float(wave_concat_ns / 1000.0),
+            "wave_collective_us": float(wave_collective_ns / 1000.0),
+            "wave_scatter_us": float(wave_scatter_ns / 1000.0),
+            "local_copy_us": float((local_copy_end_ns - local_copy_start_ns) / 1000.0),
+            "total_us": float((total_end_ns - total_start_ns) / 1000.0),
+            "idle_barrier_wait_us": 0.0,
+        }
+    )
     return output, result, execution_entries

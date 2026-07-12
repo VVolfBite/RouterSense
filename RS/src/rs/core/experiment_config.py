@@ -81,7 +81,9 @@ class WorkloadConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    line: str = ""
     precision: str = "bf16"
+    invariant_mode: str = "diagnostic"
     dispatcher: str = "alltoall"
     control_mode: str = "none"
     expert_compute_delay: float = 0.0
@@ -370,7 +372,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
             "interface_hint",
         },
         "workload": {"prompts", "trace_artifact_dir", "num_prompts"},
-        "runtime": {"precision", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
+        "runtime": {"line", "precision", "invariant_mode", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
         "online_policy": {"name", "parameters", "p2"},
         "offline_study": {"policies", "reference_policies", "p2_source", "window"},
         "execution": {"mode", "bucket_mode", "bucket_rows", "safe_projection_mode", "schedule"},
@@ -485,7 +487,9 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             num_prompts=None if workload.get("num_prompts") is None else int(workload.get("num_prompts")),
         ),
         runtime=RuntimeConfig(
+            line=str(runtime.get("line", "")),
             precision=str(runtime.get("precision", model.get("precision", "bf16"))),
+            invariant_mode=str(runtime.get("invariant_mode", "diagnostic")),
             dispatcher=str(runtime.get("dispatcher", "alltoall")),
             control_mode=str(runtime.get("control_mode", "none")),
             expert_compute_delay=float(runtime.get("expert_compute_delay", 0.0)),

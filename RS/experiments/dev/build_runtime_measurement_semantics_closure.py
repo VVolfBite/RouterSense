@@ -18,7 +18,6 @@ from experiments._bootstrap import ensure_src_on_path
 ROOT = ensure_src_on_path()
 
 from rs.core.artifact import write_json
-from rs.runtime.online.megatron_ep.async_release import runtime_projection as runtime_projection_mod
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.execution.executor_facade import ExecutionResult
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
@@ -87,39 +86,24 @@ def _runtime(*, safe_projection_mode: str) -> RouterSenseInjectionRuntime:
 
 
 def _raw_safe_audit() -> dict[str, Any]:
-    matrix = ((0, 5), (3, 0))
+    matrix = ((0, 2, 5), (3, 0, 3), (1, 5, 0))
     contexts = make_contexts_from_matrix(phase="P0", matrix=matrix, p2_hint_mode="none")
-    original = runtime_projection_mod.host_project_safe_selection
-
-    def _select_paired(*, raw_u_plan, paired_b_plan):
-        return {
-            "ideal_raw_u_estimated_makespan": 10.0,
-            "host_projected_raw_u_estimated_makespan": 10.0,
-            "ideal_paired_b_estimated_makespan": 8.0,
-            "host_projected_paired_b_estimated_makespan": 8.0,
-            "host_projected_safe_selection": str(paired_b_plan.policy_name),
-        }
-
-    runtime_projection_mod.host_project_safe_selection = _select_paired
-    try:
-        raw_runtime = _runtime(safe_projection_mode="disabled")
-        raw_observation = raw_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
-        raw_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
-            layer_name="model.layers.0.mlp",
-            phase_ctx=contexts[0],
-            observation_p0=raw_observation,
-            actual_p0_full_row_matrix=matrix,
-        )
-        safe_runtime = _runtime(safe_projection_mode="host_select")
-        safe_observation = safe_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
-        safe_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
-            layer_name="model.layers.0.mlp",
-            phase_ctx=contexts[0],
-            observation_p0=safe_observation,
-            actual_p0_full_row_matrix=matrix,
-        )
-    finally:
-        runtime_projection_mod.host_project_safe_selection = original
+    raw_runtime = _runtime(safe_projection_mode="disabled")
+    raw_observation = raw_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    raw_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=contexts[0],
+        observation_p0=raw_observation,
+        actual_p0_full_row_matrix=matrix,
+    )
+    safe_runtime = _runtime(safe_projection_mode="host_select")
+    safe_observation = safe_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    safe_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=contexts[0],
+        observation_p0=safe_observation,
+        actual_p0_full_row_matrix=matrix,
+    )
     raw_plan = raw_runtime._runtime_state.read("global_joint_window_plan")
     safe_plan = safe_runtime._runtime_state.read("global_joint_window_plan")
     return {
@@ -128,17 +112,21 @@ def _raw_safe_audit() -> dict[str, Any]:
             "safe_projection_mode": raw_plan["safe_projection_mode"],
             "selected_policy": raw_plan["safe_selected_policy"],
             "stored_p1_logical_plan_digest": raw_runtime._runtime_state.read("stored_p1_logical_plan_digest"),
+            "paired_b_build_count": raw_plan["paired_b_build_count"],
+            "host_projection_count": raw_plan["host_projection_count"],
         },
         "safe": {
             "safe_projection_mode": safe_plan["safe_projection_mode"],
             "selected_policy": safe_plan["safe_selected_policy"],
             "stored_p1_logical_plan_digest": safe_runtime._runtime_state.read("stored_p1_logical_plan_digest"),
+            "paired_b_build_count": safe_plan["paired_b_build_count"],
+            "host_projection_count": safe_plan["host_projection_count"],
         },
     }
 
 
 def _weight_audit() -> tuple[dict[str, Any], dict[str, Any]]:
-    fixture = json.loads((ROOT / "tests/fixtures/tier1/p2_local_release_witness_4rank.json").read_text(encoding="utf-8"))
+    fixture = json.loads((ROOT / "tests/fixtures/tier1/barrier_criticality_switch_witness_4rank.json").read_text(encoding="utf-8"))
     problem = _build_problem(
         fixture,
         mode="runtime_lookahead",
@@ -149,21 +137,27 @@ def _weight_audit() -> tuple[dict[str, Any], dict[str, Any]]:
     weighted = resolve_policy(
         policy_name="U_barrier_criticality_global_matching",
         bucket_rows=0,
-        residual_weight=0.0,
-        barrier_weight=0.0,
-        age_weight=0.0,
-        prediction_weight=10.0,
+        residual_weight=4.0,
+        barrier_weight=1.75,
+        age_weight=0.15,
+        prediction_weight=0.35,
     ).build_logical_plan(problem)
+    base_wave_digest = stable_hash([[flow.flow_id for flow in wave.flows] for wave in base.waves])
+    weighted_wave_digest = stable_hash([[flow.flow_id for flow in wave.flows] for wave in weighted.waves])
     effective = {
         "default_weights": dict(base.diagnostics.get("default_weights", {})),
         "requested_weights": dict(weighted.diagnostics.get("requested_weights", {})),
         "effective_weights": dict(weighted.diagnostics.get("effective_weights", {})),
         "consumed_weights": dict(weighted.diagnostics.get("consumed_weights", {})),
+        "base_valid": bool(base.diagnostics.get("valid", False)),
+        "weighted_valid": bool(weighted.diagnostics.get("valid", False)),
     }
     sensitivity = {
-        "base_plan_digest": stable_hash(base.to_dict()),
-        "weighted_plan_digest": stable_hash(weighted.to_dict()),
-        "plan_digest_changed": bool(stable_hash(base.to_dict()) != stable_hash(weighted.to_dict())),
+        "base_wave_digest": base_wave_digest,
+        "weighted_wave_digest": weighted_wave_digest,
+        "first_selected_flow_base": str(base.waves[0].flows[0].flow_id if base.waves and base.waves[0].flows else ""),
+        "first_selected_flow_weighted": str(weighted.waves[0].flows[0].flow_id if weighted.waves and weighted.waves[0].flows else ""),
+        "wave_digest_changed": bool(base_wave_digest != weighted_wave_digest),
     }
     return effective, sensitivity
 
@@ -289,7 +283,7 @@ def main() -> int:
             not git_dirty
             and bucket_mode_audit["strict_consistent"]
             and raw_safe["raw_safe_differ"]
-            and sensitivity["plan_digest_changed"]
+            and sensitivity["wave_digest_changed"]
         )
         else "MEASUREMENT_SEMANTICS_INCOMPLETE",
         "commit_sha": head_sha,
@@ -298,7 +292,7 @@ def main() -> int:
             "dynamic_bucket_retained": True,
             "requested_effective_bucket_consistent": bool(bucket_mode_audit["strict_consistent"]),
             "raw_safe_paths_diverged": bool(raw_safe["raw_safe_differ"]),
-            "weights_changed_behavior": bool(sensitivity["plan_digest_changed"]),
+            "weights_changed_behavior": bool(sensitivity["wave_digest_changed"]),
             "execution_result_is_formal_source": True,
         },
     }

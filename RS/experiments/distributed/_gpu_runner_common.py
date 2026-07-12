@@ -107,6 +107,10 @@ def build_policy_correctness_config(
     topology = dict(base_comparison.get("topology", {}) or {})
     topology_ep = dict(topology.get("ep", {}) or {})
     runtime = dict(base_comparison.get("runtime", {}) or {})
+    traffic = dict(base_comparison.get("traffic", {}) or {})
+    policy = dict(base_comparison.get("policy", {}) or {})
+    policy_options = dict(policy.get("options", {}) or {})
+    prediction = dict(base_comparison.get("prediction", {}) or {})
     workload = dict(base_comparison.get("workload", {}) or {})
     execution = dict(base_comparison.get("execution", {}) or {})
     selected_ep_size = int(topology.get("ep_size", topology_ep.get("size", topology.get("world_size", 1))) or 1)
@@ -115,12 +119,44 @@ def build_policy_correctness_config(
     strategy_runtime = resolve_strategy_runtime(strategy_name=strategy_name, runtime_line=str(runtime.get("line", "phase_sync")))
     is_native = not bool(strategy_runtime["policy"])
     p2_hint_mode = str(strategy_runtime["p2_hint_mode"])
-    p2_hint_weight = 0.0 if p2_hint_mode == "none" else float(execution.get("p2_hint_weight", 1.0))
+    requested_invariant_mode = str(runtime.get("invariant_mode", "diagnostic"))
+    requested_precision = str(runtime.get("precision", model.get("precision", "bf16")))
+    requested_dispatcher = str(runtime.get("dispatcher", "alltoall"))
+    effective_execution_mode = str(strategy_runtime["execution_mode"])
+    if effective_execution_mode == "phase_sync_wave":
+        effective_runtime_line = "phase_sync"
+    elif effective_execution_mode == "native_passthrough":
+        effective_runtime_line = str(runtime.get("line", "async_release"))
+    else:
+        effective_runtime_line = "async_release"
+    requested_bucket_mode = str(traffic.get("bucket_mode", "dynamic_current"))
+    requested_bucket_rows = int(traffic.get("bucket_rows", 0) or 0)
+    effective_safe_projection_mode = str(
+        strategy_runtime.get(
+            "safe_projection_mode",
+            policy_options.get("safe_projection_mode", execution.get("safe_projection_mode", "host_select")),
+        )
+    )
+    requested_p0_weight = float(policy_options.get("p0_weight", execution.get("p0_weight", 1.0)))
+    requested_p1_weight = float(policy_options.get("p1_reservation_weight", execution.get("p1_reservation_weight", 1.0)))
+    p2_hint_weight = 0.0 if p2_hint_mode == "none" else float(policy_options.get("p2_hint_weight", execution.get("p2_hint_weight", 1.0)))
+    requested_residual_weight = float(policy_options.get("residual_weight", execution.get("residual_weight", 0.75)))
+    requested_barrier_weight = float(policy_options.get("barrier_weight", execution.get("barrier_weight", 1.75)))
+    requested_age_weight = float(policy_options.get("age_weight", execution.get("age_weight", 0.15)))
+    requested_prediction_weight = float(policy_options.get("prediction_weight", execution.get("prediction_weight", 0.35)))
+    requested_online_predictor = str(
+        strategy_runtime.get(
+            "online_p2_predictor",
+            prediction.get("name", policy_options.get("online_p2_predictor", "none")),
+        )
+    )
+    model_local_path = str(model.get("local_path", model.get("path", "")))
+    model_id = str(model.get("model_id", model_local_path))
     return {
         "run": {"kind": str(strategy_runtime["run_kind"]), "name": run_name},
         "model": {
-            "model_id": str(model.get("model_id", model.get("local_path", model.get("path", "")))),
-            "local_path": str(model.get("local_path", model.get("path", ""))),
+            "model_id": model_id,
+            "local_path": model_local_path,
             "trust_remote_code": bool(model.get("trust_remote_code", False)),
         },
         "topology": {
@@ -135,24 +171,32 @@ def build_policy_correctness_config(
         },
         "workload": {"prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json"))},
         "runtime": {
-            "precision": str(runtime.get("precision", "fp16")),
-            "dispatcher": str(runtime.get("dispatcher", "alltoall")),
+            "line": effective_runtime_line,
+            "precision": requested_precision,
+            "invariant_mode": requested_invariant_mode,
+            "dispatcher": requested_dispatcher,
             "control_mode": "none" if is_native else str(strategy_runtime["control_mode"]),
         },
         "online_policy": {
             "name": "disabled" if is_native else str(strategy_runtime["policy"]),
             "parameters": {
-                "p0_weight": float(execution.get("p0_weight", 1.0)),
-                "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
+                "p0_weight": requested_p0_weight,
+                "p1_reservation_weight": requested_p1_weight,
                 "p2_hint_weight": float(p2_hint_weight),
-                "online_p2_predictor": str(strategy_runtime.get("online_p2_predictor", "none")),
+                "residual_weight": requested_residual_weight,
+                "barrier_weight": requested_barrier_weight,
+                "age_weight": requested_age_weight,
+                "prediction_weight": requested_prediction_weight,
+                "online_p2_predictor": requested_online_predictor,
             },
             "p2": {"mode": p2_hint_mode, "artifact": ""},
         },
         "offline_study": {"policies": []},
         "execution": {
-            "mode": str(strategy_runtime["execution_mode"]),
-            "bucket_rows": 0,
+            "mode": effective_execution_mode,
+            "bucket_mode": requested_bucket_mode,
+            "bucket_rows": requested_bucket_rows,
+            "safe_projection_mode": effective_safe_projection_mode,
             "schedule": {
                 "layer_selector": str(selected_layers),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),
@@ -163,6 +207,7 @@ def build_policy_correctness_config(
             "capture_enabled": False,
             "capture_layer_selector": "",
             "capture_phase_selector": "",
+            "invariant_mode": requested_invariant_mode,
             "heartbeat_enabled": profile == "debug",
             "per_wave_timing_enabled": profile != "perf",
             "replay_trace_enabled": profile == "debug",

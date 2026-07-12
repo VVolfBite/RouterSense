@@ -397,6 +397,7 @@ def execute_async_phase_tensor(
     rank_context: dict[str, int],
     timeline_hook: Any | None = None,
 ) -> AsyncP2PExecutionResult:
+    total_start_ns = time.monotonic_ns()
     world_group = process_group if process_group is not None else dist.group.WORLD
     rank = int(rank_context["global_rank"])
     total_recv_rows = int(sum(context.recv_splits))
@@ -406,6 +407,7 @@ def execute_async_phase_tensor(
     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
     local_copy_rows = 0
     local_copy_task_count = 0
+    local_copy_start_ns = time.monotonic_ns()
     for bundle in context.transport_bundles:
         segment = bundle.outgoing_segment
         if not segment.is_local or int(segment.row_count) <= 0:
@@ -422,6 +424,7 @@ def execute_async_phase_tensor(
         )
         local_copy_rows += int(segment.row_count)
         local_copy_task_count += 1
+    local_copy_end_ns = time.monotonic_ns()
 
     recv_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
     send_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
@@ -476,7 +479,7 @@ def execute_async_phase_tensor(
     work_handles: list[Any] = []
     retained_tensors: list[torch.Tensor] = []
 
-    enqueue_start_ns = time.monotonic_ns()
+    op_build_start_ns = time.monotonic_ns()
     if callable(timeline_hook):
         timeline_hook(
             "before_async_p2p_phase",
@@ -514,15 +517,18 @@ def execute_async_phase_tensor(
                 group=world_group,
             )
         )
-    enqueue_end_ns = time.monotonic_ns()
+    op_build_end_ns = time.monotonic_ns()
 
+    batch_submit_start_ns = time.monotonic_ns()
     if ops:
         work_handles = list(dist.batch_isend_irecv(ops))
+    batch_submit_end_ns = time.monotonic_ns()
 
     wait_start_ns = time.monotonic_ns()
     for work in work_handles:
         work.wait()
     wait_end_ns = time.monotonic_ns()
+    total_end_ns = time.monotonic_ns()
 
     if callable(timeline_hook):
         timeline_hook(
@@ -542,8 +548,10 @@ def execute_async_phase_tensor(
             "execution_mode": "joint_window_async_p2p",
             "recv_op_count": len(recv_specs),
             "send_op_count": len(send_specs),
-            "enqueue_start_ns": int(enqueue_start_ns),
-            "enqueue_end_ns": int(enqueue_end_ns),
+            "op_build_start_ns": int(op_build_start_ns),
+            "op_build_end_ns": int(op_build_end_ns),
+            "batch_submit_start_ns": int(batch_submit_start_ns),
+            "batch_submit_end_ns": int(batch_submit_end_ns),
             "wait_start_ns": int(wait_start_ns),
             "wait_end_ns": int(wait_end_ns),
             "retained_tensor_count": len(retained_tensors),
@@ -552,6 +560,13 @@ def execute_async_phase_tensor(
             "coalesced_task_count": 0,
             "local_copy_task_count": int(local_copy_task_count),
             "local_copy_row_count": int(local_copy_rows),
+            "local_copy_us": float((local_copy_end_ns - local_copy_start_ns) / 1000.0),
+            "op_build_us": float((op_build_end_ns - op_build_start_ns) / 1000.0),
+            "batch_submit_us": float((batch_submit_end_ns - batch_submit_start_ns) / 1000.0),
+            "wait_us": float((wait_end_ns - wait_start_ns) / 1000.0),
+            "total_us": float((total_end_ns - total_start_ns) / 1000.0),
+            "batch_isend_irecv_call_count": int(1 if ops else 0),
+            "all_work_completed": True,
         }
     )
 

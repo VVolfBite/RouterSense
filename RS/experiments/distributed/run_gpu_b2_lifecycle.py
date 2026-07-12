@@ -167,7 +167,7 @@ def _collect_candidate_evidence(candidate_dir: Path, *, world_size: int, selecte
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the 4GPU B2 lifecycle validation body or an explicit no-4GPU fallback.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--strategy", default="routersense_joint_predicted_async_p2p")
+    parser.add_argument("--strategy", default="routersense_joint_predicted_raw_async")
     parser.add_argument("--profile", default="execution", choices=("debug", "execution", "perf"))
     parser.add_argument("--selected-layers", default="all")
     parser.add_argument("--world-size", type=int, default=4)

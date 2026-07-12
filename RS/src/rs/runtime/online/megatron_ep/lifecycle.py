@@ -1520,6 +1520,11 @@ class RouterSenseInjectionRuntime:
             "safe_comparison_is_strict_common_core": bool(raw_u_name == paired_b_name),
             "raw_u_plan_policy": str(raw_u_plan.policy_name),
             "paired_b_plan_policy": str(paired_b_plan.policy_name),
+            "raw_plan_digest": stable_hash(raw_u_plan.to_dict()),
+            "paired_b_plan_digest": stable_hash(paired_b_plan.to_dict()),
+            "selected_plan_digest": stable_hash(selected_plan.to_dict()),
+            "paired_b_build_count": 0 if safe_projection_mode == "disabled" else 1,
+            "host_projection_count": 0 if safe_projection_mode == "disabled" else 1,
             "runtime_policy_equivalent_of": effective_policy,
             "service_demand_model": "rows_from_pre_transport_phase_ready_context",
             "bundle_bytes_per_row": int(self._bundle_bytes_per_row(phase_ctx=phase_ctx)),
@@ -1532,6 +1537,11 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("ideal_paired_b_makespan", float(safe_projection["ideal_paired_b_estimated_makespan"]))
         self._runtime_state.write("host_projected_raw_u_makespan", float(safe_projection["host_projected_raw_u_estimated_makespan"]))
         self._runtime_state.write("host_projected_paired_b_makespan", float(safe_projection["host_projected_paired_b_estimated_makespan"]))
+        self._runtime_state.write("raw_plan_digest", stable_hash(raw_u_plan.to_dict()))
+        self._runtime_state.write("paired_b_plan_digest", stable_hash(paired_b_plan.to_dict()))
+        self._runtime_state.write("selected_plan_digest", stable_hash(selected_plan.to_dict()))
+        self._runtime_state.write("paired_b_build_count", 0 if safe_projection_mode == "disabled" else 1)
+        self._runtime_state.write("host_projection_count", 0 if safe_projection_mode == "disabled" else 1)
         self._runtime_state.write(
             "prediction_consumption_records",
             [

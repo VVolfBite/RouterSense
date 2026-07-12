@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
+from experiments.distributed._gpu_runner_common import build_policy_correctness_config
 from experiments.online.support.runtime_presets import resolve_strategy_runtime
 from rs.runtime.online.megatron_ep.async_release import runtime_projection as runtime_projection_mod
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
@@ -176,3 +178,84 @@ def test_runtime_raw_and_safe_joint_store_different_selected_plan_digests(monkey
     assert safe_plan["safe_projection_mode"] == "host_select"
     assert raw_plan["safe_selected_policy"] != safe_plan["safe_selected_policy"]
     assert raw_runtime._runtime_state.read("stored_p1_logical_plan_digest") != safe_runtime._runtime_state.read("stored_p1_logical_plan_digest")  # noqa: SLF001
+
+
+def test_runtime_raw_and_safe_joint_can_naturally_diverge_without_monkeypatch() -> None:
+    matrix = ((0, 2, 5), (3, 0, 3), (1, 5, 0))
+    contexts = make_contexts_from_matrix(phase="P0", matrix=matrix, p2_hint_mode="none")
+
+    raw_runtime = _runtime(safe_projection_mode="disabled")
+    raw_observation = raw_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    raw_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=contexts[0],
+        observation_p0=raw_observation,
+        actual_p0_full_row_matrix=matrix,
+    )
+
+    safe_runtime = _runtime(safe_projection_mode="host_select")
+    safe_observation = safe_runtime._capture_pretransport_traffic_observation(phase_ctx=contexts[0])  # noqa: SLF001
+    safe_runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=contexts[0],
+        observation_p0=safe_observation,
+        actual_p0_full_row_matrix=matrix,
+    )
+
+    raw_plan = raw_runtime._runtime_state.read("global_joint_window_plan")  # noqa: SLF001
+    safe_plan = safe_runtime._runtime_state.read("global_joint_window_plan")  # noqa: SLF001
+    assert raw_plan["safe_selected_policy"] == "U_barrier_criticality_global_matching"
+    assert safe_plan["safe_selected_policy"] == "B_barrier_criticality_matching"
+    assert raw_plan["selected_plan_digest"] != safe_plan["selected_plan_digest"]
+    assert raw_plan["paired_b_build_count"] == 0
+    assert safe_plan["paired_b_build_count"] > 0
+    assert raw_plan["host_projection_count"] == 0
+    assert safe_plan["host_projection_count"] > 0
+
+
+def test_gpu_child_config_propagates_bucket_safe_and_weight_parameters() -> None:
+    child = build_policy_correctness_config(
+        base_comparison={
+            "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+            "topology": {"world_size": 4, "ep_size": 4},
+            "runtime": {
+                "line": "async_release",
+                "invariant_mode": "evaluation_strict",
+                "precision": "bf16",
+                "dispatcher": "alltoall",
+            },
+            "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+            "policy": {
+                "options": {
+                    "safe_projection_mode": "host_select",
+                    "p0_weight": 1.2,
+                    "p1_reservation_weight": 0.8,
+                    "p2_hint_weight": 0.6,
+                    "residual_weight": 0.9,
+                    "barrier_weight": 1.6,
+                    "age_weight": 0.2,
+                    "prediction_weight": 0.7,
+                }
+            },
+            "workload": {"prompts": "configs/workload/smoke_prompts.json"},
+            "execution": {"schedule_phase_selector": "both"},
+            "prediction": {"name": "copy_current_dispatch"},
+        },
+        strategy_name="routersense_joint_predicted_safe_async",
+        run_name="fixture",
+        output_root=Path("/tmp/out"),
+        profile="execution",
+        selected_layers="selected",
+        save_logits=False,
+    )
+    assert child["runtime"]["line"] == "async_release"
+    assert child["runtime"]["invariant_mode"] == "evaluation_strict"
+    assert child["execution"]["bucket_mode"] == "dynamic_current"
+    assert child["execution"]["bucket_rows"] == 0
+    assert child["execution"]["safe_projection_mode"] == "host_select"
+    assert child["online_policy"]["parameters"]["residual_weight"] == 0.9
+    assert child["online_policy"]["parameters"]["barrier_weight"] == 1.6
+    assert child["online_policy"]["parameters"]["age_weight"] == 0.2
+    assert child["online_policy"]["parameters"]["prediction_weight"] == 0.7
+    assert child["online_policy"]["parameters"]["online_p2_predictor"] == "copy_current_dispatch"
+    assert child["online_policy"]["p2"]["mode"] == "calibrated_artifact"

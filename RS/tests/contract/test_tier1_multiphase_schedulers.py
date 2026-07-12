@@ -110,7 +110,7 @@ def test_tier1_atomic_and_fluid_service_models_are_isolated() -> None:
 
 def test_tier1_weight_overrides_are_consumed_and_can_change_plan_digest() -> None:
     problem = _build_problem(
-        _fixture("p2_local_release_witness_4rank"),
+        _fixture("barrier_criticality_switch_witness_4rank"),
         mode=RUNTIME_LOOKAHEAD_MODE,
         p2_source="copy_current_dispatch",
         expert_compute_delay=1.0,
@@ -119,14 +119,18 @@ def test_tier1_weight_overrides_are_consumed_and_can_change_plan_digest() -> Non
     weighted = resolve_policy(
         policy_name="U_barrier_criticality_global_matching",
         bucket_rows=0,
-        residual_weight=0.0,
-        barrier_weight=0.0,
-        age_weight=0.0,
-        prediction_weight=10.0,
+        residual_weight=4.0,
+        barrier_weight=1.75,
+        age_weight=0.15,
+        prediction_weight=0.35,
     ).build_logical_plan(problem)
-    assert weighted.diagnostics["effective_weights"]["prediction_weight"] == 10.0
-    assert weighted.diagnostics["consumed_weights"]["prediction_weight"] == 10.0
-    assert stable_hash(base.to_dict()) != stable_hash(weighted.to_dict())
+    assert bool(base.diagnostics["valid"]) is True
+    assert bool(weighted.diagnostics["valid"]) is True
+    assert weighted.diagnostics["effective_weights"]["residual_weight"] == 4.0
+    assert weighted.diagnostics["consumed_weights"]["residual_weight"] == 4.0
+    base_wave_digest = stable_hash([[flow.flow_id for flow in wave.flows] for wave in base.waves])
+    weighted_wave_digest = stable_hash([[flow.flow_id for flow in wave.flows] for wave in weighted.waves])
+    assert base_wave_digest != weighted_wave_digest
 
 
 def test_tier1_policies_are_offline_only() -> None:
