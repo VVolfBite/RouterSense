@@ -70,7 +70,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     native_fallback_events = sum(1 for row in transport_events if row.get("event") == "native_fallback")
     contract_violation_events = sum(1 for row in transport_events if row.get("event") == "contract_violation")
     execution_entries = [row for row in transport_events if row.get("record_type") != "result_summary"]
-    task_entries = [row for row in execution_entries if row.get("record_type") == "task"]
+    task_entries = [row for row in execution_entries if row.get("record_type") in {None, "task"}]
     logical_task_entries = [row for row in task_entries if "op_kind" not in row]
     audited_task_entries = logical_task_entries if logical_task_entries else task_entries
     task_id_none_event_count = 0
@@ -153,7 +153,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     metrics = plan_dict.get("metrics", {}) or {}
     compiled_from_prepared_plan = bool(metrics.get("compiled_from_prepared_plan", False))
     prepared_plan_order_preserved_metric = bool(metrics.get("prepared_plan_order_preserved", False)) if compiled_from_prepared_plan else True
-    prepared_plan_order_preserved = bool(prepared_plan_order_preserved_metric or not order_mismatches)
+    prepared_plan_order_preserved = bool(prepared_plan_order_preserved_metric and not order_mismatches)
     p2_matrix_source = str(metrics.get("pending_window_p2_matrix_source", metrics.get("p2_matrix_source", "")))
     p2_matrix_is_replicated_local_row = bool(metrics.get("p2_matrix_is_replicated_local_row", False))
     multi_payload_task_count = sum(1 for roles in payload_roles_by_task.values() if len(roles) > 1)

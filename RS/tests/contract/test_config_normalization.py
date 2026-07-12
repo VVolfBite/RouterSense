@@ -7,6 +7,7 @@ from rs.core.config_normalization import (
     legacy_online_comparison_payload,
     normalize_run_config,
 )
+from pathlib import Path
 
 
 def _without_migrations(payload: dict) -> dict:
@@ -82,3 +83,122 @@ def test_unknown_or_conflicting_values_raise() -> None:
         assert "legacy fields" in str(exc) or "conflict" in str(exc) or "mapping" in str(exc)
     else:
         raise AssertionError("expected ValueError for mixed v1/legacy config")
+
+
+def test_v1_component_references_are_resolved_recursively(tmp_path: Path) -> None:
+    topology_component = tmp_path / "topology.yaml"
+    topology_component.write_text(
+        "\n".join(
+            (
+                "launcher:",
+                "  kind: torchrun",
+                "  nnodes: 1",
+                "  nproc_per_node: 4",
+                "ep_size: 4",
+            )
+        ),
+        encoding="utf-8",
+    )
+    model_component = tmp_path / "model.yaml"
+    model_component.write_text(
+        "\n".join(
+            (
+                "model_id: fixture_model",
+                "local_path: /models/fixture",
+                "precision: fp16",
+            )
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "official.yaml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "run:",
+                "  kind: online_strategy_comparison",
+                "  name: test",
+                "model:",
+                f"  path: {model_component.name}",
+                "topology:",
+                f"  component: {topology_component.name}",
+                "workload: {}",
+                "runtime:",
+                "  line: phase_sync",
+                "traffic:",
+                "  matrix_unit: rows",
+                "  bucket_rows: 1024",
+                "policy: {}",
+                "prediction: {}",
+                "evaluation: {}",
+                "replay: {}",
+                "oracle: {}",
+                "regime_analysis: {}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    normalized = normalize_run_config(
+        {
+            "schema_version": 1,
+            "run": {"kind": "online_strategy_comparison", "name": "test"},
+            "model": {"path": model_component.name},
+            "topology": {"component": topology_component.name},
+            "workload": {},
+            "runtime": {"line": "phase_sync"},
+            "traffic": {"matrix_unit": "rows", "bucket_rows": 1024},
+            "policy": {},
+            "prediction": {},
+            "evaluation": {},
+            "replay": {},
+            "oracle": {},
+            "regime_analysis": {},
+        },
+        source_path=config_path,
+    )
+    assert normalized.model["model_id"] == "fixture_model"
+    assert normalized.model["local_path"] == "/models/fixture"
+    assert normalized.topology["ep_size"] == 4
+    assert normalized.topology["launcher"]["nproc_per_node"] == 4
+
+
+def test_component_reference_cycle_raises(tmp_path: Path) -> None:
+    a = tmp_path / "a.yaml"
+    b = tmp_path / "b.yaml"
+    a.write_text("component: b.yaml\n", encoding="utf-8")
+    b.write_text("component: a.yaml\n", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "run: {kind: online_strategy_comparison, name: cyc}",
+                "model: {path: a.yaml}",
+                "topology: {}",
+                "workload: {}",
+                "runtime: {line: phase_sync}",
+                "traffic: {matrix_unit: rows, bucket_rows: 1024}",
+                "policy: {}",
+                "prediction: {}",
+                "evaluation: {}",
+                "replay: {}",
+                "oracle: {}",
+                "regime_analysis: {}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    try:
+        normalize_run_config(yaml_like(config_path), source_path=config_path)
+    except ValueError as exc:
+        assert "cyclic config component reference" in str(exc)
+    else:
+        raise AssertionError("expected cyclic component reference failure")
+
+
+def yaml_like(path: Path) -> dict:
+    import yaml
+
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload

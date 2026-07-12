@@ -95,7 +95,7 @@ def main() -> None:
     config_path = Path(args.config)
     layout = None
     try:
-        normalized = normalize_run_config(_load_yaml(config_path))
+        normalized = normalize_run_config(_load_yaml(config_path), source_path=config_path)
         config = canonical_offline_replay_payload(normalized)
         validate_official_entrypoint_config(
             config_snapshot=config,

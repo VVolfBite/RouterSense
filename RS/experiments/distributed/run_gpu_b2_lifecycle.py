@@ -15,7 +15,7 @@ from experiments.distributed._gpu_runner_common import (
     build_policy_correctness_config,
     copy_config,
     dump_yaml,
-    load_yaml,
+    load_official_config,
     read_json,
     run_subprocess,
     torchrun_policy_command,
@@ -211,7 +211,7 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     copy_config(Path(args.config), output_dir)
-    base = load_yaml(Path(args.config))
+    base = load_official_config(Path(args.config))
     payload = {
         "runner": "run_gpu_b2_lifecycle",
         "config": str(args.config),

@@ -49,6 +49,28 @@ def test_replay_window_and_single_hint_are_truth_separated() -> None:
     assert execution_truth.p2_truth_rows == ((0, 4), (1, 0))
 
 
+def test_imperfect_prediction_remains_valid_when_execution_truth_differs() -> None:
+    window = _window()
+    engine = ReplayEngine(scheduling_mode="execution_window", expert_compute_delay=0.0, bucket_rows=2)
+    policy_name = resolve_algorithm_id("islip_bucket").builder_key
+    for hint in (
+        PlanningHint("zero_hint", ((0, 0), (0, 0)), 0.0, None, 2),
+        PlanningHint("copy_current_dispatch", window.p0_truth_rows, 1.0, 1, 2),
+        PlanningHint("history_ema", ((0, 2), (1, 0)), 0.75, 1, 2),
+        PlanningHint("shuffled_control", ((1, 0), (0, 4)), 1.0, 1, 2),
+        PlanningHint("perfect_trace_hint", window.p2_truth_rows, 1.0, 1, 2),
+    ):
+        result = engine.execute(
+            replay_window=window,
+            planning_hint=hint,
+            policy_name=policy_name,
+        )
+        assert result["audit_valid"] is True
+        assert result["planning_hint"]["p2_hint_rows"] == hint.p2_hint_rows
+        assert result["replay_window"]["p2_truth_rows"] == window.p2_truth_rows
+        assert result["planning_hint"]["p2_hint_rows"] != result["replay_window"]["p2_truth_rows"] or hint.hint_type == "perfect_trace_hint"
+
+
 def test_canonical_bucketizer_digest_is_stable_across_deployable_policies() -> None:
     window = _window()
     digests = set()

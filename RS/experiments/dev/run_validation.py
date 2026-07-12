@@ -73,13 +73,28 @@ SUITE_TO_CMD = {
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=tuple(SUITE_TO_CMD), required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode for suites that support real execution.")
+    mode.add_argument("--execute", action="store_true", help="Force real execution for suites that support it.")
     parser.add_argument("passthrough", nargs=argparse.REMAINDER)
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    cmd = [*SUITE_TO_CMD[str(args.suite)], *list(args.passthrough)]
+    cmd = [*SUITE_TO_CMD[str(args.suite)]]
+    supports_execution_toggle = str(args.suite) in {"b2", "c2", "a2"}
+    if supports_execution_toggle:
+        if args.execute:
+            cmd = [item for item in cmd if item != "--dry-run"]
+        elif args.dry_run or not args.execute:
+            if "--dry-run" not in cmd:
+                cmd.append("--dry-run")
+    elif args.execute:
+        raise SystemExit(f"--execute is not supported for suite={args.suite}")
+    elif args.dry_run:
+        raise SystemExit(f"--dry-run override is not supported for suite={args.suite}")
+    cmd.extend(list(args.passthrough))
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(ROOT / "src") if not existing else f"{ROOT / 'src'}:{existing}"

@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -45,9 +46,13 @@ def test_official_configs_normalize_and_components_exist() -> None:
         "configs/official/gpu_c2_correctness.yaml",
         "configs/official/gpu_a2_performance.yaml",
     ):
-        payload = yaml.safe_load((REPO_ROOT / path).read_text(encoding="utf-8"))
-        normalized = normalize_run_config(payload)
+        config_path = REPO_ROOT / path
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        normalized = normalize_run_config(payload, source_path=config_path)
         assert normalized.schema_version == 1
+        if path != "configs/official/offline_replay.yaml":
+            assert normalized.model.get("local_path")
+            assert normalized.topology.get("launcher")
     assert (REPO_ROOT / "configs/components/models/olmoe_1b_7b_instruct.yaml").exists()
     assert (REPO_ROOT / "configs/components/topologies/local_4gpu.yaml").exists()
     assert (REPO_ROOT / "configs/components/workloads/comparison_64_prompts.json").exists()
@@ -57,6 +62,29 @@ def test_validation_entry_dry_run_suites() -> None:
     for suite in ("b2", "c2", "a2"):
         proc = _run("experiments/dev/run_validation.py", "--suite", suite)
         assert proc.returncode == 0, proc.stderr + proc.stdout
+
+
+def test_validation_entry_execute_removes_dry_run(monkeypatch) -> None:
+    from experiments.dev import run_validation
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd, cwd=None, env=None, check=False):
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = cwd
+        captured["env"] = dict(env or {})
+        captured["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(run_validation.subprocess, "run", _fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_validation.py", "--suite", "b2", "--execute"])
+    try:
+        run_validation.main()
+    except SystemExit as exc:
+        assert int(exc.code or 0) == 0
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert "--dry-run" not in cmd
 
 
 def test_unified_report_builder_reads_structured_metrics(tmp_path: Path) -> None:

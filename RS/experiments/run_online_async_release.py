@@ -46,7 +46,7 @@ def main() -> None:
     layout = None
     try:
         config_path = Path(args.config)
-        normalized = normalize_run_config(_load_yaml(config_path))
+        normalized = normalize_run_config(_load_yaml(config_path), source_path=config_path)
         canonical_payload = canonical_online_comparison_payload(normalized)
         validate_official_entrypoint_config(
             config_snapshot=canonical_payload,

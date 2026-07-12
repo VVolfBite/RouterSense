@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -38,6 +39,14 @@ class CanonicalRunConfig:
         return payload
 
 
+_COMPONENT_ALLOWED_OVERRIDE_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    ("model",): frozenset({"component", "path"}),
+    ("topology",): frozenset({"component"}),
+    ("workload",): frozenset({"component"}),
+    ("runtime",): frozenset({"component"}),
+}
+
+
 def _ensure_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     if value is None:
         return {}
@@ -59,8 +68,94 @@ def _conflict(name: str, old_value: Any, new_value: Any) -> None:
         raise ValueError(f"conflicting config values for {name}: legacy={old_value!r} canonical={new_value!r}")
 
 
-def normalize_run_config(raw_config: dict[str, Any]) -> CanonicalRunConfig:
-    payload = dict(raw_config)
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(dict(current), dict(value))
+        else:
+            merged[key] = value
+    return merged
+
+
+def resolve_config_components(
+    raw_config: dict[str, Any],
+    *,
+    source_path: str | Path | None,
+) -> dict[str, Any]:
+    if source_path is None:
+        return dict(raw_config)
+    config_path = Path(source_path).resolve()
+    visited: set[Path] = set()
+
+    def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+        import yaml
+
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"expected mapping config component: {path}")
+        return dict(payload)
+
+    def _resolve_component_path(component_ref: str, *, base_dir: Path) -> Path:
+        candidate = Path(component_ref)
+        search_paths: list[Path] = []
+        if candidate.is_absolute():
+            search_paths.append(candidate)
+        else:
+            current = base_dir
+            while True:
+                search_paths.append((current / candidate).resolve())
+                if current.parent == current:
+                    break
+                current = current.parent
+            search_paths.append(candidate.resolve())
+        for resolved in search_paths:
+            if resolved.exists():
+                return resolved
+        raise ValueError(f"missing config component: {component_ref!r} resolved from {base_dir}")
+
+    def _resolve_mapping(mapping: dict[str, Any], *, current_path: Path, path: tuple[str, ...]) -> dict[str, Any]:
+        resolved = dict(mapping)
+        component_key = None
+        component_ref: str | None = None
+        if isinstance(resolved.get("component"), str) and str(resolved["component"]).strip():
+            component_key = "component"
+            component_ref = str(resolved["component"]).strip()
+        elif path == ("model",) and isinstance(resolved.get("path"), str):
+            model_path = str(resolved["path"]).strip()
+            if model_path.endswith((".yaml", ".yml")):
+                component_key = "path"
+                component_ref = model_path
+
+        if component_key is not None and component_ref is not None:
+            allowed = _COMPONENT_ALLOWED_OVERRIDE_FIELDS.get(path, frozenset({"component"}))
+            invalid_keys = sorted(key for key in resolved if key in {"component", "path"} and key not in allowed)
+            if invalid_keys:
+                joined = ".".join(path) or "<root>"
+                raise ValueError(f"unsupported component indirection field(s) at {joined}: {invalid_keys}")
+            component_path = _resolve_component_path(component_ref, base_dir=current_path.parent)
+            if component_path in visited:
+                cycle = " -> ".join(str(item) for item in (*visited, component_path))
+                raise ValueError(f"cyclic config component reference detected: {cycle}")
+            visited.add(component_path)
+            component_payload = _resolve_mapping(_load_yaml_mapping(component_path), current_path=component_path, path=path)
+            visited.remove(component_path)
+            overrides = {key: value for key, value in resolved.items() if key != component_key}
+            if component_key == "path":
+                overrides.pop("component", None)
+            resolved = _deep_merge(component_payload, overrides)
+
+        for key, value in tuple(resolved.items()):
+            if isinstance(value, dict):
+                resolved[key] = _resolve_mapping(value, current_path=current_path, path=(*path, str(key)))
+        return resolved
+
+    return _resolve_mapping(dict(raw_config), current_path=config_path, path=())
+
+
+def normalize_run_config(raw_config: dict[str, Any], *, source_path: str | Path | None = None) -> CanonicalRunConfig:
+    payload = resolve_config_components(dict(raw_config), source_path=source_path)
     schema_version = int(payload.get("schema_version", 0) or 0)
     if schema_version >= 1:
         return _normalize_v1(payload, schema_version=schema_version)
@@ -318,4 +413,5 @@ __all__ = [
     "legacy_offline_replay_payload",
     "legacy_online_comparison_payload",
     "normalize_run_config",
+    "resolve_config_components",
 ]

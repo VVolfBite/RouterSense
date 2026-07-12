@@ -26,6 +26,12 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return payload
 
 
+def load_official_config(path: Path) -> dict[str, Any]:
+    from rs.core.config_normalization import resolve_config_components
+
+    return resolve_config_components(load_yaml(path), source_path=path)
+
+
 def dump_yaml(path: Path, payload: dict[str, Any]) -> None:
     if yaml is None:
         raise RuntimeError("PyYAML is required for distributed GPU runners")
@@ -97,9 +103,11 @@ def build_policy_correctness_config(
 ) -> dict[str, Any]:
     model = dict(base_comparison.get("model", {}) or {})
     topology = dict(base_comparison.get("topology", {}) or {})
+    topology_ep = dict(topology.get("ep", {}) or {})
     runtime = dict(base_comparison.get("runtime", {}) or {})
     workload = dict(base_comparison.get("workload", {}) or {})
     execution = dict(base_comparison.get("execution", {}) or {})
+    selected_ep_size = int(topology.get("ep_size", topology_ep.get("size", topology.get("world_size", 1))) or 1)
     from experiments.online.support.runtime_presets import resolve_strategy_runtime
 
     strategy_runtime = resolve_strategy_runtime(strategy_name=strategy_name, runtime_line=str(runtime.get("line", "phase_sync")))
@@ -109,18 +117,18 @@ def build_policy_correctness_config(
     return {
         "run": {"kind": str(strategy_runtime["run_kind"]), "name": run_name},
         "model": {
-            "model_id": str(model.get("model_id", model.get("path", ""))),
-            "local_path": str(model.get("path", model.get("local_path", ""))),
+            "model_id": str(model.get("model_id", model.get("local_path", model.get("path", "")))),
+            "local_path": str(model.get("local_path", model.get("path", ""))),
             "trust_remote_code": bool(model.get("trust_remote_code", False)),
         },
         "topology": {
             "launcher": {
                 "kind": "torchrun",
                 "nnodes": 1,
-                "nproc_per_node": int(topology.get("ep_size", 1)),
+                "nproc_per_node": selected_ep_size,
                 "standalone": True,
             },
-            "ep": {"size": int(topology.get("ep_size", 1))},
+            "ep": {"size": selected_ep_size},
             "network": {"scope": "single_node", "interface_hint": ""},
         },
         "workload": {"prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json"))},
