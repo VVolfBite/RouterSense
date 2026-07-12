@@ -159,7 +159,12 @@ def model_is_local_path(model: str) -> bool:
 
 def load_prompts(prompt_file: str | Path) -> list[str]:
     payload = json.loads(Path(prompt_file).read_text(encoding="utf-8"))
-    prompts = [str(item) for item in payload.get("prompts", [])]
+    if isinstance(payload, list):
+        prompts = [str(item) for item in payload]
+    elif isinstance(payload, dict):
+        prompts = [str(item) for item in payload.get("prompts", [])]
+    else:
+        raise ValueError(f"Unsupported prompts payload in {prompt_file}: expected list or mapping")
     if not prompts:
         raise ValueError(f"No prompts found in {prompt_file}")
     return prompts

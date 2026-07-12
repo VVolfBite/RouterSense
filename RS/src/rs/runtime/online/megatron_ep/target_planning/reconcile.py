@@ -31,46 +31,78 @@ def _repair_logical_plan(
     prepared_plan: TargetLayerPreparedJointPlan,
     actual_p0_rows: MatrixRows,
 ) -> tuple[LogicalSchedulePlan, int, int, int, float]:
-    expected = _edge_counts(canonicalize_remote_matrix(prepared_plan.h1_rows))
-    actual = _edge_counts(canonicalize_remote_matrix(actual_p0_rows))
-    matched = {edge for edge in expected if edge in actual}
-    removed = {edge for edge in expected if edge not in actual}
-    inserted = {edge for edge in actual if edge not in expected}
-    resized = {edge for edge in matched if int(expected[edge]) != int(actual[edge])}
-    replacement: list[FlowDemand] = []
-    preferred_order = []
-    for wave in prepared_plan.logical_plan.waves:
-        for flow in wave.flows:
-            edge = (int(flow.src_rank), int(flow.dst_rank))
-            if str(flow.phase) != "p0_dispatch" or edge not in actual:
-                continue
-            preferred_order.append(edge)
-            replacement.append(replace(flow, byte_count=int(actual[edge])))
-    for edge in sorted(inserted):
-        replacement.append(
-            FlowDemand(
-                flow_id=f"repaired:{edge[0]}->{edge[1]}",
-                phase="p0_dispatch",
-                src_rank=int(edge[0]),
-                dst_rank=int(edge[1]),
-                byte_count=int(actual[edge]),
-                release_state="ready",
-                is_executable=True,
-                dependency_metadata={"inserted_by_repair": True},
+    actual_p0 = _edge_counts(canonicalize_remote_matrix(actual_p0_rows))
+    actual_p1 = _edge_counts(canonicalize_remote_matrix(_transpose(actual_p0_rows)))
+    expected_p0 = _edge_counts(canonicalize_remote_matrix(prepared_plan.h1_rows))
+    expected_p1 = _edge_counts(canonicalize_remote_matrix(prepared_plan.derived_p1_rows))
+
+    def _repair_phase(
+        *,
+        phase: str,
+        expected: dict[tuple[int, int], int],
+        actual: dict[tuple[int, int], int],
+        inserted_prefix: str,
+    ) -> tuple[list[FlowDemand], list[tuple[int, int]], set[tuple[int, int]], set[tuple[int, int]], set[tuple[int, int]]]:
+        matched = {edge for edge in expected if edge in actual}
+        removed = {edge for edge in expected if edge not in actual}
+        inserted = {edge for edge in actual if edge not in expected}
+        resized = {edge for edge in matched if int(expected[edge]) != int(actual[edge])}
+        replacement: list[FlowDemand] = []
+        preferred_order: list[tuple[int, int]] = []
+        for wave in prepared_plan.logical_plan.waves:
+            for flow in wave.flows:
+                edge = (int(flow.src_rank), int(flow.dst_rank))
+                if str(flow.phase) != phase or edge not in actual:
+                    continue
+                preferred_order.append(edge)
+                replacement.append(replace(flow, byte_count=int(actual[edge])))
+        for edge in sorted(inserted):
+            replacement.append(
+                FlowDemand(
+                    flow_id=f"{inserted_prefix}:{edge[0]}->{edge[1]}",
+                    phase=phase,
+                    src_rank=int(edge[0]),
+                    dst_rank=int(edge[1]),
+                    byte_count=int(actual[edge]),
+                    release_state="ready",
+                    is_executable=True,
+                    dependency_metadata={"inserted_by_repair": True, "phase": phase},
+                )
             )
-        )
+        return replacement, preferred_order, matched, removed, resized
+
+    p0_replacement, p0_preferred_order, p0_matched, p0_removed, p0_resized = _repair_phase(
+        phase="p0_dispatch",
+        expected=expected_p0,
+        actual=actual_p0,
+        inserted_prefix="repaired_p0",
+    )
+    p1_replacement, p1_preferred_order, p1_matched, p1_removed, p1_resized = _repair_phase(
+        phase="p1_return",
+        expected=expected_p1,
+        actual=actual_p1,
+        inserted_prefix="repaired_p1",
+    )
+
+    replacement = [*p0_replacement, *p1_replacement]
     logical_plan = LogicalSchedulePlan(
         policy_name=str(prepared_plan.logical_plan.policy_name),
         waves=(LogicalWave(wave_id=0, flows=tuple(replacement), duration=0.0),),
         diagnostics={
             **dict(prepared_plan.logical_plan.diagnostics or {}),
             "prepared_repair": True,
-            "prepared_repair_preserved_order": [f"{src}->{dst}" for src, dst in preferred_order],
+            "prepared_repair_preserved_p0_order": [f"{src}->{dst}" for src, dst in p0_preferred_order],
+            "prepared_repair_preserved_p1_order": [f"{src}->{dst}" for src, dst in p1_preferred_order],
             "logical_plan_digest": stable_hash([flow.to_dict() for flow in replacement]),
         },
     )
-    preserved_ratio = 1.0 if not expected else float(len(matched)) / float(len(expected))
-    return logical_plan, len(inserted), len(removed), len(resized), preserved_ratio
+    expected_edge_count = len(expected_p0) + len(expected_p1)
+    matched_edge_count = len(p0_matched) + len(p1_matched)
+    removed_count = len(p0_removed) + len(p1_removed)
+    resized_count = len(p0_resized) + len(p1_resized)
+    inserted_count = max(0, len(p0_replacement) - len(p0_matched)) + max(0, len(p1_replacement) - len(p1_matched))
+    preserved_ratio = 1.0 if expected_edge_count == 0 else float(matched_edge_count) / float(expected_edge_count)
+    return logical_plan, inserted_count, removed_count, resized_count, preserved_ratio
 
 
 def reconcile_target_plan(

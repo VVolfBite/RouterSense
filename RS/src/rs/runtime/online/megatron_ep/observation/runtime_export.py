@@ -7,6 +7,8 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
     active_prediction = runtime_state.read("active_next_dispatch_prediction") or {}
     consumption_records = list(runtime_state.read("prediction_consumption_records", []) or [])
     global_joint_window_plan = runtime_state.read("global_joint_window_plan") or {}
+    target_safe_variant = str(runtime_state.read("prepared_target_selected_variant", ""))
+    target_safe_mode = str(runtime_state.read("prepared_target_safe_projection_mode", ""))
     return {
         "has_prepared_plan": bool(runtime_state.read("prepared_plan") is not None),
         "plan_source_layer": str(runtime_state.read("plan_source_layer", "")),
@@ -94,10 +96,12 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
         "consumer_layer": str(consumption_records[0].get("consumer_layer", "")) if consumption_records else "",
         "consumer_phase": str(consumption_records[0].get("consumer_phase", "")) if consumption_records else "",
         "consumed_before_p1": bool(consumption_records[0].get("consumed_before_p1", False)) if consumption_records else False,
-        "safe_selected_policy": str(global_joint_window_plan.get("safe_selected_policy", "")),
-        "safe_projection_mode": str(global_joint_window_plan.get("safe_projection_mode", "")),
+        "safe_selected_policy": str(global_joint_window_plan.get("safe_selected_policy", "")) or target_safe_variant,
+        "safe_projection_mode": str(global_joint_window_plan.get("safe_projection_mode", "")) or target_safe_mode,
         "raw_u_policy_name": str(global_joint_window_plan.get("raw_u_policy_name", "")),
         "paired_b_policy_name": str(global_joint_window_plan.get("paired_b_policy_name", "")),
+        "paired_b_build_count": int(runtime_state.read("paired_b_build_count", 0) or 0),
+        "host_projection_count": int(runtime_state.read("host_projection_count", 0) or 0),
         "requested_weights": dict(global_joint_window_plan.get("requested_weights", {})),
         "default_weights": dict(global_joint_window_plan.get("default_weights", {})),
         "effective_weights": dict(global_joint_window_plan.get("effective_weights", {})),

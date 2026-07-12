@@ -2012,6 +2012,11 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("prepared_plan_found", True)
         self._runtime_state.write("reconciliation_count", 1)
         self._runtime_state.write("full_u_replan_count", 0)
+        self._runtime_state.write("prepared_target_selected_variant", str(getattr(prepared_plan, "selected_variant", "")))
+        self._runtime_state.write(
+            "prepared_target_safe_projection_mode",
+            "host_select" if str(getattr(prepared_plan, "paired_b_logical_plan_digest", "")) else "disabled",
+        )
         if outcome.status == "rejected" or outcome.logical_plan is None:
             self.target_plan_store.reject(key, execution_origin="prepared_rejected")
             self._runtime_state.write("execution_origin", "prepared_rejected")
@@ -2107,6 +2112,11 @@ class RouterSenseInjectionRuntime:
         if self.target_plan_store.peek(key) is None:
             return None
         prepared_plan = self.target_plan_store.claim_for_reconciliation(key)
+        self._runtime_state.write("prepared_target_selected_variant", str(getattr(prepared_plan, "selected_variant", "")))
+        self._runtime_state.write(
+            "prepared_target_safe_projection_mode",
+            "host_select" if str(getattr(prepared_plan, "paired_b_logical_plan_digest", "")) else "disabled",
+        )
         if getattr(frontier, "pending_count", lambda: 0)() <= 0:
             self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
             return None

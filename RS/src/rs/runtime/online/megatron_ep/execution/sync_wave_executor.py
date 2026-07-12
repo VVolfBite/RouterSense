@@ -109,6 +109,8 @@ def execute_scheduled_phase_tensor(
     wave_concat_ns = 0
     wave_collective_ns = 0
     wave_scatter_ns = 0
+    first_transport_submit_ns = 0
+    last_transport_complete_ns = 0
     for wave in plan.waves:
         if callable(timeline_hook):
             timeline_hook(
@@ -173,6 +175,8 @@ def execute_scheduled_phase_tensor(
                 }
             )
         collective_start_ns = time.monotonic_ns()
+        if first_transport_submit_ns <= 0:
+            first_transport_submit_ns = int(collective_start_ns)
         dist.all_to_all_single(
             output_buffer,
             input_buffer,
@@ -181,6 +185,7 @@ def execute_scheduled_phase_tensor(
             group=world_group,
         )
         collective_end_ns = time.monotonic_ns()
+        last_transport_complete_ns = int(collective_end_ns)
         wave_collective_ns += int(collective_end_ns - collective_start_ns)
         if callable(timeline_hook):
             timeline_hook(
@@ -249,6 +254,12 @@ def execute_scheduled_phase_tensor(
             "local_copy_us": float((local_copy_end_ns - local_copy_start_ns) / 1000.0),
             "total_us": float((total_end_ns - total_start_ns) / 1000.0),
             "idle_barrier_wait_us": 0.0,
+            "first_transport_submit_ns": int(first_transport_submit_ns),
+            "last_transport_complete_ns": int(last_transport_complete_ns),
+            "p0_first_submit_ns": int(first_transport_submit_ns if str(context.phase).upper() == "P0" else 0),
+            "p0_last_complete_ns": int(last_transport_complete_ns if str(context.phase).upper() == "P0" else 0),
+            "p1_first_submit_ns": int(first_transport_submit_ns if str(context.phase).upper() == "P1" else 0),
+            "p1_last_complete_ns": int(last_transport_complete_ns if str(context.phase).upper() == "P1" else 0),
         }
     )
     return output, result, execution_entries

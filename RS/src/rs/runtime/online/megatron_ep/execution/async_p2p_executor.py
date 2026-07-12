@@ -589,6 +589,8 @@ def execute_async_phase_tensor(
     batch_submit_us = 0.0
     wait_us = 0.0
     batch_count = 0
+    first_transport_submit_ns = 0
+    last_transport_complete_ns = 0
     while True:
         batch = frontier.commit_batch(limit=1)
         if not batch:
@@ -671,12 +673,16 @@ def execute_async_phase_tensor(
                     ordered_entries.append({**entry, "op_kind": "send", "release_epoch": int(frontier.release_epoch)})
         op_build_end_ns = time.monotonic_ns()
         batch_submit_start_ns = time.monotonic_ns()
+        if first_transport_submit_ns <= 0 and ops:
+            first_transport_submit_ns = int(batch_submit_start_ns)
         work_handles: list[Any] = list(dist.batch_isend_irecv(ops)) if ops else []
         batch_submit_end_ns = time.monotonic_ns()
         wait_start_ns = time.monotonic_ns()
         for work in work_handles:
             work.wait()
         wait_end_ns = time.monotonic_ns()
+        if ops:
+            last_transport_complete_ns = int(wait_end_ns)
         frontier.mark_completed([task.task_id for task in batch])
         op_build_us += float((op_build_end_ns - op_build_start_ns) / 1000.0)
         batch_submit_us += float((batch_submit_end_ns - batch_submit_start_ns) / 1000.0)
@@ -756,6 +762,12 @@ def execute_async_phase_tensor(
             "total_us": float((total_end_ns - total_start_ns) / 1000.0),
             "batch_isend_irecv_call_count": int(batch_isend_irecv_call_count),
             "all_work_completed": True,
+            "first_transport_submit_ns": int(first_transport_submit_ns),
+            "last_transport_complete_ns": int(last_transport_complete_ns),
+            "p0_first_submit_ns": int(first_transport_submit_ns if str(context.phase).upper() == "P0" else 0),
+            "p0_last_complete_ns": int(last_transport_complete_ns if str(context.phase).upper() == "P0" else 0),
+            "p1_first_submit_ns": int(first_transport_submit_ns if str(context.phase).upper() == "P1" else 0),
+            "p1_last_complete_ns": int(last_transport_complete_ns if str(context.phase).upper() == "P1" else 0),
             "frontier_release_batch_count": int(batch_count),
             "suffix_splice_count": int(suffix_splice_count),
             "frontier_digest": str(frontier.frontier_digest()),

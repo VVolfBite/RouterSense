@@ -49,6 +49,12 @@ class ExecutionResult:
     all_work_completed: bool = True
     timing_us: dict[str, float] | None = None
     phase_metrics: dict[str, Any] | None = None
+    first_transport_submit_ns: int = 0
+    last_transport_complete_ns: int = 0
+    p0_first_submit_ns: int = 0
+    p0_last_complete_ns: int = 0
+    p1_first_submit_ns: int = 0
+    p1_last_complete_ns: int = 0
 
     def __post_init__(self) -> None:
         if not self.executed_backend_id and self.backend_id:
@@ -122,6 +128,12 @@ class PhaseSyncTransportExecutor:
                 "wave_count": int(summary_row.get("wave_count", len(request.execution_plan.waves)) or 0),
                 "collective_count": int(summary_row.get("collective_count", len(request.execution_plan.waves)) or 0),
             },
+            first_transport_submit_ns=int(summary_row.get("first_transport_submit_ns", 0) or 0),
+            last_transport_complete_ns=int(summary_row.get("last_transport_complete_ns", 0) or 0),
+            p0_first_submit_ns=int(summary_row.get("p0_first_submit_ns", 0) or 0),
+            p0_last_complete_ns=int(summary_row.get("p0_last_complete_ns", 0) or 0),
+            p1_first_submit_ns=int(summary_row.get("p1_first_submit_ns", 0) or 0),
+            p1_last_complete_ns=int(summary_row.get("p1_last_complete_ns", 0) or 0),
             raw_summary=summary.to_dict(),
             execution_entries=tuple(entries),
         )
@@ -174,6 +186,12 @@ class AsyncReleaseTransportExecutor:
                 "p2p_op_count": int(summary_row.get("send_op_count", 0) or 0) + int(summary_row.get("recv_op_count", 0) or 0),
                 "work_handle_count": int(summary_row.get("work_handle_count", 0) or 0),
             },
+            first_transport_submit_ns=int(summary_row.get("first_transport_submit_ns", 0) or 0),
+            last_transport_complete_ns=int(summary_row.get("last_transport_complete_ns", 0) or 0),
+            p0_first_submit_ns=int(summary_row.get("p0_first_submit_ns", 0) or 0),
+            p0_last_complete_ns=int(summary_row.get("p0_last_complete_ns", 0) or 0),
+            p1_first_submit_ns=int(summary_row.get("p1_first_submit_ns", 0) or 0),
+            p1_last_complete_ns=int(summary_row.get("p1_last_complete_ns", 0) or 0),
             raw_summary=result.summary.to_dict(),
             execution_entries=tuple(result.execution_entries),
         )

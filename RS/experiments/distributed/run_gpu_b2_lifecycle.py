@@ -21,6 +21,7 @@ from experiments.distributed._gpu_runner_common import (
     torchrun_policy_command,
     write_json,
 )
+from experiments.online.support.runtime_presets import resolve_strategy_runtime
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -355,6 +356,14 @@ def main() -> int:
             "before_async_p2p_phase_count": rank0_summary.get("before_async_p2p_phase_count", 0),
             "after_async_p2p_phase_count": rank0_summary.get("after_async_p2p_phase_count", 0),
             "phase_sync_fallback_count": phase_sync_fallback_count,
+            "paired_b_build_count": int(rank0_summary.get("paired_b_build_count", 0) or 0),
+            "host_projection_count": int(rank0_summary.get("host_projection_count", 0) or 0),
+            "execution_origin": str(rank0_summary.get("execution_origin", "")),
+            "prepared_plan_found": bool(rank0_summary.get("prepared_plan_found", False)),
+            "prepared_target_logical_plan_digest": str(rank0_summary.get("prepared_target_logical_plan_digest", "")),
+            "prediction_created_stage": str(rank0_summary.get("prediction_created_stage", "")),
+            "prediction_first_consumed_stage": str(rank0_summary.get("prediction_first_consumed_stage", "")),
+            "selected_transport_execution_count": int(rank0_summary.get("selected_transport_execution_count", 0) or 0),
         }
     )
     payload.update(
@@ -366,8 +375,8 @@ def main() -> int:
             "prediction_source_layer": latest_plan_event.get("source_layer_id", ""),
             "prediction_target_layer": latest_plan_event.get("target_layer_id", ""),
             "prediction_confidence": latest_plan_event.get("prediction_confidence", 0.0),
-            "prediction_created_stage": "after_p0_observation",
-            "prediction_first_consumed_stage": "during_p0_joint_planning" if candidate_evidence["prediction_consumed_during_p0_joint_planning"] else "",
+            "prediction_created_stage": str(rank0_summary.get("prediction_created_stage", "")),
+            "prediction_first_consumed_stage": str(rank0_summary.get("prediction_first_consumed_stage", "")),
             "consumer_layer": latest_plan_event.get("layer_id", ""),
             "consumer_phase": "P1" if candidate_evidence["prediction_consumed_during_p0_joint_planning"] else "",
             "prediction_audit": candidate_evidence["prediction_audits"][0] if candidate_evidence["prediction_audits"] else {},
@@ -387,31 +396,86 @@ def main() -> int:
             "zero_hint_joint_plan_built": bool(candidate_evidence["zero_hint_joint_plan_built"]),
         }
     )
+    expected = resolve_strategy_runtime(
+        strategy_name=str(args.strategy),
+        runtime_line=str(base.get("runtime", {}).get("line", "async_release")),
+    )
+    strategy_name = str(args.strategy)
+    execution_mode = str(expected.get("execution_mode", ""))
+    p2_hint_mode = str(expected.get("p2_hint_mode", "none"))
+    safe_projection_mode = str(expected.get("safe_projection_mode", "disabled"))
+    is_native = strategy_name in {"native", "disabled"}
+    is_phase_sync = execution_mode == "phase_sync_wave"
+    is_async = execution_mode == "joint_window_async_p2p"
+    is_b_core = strategy_name == "routersense_b_core_independent_async"
+    is_u_zero = strategy_name == "routersense_u_core_zero_raw_async"
+    is_u_predicted = is_async and p2_hint_mode != "none"
+    is_safe = is_u_predicted and safe_projection_mode == "host_select"
+    is_async_baseline = is_async and not is_u_zero and not is_u_predicted and not is_b_core
     checks = {
         "actual_p0_total_rows_nonzero": bool(candidate_evidence["actual_p0_total_rows_nonzero"]),
         "p1_exact_transpose": bool(payload["p1_is_exact_transpose"]),
-        "stored_equals_consumed": bool(candidate_evidence["stored_equals_consumed"]),
         "p0_traffic_matrix_gather_once": int(payload["p0_summary_gather_count"]) == 1,
         "prediction_extra_collective_zero": int(payload["prediction_extra_collective_count"]) == 0,
         "p1_planning_collective_zero": int(payload["p1_planning_collective_count"]) == 0,
-        "async_executor_invoked": int(payload["async_executor_invocation_count"]) > 0,
-        "p2p_called": int(payload["batch_isend_irecv_call_count"]) > 0,
-        "real_send_recv_present": int(payload["real_send_op_count"]) > 0 and int(payload["real_recv_op_count"]) > 0,
         "no_fallback": int(payload["phase_sync_fallback_count"]) == 0,
         "two_forward_epochs": int(payload["forward_epochs_tested"]) >= 2,
         "dispatcher_matches_local_rows": bool(candidate_evidence["dispatcher_consistency"]),
         "candidate_status_ready": str(candidate_summary_payload.get("status", "")) == "ready",
+        "selected_transport_execution_present": int(payload["selected_transport_execution_count"]) > 0 or is_native,
     }
-    if str(args.strategy) == "routersense_joint_zero_hint_async_p2p":
-        checks["zero_hint_joint_plan_built"] = bool(candidate_evidence["zero_hint_joint_plan_built"])
-        zero_hint_confidence = payload.get("prediction_confidence")
-        checks["zero_hint_confidence_zero"] = zero_hint_confidence is not None and float(zero_hint_confidence) == 0.0
+    if is_native:
+        checks["native_forward_completed"] = all(bool(item.get("forward_completed", False)) for item in candidate_evidence["rank_summaries"])
+        checks["native_no_transport_mutation"] = int(payload["selected_transport_execution_count"]) == 0
+    elif is_phase_sync:
+        checks["phase_sync_transport_present"] = int(rank0_summary.get("transport_execution_count", 0) or 0) > 0
+        checks["phase_sync_wave_count"] = any(
+            int((row.get("wave_count", 0) or 0)) > 0 for row in (rank0_summary.get("repeat_records") or [])
+        )
+        checks["phase_sync_prediction_boundary"] = not bool(payload.get("prediction_created_stage")) and not bool(payload.get("prepared_target_logical_plan_digest"))
+        checks["phase_sync_target_plan_absent"] = not bool(payload.get("prepared_target_logical_plan_digest"))
+    elif is_b_core or is_async_baseline:
+        checks["async_executor_invoked"] = int(payload["async_executor_invocation_count"]) > 0
+        checks["p2p_called"] = int(payload["batch_isend_irecv_call_count"]) > 0
+        checks["real_send_recv_present"] = int(payload["real_send_op_count"]) > 0 and int(payload["real_recv_op_count"]) > 0
+        checks["async_no_prediction_boundary"] = not bool(payload.get("prediction_created_stage")) and not bool(payload.get("prepared_target_logical_plan_digest"))
+    elif is_u_zero:
+        checks["async_executor_invoked"] = int(payload["async_executor_invocation_count"]) > 0
+        checks["p2p_called"] = int(payload["batch_isend_irecv_call_count"]) > 0
+        checks["real_send_recv_present"] = int(payload["real_send_op_count"]) > 0 and int(payload["real_recv_op_count"]) > 0
+        checks["u_zero_prediction_boundary"] = not bool(payload.get("prediction_created_stage")) and not bool(payload.get("prepared_target_logical_plan_digest"))
+        checks["u_zero_plan_lineage"] = bool(payload.get("stored_p1_plan_digest")) and bool(payload.get("consumed_p1_plan_digest"))
+        checks["stored_equals_consumed"] = bool(candidate_evidence["stored_equals_consumed"])
     else:
         prediction_audit = dict(payload.get("prediction_audit") or {})
         checks["prediction_audit_present"] = bool(prediction_audit)
-        checks["prediction_nonzero_consumed"] = bool(candidate_evidence["prediction_consumed_during_p0_joint_planning"])
-        checks["prediction_confidence_nonzero"] = float(payload.get("prediction_confidence", 0.0) or 0.0) > 0.0
+        checks["prediction_nonzero_consumed"] = bool(payload.get("prediction_first_consumed_stage")) or bool(
+            candidate_evidence["prediction_consumed_during_p0_joint_planning"]
+        )
+        checks["prediction_created"] = bool(payload.get("prediction_created_stage")) or bool(prediction_audit)
         checks["prediction_audit_before_overwrite"] = str(prediction_audit.get("source_layer_id", "")) != ""
+        checks["target_plan_created"] = bool(payload.get("prepared_target_logical_plan_digest"))
+        checks["target_plan_terminal_present"] = str(payload.get("execution_origin", "")) in {
+            "prepared_exact",
+            "prepared_repaired",
+            "provisional_only",
+            "provisional_then_late_suffix",
+            "prepared_rejected",
+            "prepared_expired",
+        }
+        checks["prepared_lineage_present"] = bool(payload.get("prepared_plan_found")) and bool(
+            payload.get("prepared_target_logical_plan_digest")
+        )
+        checks["async_executor_invoked"] = int(payload["async_executor_invocation_count"]) > 0
+        checks["p2p_called"] = int(payload["batch_isend_irecv_call_count"]) > 0
+        checks["real_send_recv_present"] = int(payload["real_send_op_count"]) > 0 and int(payload["real_recv_op_count"]) > 0
+        if is_safe:
+            checks["safe_paired_b_built"] = int(payload.get("paired_b_build_count", 0) or 0) > 0
+            checks["safe_projection_executed"] = int(payload.get("host_projection_count", 0) or 0) > 0
+            checks["safe_variant_recorded"] = bool(payload.get("safe_selected_policy"))
+        else:
+            checks["raw_no_paired_b_build"] = int(payload.get("paired_b_build_count", 0) or 0) == 0
+            checks["raw_no_safe_projection"] = int(payload.get("host_projection_count", 0) or 0) == 0
     payload["checks"] = checks
     payload["status"] = "passed" if all(bool(value) for value in checks.values()) else "failed"
     write_json(output_dir / "b2_runner_summary.json", payload)

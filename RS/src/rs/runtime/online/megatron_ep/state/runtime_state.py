@@ -125,6 +125,13 @@ class PreparedWindowRuntimeState:
     canonical_task_digest: str = ""
     canonical_task_count: int = 0
     canonical_task_total_rows: int = 0
+    dedicated_p2p_group_initialized: bool = False
+    p2p_group_ranks: list[int] = field(default_factory=list)
+    p2p_group_warmup_passed: bool = False
+    hotpath_new_group_count: int = 0
+    dedicated_p2p_groups_created: list[list[int]] = field(default_factory=list)
+    local_dedicated_group_ranks: list[int] = field(default_factory=list)
+    new_group_call_order: list[list[int]] = field(default_factory=list)
     compiler_shadow_status: str = ""
     compiler_shadow_plan_hash_matches_legacy: bool = False
     compiler_shadow_plan_hash: str = ""
@@ -137,6 +144,8 @@ class PreparedWindowRuntimeState:
     full_u_replan_count: int = 0
     suffix_splice_count: int = 0
     prepared_target_logical_plan_digest: str = ""
+    prepared_target_selected_variant: str = ""
+    prepared_target_safe_projection_mode: str = ""
     provisional_plan_digest: str = ""
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)

@@ -49,6 +49,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf"))
     parser.add_argument("--preflight-mode", default=None, choices=("full", "compact"))
     parser.add_argument("--world-size", type=int, default=None)
+    parser.add_argument("--c2-summary-path", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -119,14 +120,49 @@ def _safe_gain(by_name: dict[str, dict], left: str, right: str) -> float | None:
     return float((float(right_value) - float(left_value)) / float(right_value))
 
 
-def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]:
+def _load_rank_summaries(run_dir: Path) -> list[dict]:
+    file_summaries = [
+        read_json(path)
+        for path in sorted(run_dir.glob("rank*_summary.json"))
+        if path.name.startswith("rank") and "_prepared_plan_" not in path.name
+    ]
+    if file_summaries:
+        return file_summaries
+    summary_path = run_dir / "summary.json"
+    if not summary_path.exists():
+        return []
+    payload = read_json(summary_path)
+    embedded = payload.get("rank_summaries")
+    if isinstance(embedded, list):
+        return [dict(item) for item in embedded if isinstance(item, dict)]
+    details = payload.get("details", {})
+    embedded = details.get("rank_summaries") if isinstance(details, dict) else None
+    if isinstance(embedded, list):
+        return [dict(item) for item in embedded if isinstance(item, dict)]
+    return []
+
+
+def _metric_series(rank_summaries_or_rank0: dict | list[dict], run_dir: Path) -> dict[str, list[float]]:
     del run_dir
-    repeat_records = [row for row in list(rank0_summary.get("repeat_records") or []) if not bool(row.get("warmup", False))]
+    if isinstance(rank_summaries_or_rank0, dict):
+        rank_summaries = [rank_summaries_or_rank0]
+    else:
+        rank_summaries = list(rank_summaries_or_rank0)
+    per_rank_records = [
+        [row for row in list(summary.get("repeat_records") or []) if not bool(row.get("warmup", False))]
+        for summary in rank_summaries
+    ]
+    repeat_records = per_rank_records[0] if per_rank_records else []
     metrics: dict[str, list[float]] = {
         "total_forward_us": [],
         "dispatch_transport_us": [],
         "return_transport_us": [],
-        "all_rank_transport_span_us": [],
+        "communication_makespan_us": [],
+        "p0_communication_makespan_us": [],
+        "p1_communication_makespan_us": [],
+        "rank0_transport_us": [],
+        "max_rank_transport_active_us": [],
+        "rank_skew_us": [],
         "p2p_enqueue_us": [],
         "p2p_wait_us": [],
         "prediction_us": [],
@@ -140,7 +176,7 @@ def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]
         "control_overhead_us": [],
         "scheduling_overhead_us": [],
     }
-    for row in repeat_records:
+    for idx, row in enumerate(repeat_records):
         dispatch_transport_us = float(row.get("dispatch_transport_us", 0.0) or 0.0)
         return_transport_us = float(row.get("return_transport_us", 0.0) or 0.0)
         p2p_enqueue_us = float(row.get("batch_submit_us", row.get("submit_us", 0.0)) or 0.0)
@@ -161,7 +197,49 @@ def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]
         metrics["total_forward_us"].append(float(row.get("global_max_forward_us", 0.0) or 0.0))
         metrics["dispatch_transport_us"].append(dispatch_transport_us)
         metrics["return_transport_us"].append(return_transport_us)
-        metrics["all_rank_transport_span_us"].append(dispatch_transport_us + return_transport_us)
+        first_submit = []
+        last_complete = []
+        p0_first_submit = []
+        p0_last_complete = []
+        p1_first_submit = []
+        p1_last_complete = []
+        rank_active = []
+        for rank_rows in per_rank_records:
+            if idx >= len(rank_rows):
+                continue
+            rank_row = rank_rows[idx]
+            start_ns = int(rank_row.get("first_transport_submit_ns", 0) or 0)
+            end_ns = int(rank_row.get("last_transport_complete_ns", 0) or 0)
+            p0_start_ns = int(rank_row.get("p0_first_submit_ns", 0) or 0)
+            p0_end_ns = int(rank_row.get("p0_last_complete_ns", 0) or 0)
+            p1_start_ns = int(rank_row.get("p1_first_submit_ns", 0) or 0)
+            p1_end_ns = int(rank_row.get("p1_last_complete_ns", 0) or 0)
+            if start_ns > 0 and end_ns >= start_ns:
+                first_submit.append(start_ns)
+                last_complete.append(end_ns)
+                rank_active.append((end_ns - start_ns) / 1000.0)
+            if p0_start_ns > 0 and p0_end_ns >= p0_start_ns:
+                p0_first_submit.append(p0_start_ns)
+                p0_last_complete.append(p0_end_ns)
+            if p1_start_ns > 0 and p1_end_ns >= p1_start_ns:
+                p1_first_submit.append(p1_start_ns)
+                p1_last_complete.append(p1_end_ns)
+        metrics["communication_makespan_us"].append(
+            float((max(last_complete) - min(first_submit)) / 1000.0) if first_submit and last_complete else 0.0
+        )
+        metrics["p0_communication_makespan_us"].append(
+            float((max(p0_last_complete) - min(p0_first_submit)) / 1000.0) if p0_first_submit and p0_last_complete else 0.0
+        )
+        metrics["p1_communication_makespan_us"].append(
+            float((max(p1_last_complete) - min(p1_first_submit)) / 1000.0) if p1_first_submit and p1_last_complete else 0.0
+        )
+        metrics["rank0_transport_us"].append(
+            float((int(row.get("last_transport_complete_ns", 0) or 0) - int(row.get("first_transport_submit_ns", 0) or 0)) / 1000.0)
+            if int(row.get("first_transport_submit_ns", 0) or 0) > 0 and int(row.get("last_transport_complete_ns", 0) or 0) >= int(row.get("first_transport_submit_ns", 0) or 0)
+            else dispatch_transport_us + return_transport_us
+        )
+        metrics["max_rank_transport_active_us"].append(float(max(rank_active)) if rank_active else 0.0)
+        metrics["rank_skew_us"].append(float(max(rank_active) - min(rank_active)) if len(rank_active) >= 2 else 0.0)
         metrics["p2p_enqueue_us"].append(p2p_enqueue_us)
         metrics["p2p_wait_us"].append(p2p_wait_us)
         metrics["prediction_us"].append(float(row.get("prediction_us", 0.0) or 0.0))
@@ -177,10 +255,34 @@ def _metric_series(rank0_summary: dict, run_dir: Path) -> dict[str, list[float]]
     return metrics
 
 
-def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dict) -> dict:
+def _load_c2_status(path: Path | None) -> bool:
+    if path is None or not path.exists():
+        return False
+    payload = read_json(path)
+    return str(payload.get("status", "")) == "passed"
+
+
+def _normalize_safe_projection_mode(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"", "none", "null"}:
+        return "disabled"
+    return text
+
+
+def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dict, c2_passed: bool) -> dict:
     details = summary_payload.get("details", {}) if isinstance(summary_payload, dict) else {}
-    rank0_summary = read_json(run_dir / "rank0_summary.json")
-    raw_series = _metric_series(rank0_summary, run_dir)
+    rank_summaries = _load_rank_summaries(run_dir)
+    if not rank_summaries:
+        return {
+            "name": strategy,
+            "status": "ineligible",
+            "result_eligible_for_performance_comparison": False,
+            "summary_status": str(summary_payload.get("status", "")),
+            "metrics": {},
+            "eligibility_checks": {"rank_summaries_present": False},
+        }
+    rank0_summary = rank_summaries[0]
+    raw_series = _metric_series(rank_summaries, run_dir)
     metrics = {name: _summary_stats(values) for name, values in raw_series.items()}
     metrics["safe_selected_policy"] = rank0_summary.get("safe_selected_policy")
     metrics["fallback_count"] = int(rank0_summary.get("phase_sync_fallback_count", 0) or 0)
@@ -196,10 +298,24 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     metrics["selected_p1_hook_count"] = int(rank0_summary.get("selected_p1_hook_count", 0) or 0)
     metrics["selected_transport_execution_count"] = int(rank0_summary.get("selected_transport_execution_count", 0) or 0)
     metrics["transport_mutation_count"] = int(rank0_summary.get("transport_mutation_count", 0) or 0)
-    metrics["prediction_created"] = bool(rank0_summary.get("prediction_created_stage"))
-    metrics["prediction_consumed"] = bool(rank0_summary.get("prediction_first_consumed_stage"))
+    metrics["prediction_created"] = bool(rank0_summary.get("prediction_created_stage")) or (
+        str(rank0_summary.get("predictor_name", "") or "").strip() not in {"", "none", "zero_hint"}
+        and bool(rank0_summary.get("prediction_digest"))
+    )
+    metrics["prediction_consumed"] = bool(rank0_summary.get("prediction_first_consumed_stage")) or bool(
+        rank0_summary.get("prepared_target_logical_plan_digest")
+    )
     metrics["target_plan_created"] = bool(rank0_summary.get("prepared_target_logical_plan_digest"))
-    metrics["plan_digest_present"] = bool(rank0_summary.get("logical_plan_digest") or rank0_summary.get("compiled_plan_digest"))
+    metrics["plan_digest_present"] = bool(
+        rank0_summary.get("logical_plan_digest")
+        or rank0_summary.get("compiled_plan_digest")
+        or rank0_summary.get("stored_p1_logical_plan_digest")
+        or rank0_summary.get("stored_p1_plan_digest")
+    )
+    metrics["paired_b_build_count"] = int(rank0_summary.get("paired_b_build_count", 0) or 0)
+    metrics["host_projection_count"] = int(rank0_summary.get("host_projection_count", 0) or 0)
+    metrics["execution_origin"] = str(rank0_summary.get("execution_origin", ""))
+    metrics["c2_passed"] = bool(c2_passed)
     expected = resolve_strategy_runtime(strategy_name=str(strategy), runtime_line="async_release" if "async" in str(strategy) else "phase_sync")
     expected_policy_name = str(expected.get("policy", ""))
     observed_policy_name = str(rank0_summary.get("policy_name", ""))
@@ -208,29 +324,71 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
         if expected_policy_name == ""
         else observed_policy_name == expected_policy_name
     )
+    expected_safe_mode = _normalize_safe_projection_mode(expected.get("safe_projection_mode", "disabled"))
+    observed_safe_mode = _normalize_safe_projection_mode(rank0_summary.get("safe_projection_mode", "disabled"))
+    is_native = str(strategy) in {"native", "disabled"}
+    is_phase_sync = str(strategy) == "birkhoff_phase_local_sync"
+    is_async_baseline = str(strategy) in {
+        "birkhoff_phase_local_async_p2p",
+        "fifo_async_p2p",
+        "greedy_async_p2p",
+        "routersense_b_core_independent_async",
+    }
+    is_u_zero = str(strategy) == "routersense_u_core_zero_raw_async"
     checks = {
         "summary_status_ready": str(summary_payload.get("status", "")) == "ready",
-        "selected_layer_match": int(metrics["selected_layer_match_count"]) > 0,
-        "selected_p0_hook": int(metrics["selected_p0_hook_count"]) > 0,
-        "selected_p1_hook": int(metrics["selected_p1_hook_count"]) > 0,
-        "selected_transport_execution": int(metrics["selected_transport_execution_count"]) > 0,
-        "plan_digest_present": bool(metrics["plan_digest_present"]),
-        "transport_mutation": int(metrics["transport_mutation_count"]) > 0 or str(strategy) in {"native", "disabled"},
-        "all_work_completed": bool(metrics["all_work_completed"]),
+        "all_rank_summaries_present": len(rank_summaries) > 0,
+        "all_ranks_completed": all(bool(item.get("forward_completed") or item.get("forward_partial_stop")) for item in rank_summaries),
+        "selected_layer_match": int(metrics["selected_layer_match_count"]) > 0 if not is_native else True,
+        "selected_p0_hook": int(metrics["selected_p0_hook_count"]) > 0 if not is_native else True,
+        "selected_p1_hook": int(metrics["selected_p1_hook_count"]) > 0 if not is_native else True,
+        "selected_transport_execution": int(metrics["selected_transport_execution_count"]) > 0 if not is_native else True,
+        "plan_digest_present": bool(metrics["plan_digest_present"]) if not (is_native or is_phase_sync) else True,
+        "transport_mutation": int(metrics["transport_mutation_count"]) > 0 if not is_native else True,
+        "all_work_completed": (
+            all(bool(item.get("all_work_completed", False)) for item in rank_summaries)
+            if not is_native
+            else all(bool(item.get("forward_completed") or item.get("forward_partial_stop")) for item in rank_summaries)
+        ),
         "fallback_zero": int(metrics["fallback_count"]) == 0,
-        "timeout_zero": int(metrics["timeout_count"]) == 0,
+        "timeout_zero": (
+            all(int(item.get("timeout_count", 1)) == 0 for item in rank_summaries)
+            if not is_native
+            else True
+        ),
         "policy_matches": bool(policy_matches),
         "execution_mode_matches": str(rank0_summary.get("execution_mode", "")) == str(expected.get("execution_mode", "")),
-        "safe_projection_mode_matches": str(rank0_summary.get("safe_projection_mode", "")) == str(expected.get("safe_projection_mode", rank0_summary.get("safe_projection_mode", ""))),
+        "safe_projection_mode_matches": (
+            observed_safe_mode == expected_safe_mode
+            or (
+                expected_safe_mode == "host_select"
+                and int(metrics["paired_b_build_count"]) > 0
+                and int(metrics["host_projection_count"]) > 0
+            )
+        ),
+        "c2_passed": bool(c2_passed),
     }
-    if str(expected.get("online_p2_predictor", "none")) == "none":
-        checks["prediction_boundary"] = not bool(metrics["prediction_consumed"]) and not bool(metrics["target_plan_created"])
+    expected_predictor = str(expected.get("online_p2_predictor", "none"))
+    is_predicted_joint = bool(expected_predictor != "none" and "u_core_predicted" in str(strategy))
+    is_safe = expected_safe_mode == "host_select"
+    if is_native:
+        checks["prediction_boundary"] = True
+    elif is_phase_sync or is_async_baseline:
+        checks["prediction_boundary"] = not bool(metrics["prediction_created"]) and not bool(metrics["prediction_consumed"]) and not bool(metrics["target_plan_created"])
+    elif is_u_zero:
+        checks["prediction_boundary"] = not bool(metrics["prediction_created"]) and not bool(metrics["prediction_consumed"]) and not bool(metrics["target_plan_created"])
     else:
-        checks["prediction_boundary"] = bool(metrics["prediction_created"]) and bool(metrics["prediction_consumed"])
-    if str(expected.get("safe_projection_mode", "disabled")) == "host_select":
-        checks["safe_variant_recorded"] = bool(metrics["safe_selected_policy"])
+        checks["prediction_boundary"] = bool(metrics["prediction_created"]) and bool(metrics["prediction_consumed"]) and bool(metrics["target_plan_created"])
+    if is_predicted_joint:
+        checks["target_plan_terminal"] = str(metrics["execution_origin"]) in {"prepared_exact", "prepared_repaired", "provisional_only", "provisional_then_late_suffix", "prepared_rejected", "prepared_expired"}
+    else:
+        checks["target_plan_terminal"] = not bool(metrics["target_plan_created"])
+    if is_safe:
+        checks["safe_variant_recorded"] = bool(metrics["safe_selected_policy"]) or int(metrics["host_projection_count"]) > 0
+        checks["safe_build_counts"] = int(metrics["paired_b_build_count"]) > 0 and int(metrics["host_projection_count"]) > 0
     else:
         checks["safe_variant_recorded"] = True
+        checks["safe_build_counts"] = True
     eligible = all(bool(value) for value in checks.values())
     return {
         "name": strategy,
@@ -256,6 +414,8 @@ def main() -> int:
     resolved_profile = str(args.profile if args.profile is not None else base.get("profile", "perf"))
     resolved_preflight_mode = str(args.preflight_mode if args.preflight_mode is not None else base.get("preflight_mode", "compact"))
     resolved_world_size = int(args.world_size if args.world_size is not None else base.get("world_size", (base.get("topology", {}) or {}).get("world_size", 4)))
+    c2_summary_path = Path(args.c2_summary_path) if args.c2_summary_path else (output_dir.parent / "c2" / "c2_runner_summary.json")
+    c2_passed = _load_c2_status(c2_summary_path)
     payload = {
         "runner": "run_gpu_a2_strategy_compare",
         "config": str(args.config),
@@ -267,6 +427,7 @@ def main() -> int:
         "preflight_mode": str(resolved_preflight_mode),
         "world_size": int(resolved_world_size),
         "dry_run": bool(args.dry_run),
+        "c2_summary_path": str(c2_summary_path),
     }
     if args.dry_run:
         payload["status"] = "dry_run_ready"
@@ -331,21 +492,22 @@ def main() -> int:
             return int(proc.returncode)
         run_dir = strategy_root / run_name
         summary_payload = read_json(run_dir / "summary.json")
-        strategy_results.append(_build_strategy_result(strategy=str(strategy), run_dir=run_dir, summary_payload=summary_payload))
+        strategy_results.append(_build_strategy_result(strategy=str(strategy), run_dir=run_dir, summary_payload=summary_payload, c2_passed=c2_passed))
 
     by_name = {row["name"]: row for row in strategy_results}
     payload.update(
         {
             "status": "executed",
             "strategies": strategy_results,
+            "c2_passed": bool(c2_passed),
             "backend_gain": _safe_gain(by_name, "birkhoff_phase_local_async_p2p", "birkhoff_phase_local_sync"),
-            "phase_sync_joint_gain": _safe_gain(by_name, "routersense_joint_phase_sync", "birkhoff_phase_local_sync"),
-            "async_raw_joint_gain": _safe_gain(by_name, "routersense_joint_zero_raw_async", "birkhoff_phase_local_async_p2p"),
-            "raw_prediction_gain": _safe_gain(by_name, "routersense_joint_predicted_raw_async", "routersense_joint_zero_raw_async"),
-            "safe_prediction_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "routersense_joint_zero_safe_async"),
-            "safe_zero_gain": _safe_gain(by_name, "routersense_joint_zero_safe_async", "routersense_joint_zero_raw_async"),
-            "safe_predicted_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "routersense_joint_predicted_raw_async"),
-            "full_system_gain": _safe_gain(by_name, "routersense_joint_predicted_safe_async", "native"),
+            "phase_sync_joint_gain": None,
+            "async_raw_joint_gain": _safe_gain(by_name, "routersense_u_core_zero_raw_async", "birkhoff_phase_local_async_p2p"),
+            "raw_prediction_gain": _safe_gain(by_name, "routersense_u_core_predicted_raw_async", "routersense_u_core_zero_raw_async"),
+            "safe_prediction_gain": None,
+            "safe_zero_gain": None,
+            "safe_predicted_gain": _safe_gain(by_name, "routersense_u_core_predicted_safe_async", "routersense_u_core_predicted_raw_async"),
+            "full_system_gain": _safe_gain(by_name, "routersense_u_core_predicted_safe_async", "native"),
         }
     )
     write_json(output_dir / "a2_runner_summary.json", payload)

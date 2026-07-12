@@ -31,6 +31,7 @@ SUPPORTED_ONLINE_PHASE_POLICIES = {
     "trivial_reverse_bucket",
     "aurora_order_fixed",
     "fast_bvn_single_tier",
+    "barrier_criticality_core_independent",
     "routersense_p0p1_reservation",
     "routersense_p0p1p2_hint",
     "routersense_joint_priority_phase_sync",
@@ -265,11 +266,12 @@ def validate_run_config(config: RunConfig) -> None:
             "bucketed_fifo",
             "greedy_ready_set",
             "birkhoff_phase_local",
+            "barrier_criticality_core_independent",
             "routersense_p0p1p2_hint",
         }:
             raise ValueError(
                 "joint_window_async_p2p supports online_policy.name in "
-                "{bucketed_fifo, greedy_ready_set, birkhoff_phase_local, routersense_p0p1p2_hint}"
+                "{bucketed_fifo, greedy_ready_set, birkhoff_phase_local, barrier_criticality_core_independent, routersense_p0p1p2_hint}"
             )
     if config.execution.bucket_mode not in {"dynamic_current", "fixed_rows"}:
         raise ValueError(f"unsupported execution.bucket_mode {config.execution.bucket_mode!r}")

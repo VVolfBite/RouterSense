@@ -98,6 +98,14 @@ def _load_logits(run_dir: Path) -> dict[tuple[int, int], torch.Tensor]:
     return result
 
 
+def _load_rank_summaries(run_dir: Path) -> list[dict]:
+    return [
+        read_json(path)
+        for path in sorted(run_dir.glob("rank*_summary.json"))
+        if path.name.startswith("rank") and "_prepared_plan_" not in path.name
+    ]
+
+
 def main() -> int:
     args = _parse_args()
     output_dir = Path(args.output_dir)
@@ -237,17 +245,39 @@ def main() -> int:
         mean_abs = float(sum(float(item["max_abs_error"]) for item in per_rank) / len(per_rank)) if per_rank else 0.0
         mismatch_count = sum(int(item["mismatch_count"]) for item in per_rank)
         candidate_summary = read_json(candidate_run / "summary.json").get("details", {})
-        candidate_rank_summary = read_json(candidate_run / "rank0_summary.json")
+        candidate_rank_summaries = _load_rank_summaries(candidate_run)
+        if len(candidate_rank_summaries) != int(resolved_world_size):
+            payload.update({"status": "candidate_rank_summary_missing", "candidate_strategy": candidate_strategy})
+            write_json(output_dir / "c2_runner_summary.json", payload)
+            print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
+            return 1
+        candidate_rank_summary = candidate_rank_summaries[0]
         checks = {
-            "async_invocation_count": int(candidate_rank_summary.get("async_executor_invocation_count", 0)) > 0,
-            "p2p_call_count": int(candidate_rank_summary.get("batch_isend_irecv_call_count", 0)) > 0,
-            "real_send_op_count": int(candidate_rank_summary.get("real_send_op_count", 0)) > 0,
-            "real_recv_op_count": int(candidate_rank_summary.get("real_recv_op_count", 0)) > 0,
-            "fallback_count_zero": int(candidate_rank_summary.get("phase_sync_fallback_count", candidate_rank_summary.get("fallback_count", 0)) or 0) == 0,
-            "timeout_count_zero": int(candidate_rank_summary.get("timeout_count", 0) or 0) == 0,
-            "all_work_completed": bool(candidate_rank_summary.get("all_work_completed", True)),
+            "transport_invoked_if_mutating": (
+                str(candidate_strategy) == "native"
+                or all(int(item.get("selected_transport_execution_count", 0) or 0) > 0 for item in candidate_rank_summaries)
+            ),
+            "p2p_call_count_if_async": (
+                str(candidate_strategy) in {"native", "birkhoff_phase_local_sync"}
+                or all(int(item.get("batch_isend_irecv_call_count", 0) or 0) > 0 for item in candidate_rank_summaries)
+            ),
+            "real_send_op_count_if_async": (
+                str(candidate_strategy) in {"native", "birkhoff_phase_local_sync"}
+                or all(int(item.get("real_send_op_count", 0) or 0) > 0 for item in candidate_rank_summaries)
+            ),
+            "real_recv_op_count_if_async": (
+                str(candidate_strategy) in {"native", "birkhoff_phase_local_sync"}
+                or all(int(item.get("real_recv_op_count", 0) or 0) > 0 for item in candidate_rank_summaries)
+            ),
+            "fallback_count_zero": all(int(item.get("phase_sync_fallback_count", item.get("fallback_count", 0)) or 0) == 0 for item in candidate_rank_summaries),
+            "timeout_count_zero": all("timeout_count" in item and int(item.get("timeout_count", 0) or 0) == 0 for item in candidate_rank_summaries),
+            "all_work_completed": all("all_work_completed" in item and bool(item.get("all_work_completed", False)) for item in candidate_rank_summaries),
+            "all_ranks_completed": all(bool(item.get("forward_completed") or item.get("forward_partial_stop")) for item in candidate_rank_summaries),
             "selected_layer_match_count": int(candidate_rank_summary.get("selected_layer_match_count", 0) or 0) > 0,
-            "selected_transport_execution_count": int(candidate_rank_summary.get("selected_transport_execution_count", 0) or 0) > 0,
+            "selected_transport_execution_count": (
+                str(candidate_strategy) == "native"
+                or int(candidate_rank_summary.get("selected_transport_execution_count", 0) or 0) > 0
+            ),
             "shape_parity": all(bool(item["shape_parity"]) for item in per_rank),
             "dtype_parity": all(bool(item["dtype_parity"]) for item in per_rank),
             "nan_inf_zero": (sum(int(item["nan_count"]) for item in per_rank) == 0 and sum(int(item["inf_count"]) for item in per_rank) == 0),
@@ -280,6 +310,7 @@ def main() -> int:
                 "all_work_completed": candidate_rank_summary.get("all_work_completed", True),
                 "selected_layer_match_count": candidate_rank_summary.get("selected_layer_match_count", 0),
                 "selected_transport_execution_count": candidate_rank_summary.get("selected_transport_execution_count", 0),
+                "rank_summaries_present": len(candidate_rank_summaries),
                 "forward_epochs_compared": sorted(compared_epochs),
                 "parity_passed": bool(checks["tolerance"]),
                 "checks": checks,

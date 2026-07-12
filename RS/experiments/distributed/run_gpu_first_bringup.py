@@ -14,6 +14,7 @@ from experiments.distributed._gpu_runner_common import (
     available_cuda_count,
     copy_config,
     load_official_config,
+    python_module_command,
     run_subprocess,
     write_json,
 )
@@ -33,17 +34,61 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     copy_config(config_path, output_dir)
     config = load_official_config(config_path)
+    bringup_config = REPO_ROOT / "configs/official/gpu_first_bringup.yaml"
+    c2_config = REPO_ROOT / "configs/official/gpu_c2_correctness.yaml"
     stages = [
         {"stage": "environment_preflight", "runner": "", "config": str(config_path)},
-        {"stage": "native_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "phase_sync_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "async_b_core_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "u_zero_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "u_predicted_ready_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "late_plan_smoke", "runner": "experiments/distributed/run_target_plan_hotpath_gloo_gate.py", "config": str(config_path)},
-        {"stage": "safe_u_smoke", "runner": "experiments/distributed/run_gpu_b2_lifecycle.py", "config": str(config_path)},
-        {"stage": "c2", "runner": "experiments/distributed/run_gpu_c2_async_correctness.py", "config": str(REPO_ROOT / 'configs/official/gpu_c2_correctness.yaml')},
-        {"stage": "short_a2", "runner": "experiments/distributed/run_gpu_a2_strategy_compare.py", "config": str(REPO_ROOT / 'configs/official/gpu_first_bringup.yaml')},
+        {
+            "stage": "native_smoke",
+            "cmd": python_module_command(
+                module="experiments.distributed.run_gpu_a2_strategy_compare",
+                args=[
+                    "--config", str(bringup_config),
+                    "--strategies", "native",
+                    "--warmup-iters", "1",
+                    "--measure-iters", "1",
+                    "--selected-layers", "0,1",
+                    "--world-size", "4",
+                    "--output-dir",
+                ],
+            ),
+        },
+        {
+            "stage": "phase_sync_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "birkhoff_phase_local_sync", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "async_birkhoff_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "birkhoff_phase_local_async_p2p", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "async_b_core_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "routersense_b_core_independent_async", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "u_zero_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "routersense_u_core_zero_raw_async", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "u_predicted_raw_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "routersense_u_core_predicted_raw_async", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "u_predicted_safe_smoke",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_b2_lifecycle.py", "--config", str(bringup_config), "--strategy", "routersense_u_core_predicted_safe_async", "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "gpu_target_lifecycle",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_target_plan_lifecycle_smoke.py", "--config", str(bringup_config), "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "c2",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_c2_async_correctness.py", "--config", str(c2_config), "--selected-layers", "0,1", "--world-size", "4", "--output-dir"],
+        },
+        {
+            "stage": "short_a2",
+            "cmd": [sys.executable, "experiments/distributed/run_gpu_a2_strategy_compare.py", "--config", str(bringup_config), "--warmup-iters", "1", "--measure-iters", "3", "--selected-layers", "0,1", "--world-size", "4", "--c2-summary-path", "", "--output-dir"],
+        },
     ]
     payload = {
         "runner": "run_gpu_first_bringup",
@@ -66,9 +111,17 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     stage_results: list[dict[str, object]] = []
+    c2_summary_path = output_dir / "c2" / "c2_runner_summary.json"
     for stage in stages[1:]:
-        runner = str(stage["runner"])
-        cmd = [sys.executable, runner, "--config", str(stage["config"]), "--output-dir", str(output_dir / stage["stage"])]
+        cmd = list(stage["cmd"])
+        if "--output-dir" in cmd:
+            cmd[cmd.index("--output-dir") + 1:cmd.index("--output-dir") + 1] = [str(output_dir / stage["stage"])]
+        else:
+            cmd.extend(["--output-dir", str(output_dir / stage["stage"])])
+        if str(stage["stage"]) == "short_a2":
+            empty_index = cmd.index("") if "" in cmd else -1
+            if empty_index >= 0:
+                cmd[empty_index] = str(c2_summary_path)
         proc = run_subprocess(cmd)
         stage_result = {
             "stage": str(stage["stage"]),
@@ -84,7 +137,7 @@ def main() -> int:
                 {
                     "status": "failed",
                     "earliest_failure_stage": str(stage["stage"]),
-                    "concrete_failure": f"{runner} exited with {proc.returncode}",
+                    "concrete_failure": f"{' '.join(cmd[:6])} exited with {proc.returncode}",
                     "last_valid_artifact": str(output_dir / stage["stage"]),
                     "stage_results": stage_results,
                 }

@@ -319,6 +319,12 @@ def main(argv: list[str] | None = None) -> int:
         preflight_collective_count = 0
         all_work_completed = True
         timeout_observed = False
+        first_transport_submit_ns = 0
+        last_transport_complete_ns = 0
+        p0_first_submit_ns = 0
+        p0_last_complete_ns = 0
+        p1_first_submit_ns = 0
+        p1_last_complete_ns = 0
         for row in result_rows:
             phase = str(row.get("phase", "")).upper()
             timing_us = dict(row.get("timing_us", {}) or {})
@@ -344,6 +350,24 @@ def main(argv: list[str] | None = None) -> int:
             preflight_collective_count += int(row.get("preflight_collective_count", 0) or 0)
             all_work_completed = all_work_completed and bool(row.get("all_work_completed", True))
             timeout_observed = timeout_observed or bool(row.get("timeout", False))
+            submit_ns = int(row.get("first_transport_submit_ns", 0) or 0)
+            complete_ns = int(row.get("last_transport_complete_ns", 0) or 0)
+            if submit_ns > 0:
+                first_transport_submit_ns = submit_ns if first_transport_submit_ns <= 0 else min(first_transport_submit_ns, submit_ns)
+            if complete_ns > 0:
+                last_transport_complete_ns = max(last_transport_complete_ns, complete_ns)
+            p0_submit_ns = int(row.get("p0_first_submit_ns", 0) or 0)
+            p0_complete_ns = int(row.get("p0_last_complete_ns", 0) or 0)
+            p1_submit_ns = int(row.get("p1_first_submit_ns", 0) or 0)
+            p1_complete_ns = int(row.get("p1_last_complete_ns", 0) or 0)
+            if p0_submit_ns > 0:
+                p0_first_submit_ns = p0_submit_ns if p0_first_submit_ns <= 0 else min(p0_first_submit_ns, p0_submit_ns)
+            if p0_complete_ns > 0:
+                p0_last_complete_ns = max(p0_last_complete_ns, p0_complete_ns)
+            if p1_submit_ns > 0:
+                p1_first_submit_ns = p1_submit_ns if p1_first_submit_ns <= 0 else min(p1_first_submit_ns, p1_submit_ns)
+            if p1_complete_ns > 0:
+                p1_last_complete_ns = max(p1_last_complete_ns, p1_complete_ns)
         return {
             "dispatch_transport_us": dispatch_transport_us,
             "return_transport_us": return_transport_us,
@@ -363,6 +387,12 @@ def main(argv: list[str] | None = None) -> int:
             "preflight_collective_count": preflight_collective_count,
             "all_work_completed": all_work_completed,
             "timeout_observed": timeout_observed,
+            "first_transport_submit_ns": int(first_transport_submit_ns),
+            "last_transport_complete_ns": int(last_transport_complete_ns),
+            "p0_first_submit_ns": int(p0_first_submit_ns),
+            "p0_last_complete_ns": int(p0_last_complete_ns),
+            "p1_first_submit_ns": int(p1_first_submit_ns),
+            "p1_last_complete_ns": int(p1_last_complete_ns),
         }
     try:
         record_event("main_enter")
@@ -548,6 +578,12 @@ def main(argv: list[str] | None = None) -> int:
                     "preflight_collective_count": int(transport_timing.get("preflight_collective_count", 0) or 0),
                     "all_work_completed": bool(transport_timing.get("all_work_completed", True)),
                     "timeout_observed": bool(transport_timing.get("timeout_observed", False)),
+                    "first_transport_submit_ns": int(transport_timing.get("first_transport_submit_ns", 0) or 0),
+                    "last_transport_complete_ns": int(transport_timing.get("last_transport_complete_ns", 0) or 0),
+                    "p0_first_submit_ns": int(transport_timing.get("p0_first_submit_ns", 0) or 0),
+                    "p0_last_complete_ns": int(transport_timing.get("p0_last_complete_ns", 0) or 0),
+                    "p1_first_submit_ns": int(transport_timing.get("p1_first_submit_ns", 0) or 0),
+                    "p1_last_complete_ns": int(transport_timing.get("p1_last_complete_ns", 0) or 0),
                     "unattributed_us": max(
                         0.0,
                         float(global_forward_us)

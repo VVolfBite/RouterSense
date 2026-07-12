@@ -223,7 +223,6 @@ def build_policy_correctness_config(
             "capture_enabled": False,
             "capture_layer_selector": "",
             "capture_phase_selector": "",
-            "invariant_mode": requested_invariant_mode,
             "heartbeat_enabled": profile == "debug",
             "per_wave_timing_enabled": profile != "perf",
             "replay_trace_enabled": profile == "debug",
