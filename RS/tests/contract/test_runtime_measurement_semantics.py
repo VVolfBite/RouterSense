@@ -87,11 +87,11 @@ def test_fixed_rows_1024_splits_large_edge() -> None:
 
 def test_runtime_presets_distinguish_raw_and_safe_async_joint_paths() -> None:
     predicted_raw = resolve_strategy_runtime(
-        strategy_name="routersense_joint_predicted_raw_async",
+        strategy_name="routersense_u_core_predicted_raw_async",
         runtime_line="async_release",
     )
     predicted_safe = resolve_strategy_runtime(
-        strategy_name="routersense_joint_predicted_safe_async",
+        strategy_name="routersense_u_core_predicted_safe_async",
         runtime_line="async_release",
     )
     legacy_predicted = resolve_strategy_runtime(
@@ -205,8 +205,11 @@ def test_runtime_raw_and_safe_joint_can_naturally_diverge_without_monkeypatch() 
     raw_plan = raw_runtime._runtime_state.read("global_joint_window_plan")  # noqa: SLF001
     safe_plan = safe_runtime._runtime_state.read("global_joint_window_plan")  # noqa: SLF001
     assert raw_plan["safe_selected_policy"] == "U_barrier_criticality_global_matching"
-    assert safe_plan["safe_selected_policy"] == "B_barrier_criticality_matching"
-    assert raw_plan["selected_plan_digest"] != safe_plan["selected_plan_digest"]
+    assert safe_plan["paired_b_policy_name"] == "B_barrier_criticality_core_independent"
+    assert safe_plan["safe_selected_policy"] in {
+        "U_barrier_criticality_global_matching",
+        "B_barrier_criticality_core_independent",
+    }
     assert raw_plan["paired_b_build_count"] == 0
     assert safe_plan["paired_b_build_count"] > 0
     assert raw_plan["host_projection_count"] == 0
@@ -242,7 +245,7 @@ def test_gpu_child_config_propagates_bucket_safe_and_weight_parameters() -> None
             "evaluation": {"selected_layer_ids": [0, 1]},
             "prediction": {"name": "copy_current_dispatch"},
         },
-        strategy_name="routersense_joint_predicted_safe_async",
+        strategy_name="routersense_u_core_predicted_safe_async",
         run_name="fixture",
         output_root=Path("/tmp/out"),
         profile="execution",

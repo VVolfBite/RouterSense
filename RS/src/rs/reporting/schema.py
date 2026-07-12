@@ -66,12 +66,20 @@ def validate_report_eligibility(
         failures.append("fallback_count_nonzero")
     if int(summary.get("timeout_count", 0) or 0) > 0:
         failures.append("timeout_count_nonzero")
+    if int(summary.get("selected_layer_match_count", 1) or 0) <= 0:
+        failures.append("selected_layer_match_count_zero")
+    if int(summary.get("selected_transport_execution_count", 1) or 0) <= 0:
+        failures.append("selected_transport_execution_count_zero")
+    if not bool(summary.get("all_work_completed", True)):
+        failures.append("all_work_completed_false")
     if int(summary.get("audit_invalid_count", 0) or 0) > 0:
         failures.append("audit_invalid_count_nonzero")
     if int(summary.get("legacy_secondary_policy_call_count", summary.get("legacy_secondary_policy_invocation_count", 0)) or 0) > 0:
         failures.append("legacy_secondary_policy_call_count_nonzero")
     if int(summary.get("compiler_shadow_compare_count", 0) or 0) > 0:
         failures.append("compiler_shadow_compare_count_nonzero")
+    if "result_eligible_for_performance_comparison" in summary and not bool(summary.get("result_eligible_for_performance_comparison", False)):
+        failures.append("performance_eligibility_false")
     if report_type == "a2" and not bool(summary.get("valid_for_a2", summary.get("c2_pass", False))):
         failures.append("a2_missing_c2_eligibility")
     eligible = not failures

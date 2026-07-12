@@ -19,6 +19,7 @@ from rs.scheduling.multiphase.scheduler_state import run_global_matching_schedul
 TIER1_ALGORITHM_IDS = (
     "B_birkhoff",
     "B_birkhoff_wave",
+    "B_barrier_criticality_core_independent",
     "U_gated_maxweight_matching",
     "U_barrier_criticality_global_matching",
     "U_gated_maxweight_matching_atomic",
@@ -29,6 +30,9 @@ TIER1_ALGORITHM_IDS = (
 ATOMIC_SERVICE_MODEL = "atomic_chunk"
 FLUID_SERVICE_MODEL = "fluid_wave"
 LAGRANGIAN_SERVICE_MODEL = "lagrangian_atomic_chunk"
+COMMON_CORE_MATCHING_ID = "barrier_criticality_matching_core_v1"
+COMMON_CORE_COST_MODEL_ID = "phase_aware_wire_cost_v1"
+COMMON_CORE_SERVICE_MODEL_ID = "rank_phase_release_batch_v1"
 
 _PHASE_NAMES = {0: "p0_dispatch", 1: "p1_return", 2: "p2_next_dispatch"}
 
@@ -48,6 +52,12 @@ class Tier1PolicySpec:
     price_decay: float = 0.0
     price_clip: float = 0.0
     iteration_budget: int = 1
+    matching_core_id: str = COMMON_CORE_MATCHING_ID
+    cost_model_id: str = COMMON_CORE_COST_MODEL_ID
+    service_model_id: str = COMMON_CORE_SERVICE_MODEL_ID
+    task_contract_digest: str = "canonical_bucket_tasks_v1"
+    bucket_contract_digest: str = "dynamic_or_fixed_bucket_v1"
+    solver_budget_digest: str = "max_waves_v1"
 
 
 _U_SPECS = {
@@ -129,12 +139,38 @@ class Tier1MultiphasePolicy:
             "age_weight": age_weight,
             "prediction_weight": prediction_weight,
         }
+        if algorithm_id == "B_barrier_criticality_core_independent":
+            self.capabilities = PolicyCapabilities(
+                supports_offline=True,
+                supports_online_phase_local_execution=True,
+                supports_online_multiphase_execution=True,
+                uses_current_ready_flows=True,
+                uses_blocked_p1_dependency=False,
+                uses_p2_forecast=False,
+                requires_fixed_placement=True,
+                evaluation_eligible=True,
+            )
+        elif algorithm_id.startswith("B_"):
+            self.capabilities = PolicyCapabilities(
+                supports_offline=True,
+                supports_online_phase_local_execution=True,
+                supports_online_multiphase_execution=True,
+                uses_current_ready_flows=True,
+                uses_blocked_p1_dependency=False,
+                uses_p2_forecast=False,
+                requires_fixed_placement=True,
+                evaluation_eligible=True,
+            )
+        else:
+            self.capabilities = self.__class__.capabilities
 
     def build_logical_plan(self, problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan:
         if self.algorithm_id == "B_birkhoff":
             return _build_b_birkhoff_atomic(problem)
         if self.algorithm_id == "B_birkhoff_wave":
             return _build_b_birkhoff_wave(problem)
+        if self.algorithm_id == "B_barrier_criticality_core_independent":
+            return _build_b_core_independent(problem, policy=self)
         if self.algorithm_id == "U_lagrangian":
             return _build_lagrangian(problem)
         spec = _U_SPECS[self.algorithm_id]
@@ -180,9 +216,31 @@ def tier1_inventory() -> tuple[dict[str, Any], ...]:
             "supports_online_multiphase_execution": False,
             "service_model": _service_model_for_algorithm(algorithm_id),
             "recovery_status": "recovered_exactly",
+            "matching_core_id": COMMON_CORE_MATCHING_ID if "barrier_criticality" in algorithm_id else "",
         }
         for algorithm_id in TIER1_ALGORITHM_IDS
     )
+
+
+def _common_core_metadata(
+    *,
+    algorithm_id: str,
+    spec: Tier1PolicySpec,
+    phase_independent: bool,
+    uses_p2_prediction: bool,
+) -> dict[str, Any]:
+    return {
+        "matching_core_id": str(spec.matching_core_id),
+        "task_contract_digest": str(spec.task_contract_digest),
+        "bucket_contract_digest": str(spec.bucket_contract_digest),
+        "cost_contract_digest": str(spec.cost_model_id),
+        "service_model_id": str(spec.service_model_id),
+        "solver_budget_digest": str(spec.solver_budget_digest),
+        "heuristic_family": "barrier_criticality",
+        "algorithm_id": str(algorithm_id),
+        "phase_independent": bool(phase_independent),
+        "uses_p2_prediction": bool(uses_p2_prediction),
+    }
 
 
 def _build_u_policy(
@@ -267,8 +325,159 @@ def _build_u_policy(
                 "age_weight": spec.age_weight,
                 "prediction_weight": spec.prediction_weight,
             },
+            "common_core": _common_core_metadata(
+                algorithm_id=spec.algorithm_id,
+                spec=spec,
+                phase_independent=False,
+                uses_p2_prediction=bool(spec.prediction_weight > 0.0),
+            ),
             "scheduler_debug_trace": list(result.get("debug_trace", [])),
             "scheduler_debug_trace_collected": bool(getattr(policy, "collect_debug_trace", False)),
+        },
+    )
+
+
+def _offset_schedule(schedule: list[dict[str, Any]], *, start_offset: float, wave_offset: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in schedule:
+        item = dict(entry)
+        item["start"] = float(item.get("start", 0.0)) + float(start_offset)
+        item["end"] = float(item.get("end", 0.0)) + float(start_offset)
+        item["wave_id"] = int(item.get("wave_id", 0)) + int(wave_offset)
+        rows.append(item)
+    return rows
+
+
+def _build_b_core_independent(
+    problem: MultiPhaseSchedulingProblem,
+    *,
+    policy: Tier1MultiphasePolicy,
+) -> LogicalSchedulePlan:
+    spec = replace(
+        _U_SPECS["U_barrier_criticality_global_matching"],
+        algorithm_id="B_barrier_criticality_core_independent",
+        prediction_weight=0.0,
+        residual_weight=_U_SPECS["U_barrier_criticality_global_matching"].residual_weight
+        if getattr(policy, "_requested_weight_overrides", {}).get("residual_weight") is None
+        else float(getattr(policy, "_requested_weight_overrides", {}).get("residual_weight")),
+        barrier_weight=_U_SPECS["U_barrier_criticality_global_matching"].barrier_weight
+        if getattr(policy, "_requested_weight_overrides", {}).get("barrier_weight") is None
+        else float(getattr(policy, "_requested_weight_overrides", {}).get("barrier_weight")),
+        age_weight=_U_SPECS["U_barrier_criticality_global_matching"].age_weight
+        if getattr(policy, "_requested_weight_overrides", {}).get("age_weight") is None
+        else float(getattr(policy, "_requested_weight_overrides", {}).get("age_weight")),
+    )
+    zero_matrix = [[0 for _ in row] for row in problem.p0_dispatch_matrix]
+    started = time.perf_counter()
+    p0_result = run_global_matching_scheduler(
+        [list(row) for row in problem.p0_dispatch_matrix],
+        [list(row) for row in zero_matrix],
+        [list(row) for row in zero_matrix],
+        int(problem.topology.num_gpus),
+        strategy="U_barrier_criticality_global_matching",
+        mode=problem.options.scheduling_mode,
+        prediction_confidence=0.0,
+        expert_compute_delay=float(problem.release_model.expert_compute_delay),
+        exact_matching=spec.exact_matching,
+        wave_quantum=None,
+        max_waves=int(problem.options.max_waves),
+        residual_weight=spec.residual_weight,
+        barrier_weight=spec.barrier_weight,
+        age_weight=spec.age_weight,
+        prediction_weight=0.0,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=spec.iteration_budget,
+        atomic=spec.atomic,
+        prediction_matrix=[list(row) for row in zero_matrix],
+        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
+    )
+    p0_schedule = list(p0_result.get("schedule", []))
+    p0_end = max((float(entry.get("end", 0.0)) for entry in p0_schedule), default=0.0)
+    p1_result = run_global_matching_scheduler(
+        [list(row) for row in zero_matrix],
+        [list(row) for row in problem.p1_return_matrix],
+        [list(row) for row in zero_matrix],
+        int(problem.topology.num_gpus),
+        strategy="U_barrier_criticality_global_matching",
+        mode=problem.options.scheduling_mode,
+        prediction_confidence=0.0,
+        expert_compute_delay=float(problem.release_model.expert_compute_delay),
+        exact_matching=spec.exact_matching,
+        wave_quantum=None,
+        max_waves=int(problem.options.max_waves),
+        residual_weight=spec.residual_weight,
+        barrier_weight=spec.barrier_weight,
+        age_weight=spec.age_weight,
+        prediction_weight=0.0,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=spec.iteration_budget,
+        atomic=spec.atomic,
+        prediction_matrix=[list(row) for row in zero_matrix],
+        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
+    )
+    p1_schedule = _offset_schedule(
+        list(p1_result.get("schedule", [])),
+        start_offset=float(p0_end),
+        wave_offset=(max((int(entry.get("wave_id", -1)) for entry in p0_schedule), default=-1) + 1),
+    )
+    raw_schedule = p0_schedule + p1_schedule
+    planning_time_ms = float((time.perf_counter() - started) * 1000.0)
+    audit = replay_and_audit_schedule(
+        schedule=raw_schedule,
+        dispatch_matrix=[list(row) for row in problem.p0_dispatch_matrix],
+        combine_matrix=[list(row) for row in problem.p1_return_matrix],
+        next_dispatch_matrix=[[0 for _ in row] for row in problem.p0_dispatch_matrix],
+        num_gpus=int(problem.topology.num_gpus),
+        expert_compute_delay=float(problem.release_model.expert_compute_delay),
+        mode=problem.options.scheduling_mode,
+        scheduler_name="B_barrier_criticality_core_independent",
+        planning_time_ms=planning_time_ms,
+        reported_makespan=float(max((float(entry.get("end", 0.0)) for entry in raw_schedule), default=0.0)),
+        prediction_used=False,
+    )
+    makespan = float(audit.get("makespan", max((float(entry.get("end", 0.0)) for entry in raw_schedule), default=0.0)))
+    return _raw_schedule_to_plan(
+        problem=problem,
+        algorithm_id="B_barrier_criticality_core_independent",
+        service_model=spec.service_model,
+        raw_schedule=raw_schedule,
+        audit=audit,
+        makespan=makespan,
+        planning_time_ms=planning_time_ms,
+        solver_status=str(p0_result.get("solver_status", "completed")),
+        selection_model="barrier_criticality_matching_core_phase_independent",
+        extra_diagnostics={
+            "default_weights": {
+                "residual_weight": _U_SPECS["U_barrier_criticality_global_matching"].residual_weight,
+                "barrier_weight": _U_SPECS["U_barrier_criticality_global_matching"].barrier_weight,
+                "age_weight": _U_SPECS["U_barrier_criticality_global_matching"].age_weight,
+                "prediction_weight": 0.0,
+            },
+            "requested_weights": dict(getattr(policy, "_requested_weight_overrides", {})),
+            "effective_weights": {
+                "residual_weight": spec.residual_weight,
+                "barrier_weight": spec.barrier_weight,
+                "age_weight": spec.age_weight,
+                "prediction_weight": 0.0,
+            },
+            "consumed_weights": {
+                "residual_weight": spec.residual_weight,
+                "barrier_weight": spec.barrier_weight,
+                "age_weight": spec.age_weight,
+                "prediction_weight": 0.0,
+            },
+            "common_core": _common_core_metadata(
+                algorithm_id="B_barrier_criticality_core_independent",
+                spec=spec,
+                phase_independent=True,
+                uses_p2_prediction=False,
+            ),
         },
     )
 
@@ -826,7 +1035,7 @@ def _forecast_summary(problem: MultiPhaseSchedulingProblem) -> dict[str, Any]:
 def _service_model_for_algorithm(algorithm_id: str) -> str:
     if algorithm_id in {"B_birkhoff", "U_gated_maxweight_matching_atomic", "U_barrier_criticality_global_matching_atomic"}:
         return ATOMIC_SERVICE_MODEL
-    if algorithm_id in {"B_birkhoff_wave", "U_gated_maxweight_matching", "U_barrier_criticality_global_matching"}:
+    if algorithm_id in {"B_birkhoff_wave", "B_barrier_criticality_core_independent", "U_gated_maxweight_matching", "U_barrier_criticality_global_matching"}:
         return FLUID_SERVICE_MODEL
     if algorithm_id == "U_lagrangian":
         return LAGRANGIAN_SERVICE_MODEL

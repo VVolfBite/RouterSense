@@ -53,6 +53,7 @@ def _runtime(rank: int, *, policy_name: str, p2_hint_mode: str, online_p2_predic
             p2_hint_weight=1.0,
             observation_profile="execution",
             online_p2_predictor=online_p2_predictor,
+            safe_projection_mode="disabled",
             executor_heartbeat_path="",
         ),
         rank=rank,

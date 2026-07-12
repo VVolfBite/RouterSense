@@ -104,13 +104,13 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     copy_config(Path(args.config), output_dir)
     base = load_official_config(Path(args.config))
-    resolved_reference = str(args.reference_strategy or base.get("reference_strategy", "birkhoff_phase_local_sync"))
+    resolved_reference = str(args.reference_strategy or base.get("reference_strategy", "native"))
     resolved_candidates = (
         list(args.candidate_strategies)
         if args.candidate_strategies is not None
         else [str(args.candidate_strategy)]
         if args.candidate_strategy is not None
-        else [str(item) for item in (base.get("candidate_strategies") or [base.get("candidate_strategy", "routersense_joint_predicted_raw_async")])]
+        else [str(item) for item in (base.get("candidate_strategies") or [base.get("candidate_strategy", "routersense_u_core_predicted_raw_async")])]
     )
     resolved_profile = str(args.profile if args.profile is not None else base.get("profile", "execution"))
     resolved_selected_layers = str(args.selected_layers if args.selected_layers is not None else base.get("selected_layers", "selected"))
@@ -243,8 +243,11 @@ def main() -> int:
             "p2p_call_count": int(candidate_rank_summary.get("batch_isend_irecv_call_count", 0)) > 0,
             "real_send_op_count": int(candidate_rank_summary.get("real_send_op_count", 0)) > 0,
             "real_recv_op_count": int(candidate_rank_summary.get("real_recv_op_count", 0)) > 0,
-            "fallback_count_zero": int(candidate_rank_summary.get("phase_sync_fallback_count", 0)) == 0,
-            "timeout_count_zero": True,
+            "fallback_count_zero": int(candidate_rank_summary.get("phase_sync_fallback_count", candidate_rank_summary.get("fallback_count", 0)) or 0) == 0,
+            "timeout_count_zero": int(candidate_rank_summary.get("timeout_count", 0) or 0) == 0,
+            "all_work_completed": bool(candidate_rank_summary.get("all_work_completed", True)),
+            "selected_layer_match_count": int(candidate_rank_summary.get("selected_layer_match_count", 0) or 0) > 0,
+            "selected_transport_execution_count": int(candidate_rank_summary.get("selected_transport_execution_count", 0) or 0) > 0,
             "shape_parity": all(bool(item["shape_parity"]) for item in per_rank),
             "dtype_parity": all(bool(item["dtype_parity"]) for item in per_rank),
             "nan_inf_zero": (sum(int(item["nan_count"]) for item in per_rank) == 0 and sum(int(item["inf_count"]) for item in per_rank) == 0),
@@ -272,8 +275,11 @@ def main() -> int:
                 "p2p_call_count": candidate_rank_summary.get("batch_isend_irecv_call_count", 0),
                 "real_send_op_count": candidate_rank_summary.get("real_send_op_count", 0),
                 "real_recv_op_count": candidate_rank_summary.get("real_recv_op_count", 0),
-                "fallback_count": candidate_rank_summary.get("phase_sync_fallback_count", 0),
-                "timeout_count": 0,
+                "fallback_count": candidate_rank_summary.get("phase_sync_fallback_count", candidate_rank_summary.get("fallback_count", 0)),
+                "timeout_count": candidate_rank_summary.get("timeout_count", 0),
+                "all_work_completed": candidate_rank_summary.get("all_work_completed", True),
+                "selected_layer_match_count": candidate_rank_summary.get("selected_layer_match_count", 0),
+                "selected_transport_execution_count": candidate_rank_summary.get("selected_transport_execution_count", 0),
                 "forward_epochs_compared": sorted(compared_epochs),
                 "parity_passed": bool(checks["tolerance"]),
                 "checks": checks,

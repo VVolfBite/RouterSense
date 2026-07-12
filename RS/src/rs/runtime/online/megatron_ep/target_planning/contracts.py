@@ -68,6 +68,12 @@ class TargetLayerPreparedJointPlan:
     selected_variant: str = "raw_u"
     raw_logical_plan_digest: str = ""
     paired_b_logical_plan_digest: str = ""
+    selected_logical_plan_digest: str = ""
+    raw_u_estimated_makespan: float = 0.0
+    paired_b_estimated_makespan: float = 0.0
+    raw_u_build_us: float = 0.0
+    paired_b_build_us: float = 0.0
+    safe_selection_us: float = 0.0
     plan_origin: PlanOrigin = "target_prepared"
     plan_version: int = 1
     parent_plan_version: int = 0

@@ -40,7 +40,7 @@ class SyntheticDispatcher:
         return tensor
 
 
-def _runtime(rank: int) -> RouterSenseInjectionRuntime:
+def _runtime(rank: int, *, safe_projection_mode: str = "disabled") -> RouterSenseInjectionRuntime:
     return RouterSenseInjectionRuntime(
         config=RouterSenseInjectionConfig(
             policy="routersense_p0p1p2_hint",
@@ -53,6 +53,7 @@ def _runtime(rank: int) -> RouterSenseInjectionRuntime:
             invariant_mode="evaluation_strict",
             bucket_mode="fixed_rows",
             bucket_rows=1,
+            safe_projection_mode=safe_projection_mode,
             executor_heartbeat_path="",
         ),
         rank=rank,
@@ -180,8 +181,8 @@ def _publish_plan(runtime: RouterSenseInjectionRuntime, *, key: Any, plan: Any) 
         return f"{type(exc).__name__}: {exc}"
 
 
-def _build_runtime(rank: int, p2p_group: Any) -> tuple[RouterSenseInjectionRuntime, MegatronPhaseTransportAdapter]:
-    runtime = _runtime(rank)
+def _build_runtime(rank: int, p2p_group: Any, *, safe_projection_mode: str = "disabled") -> tuple[RouterSenseInjectionRuntime, MegatronPhaseTransportAdapter]:
+    runtime = _runtime(rank, safe_projection_mode=safe_projection_mode)
     adapter = MegatronPhaseTransportAdapter(
         dispatcher_class="SyntheticDispatcher",
         dispatcher_module_sha256=None,
@@ -202,7 +203,7 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
     layer1 = "model.layers.1.mlp"
     bootstrap_matrix = ((0, 4), (4, 0))
 
-    ready_runtime, ready_adapter = _build_runtime(rank, p2p_group)
+    ready_runtime, ready_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="disabled")
     _execute_dispatch(runtime=ready_runtime, adapter=ready_adapter, layer_name=layer0, matrix=bootstrap_matrix)
     ready_key = ready_runtime._target_plan_key(layer_name=layer1)  # noqa: SLF001
     deadline = time.time() + 5.0
@@ -213,7 +214,7 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
     ready_case = _execute_dispatch(runtime=ready_runtime, adapter=ready_adapter, layer_name=layer1, matrix=bootstrap_matrix)
     ready_terminal = ready_runtime.target_plan_store.get_terminal_record(ready_key)  # type: ignore[union-attr]
 
-    late_runtime, late_adapter = _build_runtime(rank, p2p_group)
+    late_runtime, late_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="disabled")
     _, late_plan = _build_target_plan(late_runtime, source_layer="0", target_layer="1", matrix=bootstrap_matrix)
     late_plan = replace(
         late_plan,
@@ -259,7 +260,7 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
     late_case = _execute_dispatch(runtime=late_runtime, adapter=late_adapter, layer_name=layer1, matrix=bootstrap_matrix, after_before_dispatch=_late_setup)
     late_terminal = late_runtime.target_plan_store.get_terminal_record(late_key)  # type: ignore[union-attr]
 
-    too_late_runtime, too_late_adapter = _build_runtime(rank, p2p_group)
+    too_late_runtime, too_late_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="disabled")
     _, too_late_plan = _build_target_plan(too_late_runtime, source_layer="0", target_layer="1", matrix=bootstrap_matrix)
     too_late_key = too_late_runtime._target_plan_key(layer_name=layer1)  # noqa: SLF001
     too_late_case = _execute_dispatch(runtime=too_late_runtime, adapter=too_late_adapter, layer_name=layer1, matrix=((0, 1), (1, 0)))
@@ -267,7 +268,7 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
     too_late_publish_error = _publish_plan(too_late_runtime, key=too_late_key, plan=too_late_plan)
     too_late_terminal = too_late_runtime.target_plan_store.get_terminal_record(too_late_key)  # type: ignore[union-attr]
 
-    reject_runtime, reject_adapter = _build_runtime(rank, p2p_group)
+    reject_runtime, reject_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="disabled")
     _, reject_plan = _build_target_plan(reject_runtime, source_layer="0", target_layer="1", matrix=((0, 4), (0, 0)))
     reject_plan = replace(reject_plan, h1_rows=((0, 4), (0, 0)))
     reject_key = reject_runtime._target_plan_key(layer_name=layer1)  # noqa: SLF001
@@ -287,6 +288,44 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
 
     reject_case = _execute_dispatch(runtime=reject_runtime, adapter=reject_adapter, layer_name=layer1, matrix=((0, 0), (4, 0)), after_before_dispatch=_reject_setup)
     reject_terminal = reject_runtime.target_plan_store.get_terminal_record(reject_key)  # type: ignore[union-attr]
+
+    safe_ready_runtime, safe_ready_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="host_select")
+    _execute_dispatch(runtime=safe_ready_runtime, adapter=safe_ready_adapter, layer_name=layer0, matrix=bootstrap_matrix)
+    safe_ready_key = safe_ready_runtime._target_plan_key(layer_name=layer1)  # noqa: SLF001
+    safe_deadline = time.time() + 5.0
+    while safe_ready_runtime.target_plan_store.peek(safe_ready_key) is None and time.time() < safe_deadline:  # type: ignore[union-attr]
+        time.sleep(0.01)
+    if safe_ready_runtime.target_plan_store.peek(safe_ready_key) is None:  # type: ignore[union-attr]
+        raise RuntimeError(f"safe prepared target plan missing for attempt {attempt}")
+    safe_ready_plan = safe_ready_runtime.target_plan_store.peek(safe_ready_key)  # type: ignore[union-attr]
+    safe_ready_case = _execute_dispatch(runtime=safe_ready_runtime, adapter=safe_ready_adapter, layer_name=layer1, matrix=bootstrap_matrix)
+    safe_ready_terminal = safe_ready_runtime.target_plan_store.get_terminal_record(safe_ready_key)  # type: ignore[union-attr]
+
+    safe_late_runtime, safe_late_adapter = _build_runtime(rank, p2p_group, safe_projection_mode="host_select")
+    _, safe_late_plan = _build_target_plan(safe_late_runtime, source_layer="0", target_layer="1", matrix=bootstrap_matrix)
+    safe_late_key = safe_late_runtime._target_plan_key(layer_name=layer1)  # noqa: SLF001
+    safe_published_late = {"done": False}
+
+    def _safe_late_hook(release_epoch: int, _snapshot: dict[str, Any]) -> None:
+        if release_epoch != 1 or safe_published_late["done"]:
+            return
+        dist.barrier()
+        publish_error = _publish_plan(safe_late_runtime, key=safe_late_key, plan=safe_late_plan)
+        if publish_error is not None:
+            raise RuntimeError(publish_error)
+        safe_published_late["done"] = True
+
+    def _safe_late_setup() -> None:
+        setattr(safe_late_adapter, "on_release_batch_completed", _safe_late_hook)
+
+    safe_late_case = _execute_dispatch(
+        runtime=safe_late_runtime,
+        adapter=safe_late_adapter,
+        layer_name=layer1,
+        matrix=bootstrap_matrix,
+        after_before_dispatch=_safe_late_setup,
+    )
+    safe_late_terminal = safe_late_runtime.target_plan_store.get_terminal_record(safe_late_key)  # type: ignore[union-attr]
 
     return {
         "attempt": int(attempt),
@@ -313,12 +352,31 @@ def _run_attempt(rank: int, p2p_group: Any, attempt: int) -> dict[str, Any]:
             "terminal": reject_terminal.to_dict() if reject_terminal is not None else None,
             "hidden_async_summary": _async_summary(reject_case["transport"], tensor_role="hidden_states"),
         },
+        "safe_prepared_ready": {
+            "execution_origin": str(safe_ready_case["summary"].get("execution_origin", "")),
+            "terminal": safe_ready_terminal.to_dict() if safe_ready_terminal is not None else None,
+            "selected_variant": str(getattr(safe_ready_plan, "selected_variant", "")),
+            "raw_u_logical_plan_digest": str(getattr(safe_ready_plan, "raw_logical_plan_digest", "")),
+            "paired_b_logical_plan_digest": str(getattr(safe_ready_plan, "paired_b_logical_plan_digest", "")),
+            "selected_logical_plan_digest": str(getattr(safe_ready_plan, "selected_logical_plan_digest", "")),
+        },
+        "safe_late_suffix": {
+            "execution_origin": str(safe_late_case["summary"].get("execution_origin", "")),
+            "terminal": safe_late_terminal.to_dict() if safe_late_terminal is not None else None,
+            "hidden_async_summary": _async_summary(safe_late_case["transport"], tensor_role="hidden_states"),
+            "selected_variant": str(getattr(safe_late_plan, "selected_variant", "")),
+            "raw_u_logical_plan_digest": str(getattr(safe_late_plan, "raw_logical_plan_digest", "")),
+            "paired_b_logical_plan_digest": str(getattr(safe_late_plan, "paired_b_logical_plan_digest", "")),
+            "selected_logical_plan_digest": str(getattr(safe_late_plan, "selected_logical_plan_digest", "")),
+        },
     }
 
 
 def _attempt_passed(payloads: list[dict[str, Any]]) -> bool:
     ready = [item.get("prepared_ready", {}) for item in payloads]
     late = [item.get("late_suffix", {}) for item in payloads]
+    safe_ready = [item.get("safe_prepared_ready", {}) for item in payloads]
+    safe_late = [item.get("safe_late_suffix", {}) for item in payloads]
     too_late = [item.get("too_late", {}) for item in payloads]
     reject = [item.get("reject", {}) for item in payloads]
     if not all(((item.get("terminal") or {}).get("final_status") == "CONSUMED") for item in ready):
@@ -346,6 +404,14 @@ def _attempt_passed(payloads: list[dict[str, Any]]) -> bool:
     if not all(((item.get("terminal") or {}).get("final_status") == "REJECTED") for item in reject):
         return False
     if not all(int((item.get("hidden_async_summary") or {}).get("suffix_splice_count", 0)) == 0 for item in reject):
+        return False
+    if not all(((item.get("terminal") or {}).get("final_status") == "CONSUMED") for item in safe_ready):
+        return False
+    if not all(str(item.get("execution_origin", "")).startswith("prepared_") for item in safe_ready):
+        return False
+    if not all(((item.get("terminal") or {}).get("final_status") == "CONSUMED") for item in safe_late):
+        return False
+    if not all(int((item.get("hidden_async_summary") or {}).get("suffix_splice_count", 0)) == 1 for item in safe_late):
         return False
     return True
 

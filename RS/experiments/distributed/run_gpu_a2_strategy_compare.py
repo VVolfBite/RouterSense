@@ -23,6 +23,7 @@ from experiments.distributed._gpu_runner_common import (
     torchrun_policy_command,
     write_json,
 )
+from experiments.online.support.runtime_presets import resolve_strategy_runtime
 
 
 DEFAULT_STRATEGIES = (
@@ -31,11 +32,10 @@ DEFAULT_STRATEGIES = (
     "greedy_async_p2p",
     "birkhoff_phase_local_sync",
     "birkhoff_phase_local_async_p2p",
-    "routersense_joint_phase_sync",
-    "routersense_joint_zero_raw_async",
-    "routersense_joint_predicted_raw_async",
-    "routersense_joint_zero_safe_async",
-    "routersense_joint_predicted_safe_async",
+    "routersense_b_core_independent_async",
+    "routersense_u_core_zero_raw_async",
+    "routersense_u_core_predicted_raw_async",
+    "routersense_u_core_predicted_safe_async",
 )
 
 
@@ -184,18 +184,62 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     metrics = {name: _summary_stats(values) for name, values in raw_series.items()}
     metrics["safe_selected_policy"] = rank0_summary.get("safe_selected_policy")
     metrics["fallback_count"] = int(rank0_summary.get("phase_sync_fallback_count", 0) or 0)
+    metrics["timeout_count"] = int(rank0_summary.get("timeout_count", 0) or 0)
+    metrics["all_work_completed"] = bool(rank0_summary.get("all_work_completed", True))
     metrics["async_executor_invocation_count"] = int(rank0_summary.get("async_executor_invocation_count", 0) or 0)
     metrics["batch_isend_irecv_call_count"] = int(rank0_summary.get("batch_isend_irecv_call_count", 0) or 0)
     metrics["real_send_op_count"] = int(rank0_summary.get("real_send_op_count", 0) or 0)
     metrics["real_recv_op_count"] = int(rank0_summary.get("real_recv_op_count", 0) or 0)
     metrics["local_copy_task_count"] = int(rank0_summary.get("local_copy_task_count", 0) or 0)
+    metrics["selected_layer_match_count"] = int(rank0_summary.get("selected_layer_match_count", 0) or 0)
+    metrics["selected_p0_hook_count"] = int(rank0_summary.get("selected_p0_hook_count", 0) or 0)
+    metrics["selected_p1_hook_count"] = int(rank0_summary.get("selected_p1_hook_count", 0) or 0)
+    metrics["selected_transport_execution_count"] = int(rank0_summary.get("selected_transport_execution_count", 0) or 0)
+    metrics["transport_mutation_count"] = int(rank0_summary.get("transport_mutation_count", 0) or 0)
+    metrics["prediction_created"] = bool(rank0_summary.get("prediction_created_stage"))
+    metrics["prediction_consumed"] = bool(rank0_summary.get("prediction_first_consumed_stage"))
+    metrics["target_plan_created"] = bool(rank0_summary.get("prepared_target_logical_plan_digest"))
+    metrics["plan_digest_present"] = bool(rank0_summary.get("logical_plan_digest") or rank0_summary.get("compiled_plan_digest"))
+    expected = resolve_strategy_runtime(strategy_name=str(strategy), runtime_line="async_release" if "async" in str(strategy) else "phase_sync")
+    expected_policy_name = str(expected.get("policy", ""))
+    observed_policy_name = str(rank0_summary.get("policy_name", ""))
+    policy_matches = (
+        observed_policy_name in {"", "disabled"}
+        if expected_policy_name == ""
+        else observed_policy_name == expected_policy_name
+    )
+    checks = {
+        "summary_status_ready": str(summary_payload.get("status", "")) == "ready",
+        "selected_layer_match": int(metrics["selected_layer_match_count"]) > 0,
+        "selected_p0_hook": int(metrics["selected_p0_hook_count"]) > 0,
+        "selected_p1_hook": int(metrics["selected_p1_hook_count"]) > 0,
+        "selected_transport_execution": int(metrics["selected_transport_execution_count"]) > 0,
+        "plan_digest_present": bool(metrics["plan_digest_present"]),
+        "transport_mutation": int(metrics["transport_mutation_count"]) > 0 or str(strategy) in {"native", "disabled"},
+        "all_work_completed": bool(metrics["all_work_completed"]),
+        "fallback_zero": int(metrics["fallback_count"]) == 0,
+        "timeout_zero": int(metrics["timeout_count"]) == 0,
+        "policy_matches": bool(policy_matches),
+        "execution_mode_matches": str(rank0_summary.get("execution_mode", "")) == str(expected.get("execution_mode", "")),
+        "safe_projection_mode_matches": str(rank0_summary.get("safe_projection_mode", "")) == str(expected.get("safe_projection_mode", rank0_summary.get("safe_projection_mode", ""))),
+    }
+    if str(expected.get("online_p2_predictor", "none")) == "none":
+        checks["prediction_boundary"] = not bool(metrics["prediction_consumed"]) and not bool(metrics["target_plan_created"])
+    else:
+        checks["prediction_boundary"] = bool(metrics["prediction_created"]) and bool(metrics["prediction_consumed"])
+    if str(expected.get("safe_projection_mode", "disabled")) == "host_select":
+        checks["safe_variant_recorded"] = bool(metrics["safe_selected_policy"])
+    else:
+        checks["safe_variant_recorded"] = True
+    eligible = all(bool(value) for value in checks.values())
     return {
         "name": strategy,
-        "status": "eligible" if int(metrics["fallback_count"]) == 0 else "fallback",
-        "result_eligible_for_performance_comparison": int(metrics["fallback_count"]) == 0,
+        "status": "eligible" if eligible else "ineligible",
+        "result_eligible_for_performance_comparison": bool(eligible),
         "summary_status": str(summary_payload.get("status", "")),
         "metrics": metrics,
         "output_checksum": details.get("output_checksum"),
+        "eligibility_checks": checks,
     }
 
 

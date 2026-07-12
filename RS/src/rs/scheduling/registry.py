@@ -144,6 +144,14 @@ def resolve_policy(
         return BGatedMaxweightMatchingPolicy(bucket_rows=bucket_rows)
     if base_name == "B_barrier_criticality_matching":
         return BBarrierCriticalityMatchingPolicy(bucket_rows=bucket_rows)
+    if base_name == "B_barrier_criticality_core_independent":
+        return resolve_tier1_policy(
+            "B_barrier_criticality_core_independent",
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
+        )
     if base_name == "B_barrier_price_adaptive_matching":
         return BBarrierPriceAdaptiveMatchingPolicy(bucket_rows=bucket_rows)
     if base_name == "B_lagrangian_phase_local":

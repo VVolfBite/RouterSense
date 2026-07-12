@@ -191,6 +191,10 @@ def write_rank_artifacts(
         write_json(run_dir / f"rank{rank}_prepared_plan_summary.json", prepared_plan_summary)
         adapter = getattr(runtime, "transport_adapter", None)
         transport_results = adapter.export_results() if adapter is not None else runtime.export_transport_execution_results()
+        result_rows = [row for row in transport_results if str(row.get("record_type", "")) == "result_summary"]
+        timeout_count = sum(int(bool(row.get("timeout", False))) for row in result_rows)
+        all_work_completed = all(bool(row.get("all_work_completed", True)) for row in result_rows) if result_rows else True
+        preflight_collective_count = sum(int(row.get("preflight_collective_count", 0) or 0) for row in result_rows)
         if adapter is not None:
             rank_summary.update(
                 {
@@ -202,6 +206,14 @@ def write_rank_artifacts(
                     "phase_sync_fallback_count": int(getattr(adapter, "phase_sync_fallback_count", 0)),
                 }
             )
+        rank_summary.update(
+            {
+                "transport_mutation_count": int(len(result_rows)),
+                "timeout_count": int(timeout_count),
+                "all_work_completed": bool(all_work_completed),
+                "preflight_collective_count": int(preflight_collective_count),
+            }
+        )
         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)
         write_jsonl(run_dir / f"rank{rank}_captured_phase_tensors.jsonl", runtime.export_captured_phase_tensors())
         capture_dir = run_dir / "captured_phase_tensors"

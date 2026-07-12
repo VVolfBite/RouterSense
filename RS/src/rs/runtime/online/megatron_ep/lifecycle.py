@@ -306,7 +306,7 @@ class RouterSenseInjectionRuntime:
         policy_name = str(self.config.policy or "")
         if "gated_greedy" in policy_name:
             return ("U_gated_greedy_maximal", "B_gated_greedy_maximal")
-        return ("U_barrier_criticality_global_matching", "B_barrier_criticality_matching")
+        return ("U_barrier_criticality_global_matching", "B_barrier_criticality_core_independent")
 
     def _effective_bucket_mode(self) -> str:
         return bucket_mode_for_rows(int(self.config.bucket_rows))
@@ -742,11 +742,12 @@ class RouterSenseInjectionRuntime:
         has_prediction = predictor_name not in {"none", "zero_hint"}
         is_joint_window = self._is_joint_window_async_mode()
         resolved_name = str(resolved.canonical_name)
+        safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
         supports_target_preplanning = bool(
             has_prediction
             and is_joint_window
             and base.uses_p2_forecast
-            and resolved_name != "barrier_criticality_runtime_safe"
+            and (safe_projection_mode == "disabled" or safe_projection_mode == "host_select")
         )
         return base.with_runtime_flags(
             supports_current_window_joint_planning=bool(
@@ -1168,6 +1169,10 @@ class RouterSenseInjectionRuntime:
             if isinstance(previous_record, dict):
                 previous_matrix = tuple(tuple(int(value) for value in row) for row in previous_record.get("matrix", []))
             if self.target_planner_service is not None:
+                raw_u_name = str(self._effective_phase_policy_name() or "")
+                paired_b_name = ""
+                if str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select") == "host_select":
+                    raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
                 self.target_planner_service.enqueue(
                     TargetLayerPlanningRequest(
                         run_id=str(self.run_id),
@@ -1192,6 +1197,9 @@ class RouterSenseInjectionRuntime:
                         ),
                         topology_digest=digest_text(stable_hash({"ep_group_ranks": list(int(v) for v in self.ep_group_ranks)})),
                         bucket_contract_digest=str(self._effective_bucket_mode()),
+                        raw_u_policy_id=str(raw_u_name),
+                        paired_b_policy_id=str(paired_b_name),
+                        safe_projection_mode=str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select"),
                     )
                 )
 
@@ -1881,7 +1889,11 @@ class RouterSenseInjectionRuntime:
                 safe_projection["host_projected_paired_b_estimated_makespan"]
                 - safe_projection["host_projected_raw_u_estimated_makespan"]
             ),
-            "safe_comparison_is_strict_common_core": bool(raw_u_name == paired_b_name),
+            "safe_comparison_is_strict_common_core": bool(
+                dict((raw_u_plan.diagnostics or {}).get("common_core", {}))
+                == dict((paired_b_plan.diagnostics or {}).get("common_core", {}))
+            ),
+            "common_core_metadata": dict((raw_u_plan.diagnostics or {}).get("common_core", {})),
             "raw_u_plan_policy": str(raw_u_plan.policy_name),
             "paired_b_plan_policy": str(paired_b_plan.policy_name),
             "raw_plan_digest": stable_hash(raw_u_plan.to_dict()),

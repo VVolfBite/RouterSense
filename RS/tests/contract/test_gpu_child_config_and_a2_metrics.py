@@ -15,10 +15,10 @@ def test_official_gpu_c2_matrix_includes_four_joint_async_candidates() -> None:
     payload = load_official_config(REPO_ROOT / "configs/official/gpu_c2_correctness.yaml")
     assert payload["candidate_strategies"] == [
         "birkhoff_phase_local_async_p2p",
-        "routersense_joint_zero_raw_async",
-        "routersense_joint_predicted_raw_async",
-        "routersense_joint_zero_safe_async",
-        "routersense_joint_predicted_safe_async",
+        "routersense_b_core_independent_async",
+        "routersense_u_core_zero_raw_async",
+        "routersense_u_core_predicted_raw_async",
+        "routersense_u_core_predicted_safe_async",
     ]
 
 
@@ -67,7 +67,7 @@ def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
     }
     raw_cfg = build_policy_correctness_config(
         base_comparison=base,
-        strategy_name="routersense_joint_predicted_raw_async",
+        strategy_name="routersense_u_core_predicted_raw_async",
         run_name="raw",
         output_root=Path("/tmp/raw"),
         profile="execution",
@@ -76,7 +76,7 @@ def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
     )
     safe_cfg = build_policy_correctness_config(
         base_comparison=base,
-        strategy_name="routersense_joint_predicted_safe_async",
+        strategy_name="routersense_u_core_predicted_safe_async",
         run_name="safe",
         output_root=Path("/tmp/safe"),
         profile="execution",
@@ -101,7 +101,7 @@ def test_selected_layer_selector_resolves_to_explicit_ids_in_child_config() -> N
     }
     cfg = build_policy_correctness_config(
         base_comparison=base,
-        strategy_name="routersense_joint_predicted_raw_async",
+        strategy_name="routersense_u_core_predicted_raw_async",
         run_name="selected",
         output_root=Path("/tmp/selected"),
         profile="execution",
@@ -121,3 +121,18 @@ def test_selected_layer_selector_requires_ids_in_strict_mode() -> None:
         assert "selected_layer_ids" in str(exc)
     else:
         raise AssertionError("expected strict selected resolver to fail without selected_layer_ids")
+
+
+def test_official_gpu_first_bringup_config_uses_selected_layers_and_core_strategies() -> None:
+    payload = load_official_config(REPO_ROOT / "configs/official/gpu_first_bringup.yaml")
+    assert payload["selected_layers"] == "0,1"
+    assert payload["evaluation"]["selected_layer_ids"] == [0, 1]
+    assert payload["strategies"] == [
+        "native",
+        "birkhoff_phase_local_sync",
+        "birkhoff_phase_local_async_p2p",
+        "routersense_b_core_independent_async",
+        "routersense_u_core_zero_raw_async",
+        "routersense_u_core_predicted_raw_async",
+        "routersense_u_core_predicted_safe_async",
+    ]

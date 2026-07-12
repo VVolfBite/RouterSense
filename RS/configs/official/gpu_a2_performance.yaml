@@ -48,8 +48,7 @@ strategies:
   - greedy_async_p2p
   - birkhoff_phase_local_sync
   - birkhoff_phase_local_async_p2p
-  - routersense_joint_phase_sync
-  - routersense_joint_zero_raw_async
-  - routersense_joint_predicted_raw_async
-  - routersense_joint_zero_safe_async
-  - routersense_joint_predicted_safe_async
+  - routersense_b_core_independent_async
+  - routersense_u_core_zero_raw_async
+  - routersense_u_core_predicted_raw_async
+  - routersense_u_core_predicted_safe_async

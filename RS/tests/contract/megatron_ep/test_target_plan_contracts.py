@@ -55,6 +55,8 @@ def test_target_prepared_plan_contract() -> None:
     payload = plan.to_dict()
     assert payload["target_layer_id"] == "1"
     assert payload["plan_origin"] == "target_prepared"
+    assert payload["selected_variant"] == "raw_u"
+    assert payload["paired_b_logical_plan_digest"] == ""
 
 
 def test_prepared_priority_hint_is_not_target_plan() -> None:
@@ -77,4 +79,3 @@ def test_prepared_priority_hint_is_not_target_plan() -> None:
     )
     assert hint.to_dict()["priority_digest"] == "digest"
     assert provisional.to_dict()["plan_origin"] == "provisional"
-
