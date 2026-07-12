@@ -137,6 +137,7 @@ class MegatronPhaseTransportAdapter:
                         rank_context={
                             "global_rank": int(state.context.global_rank),
                             "local_rank": int(state.context.local_rank),
+                            "late_suffix_provider": getattr(self, "late_suffix_provider", None),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
                         requested_backend_id="async_release",
@@ -183,6 +184,7 @@ class MegatronPhaseTransportAdapter:
                         rank_context={
                             "global_rank": int(state.context.global_rank),
                             "local_rank": int(state.context.local_rank),
+                            "late_suffix_provider": getattr(self, "late_suffix_provider", None),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
                         requested_backend_id="async_release",
@@ -221,6 +223,7 @@ class MegatronPhaseTransportAdapter:
                     rank_context={
                         "global_rank": int(state.context.global_rank),
                         "local_rank": int(state.context.local_rank),
+                        "late_suffix_provider": getattr(self, "late_suffix_provider", None),
                     },
                     event_sink=getattr(self, "timeline_hook", None),
                     requested_backend_id="phase_sync",

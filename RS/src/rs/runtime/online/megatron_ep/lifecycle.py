@@ -60,6 +60,7 @@ from rs.runtime.online.megatron_ep.compiler_facade import (
     build_phase_canonical_tasks,
     compile_schedule,
 )
+from rs.runtime.online.megatron_ep.execution.release_frontier import ReleaseBatchTask
 from rs.runtime.online.megatron_ep.state import PreparedWindowRuntimeState
 from rs.runtime.online.megatron_ep.planning.window_shadow_service import (
     advance_window_release,
@@ -94,6 +95,15 @@ from rs.runtime.online.megatron_ep.prediction import (
     ZeroHintPredictor,
     compare_predicted_to_actual,
     maybe_capture_expert_route_trace,
+)
+from rs.runtime.online.megatron_ep.target_planning import (
+    ProvisionalExecutionPlan,
+    TargetLayerPlannerService,
+    TargetLayerPlanningRequest,
+    TargetLayerPreparedJointPlan,
+    TargetPlanKey,
+    TargetPlanStore,
+    reconcile_once,
 )
 from rs.scheduling.contracts import PreparedWindowPlan
 from rs.scheduling.registry import resolve_phase_policy
@@ -151,12 +161,15 @@ class RouterSenseInjectionRuntime:
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
     _window_states: dict[str, Any] = field(default_factory=dict)
     _selected_layer_matches_seen: set[str] = field(default_factory=set)
+    _target_plan_reconciled_keys: set[tuple[str, int, str, str]] = field(default_factory=set)
     _forward_epoch: int = 0
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
     _p2_hint_provider: Any | None = None
     _pending_window_adapter_instance: Any | None = None
     perf_counters: dict[str, dict[str, float]] = field(default_factory=dict)
+    target_plan_store: TargetPlanStore | None = None
+    target_planner_service: TargetLayerPlannerService | None = None
 
     # Configuration and policy selection
 
@@ -181,6 +194,7 @@ class RouterSenseInjectionRuntime:
                 self.config.p2_hint_mode,
                 shared_state=self._runtime_state,
             )
+        self._ensure_target_planner_runtime()
 
     @property
     def _prepared_plan_state(self) -> PreparedWindowRuntimeState:
@@ -723,7 +737,8 @@ class RouterSenseInjectionRuntime:
         base = getattr(policy, "capabilities", None)
         if base is None:
             return None
-        has_prediction = str(self.config.p2_hint_mode) == "calibrated_artifact"
+        predictor_name = self._online_p2_predictor_name()
+        has_prediction = predictor_name not in {"none", "zero_hint"}
         is_joint_window = self._is_joint_window_async_mode()
         return base.with_runtime_flags(
             supports_current_window_joint_planning=bool(
@@ -731,11 +746,11 @@ class RouterSenseInjectionRuntime:
             ),
             supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
             supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
-            supports_target_layer_preplanning=False,
+            supports_target_layer_preplanning=bool(has_prediction and is_joint_window and base.uses_p2_forecast),
             supports_p1_plan_reuse=bool(
                 is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
             ),
-            supports_late_suffix_splice=False,
+            supports_late_suffix_splice=bool(has_prediction and is_joint_window and base.uses_p2_forecast),
             supports_rank_release_batch=bool(is_joint_window),
         )
 
@@ -749,6 +764,151 @@ class RouterSenseInjectionRuntime:
 
     def _should_generate_runtime_prediction(self) -> bool:
         return self._policy_supports_runtime_prediction()
+
+    def _policy_supports_target_layer_preplanning(self) -> bool:
+        capabilities = self._resolved_online_policy_capabilities()
+        return bool(capabilities is not None and capabilities.supports_target_layer_preplanning)
+
+    def _target_plan_key(self, *, layer_name: str) -> TargetPlanKey:
+        return TargetPlanKey(
+            run_id=str(self.run_id),
+            forward_epoch=int(self._forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+            target_layer_id=str(parse_layer_id(layer_name)),
+        )
+
+    def _ensure_target_planner_runtime(self) -> None:
+        if not self._policy_supports_target_layer_preplanning():
+            return
+        if self.target_plan_store is None:
+            self.target_plan_store = TargetPlanStore()
+        if self.target_planner_service is None:
+            self.target_planner_service = TargetLayerPlannerService(
+                store=self.target_plan_store,
+                agreement_fn=lambda digest: str(digest),
+            )
+            self.target_planner_service.start()
+
+    def _cleanup_target_plan_runtime(self) -> None:
+        if self.target_planner_service is not None:
+            self.target_planner_service.shutdown()
+        if self.target_plan_store is not None:
+            self.target_plan_store.shutdown()
+
+    def _build_release_batch_tasks_from_plan(
+        self,
+        *,
+        plan: PhaseExecutionPlan,
+        tensor_role: str,
+    ) -> list[ReleaseBatchTask]:
+        tasks: list[ReleaseBatchTask] = []
+        previous_task_id = ""
+        peer_sequence = 0
+        for wave in plan.waves:
+            for task in wave.bucket_tasks:
+                payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
+                if payload is None or int(payload.row_count) <= 0 or int(task.src_rank) == int(task.dst_rank):
+                    continue
+                deps = (previous_task_id,) if previous_task_id else ()
+                tasks.append(
+                    ReleaseBatchTask(
+                        task_id=str(task.task_id),
+                        phase=str(plan.phase),
+                        src_rank=int(task.src_rank),
+                        dst_rank=int(task.dst_rank),
+                        row_count=int(payload.row_count),
+                        sender_offset=int(payload.sender_offset_rows),
+                        receiver_offset=int(payload.receiver_offset_rows),
+                        tensor_role=str(tensor_role),
+                        peer_sequence=int(peer_sequence),
+                        dependency_ids=deps,
+                        plan_digest=str(plan.plan_hash),
+                        plan_version=int((plan.metrics or {}).get("plan_version", 1) or 1),
+                    )
+                )
+                previous_task_id = str(task.task_id)
+                peer_sequence += 1
+        return tasks
+
+    def _compile_async_phase_from_logical_plan(
+        self,
+        *,
+        logical_plan: Any,
+        layer_name: str,
+        phase: str,
+        local_context: PhaseReadyContext,
+        matrix: tuple[tuple[int, ...], ...],
+        plan_origin: str,
+        plan_version: int,
+    ) -> PhaseExecutionPlan:
+        global_contexts = reconstruct_global_phase_contexts_from_byte_matrix(
+            local_context=local_context,
+            matrix=matrix,
+            matrix_unit="rows",
+        )
+        compiled_local_context = next(
+            (context for context in global_contexts if int(context.global_rank) == int(local_context.global_rank)),
+            local_context,
+        )
+        canonical_tasks = build_phase_canonical_tasks(
+            phase=str(phase),
+            matrix_rows=matrix,
+            bucket_rows=int(self.config.bucket_rows),
+        )
+        prepared_wrapper = PreparedWindowPlan(
+            window_key=stable_hash({"layer_name": str(layer_name), "phase": str(phase), "plan_origin": str(plan_origin)})[:16],
+            forecast_digest="",
+            logical_plan=logical_plan,
+            created_at_layer_id=str(parse_layer_id(layer_name)),
+            applies_from_layer_id=str(parse_layer_id(layer_name)),
+            execution_capability_required="joint_window_async_p2p",
+            forecast_matrix=(),
+        )
+        compilation = compile_schedule(
+            PlanCompilationRequest(
+                logical_plan=logical_plan,
+                local_context=compiled_local_context,
+                global_contexts=global_contexts,
+                canonical_tasks=canonical_tasks,
+                phase=str(phase),
+                tensor_role="hidden_states" if str(phase) == "P1" else "dispatch_bundle",
+                rank_context={
+                    "global_rank": int(compiled_local_context.global_rank),
+                    "local_rank": int(compiled_local_context.local_rank),
+                },
+                compilation_options=CompilationOptions(
+                    bucket_rows=int(self.config.bucket_rows),
+                    p0_weight=float(self.config.p0_weight),
+                    p1_reservation_weight=float(self.config.p1_reservation_weight),
+                    p2_hint_weight=float(self.config.p2_hint_weight),
+                    debug_trace=not self._is_perf_profile(),
+                    invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+                    legacy_compiler_bridge=bool(getattr(self.config, "legacy_compiler_bridge", False)),
+                ),
+                prepared_plan=prepared_wrapper,
+            )
+        )
+        compiled = compilation.execution_plan
+        self._runtime_state.write("compiler_id", str(compilation.audit.compiler_id))
+        self._runtime_state.write("logical_plan_digest", str(compilation.audit.logical_plan_digest))
+        self._runtime_state.write("compiled_plan_digest", str(compilation.audit.compiled_plan_digest))
+        self._runtime_state.write("canonical_task_digest", str(compilation.audit.task_digest))
+        self._runtime_state.write("canonical_task_count", int(compilation.audit.task_count))
+        self._runtime_state.write("canonical_task_total_rows", int(compilation.audit.total_rows))
+        return replace(
+            compiled,
+            execution_mode="joint_window_async_p2p",
+            metrics={
+                **compiled.metrics,
+                "plan_origin": str(plan_origin),
+                "plan_version": int(plan_version),
+                "requested_bucket_mode": str(self._requested_bucket_mode()),
+                "effective_bucket_mode": str(self._effective_bucket_mode()),
+                "requested_bucket_rows": int(self.config.bucket_rows),
+                "effective_bucket_rows": int(self.config.bucket_rows),
+                "max_inflight_release_batches": int(getattr(self.config, "max_inflight_release_batches", 1) or 1),
+            },
+        )
 
     def _record_prediction_for_dispatch(
         self,
@@ -890,6 +1050,39 @@ class RouterSenseInjectionRuntime:
             audit_time_us=max(0.0, float(audit_end_ns - audit_start_ns) / 1000.0),
             prediction_audit_emitted=bool(existing_prediction is not None),
         )
+        if self._policy_supports_target_layer_preplanning():
+            self._ensure_target_planner_runtime()
+            previous_matrix = None
+            previous_record = actual_dispatch_by_layer.get(str(int(layer_id) - 1)) if str(layer_id).isdigit() else None
+            if isinstance(previous_record, dict):
+                previous_matrix = tuple(tuple(int(value) for value in row) for row in previous_record.get("matrix", []))
+            if self.target_planner_service is not None:
+                self.target_planner_service.enqueue(
+                    TargetLayerPlanningRequest(
+                        run_id=str(self.run_id),
+                        forward_epoch=int(self._forward_epoch),
+                        microbatch_id=str(self.microbatch_id),
+                        source_layer_id=str(layer_id),
+                        target_layer_id=str(next_layer_id),
+                        current_p0_rows=remote_matrix,
+                        previous_p0_rows=previous_matrix,
+                        predictor_name=str(self._online_p2_predictor_name()),
+                        policy_id=str(self._effective_phase_policy_name() or ""),
+                        group_size=int(world_size),
+                        bucket_rows=int(self.config.bucket_rows),
+                        policy_options=PolicyOptions(
+                            p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
+                            p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
+                            p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
+                            residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
+                            barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
+                            age_weight=float(getattr(self.config, "age_weight", 0.15)),
+                            prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
+                        ),
+                        topology_digest=digest_text(stable_hash({"ep_group_ranks": list(int(v) for v in self.ep_group_ranks)})),
+                        bucket_contract_digest=str(self._effective_bucket_mode()),
+                    )
+                )
 
     # Hint, shadow, and pending-window state
 
@@ -1666,6 +1859,174 @@ class RouterSenseInjectionRuntime:
             paired_b_policy_name=paired_b_name,
         )
 
+    def _try_prepared_target_plan_for_p0(
+        self,
+        *,
+        layer_name: str,
+        phase_ctx: PhaseReadyContext,
+        actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
+    ) -> PhaseExecutionPlan | None:
+        if not self._policy_supports_target_layer_preplanning() or self.target_plan_store is None:
+            return None
+        key = self._target_plan_key(layer_name=layer_name)
+        prepared_plan = self.target_plan_store.peek(key)
+        if prepared_plan is None:
+            self._runtime_state.write("prepared_plan_found", False)
+            return None
+        reconcile_key = (key.run_id, key.forward_epoch, key.microbatch_id, key.target_layer_id)
+        if reconcile_key in self._target_plan_reconciled_keys:
+            raise RuntimeError(f"target plan reconcile_once double invocation for {reconcile_key}")
+        outcome = reconcile_once(
+            prepared_plan=prepared_plan,
+            actual_p0_rows=canonicalize_remote_matrix(actual_p0_full_row_matrix),
+        )
+        inferred_p1_rows = tuple(
+            tuple(int(actual_p0_full_row_matrix[col_idx][row_idx]) for col_idx in range(len(actual_p0_full_row_matrix)))
+            for row_idx in range(len(actual_p0_full_row_matrix))
+        )
+        self._target_plan_reconciled_keys.add(reconcile_key)
+        self._runtime_state.write("prepared_plan_found", True)
+        self._runtime_state.write("reconciliation_count", 1)
+        self._runtime_state.write("full_u_replan_count", 0)
+        if outcome.status == "rejected" or outcome.logical_plan is None:
+            self.target_plan_store.reject(key, execution_origin="prepared_rejected")
+            self._runtime_state.write("execution_origin", "prepared_rejected")
+            return None
+        target_matrix = (
+            tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix)
+            if str(phase_ctx.phase) == "P0"
+            else tuple(tuple(int(value) for value in row) for row in (self._runtime_state.read("p1_inferred_from_p0") or []))
+        )
+        compiled = self._compile_async_phase_from_logical_plan(
+            logical_plan=outcome.logical_plan,
+            layer_name=layer_name,
+            phase=str(phase_ctx.phase),
+            local_context=phase_ctx,
+            matrix=target_matrix,
+            plan_origin="prepared_exact" if outcome.status == "exact" else "prepared_repaired",
+            plan_version=1,
+        )
+        synthetic_prepared = PreparedWindowPlan(
+            window_key=stable_hash({"target_layer": str(layer_name), "origin": str(outcome.status)})[:16],
+            forecast_digest=str(prepared_plan.h1_prediction_digest),
+            logical_plan=outcome.logical_plan,
+            created_at_layer_id=str(prepared_plan.source_layer_id),
+            applies_from_layer_id=str(prepared_plan.target_layer_id),
+            execution_capability_required="joint_window_async_p2p",
+            forecast_matrix=tuple(tuple(int(value) for value in row) for row in prepared_plan.h1_rows),
+        )
+        stored_logical_digest = str(outcome.logical_plan_digest or stable_hash(outcome.logical_plan.to_dict()))
+        stored_compile_input_digest = stable_hash(
+            {
+                "phase": "P1",
+                "layer_name": str(layer_name),
+                "forward_epoch": int(self._forward_epoch),
+                "matrix": [list(row) for row in inferred_p1_rows],
+            }
+        )
+        self._runtime_state.write("prepared_plan", synthetic_prepared)
+        self._runtime_state.write("stored_p1_plan_digest", stored_logical_digest)
+        self._runtime_state.write("stored_p1_logical_plan_digest", stored_logical_digest)
+        self._runtime_state.write("stored_p1_compile_input_digest", stored_compile_input_digest)
+        self._runtime_state.write("p1_inferred_from_p0", [list(row) for row in inferred_p1_rows])
+        self.target_plan_store.consume_once(key)
+        self._runtime_state.write("execution_origin", "prepared_exact" if outcome.status == "exact" else "prepared_repaired")
+        self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
+        return compiled
+
+    def _build_provisional_async_plan(
+        self,
+        *,
+        layer_name: str,
+        phase_ctx: PhaseReadyContext,
+        observation_p0: PreTransportTrafficObservation,
+        actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
+    ) -> PhaseExecutionPlan:
+        self._store_runtime_joint_plan_from_p0(
+            layer_name=layer_name,
+            phase_ctx=phase_ctx,
+            observation_p0=observation_p0,
+            actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+        )
+        prepared_plan = self._runtime_state.read("prepared_plan")
+        if prepared_plan is None:
+            raise RuntimeError(f"missing provisional prepared plan for {layer_name}")
+        compiled = self._compile_async_phase_from_logical_plan(
+            logical_plan=getattr(prepared_plan, "logical_plan"),
+            layer_name=layer_name,
+            phase="P0",
+            local_context=phase_ctx,
+            matrix=tuple(tuple(int(value) for value in row) for row in actual_p0_full_row_matrix),
+            plan_origin="provisional",
+            plan_version=0,
+        )
+        self._runtime_state.write("execution_origin", "provisional_only")
+        self._runtime_state.write("provisional_plan_digest", str(compiled.plan_hash))
+        return compiled
+
+    def _late_suffix_provider(
+        self,
+        *,
+        context: PhaseReadyContext,
+        plan: PhaseExecutionPlan,
+        tensor_role: str,
+        frontier: Any,
+        release_epoch: int,
+    ) -> dict[str, Any] | None:
+        if not self._policy_supports_target_layer_preplanning() or self.target_plan_store is None:
+            return None
+        layer_name = str(context.layer_name)
+        key = self._target_plan_key(layer_name=layer_name)
+        prepared_plan = self.target_plan_store.peek(key)
+        if prepared_plan is None:
+            return None
+        if getattr(frontier, "pending_count", lambda: 0)() <= 0:
+            self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
+            return None
+        actual_rows = tuple(
+            tuple(int(value) for value in row)
+            for row in (
+                ((self._runtime_state.read("global_joint_window_plan") or {}).get("actual_p0_full_row_matrix"))
+                or []
+            )
+        )
+        if not actual_rows:
+            return None
+        outcome = reconcile_once(
+            prepared_plan=prepared_plan,
+            actual_p0_rows=canonicalize_remote_matrix(actual_rows),
+            frozen_frontier=set(frontier.immutable_prefix_ids()),
+        )
+        if outcome.status == "rejected" or outcome.logical_plan is None:
+            self.target_plan_store.reject(key, execution_origin="late_rejected")
+            return None
+        compiled = self._compile_async_phase_from_logical_plan(
+            logical_plan=outcome.logical_plan,
+            layer_name=layer_name,
+            phase=str(context.phase),
+            local_context=context,
+            matrix=actual_rows,
+            plan_origin="late_spliced",
+            plan_version=2,
+        )
+        suffix_tasks = [
+            task
+            for task in self._build_release_batch_tasks_from_plan(plan=compiled, tensor_role=tensor_role)
+            if str(task.task_id) in set(frontier.replaceable_suffix_ids())
+        ]
+        if not suffix_tasks:
+            self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
+            return None
+        self.target_plan_store.consume_once(key)
+        self._runtime_state.write("execution_origin", "provisional_then_late_suffix")
+        self._runtime_state.write("suffix_splice_count", 1)
+        return {
+            "apply_suffix": True,
+            "suffix_tasks": suffix_tasks,
+            "new_plan_version": 2,
+            "parent_plan_version": int((plan.metrics or {}).get("plan_version", 0) or 0),
+        }
+
     def _compile_async_local_phase_plan(
         self,
         *,
@@ -2179,6 +2540,13 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.remove("global_joint_window_plan", None)
         self._runtime_state.write("forward_start_ns", int(time.monotonic_ns()))
         self._runtime_state.write("forward_end_ns", 0)
+        self._target_plan_reconciled_keys.clear()
+        if self.target_plan_store is not None:
+            self.target_plan_store.cleanup_epoch(
+                run_id=str(self.run_id),
+                forward_epoch=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
 
     def end_forward(self) -> dict[str, Any]:
         active_transport = self._active_transport is not None
@@ -2194,6 +2562,12 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.remove("global_joint_plan_wire", None)
         self._runtime_state.remove("global_joint_plan_agreement", None)
         self._runtime_state.remove("global_joint_window_plan", None)
+        if self.target_plan_store is not None:
+            self.target_plan_store.cleanup_epoch(
+                run_id=str(self.run_id),
+                forward_epoch=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
         return {
             "forward_epoch": int(self._forward_epoch),
             "active_transport_cleared": bool(active_transport),
@@ -2365,33 +2739,28 @@ class RouterSenseInjectionRuntime:
         self._timeline("before_phase_plan", layer_name=layer_name, phase_name="P0")
         if self._should_schedule_phase(layer_name=layer_name, phase="P0"):
             if self._is_joint_window_async_mode():
-                agreement_start_ns = time.monotonic_ns()
-                agreement = self._agree_joint_plan_digest(
+                target_plan = self._try_prepared_target_plan_for_p0(
                     layer_name=layer_name,
-                    phase="P0",
-                    prepared_plan=self._runtime_state.read("prepared_plan"),
+                    phase_ctx=phase_ctx,
+                    actual_p0_full_row_matrix=actual_p0_full_row_matrix,
                 )
-                if not bool(agreement.get("valid", False)):
-                    raise RuntimeError(f"global joint plan digest mismatch for {layer_name} P0")
-                plan = self._compile_async_local_phase_plan(
-                    layer_name=layer_name,
-                    phase="P0",
-                    local_context=phase_ctx,
-                )
-                agreement_end_ns = time.monotonic_ns()
-                self._record_planning_timing(
-                    layer_name=layer_name,
-                    phase="P0",
-                    stage="agree_global_joint_plan_digest",
-                    start_ns=agreement_start_ns,
-                    end_ns=agreement_end_ns,
-                    global_plan_digest=str(agreement.get("global_plan_digest", "")),
-                )
+                if target_plan is None:
+                    plan = self._build_provisional_async_plan(
+                        layer_name=layer_name,
+                        phase_ctx=phase_ctx,
+                        observation_p0=pretransport,
+                        actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+                    )
+                else:
+                    plan = target_plan
                 if self.observation_recorder is not None:
                     self.observation_recorder.record_scheduled_plan(
                         scheduled_plan_artifact(plan=plan, perf_profile=self._is_perf_profile())
                     )
                 self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
+                adapter = getattr(self, "transport_adapter", None)
+                if adapter is not None:
+                    setattr(adapter, "late_suffix_provider", self._late_suffix_provider)
                 self._runtime_state.write("before_async_p2p_phase_count", int(self._runtime_state.read("before_async_p2p_phase_count", 0) or 0) + 1)
                 self._timeline(
                     "phase_execution_plan_agreed",
@@ -2401,7 +2770,7 @@ class RouterSenseInjectionRuntime:
                     wave_count=len(plan.waves),
                     bucket_count=sum(len(wave.bucket_tasks) for wave in plan.waves),
                     execution_mode=plan.execution_mode,
-                    global_plan_digest=str(agreement.get("global_plan_digest", "")),
+                    execution_origin=str(self._runtime_state.read("execution_origin", "")),
                 )
                 hook_end_ns = time.monotonic_ns()
                 self._record_hook_timing(
@@ -2615,6 +2984,10 @@ class RouterSenseInjectionRuntime:
         if bool(self._effective_phase_policy_name()):
             clear_start_ns = time.monotonic_ns()
             self.clear_transport(layer_name=layer_name, phase="P0")
+            if self._is_joint_window_async_mode() and self.target_plan_store is not None:
+                key = self._target_plan_key(layer_name=layer_name)
+                if str(self._runtime_state.read("execution_origin", "")) == "provisional_only" and self.target_plan_store.peek(key) is not None:
+                    self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
             if self._is_joint_window_async_mode():
                 self._runtime_state.write("after_async_p2p_phase_count", int(self._runtime_state.read("after_async_p2p_phase_count", 0) or 0) + 1)
                 self._runtime_state.write("all_layer_async_phase_count", int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0) + 1)

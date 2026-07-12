@@ -16,6 +16,7 @@ import torch
 import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.phase import BucketTask, PhaseExecutionPlan, PhaseReadyContext
+from rs.runtime.online.megatron_ep.execution.release_frontier import ReleaseBatchFrontier, ReleaseBatchTask
 
 from .sync_wave_executor import PhaseExecutionResult, _copy_segment, _empty_like_rows
 
@@ -426,108 +427,209 @@ def execute_async_phase_tensor(
         local_copy_task_count += 1
     local_copy_end_ns = time.monotonic_ns()
 
-    recv_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
-    send_specs: list[tuple[tuple[int, str, int, int, int, int], dict[str, Any]]] = []
     execution_entries: list[dict[str, Any]] = []
     active_wave_ids: set[int] = set()
     remote_copy_rows = 0
-
-    for wave in plan.waves:
-        for task in wave.bucket_tasks:
-            payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
-            if payload is None or int(payload.row_count) <= 0:
-                continue
-            seq = _sequence_entry(
-                context=context,
-                phase=str(context.phase),
-                tensor_role=str(tensor_role),
-                wave_id=int(wave.wave_id),
-                task=task,
-                row_count=int(payload.row_count),
-                dtype=str(payload.dtype),
-                shape_suffix=tuple(int(v) for v in payload.shape_suffix),
-            )
-            base_entry = {
-                "phase": str(context.phase),
-                "wave_id": int(wave.wave_id),
-                "task_id": str(task.task_id),
-                "src_rank": int(task.src_rank),
-                "dst_rank": int(task.dst_rank),
-                "tensor_role": str(tensor_role),
-                "sender_offset_rows": int(payload.sender_offset_rows),
-                "receiver_offset_rows": int(payload.receiver_offset_rows),
-                "row_count": int(payload.row_count),
-                "byte_count": int(payload.payload_byte_count),
-                "sequence_key": list(seq),
-                "record_type": "task",
-                "execution_mode": "joint_window_async_p2p",
-            }
-            if emit_detailed_artifacts:
-                execution_entries.append(dict(base_entry))
-            if int(task.src_rank) == int(task.dst_rank):
-                continue
-            active_wave_ids.add(int(wave.wave_id))
-            if int(task.dst_rank) == rank:
-                recv_specs.append((seq, dict(base_entry)))
-                remote_copy_rows += int(payload.row_count)
-            if int(task.src_rank) == rank:
-                send_specs.append((seq, dict(base_entry)))
-
-    recv_specs.sort(key=lambda item: item[0])
-    send_specs.sort(key=lambda item: item[0])
     ordered_entries: list[dict[str, Any]] = []
-    work_handles: list[Any] = []
-    retained_tensors: list[torch.Tensor] = []
-
-    op_build_start_ns = time.monotonic_ns()
     if callable(timeline_hook):
         timeline_hook(
             "before_async_p2p_phase",
             phase=context.phase,
             tensor_role=tensor_role,
             plan_hash=plan.plan_hash,
-            recv_op_count=len(recv_specs),
-            send_op_count=len(send_specs),
+            recv_op_count=0,
+            send_op_count=0,
         )
-
-    ops: list[Any] = []
-    for seq, entry in recv_specs:
-        recv_tensor = output.narrow(0, int(entry["receiver_offset_rows"]), int(entry["row_count"]))
-        if emit_detailed_artifacts:
-            ordered_entries.append({**entry, "op_kind": "recv"})
-        retained_tensors.append(recv_tensor)
-        ops.append(
-            dist.P2POp(
-                dist.irecv,
-                recv_tensor,
-                int(entry["src_rank"]),
-                group=world_group,
+    plan_task_lookup: dict[str, tuple[int, BucketTask, Any]] = {}
+    frontier_tasks: list[ReleaseBatchTask] = []
+    previous_task_id = ""
+    peer_sequence = 0
+    for wave in plan.waves:
+        for task in wave.bucket_tasks:
+            payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
+            if payload is None or int(payload.row_count) <= 0:
+                continue
+            plan_task_lookup[str(task.task_id)] = (int(wave.wave_id), task, payload)
+            if emit_detailed_artifacts:
+                seq = _sequence_entry(
+                    context=context,
+                    phase=str(context.phase),
+                    tensor_role=str(tensor_role),
+                    wave_id=int(wave.wave_id),
+                    task=task,
+                    row_count=int(payload.row_count),
+                    dtype=str(payload.dtype),
+                    shape_suffix=tuple(int(v) for v in payload.shape_suffix),
+                )
+                execution_entries.append(
+                    {
+                        "phase": str(context.phase),
+                        "wave_id": int(wave.wave_id),
+                        "task_id": str(task.task_id),
+                        "src_rank": int(task.src_rank),
+                        "dst_rank": int(task.dst_rank),
+                        "tensor_role": str(tensor_role),
+                        "sender_offset_rows": int(payload.sender_offset_rows),
+                        "receiver_offset_rows": int(payload.receiver_offset_rows),
+                        "row_count": int(payload.row_count),
+                        "byte_count": int(payload.payload_byte_count),
+                        "sequence_key": list(seq),
+                        "record_type": "task",
+                        "execution_mode": "joint_window_async_p2p",
+                    }
+                )
+            if int(task.src_rank) == int(task.dst_rank):
+                continue
+            active_wave_ids.add(int(wave.wave_id))
+            deps = (previous_task_id,) if previous_task_id else ()
+            frontier_tasks.append(
+                ReleaseBatchTask(
+                    task_id=str(task.task_id),
+                    phase=str(context.phase),
+                    src_rank=int(task.src_rank),
+                    dst_rank=int(task.dst_rank),
+                    row_count=int(payload.row_count),
+                    sender_offset=int(payload.sender_offset_rows),
+                    receiver_offset=int(payload.receiver_offset_rows),
+                    tensor_role=str(tensor_role),
+                    peer_sequence=int(peer_sequence),
+                    dependency_ids=deps,
+                    plan_digest=str(plan.plan_hash),
+                    plan_version=int((plan.metrics or {}).get("plan_version", 0) or 0),
+                )
             )
-        )
-    for seq, entry in send_specs:
-        send_tensor = input_tensor.narrow(0, int(entry["sender_offset_rows"]), int(entry["row_count"]))
-        if emit_detailed_artifacts:
-            ordered_entries.append({**entry, "op_kind": "send"})
-        retained_tensors.append(send_tensor)
-        ops.append(
-            dist.P2POp(
-                dist.isend,
-                send_tensor,
-                int(entry["dst_rank"]),
-                group=world_group,
+            previous_task_id = str(task.task_id)
+            peer_sequence += 1
+            if int(task.dst_rank) == rank:
+                remote_copy_rows += int(payload.row_count)
+    frontier = ReleaseBatchFrontier(
+        tasks=frontier_tasks,
+        max_inflight_release_batches=int((plan.metrics or {}).get("max_inflight_release_batches", 1) or 1),
+    )
+    late_suffix_provider = rank_context.get("late_suffix_provider") if isinstance(rank_context, dict) else None
+    suffix_splice_count = 0
+    retained_tensors: list[torch.Tensor] = []
+    total_send_ops = 0
+    total_recv_ops = 0
+    batch_isend_irecv_call_count = 0
+    work_handle_count = 0
+    op_build_us = 0.0
+    batch_submit_us = 0.0
+    wait_us = 0.0
+    batch_count = 0
+    while True:
+        batch = frontier.commit_batch(limit=1)
+        if not batch:
+            if frontier.pending_count() <= 0:
+                break
+            ready = frontier.ready_batch(limit=1)
+            if not ready:
+                break
+            batch = frontier.commit_batch(limit=1)
+            if not batch:
+                break
+        batch_count += 1
+        frontier.mark_in_flight([task.task_id for task in batch])
+        op_build_start_ns = time.monotonic_ns()
+        ops: list[Any] = []
+        batch_send = 0
+        batch_recv = 0
+        for release_task in batch:
+            lookup = plan_task_lookup.get(str(release_task.task_id))
+            if lookup is not None:
+                wave_id, task, payload = lookup
+                seq = _sequence_entry(
+                    context=context,
+                    phase=str(context.phase),
+                    tensor_role=str(tensor_role),
+                    wave_id=int(wave_id),
+                    task=task,
+                    row_count=int(payload.row_count),
+                    dtype=str(payload.dtype),
+                    shape_suffix=tuple(int(v) for v in payload.shape_suffix),
+                )
+                payload_byte_count = int(payload.payload_byte_count)
+            else:
+                wave_id = -1
+                seq = (
+                    int(context.forward_epoch),
+                    int(rank),
+                    0,
+                    int(release_task.src_rank),
+                    int(release_task.dst_rank),
+                    int(release_task.peer_sequence),
+                    int(release_task.row_count),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                payload_byte_count = int(release_task.row_count)
+            entry = {
+                "phase": str(context.phase),
+                "wave_id": int(wave_id),
+                "task_id": str(release_task.task_id),
+                "src_rank": int(release_task.src_rank),
+                "dst_rank": int(release_task.dst_rank),
+                "tensor_role": str(tensor_role),
+                "sender_offset_rows": int(release_task.sender_offset),
+                "receiver_offset_rows": int(release_task.receiver_offset),
+                "row_count": int(release_task.row_count),
+                "byte_count": int(payload_byte_count),
+                "sequence_key": list(seq),
+                "record_type": "task",
+                "execution_mode": "joint_window_async_p2p",
+            }
+            if int(release_task.dst_rank) == rank:
+                recv_tensor = output.narrow(0, int(release_task.receiver_offset), int(release_task.row_count))
+                retained_tensors.append(recv_tensor)
+                ops.append(dist.P2POp(dist.irecv, recv_tensor, int(release_task.src_rank), group=world_group))
+                batch_recv += 1
+                if emit_detailed_artifacts:
+                    ordered_entries.append({**entry, "op_kind": "recv", "release_epoch": int(frontier.release_epoch)})
+            if int(release_task.src_rank) == rank:
+                send_tensor = input_tensor.narrow(0, int(release_task.sender_offset), int(release_task.row_count))
+                retained_tensors.append(send_tensor)
+                ops.append(dist.P2POp(dist.isend, send_tensor, int(release_task.dst_rank), group=world_group))
+                batch_send += 1
+                if emit_detailed_artifacts:
+                    ordered_entries.append({**entry, "op_kind": "send", "release_epoch": int(frontier.release_epoch)})
+        op_build_end_ns = time.monotonic_ns()
+        batch_submit_start_ns = time.monotonic_ns()
+        work_handles: list[Any] = list(dist.batch_isend_irecv(ops)) if ops else []
+        batch_submit_end_ns = time.monotonic_ns()
+        wait_start_ns = time.monotonic_ns()
+        for work in work_handles:
+            work.wait()
+        wait_end_ns = time.monotonic_ns()
+        frontier.mark_completed([task.task_id for task in batch])
+        op_build_us += float((op_build_end_ns - op_build_start_ns) / 1000.0)
+        batch_submit_us += float((batch_submit_end_ns - batch_submit_start_ns) / 1000.0)
+        wait_us += float((wait_end_ns - wait_start_ns) / 1000.0)
+        total_send_ops += int(batch_send)
+        total_recv_ops += int(batch_recv)
+        batch_isend_irecv_call_count += int(1 if ops else 0)
+        work_handle_count += int(len(work_handles))
+        if callable(late_suffix_provider) and frontier.pending_count() > 0:
+            suffix_result = late_suffix_provider(
+                context=context,
+                plan=plan,
+                tensor_role=tensor_role,
+                frontier=frontier,
+                release_epoch=int(frontier.release_epoch),
             )
-        )
-    op_build_end_ns = time.monotonic_ns()
-
-    batch_submit_start_ns = time.monotonic_ns()
-    if ops:
-        work_handles = list(dist.batch_isend_irecv(ops))
-    batch_submit_end_ns = time.monotonic_ns()
-
-    wait_start_ns = time.monotonic_ns()
-    for work in work_handles:
-        work.wait()
-    wait_end_ns = time.monotonic_ns()
+            if isinstance(suffix_result, dict) and suffix_result.get("apply_suffix"):
+                suffix_tasks = list(suffix_result.get("suffix_tasks", []))
+                frontier.apply_late_suffix(
+                    new_plan_version=int(suffix_result.get("new_plan_version", 1)),
+                    suffix_tasks=suffix_tasks,
+                    plan_origin="late_spliced",
+                    parent_plan_version=int(suffix_result.get("parent_plan_version", 0)),
+                )
+                suffix_splice_count += 1
     total_end_ns = time.monotonic_ns()
 
     if callable(timeline_hook):
@@ -536,8 +638,8 @@ def execute_async_phase_tensor(
             phase=context.phase,
             tensor_role=tensor_role,
             plan_hash=plan.plan_hash,
-            recv_op_count=len(recv_specs),
-            send_op_count=len(send_specs),
+            recv_op_count=total_recv_ops,
+            send_op_count=total_send_ops,
         )
 
     execution_entries.append(
@@ -546,27 +648,26 @@ def execute_async_phase_tensor(
             "phase": str(context.phase),
             "tensor_role": str(tensor_role),
             "execution_mode": "joint_window_async_p2p",
-            "recv_op_count": len(recv_specs),
-            "send_op_count": len(send_specs),
-            "op_build_start_ns": int(op_build_start_ns),
-            "op_build_end_ns": int(op_build_end_ns),
-            "batch_submit_start_ns": int(batch_submit_start_ns),
-            "batch_submit_end_ns": int(batch_submit_end_ns),
-            "wait_start_ns": int(wait_start_ns),
-            "wait_end_ns": int(wait_end_ns),
+            "recv_op_count": int(total_recv_ops),
+            "send_op_count": int(total_send_ops),
             "retained_tensor_count": len(retained_tensors),
-            "work_handle_count": len(work_handles),
+            "work_handle_count": int(work_handle_count),
             "coalescing_enabled": False,
             "coalesced_task_count": 0,
             "local_copy_task_count": int(local_copy_task_count),
             "local_copy_row_count": int(local_copy_rows),
             "local_copy_us": float((local_copy_end_ns - local_copy_start_ns) / 1000.0),
-            "op_build_us": float((op_build_end_ns - op_build_start_ns) / 1000.0),
-            "batch_submit_us": float((batch_submit_end_ns - batch_submit_start_ns) / 1000.0),
-            "wait_us": float((wait_end_ns - wait_start_ns) / 1000.0),
+            "op_build_us": float(op_build_us),
+            "batch_submit_us": float(batch_submit_us),
+            "wait_us": float(wait_us),
             "total_us": float((total_end_ns - total_start_ns) / 1000.0),
-            "batch_isend_irecv_call_count": int(1 if ops else 0),
+            "batch_isend_irecv_call_count": int(batch_isend_irecv_call_count),
             "all_work_completed": True,
+            "frontier_release_batch_count": int(batch_count),
+            "suffix_splice_count": int(suffix_splice_count),
+            "frontier_digest": str(frontier.frontier_digest()),
+            "immutable_prefix_ids": list(frontier.immutable_prefix_ids()),
+            "replaceable_suffix_ids": list(frontier.replaceable_suffix_ids()),
         }
     )
 

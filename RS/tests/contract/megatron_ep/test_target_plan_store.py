@@ -49,7 +49,6 @@ def test_target_plan_store_cancel_and_invalidate() -> None:
     store.put(key, _plan())
     store.cancel(key)
     assert store.peek(key) is None
-    store.put(key, _plan())
-    store.invalidate(key)
-    assert store.peek(key) is None
-
+    assert store.get_terminal_record(key) is not None
+    with pytest.raises(RouterSenseInvariantError):
+        store.put(key, _plan())

@@ -16,7 +16,13 @@ class ReleaseBatchTask:
     src_rank: int
     dst_rank: int
     row_count: int
-    plan_version: int
+    plan_version: int = 0
+    sender_offset: int = 0
+    receiver_offset: int = 0
+    tensor_role: str = ""
+    peer_sequence: int = 0
+    dependency_ids: tuple[str, ...] = ()
+    plan_digest: str = ""
     state: str = "pending"
 
 
@@ -28,8 +34,20 @@ class ReleaseBatchFrontier:
     lineage: list[PlanVersionLineage] = field(default_factory=list)
 
     def ready_batch(self, *, limit: int) -> list[ReleaseBatchTask]:
-        ready = [task for task in self.tasks if task.state in {"pending", "planned"}]
-        return ready[: max(0, int(limit))]
+        completed = {task.task_id for task in self.tasks if task.state == "completed"}
+        in_flight = sum(1 for task in self.tasks if task.state in {"committed", "in_flight"})
+        if in_flight >= max(1, int(self.max_inflight_release_batches)):
+            return []
+        ready: list[ReleaseBatchTask] = []
+        for task in self.tasks:
+            if task.state not in {"pending", "planned"}:
+                continue
+            if any(dep not in completed for dep in task.dependency_ids):
+                continue
+            ready.append(task)
+            if len(ready) >= max(0, int(limit)):
+                break
+        return ready
 
     def commit_batch(self, *, limit: int) -> list[ReleaseBatchTask]:
         batch = []
@@ -75,8 +93,28 @@ class ReleaseBatchFrontier:
     def replaceable_suffix_ids(self) -> tuple[str, ...]:
         return tuple(task.task_id for task in self.tasks if task.state in {"pending", "planned"})
 
+    def immutable_prefix(self) -> tuple[ReleaseBatchTask, ...]:
+        return tuple(task for task in self.tasks if task.state in {"committed", "in_flight", "completed"})
+
+    def replaceable_suffix(self) -> tuple[ReleaseBatchTask, ...]:
+        return tuple(task for task in self.tasks if task.state in {"pending", "planned"})
+
+    def pending_count(self) -> int:
+        return sum(1 for task in self.tasks if task.state in {"pending", "planned"})
+
     def frontier_digest(self) -> str:
-        payload = [(task.task_id, task.state, task.plan_version) for task in self.tasks]
+        payload = [
+            (
+                task.task_id,
+                task.state,
+                task.plan_version,
+                task.peer_sequence,
+                task.sender_offset,
+                task.receiver_offset,
+                task.row_count,
+            )
+            for task in self.tasks
+        ]
         return stable_hash(payload)
 
     def apply_late_suffix(
@@ -131,4 +169,3 @@ class ReleaseBatchFrontier:
                 actual={"task_id": updated.task_id},
             )
         )
-

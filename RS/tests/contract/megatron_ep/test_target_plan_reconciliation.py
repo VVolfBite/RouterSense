@@ -30,16 +30,15 @@ def _prepared(h1=((0, 2), (1, 0))) -> TargetLayerPreparedJointPlan:
 
 def test_reconcile_exact_match() -> None:
     outcome = reconcile_target_plan(prepared_plan=_prepared(), actual_p0_rows=((0, 2), (1, 0)))
-    assert outcome.status == "exact_match"
+    assert outcome.status == "exact"
 
 
 def test_reconcile_repairable() -> None:
     outcome = reconcile_target_plan(prepared_plan=_prepared(), actual_p0_rows=((0, 4), (1, 0)))
-    assert outcome.status == "repairable"
+    assert outcome.status == "repaired"
     assert outcome.resized_edges == 1
 
 
 def test_reconcile_reject() -> None:
     outcome = reconcile_target_plan(prepared_plan=_prepared(h1=((0, 2), (0, 0))), actual_p0_rows=((0, 0), (5, 0)))
-    assert outcome.status == "reject"
-
+    assert outcome.status == "rejected"

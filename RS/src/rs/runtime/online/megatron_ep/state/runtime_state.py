@@ -131,6 +131,13 @@ class PreparedWindowRuntimeState:
     compiler_shadow_missing_task_count: int = 0
     compiler_shadow_extra_task_count: int = 0
     compiler_shadow_execution_order_matches_legacy: bool = False
+    prepared_plan_found: bool = False
+    execution_origin: str = ""
+    reconciliation_count: int = 0
+    full_u_replan_count: int = 0
+    suffix_splice_count: int = 0
+    prepared_target_logical_plan_digest: str = ""
+    provisional_plan_digest: str = ""
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
     extras: dict[str, Any] = field(default_factory=dict)

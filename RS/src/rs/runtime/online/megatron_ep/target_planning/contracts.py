@@ -7,8 +7,9 @@ from rs.scheduling.contracts import LogicalSchedulePlan
 
 
 MatrixRows = tuple[tuple[int, ...], ...]
-ReconciliationStatus = Literal["exact_match", "repairable", "reject"]
+ReconciliationStatus = Literal["exact", "repaired", "rejected"]
 PlanOrigin = Literal["current_window", "prepared_priority_hint", "target_prepared", "provisional", "late_spliced"]
+TargetPlanFinalStatus = Literal["AVAILABLE", "CONSUMED", "REJECTED", "EXPIRED", "CANCELLED"]
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,22 @@ class ReconciliationOutcome:
 
 
 @dataclass(frozen=True)
+class ReconciledExecutionPlan:
+    status: ReconciliationStatus
+    logical_plan: LogicalSchedulePlan | None
+    logical_plan_digest: str | None
+    preserved_edge_ratio: float
+    inserted_edge_count: int
+    removed_edge_count: int
+    resized_edge_count: int
+    repair_us: float
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class PlanVersionLineage:
     old_version: int
     new_version: int
@@ -160,3 +177,14 @@ class PlanVersionLineage:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass(frozen=True)
+class TargetPlanTerminalRecord:
+    key: TargetPlanKey
+    plan_digest: str
+    final_status: TargetPlanFinalStatus
+    execution_origin: str
+    terminal_at_ns: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
