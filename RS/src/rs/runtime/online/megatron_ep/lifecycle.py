@@ -20,6 +20,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from rs.core.layer_selection import layer_selected, resolve_layer_selector
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
     InjectionDecision,
@@ -149,6 +150,7 @@ class RouterSenseInjectionRuntime:
     _active_plan_versions: dict[str, int] = field(default_factory=dict)
     _active_plan_hashes: dict[str, str] = field(default_factory=dict)
     _window_states: dict[str, Any] = field(default_factory=dict)
+    _selected_layer_matches_seen: set[str] = field(default_factory=set)
     _forward_epoch: int = 0
     observation_recorder: RuntimeObservationRecorder | None = None
     _active_transport: dict[str, Any] | None = None
@@ -256,11 +258,16 @@ class RouterSenseInjectionRuntime:
         return self._pending_window_adapter_instance
 
     def _layer_selected(self, layer_name: str) -> bool:
-        selector = str(self.config.schedule_layer_selector)
-        if selector in {"", "all"}:
-            return True
-        selected = {item.strip() for item in selector.split(",") if item.strip()}
-        return parse_layer_id(layer_name) in selected
+        resolved = resolve_layer_selector(
+            str(self.config.schedule_layer_selector),
+            selected_layer_ids=tuple(str(item) for item in getattr(self.config, "selected_layer_ids", ()) or ()),
+            invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+        )
+        matched = layer_selected(parse_layer_id(layer_name), selector=resolved)
+        if matched:
+            self._selected_layer_matches_seen.add(parse_layer_id(layer_name))
+            self._runtime_state.metrics.selected_layer_match_count = int(len(self._selected_layer_matches_seen))
+        return matched
 
     def _phase_selected(self, phase: str) -> bool:
         selector = str(self.config.schedule_phase_selector).lower()
@@ -320,6 +327,10 @@ class RouterSenseInjectionRuntime:
 
     def _activate_transport(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
         start_ns = time.monotonic_ns()
+        if self._layer_selected(layer_name):
+            self._runtime_state.metrics.selected_transport_execution_count = int(
+                self._runtime_state.metrics.selected_transport_execution_count
+            ) + 1
         self._active_transport = {
             "layer_name": layer_name,
             "phase": phase,
@@ -687,8 +698,26 @@ class RouterSenseInjectionRuntime:
             f"{name!r}; expected one of ('none', 'zero_hint', 'copy_current_dispatch', 'history_ema')"
         )
 
+    def _resolved_online_policy_family(self) -> str:
+        resolved = resolve_online_policy_config(self.config)
+        if resolved is None:
+            return ""
+        return str(getattr(resolved.spec, "family", ""))
+
+    def _policy_supports_runtime_prediction(self) -> bool:
+        return (
+            self._resolved_online_policy_family() in {"joint_u", "runtime_safe"}
+            and str(self.config.p2_hint_mode) == "calibrated_artifact"
+        )
+
+    def _policy_uses_joint_window_plan(self) -> bool:
+        return (
+            self._resolved_online_policy_family() in {"joint_u", "runtime_safe"}
+            and self._is_joint_window_async_mode()
+        )
+
     def _should_generate_runtime_prediction(self) -> bool:
-        return self._is_joint_window_async_mode() or self.config.p2_hint_mode == "calibrated_artifact"
+        return self._policy_supports_runtime_prediction()
 
     def _record_prediction_for_dispatch(
         self,
@@ -2152,6 +2181,8 @@ class RouterSenseInjectionRuntime:
         packed_probs: Any,
     ) -> None:
         hook_start_ns = time.monotonic_ns()
+        if self._layer_selected(layer_name):
+            self._runtime_state.metrics.selected_p0_hook_count = int(self._runtime_state.metrics.selected_p0_hook_count) + 1
         self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
         sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
         if callable(sync_fn):
@@ -2196,13 +2227,13 @@ class RouterSenseInjectionRuntime:
                 actual_p0_full_row_matrix=actual_p0_full_row_matrix,
                 device=matrix_device,
             )
-            if self._is_joint_window_async_mode():
-                self._store_runtime_joint_plan_from_p0(
-                    layer_name=layer_name,
-                    phase_ctx=phase_ctx,
-                    observation_p0=pretransport,
-                    actual_p0_full_row_matrix=actual_p0_full_row_matrix,
-                )
+        if self._policy_uses_joint_window_plan():
+            self._store_runtime_joint_plan_from_p0(
+                layer_name=layer_name,
+                phase_ctx=phase_ctx,
+                observation_p0=pretransport,
+                actual_p0_full_row_matrix=actual_p0_full_row_matrix,
+            )
         p2_hint = self._build_p2_hint(layer_name=layer_name, phase="P0")
         phase_ctx = replace(phase_ctx, p2_hint=p2_hint)
         observation_start_ns = time.monotonic_ns()
@@ -2628,6 +2659,8 @@ class RouterSenseInjectionRuntime:
 
     def before_token_combine(self, *, layer_name: str, dispatcher: Any, packed_hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
+        if self._layer_selected(layer_name):
+            self._runtime_state.metrics.selected_p1_hook_count = int(self._runtime_state.metrics.selected_p1_hook_count) + 1
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
         self._runtime_state.write("expert_compute_end_ns", int(hook_start_ns))
         observation_start_ns = time.monotonic_ns()

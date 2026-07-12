@@ -134,6 +134,45 @@ artifact:
         load_run_config(config_path=path)
 
 
+def test_execution_schedule_selected_layer_ids_are_loaded(tmp_path: Path) -> None:
+    path = tmp_path / "selected-layer-config.yaml"
+    path.write_text(
+        """
+run:
+  kind: online_policy_correctness
+  name: selected-layer-config
+model:
+  model_id: fixture/model
+topology:
+  launcher:
+    kind: torchrun
+    nproc_per_node: 2
+  ep_size: 2
+runtime:
+  precision: bf16
+  control_mode: sync_before_phase
+online_policy:
+  name: bucketed_fifo
+execution:
+  mode: phase_sync_wave
+  schedule:
+    layer_selector: selected
+    phase_selector: both
+    selected_layer_ids: ["0", "1"]
+observation:
+  profile: execution
+validation:
+  save_logits: false
+artifact:
+  artifact_root: artifacts/test
+""".strip(),
+        encoding="utf-8",
+    )
+    config = load_run_config(config_path=path)
+    assert config.execution.schedule.layer_selector == "selected"
+    assert config.execution.schedule.selected_layer_ids == ("0", "1")
+
+
 def test_capture_expert_trace_is_preserved_from_yaml(tmp_path: Path) -> None:
     path = tmp_path / "capture-expert-trace.yaml"
     path.write_text(

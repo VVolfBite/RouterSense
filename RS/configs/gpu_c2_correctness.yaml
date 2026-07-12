@@ -21,6 +21,9 @@ prediction: {}
 evaluation:
   repeats: 2
   warmup: 0
+  selected_layer_ids:
+    - 0
+    - 1
   metrics:
     - output_parity
     - nan_inf
@@ -35,7 +38,7 @@ candidate_strategies:
   - routersense_joint_predicted_raw_async
   - routersense_joint_zero_safe_async
   - routersense_joint_predicted_safe_async
-selected_layers: selected
+selected_layers: 0,1
 forward_epochs: 2
 profile: execution
 preflight_mode: full

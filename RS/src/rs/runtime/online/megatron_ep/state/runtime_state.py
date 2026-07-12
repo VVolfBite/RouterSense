@@ -11,6 +11,11 @@ MatrixRows = tuple[tuple[int, ...], ...]
 
 @dataclass
 class RuntimeExecutionMetrics:
+    selected_layer_match_count: int = 0
+    selected_p0_hook_count: int = 0
+    selected_p1_hook_count: int = 0
+    selected_transport_execution_count: int = 0
+
     p0_traffic_matrix_gather_count: int = 0
     prediction_extra_collective_count: int = 0
     p1_planning_collective_count: int = 0

@@ -32,6 +32,7 @@ AssertionStatus = Literal["passed", "failed", "not_applicable"]
 class ExecutionSelection:
     layer_selector: str = "all"
     phase_selector: str = "both"
+    selected_layer_ids: tuple[str, ...] = ()
     bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
 
@@ -116,6 +117,7 @@ class RouterSenseInjectionConfig:
     safe_projection_mode: str = "host_select"
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
+    selected_layer_ids: tuple[str, ...] = ()
     capture_phase_tensors: bool = False
     capture_expert_trace: bool = False
     observation_profile: str = "minimal"

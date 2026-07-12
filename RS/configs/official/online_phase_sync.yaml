@@ -15,7 +15,7 @@ runtime:
   output_mode: paper
   precision: fp16
   dispatcher: alltoall
-  selected_layers: selected
+  selected_layers: 0,1
 traffic:
   matrix_unit: rows
   bucket_rows: 1024
@@ -28,6 +28,9 @@ prediction: {}
 evaluation:
   repeats: 1
   warmup: 0
+  selected_layer_ids:
+    - 0
+    - 1
   metrics: []
   baseline_strategy: native
   phase_selector: both

@@ -133,6 +133,7 @@ class OfflineStudyConfig:
 class ExecutionScheduleConfig:
     layer_selector: str = "all"
     phase_selector: str = "both"
+    selected_layer_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -376,6 +377,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "online_policy": {"name", "parameters", "p2"},
         "offline_study": {"policies", "reference_policies", "p2_source", "window"},
         "execution": {"mode", "bucket_mode", "bucket_rows", "safe_projection_mode", "schedule"},
+        "evaluation": {"selected_layer_ids"},
         "observation": {
             "profile",
             "capture_enabled",
@@ -388,6 +390,9 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         },
         "validation": {"save_logits", "stop_after_selected_layer", "allow_debug_capture"},
         "artifact": {"output_root", "artifact_root"},
+        "requested_layer_selector": set(),
+        "resolved_layer_selector": set(),
+        "resolved_layer_ids": set(),
     }
     nested: dict[tuple[str, ...], set[str]] = {
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
@@ -405,7 +410,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         },
         ("online_policy", "p2"): {"mode", "artifact"},
         ("offline_study", "window"): {"sample_selector", "start_layer_selector"},
-        ("execution", "schedule"): {"layer_selector", "phase_selector"},
+        ("execution", "schedule"): {"layer_selector", "phase_selector", "selected_layer_ids"},
     }
 
     def _walk(mapping: dict[str, Any], path: tuple[str, ...] = ()) -> None:
@@ -529,6 +534,14 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             schedule=ExecutionScheduleConfig(
                 layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
                 phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),
+                selected_layer_ids=tuple(
+                    str(item)
+                    for item in (
+                        execution.get("schedule", {}).get("selected_layer_ids")
+                        or payload.get("evaluation", {}).get("selected_layer_ids")
+                        or ()
+                    )
+                ),
             ),
         ),
         observation=RuntimeObservationConfig(

@@ -15,7 +15,7 @@ runtime:
   output_mode: paper
   precision: fp16
   dispatcher: alltoall
-  selected_layers: selected
+  selected_layers: 0,1
 traffic:
   matrix_unit: rows
   bucket_mode: dynamic_current
@@ -34,6 +34,9 @@ prediction: {}
 evaluation:
   repeats: 1
   warmup: 0
+  selected_layer_ids:
+    - 0
+    - 1
   metrics: []
   baseline_strategy: fifo_async_p2p
   phase_selector: both

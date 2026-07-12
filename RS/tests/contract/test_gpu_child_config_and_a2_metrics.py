@@ -5,6 +5,7 @@ from pathlib import Path
 
 from experiments.distributed._gpu_runner_common import build_policy_correctness_config, load_official_config
 from experiments.distributed.run_gpu_a2_strategy_compare import _metric_series
+from rs.core.layer_selection import resolve_layer_selector
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +63,7 @@ def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
         "policy": {"options": {"p0_weight": 1.0, "p1_reservation_weight": 1.0, "p2_hint_weight": 1.0, "residual_weight": 0.75, "barrier_weight": 1.75, "age_weight": 0.15, "prediction_weight": 0.35}},
         "workload": {"prompts": "configs/workload/smoke_prompts.json"},
         "execution": {"schedule_phase_selector": "both"},
+        "evaluation": {"selected_layer_ids": [0, 1]},
     }
     raw_cfg = build_policy_correctness_config(
         base_comparison=base,
@@ -84,3 +86,38 @@ def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
     assert raw_cfg["execution"]["safe_projection_mode"] == "disabled"
     assert safe_cfg["execution"]["safe_projection_mode"] == "host_select"
     assert json.dumps(raw_cfg, sort_keys=True) != json.dumps(safe_cfg, sort_keys=True)
+
+
+def test_selected_layer_selector_resolves_to_explicit_ids_in_child_config() -> None:
+    base = {
+        "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+        "topology": {"world_size": 4, "ep_size": 4},
+        "runtime": {"line": "async_release", "invariant_mode": "evaluation_strict", "precision": "bf16", "dispatcher": "alltoall"},
+        "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+        "policy": {"options": {}},
+        "workload": {"prompts": "configs/workload/smoke_prompts.json"},
+        "execution": {"schedule_phase_selector": "both"},
+        "evaluation": {"selected_layer_ids": [0, 1]},
+    }
+    cfg = build_policy_correctness_config(
+        base_comparison=base,
+        strategy_name="routersense_joint_predicted_raw_async",
+        run_name="selected",
+        output_root=Path("/tmp/selected"),
+        profile="execution",
+        selected_layers="selected",
+        save_logits=False,
+    )
+    assert cfg["requested_layer_selector"] == "selected"
+    assert cfg["resolved_layer_selector"] == "explicit"
+    assert cfg["resolved_layer_ids"] == ["0", "1"]
+    assert cfg["execution"]["schedule"]["selected_layer_ids"] == ["0", "1"]
+
+
+def test_selected_layer_selector_requires_ids_in_strict_mode() -> None:
+    try:
+        resolve_layer_selector("selected", invariant_mode="evaluation_strict")
+    except ValueError as exc:
+        assert "selected_layer_ids" in str(exc)
+    else:
+        raise AssertionError("expected strict selected resolver to fail without selected_layer_ids")

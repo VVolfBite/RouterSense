@@ -103,6 +103,8 @@ def build_policy_correctness_config(
     selected_layers: str,
     save_logits: bool,
 ) -> dict[str, Any]:
+    from rs.core.layer_selection import resolve_layer_selector
+
     model = dict(base_comparison.get("model", {}) or {})
     topology = dict(base_comparison.get("topology", {}) or {})
     topology_ep = dict(topology.get("ep", {}) or {})
@@ -131,6 +133,19 @@ def build_policy_correctness_config(
         effective_runtime_line = "async_release"
     requested_bucket_mode = str(traffic.get("bucket_mode", "dynamic_current"))
     requested_bucket_rows = int(traffic.get("bucket_rows", 0) or 0)
+    selected_layer_ids = [
+        str(item)
+        for item in (
+            ((base_comparison.get("evaluation", {}) or {}).get("selected_layer_ids"))
+            or ((execution.get("schedule", {}) or {}).get("selected_layer_ids"))
+            or ()
+        )
+    ]
+    resolved_layer_selector = resolve_layer_selector(
+        str(selected_layers),
+        selected_layer_ids=selected_layer_ids,
+        invariant_mode=requested_invariant_mode,
+    )
     effective_safe_projection_mode = str(
         strategy_runtime.get(
             "safe_projection_mode",
@@ -200,6 +215,7 @@ def build_policy_correctness_config(
             "schedule": {
                 "layer_selector": str(selected_layers),
                 "phase_selector": str(execution.get("schedule_phase_selector", "both")),
+                "selected_layer_ids": list(resolved_layer_selector.resolved_layer_ids),
             },
         },
         "observation": {
@@ -217,6 +233,12 @@ def build_policy_correctness_config(
             "stop_after_selected_layer": False,
         },
         "artifact": {"artifact_root": str(output_root)},
+        "evaluation": {
+            "selected_layer_ids": list(resolved_layer_selector.resolved_layer_ids),
+        },
+        "requested_layer_selector": str(selected_layers),
+        "resolved_layer_selector": str(resolved_layer_selector.resolved_selector),
+        "resolved_layer_ids": list(resolved_layer_selector.resolved_layer_ids),
     }
 
 

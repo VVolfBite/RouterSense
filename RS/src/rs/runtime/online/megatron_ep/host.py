@@ -785,6 +785,7 @@ def attach_formal_online_runtime(
         safe_projection_mode=str(getattr(runtime_config.policy_parameters, "safe_projection_mode", "host_select")),
         schedule_layer_selector=runtime_config.execution_selection.layer_selector,
         schedule_phase_selector=runtime_config.execution_selection.phase_selector,
+        selected_layer_ids=tuple(str(item) for item in getattr(runtime_config.execution_selection, "selected_layer_ids", ()) or ()),
         capture_phase_tensors=bool(runtime_config.observation.get("capture_enabled", False)),
         capture_expert_trace=bool(runtime_config.observation.get("capture_expert_trace", False)),
         stop_after_selected_layer=bool(runtime_config.validation.stop_after_selected_layer),

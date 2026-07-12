@@ -239,6 +239,7 @@ def test_gpu_child_config_propagates_bucket_safe_and_weight_parameters() -> None
             },
             "workload": {"prompts": "configs/workload/smoke_prompts.json"},
             "execution": {"schedule_phase_selector": "both"},
+            "evaluation": {"selected_layer_ids": [0, 1]},
             "prediction": {"name": "copy_current_dispatch"},
         },
         strategy_name="routersense_joint_predicted_safe_async",
