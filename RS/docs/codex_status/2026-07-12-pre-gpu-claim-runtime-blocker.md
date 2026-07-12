@@ -1,27 +1,39 @@
-Starting SHA: `6e555201efa900e4db0217ef6e989846e0e6d61f`
+Starting SHA: `d76a5221ade3c714bda89739c4c196bd15178f3a`
 
-Current SHA: `c9b8a2600498c917ccdc5aa494991bcd76add066`
+Current SHA: `PENDING_FINAL_SHA`
 
 CPU/Gloo closure completed on the current codebase:
 
 - selected-layer resolution is explicit and strict
 - official child config writes requested/resolved layer selectors and IDs
 - runtime selected-layer counters are recorded
-- online prediction generation is gated by policy capability instead of async-mode alone
-- unsupported online scheduler modes raise `UnsupportedSchedulerMode`
-- `bucketed_fifo` resolves to the canonical FIFO phase policy
-- `rs.scheduling` no longer imports `rs.runtime`
-- targeted regression suite passed (`176 passed`)
-- low-memory runtime-integrated Gloo gate passed
+- runtime prediction generation is gated by formal policy capability instead of async-mode family checks
+- target-plan formal contracts now exist:
+  `CurrentWindowJointPlan`, `PreparedPriorityHint`, `TargetLayerPreparedJointPlan`, `ProvisionalExecutionPlan`
+- standalone target-plan modules now exist:
+  two-horizon predictor, target-plan store, target-plan reconcile, release-frontier state model
+- new target-plan contract suite passed (`12 passed`)
+- low-memory runtime-integrated Gloo gate still passed on the modified codebase
 
-The remaining blocker is semantic, not environmental:
+The remaining blocker is now a single formal runtime mechanism:
 
-- the runtime still only executes current-window joint planning for `P0(L)` and `P1(L)`
-- there is no end-to-end `TargetLayerPreparedJointPlan`
-- there is no real `H1/H2` two-horizon target-plan generation and storage chain
-- there is no live provisional/default-continue path that later upgrades into a target-plan lineage
-- there is no release-batch frontier or late suffix splice in the real async executor
+- the new target-plan / provisional / late-suffix / release-frontier chain is not yet integrated into the formal Megatron lifecycle and async transport hot path
 
-Because of that, a 4GPU bring-up on this commit would still validate only current-window joint planning, not the claim-critical target-layer preplanning path.
+More specifically, the codebase now has standalone CPU-contract implementations for:
+
+- H1/H2 prediction
+- target-layer prepared-plan storage
+- exact/repairable/reject reconciliation
+- provisional lineage objects
+- release-batch frontier objects
+- late suffix replacement over pending/planned tasks
+
+But the formal runtime still executes current-window planning only:
+
+- `before_token_dispatch()` still creates and consumes `PreparedWindowPlan`
+- the real transport adapter / async executor still do not consume `TargetLayerPreparedJointPlan`
+- the real async executor still submits the whole phase rather than a mutable release-batch frontier
+
+Because of that, a 4GPU bring-up on the final runtime would still validate only current-window joint planning, not the claim-critical target-layer preplanning path.
 
 Status: `PRE_GPU_SEMANTIC_BLOCKER`

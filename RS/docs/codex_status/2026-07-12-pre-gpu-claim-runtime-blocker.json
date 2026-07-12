@@ -1,22 +1,21 @@
 {
-  "starting_sha": "6e555201efa900e4db0217ef6e989846e0e6d61f",
-  "current_sha": "c9b8a2600498c917ccdc5aa494991bcd76add066",
+  "starting_sha": "d76a5221ade3c714bda89739c4c196bd15178f3a",
+  "current_sha": "PENDING_FINAL_SHA",
   "status": "PRE_GPU_SEMANTIC_BLOCKER",
   "cpu_gloo_closure": {
     "selected_layer_resolution_closed": true,
     "prediction_capability_boundary_closed": true,
     "scheduler_contract_regressions_fixed": true,
-    "targeted_regression_passed": true,
+    "target_plan_contract_suite_passed": true,
     "runtime_integrated_gloo_gate_passed": true
   },
   "blocking_reason": {
-    "code": "target_layer_preplanning_not_implemented_end_to_end",
+    "code": "target_plan_runtime_not_integrated_into_formal_lifecycle",
     "details": [
-      "Current runtime still executes only current-window joint planning for P0(L)/P1(L).",
-      "TargetLayerPreparedJointPlan is not implemented as a real runtime object.",
-      "There is no end-to-end H1/H2 target-plan generation and storage chain.",
-      "There is no live provisional/default-continue lineage upgrade into a target plan.",
-      "There is no release-batch frontier with late suffix splice in the real async executor."
+      "Standalone target-plan objects and services now exist.",
+      "Formal Megatron lifecycle still stores and consumes PreparedWindowPlan instead of TargetLayerPreparedJointPlan.",
+      "Formal async executor still does not expose a mutable release-batch frontier for late suffix replacement.",
+      "Formal target-plan lineage is therefore not yet wired into hot-path P0/P1 execution."
     ]
   }
 }

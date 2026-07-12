@@ -704,17 +704,48 @@ class RouterSenseInjectionRuntime:
             return ""
         return str(getattr(resolved.spec, "family", ""))
 
-    def _policy_supports_runtime_prediction(self) -> bool:
-        return (
-            self._resolved_online_policy_family() in {"joint_u", "runtime_safe"}
-            and str(self.config.p2_hint_mode) == "calibrated_artifact"
+    def _resolved_online_policy_capabilities(self):
+        resolved = resolve_online_policy_config(self.config)
+        if resolved is None:
+            return None
+        policy = build_policy(
+            str(resolved.canonical_name),
+            PolicyOptions(
+                p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
+                p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
+                p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
+                residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
+                barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
+                age_weight=float(getattr(self.config, "age_weight", 0.15)),
+                prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
+            ),
+        )
+        base = getattr(policy, "capabilities", None)
+        if base is None:
+            return None
+        has_prediction = str(self.config.p2_hint_mode) == "calibrated_artifact"
+        is_joint_window = self._is_joint_window_async_mode()
+        return base.with_runtime_flags(
+            supports_current_window_joint_planning=bool(
+                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+            ),
+            supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
+            supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
+            supports_target_layer_preplanning=False,
+            supports_p1_plan_reuse=bool(
+                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+            ),
+            supports_late_suffix_splice=False,
+            supports_rank_release_batch=bool(is_joint_window),
         )
 
+    def _policy_supports_runtime_prediction(self) -> bool:
+        capabilities = self._resolved_online_policy_capabilities()
+        return bool(capabilities is not None and capabilities.supports_cross_layer_prediction)
+
     def _policy_uses_joint_window_plan(self) -> bool:
-        return (
-            self._resolved_online_policy_family() in {"joint_u", "runtime_safe"}
-            and self._is_joint_window_async_mode()
-        )
+        capabilities = self._resolved_online_policy_capabilities()
+        return bool(capabilities is not None and capabilities.supports_current_window_joint_planning)
 
     def _should_generate_runtime_prediction(self) -> bool:
         return self._policy_supports_runtime_prediction()

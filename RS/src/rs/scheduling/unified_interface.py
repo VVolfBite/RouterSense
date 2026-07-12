@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
+from rs.scheduling.capabilities import PolicyCapabilities
 from rs.scheduling.contracts import (
     FlowDemand,
     FlowWindow,
@@ -187,10 +188,18 @@ def request_to_legacy_problem(request: SchedulingRequest) -> MultiPhaseSchedulin
 
 
 class LegacyLogicalPolicyAdapter:
-    def __init__(self, *, canonical_policy_id: str, builder_key: str, options: PolicyOptions) -> None:
+    def __init__(
+        self,
+        *,
+        canonical_policy_id: str,
+        builder_key: str,
+        options: PolicyOptions,
+        capabilities: PolicyCapabilities,
+    ) -> None:
         self.policy_id = str(canonical_policy_id)
         self._builder_key = str(builder_key)
         self._options = options
+        self.capabilities = capabilities
 
     def plan(self, request: SchedulingRequest) -> LogicalSchedulePlan:
         legacy_problem = request_to_legacy_problem(request)
@@ -222,6 +231,7 @@ class LegacyLogicalPolicyAdapter:
 
 def build_policy(policy_id: str, options: PolicyOptions) -> SchedulingPolicy:
     from rs.scheduling.catalog import resolve_algorithm_id
+    from rs.scheduling.registry import resolve_policy
 
     resolved = resolve_algorithm_id(policy_id)
     if str(resolved.canonical_name) == "barrier_criticality_posthoc_best":
@@ -232,10 +242,31 @@ def build_policy(policy_id: str, options: PolicyOptions) -> SchedulingPolicy:
         raise ValueError(
             "oracle_local_cp_sat remains a reference-only reporting alias and does not map to a unified planning-time policy"
         )
+    legacy_policy = resolve_policy(
+        policy_name=str(resolved.builder_key),
+        bucket_rows=0,
+        p0_weight=float(options.p0_weight),
+        p1_reservation_weight=float(options.p1_weight),
+        p2_hint_weight=float(options.p2_hint_weight),
+        residual_weight=float(options.residual_weight),
+        barrier_weight=float(options.barrier_weight),
+        age_weight=float(options.age_weight),
+        prediction_weight=float(options.prediction_weight),
+    )
     return LegacyLogicalPolicyAdapter(
         canonical_policy_id=str(resolved.canonical_name),
         builder_key=str(resolved.builder_key),
         options=options,
+        capabilities=getattr(legacy_policy, "capabilities", PolicyCapabilities(
+            supports_offline=True,
+            supports_online_phase_local_execution=False,
+            supports_online_multiphase_execution=False,
+            uses_current_ready_flows=True,
+            uses_blocked_p1_dependency=False,
+            uses_p2_forecast=False,
+            requires_fixed_placement=False,
+            evaluation_eligible=True,
+        )),
     )
 
 
