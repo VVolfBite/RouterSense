@@ -218,6 +218,10 @@ def _worker(rank: int, init_file: str) -> None:
             "p1_is_exact_transpose": bool(summary.get("p1_is_exact_transpose", False)),
             "stored_p1_plan_digest": str(summary.get("stored_p1_plan_digest", "")),
             "consumed_p1_plan_digest": str(summary.get("consumed_p1_plan_digest", "")),
+            "stored_p1_logical_plan_digest": str(summary.get("stored_p1_logical_plan_digest", "")),
+            "consumed_p1_logical_plan_digest": str(summary.get("consumed_p1_logical_plan_digest", "")),
+            "stored_p1_compile_input_digest": str(summary.get("stored_p1_compile_input_digest", "")),
+            "consumed_p1_compile_input_digest": str(summary.get("consumed_p1_compile_input_digest", "")),
             "compiler_id": str(summary.get("compiler_id", "")),
             "logical_plan_digest": str(summary.get("logical_plan_digest", "")),
             "compiled_plan_digest": str(summary.get("compiled_plan_digest", "")),
@@ -290,6 +294,8 @@ def main() -> None:
             and payload["batch_isend_irecv_call_count"] > 0
             and payload["phase_sync_fallback_count"] == 0
             and payload["stored_p1_plan_digest"] == payload["consumed_p1_plan_digest"]
+            and payload["stored_p1_logical_plan_digest"] == payload["consumed_p1_logical_plan_digest"]
+            and payload["stored_p1_compile_input_digest"] == payload["consumed_p1_compile_input_digest"]
             for payload in rank_payloads
         ),
         "ranks": rank_payloads,
