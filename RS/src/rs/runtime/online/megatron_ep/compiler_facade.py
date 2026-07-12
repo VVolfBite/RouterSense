@@ -10,6 +10,7 @@ from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext,
 from rs.scheduling.phase_local.common import build_transfer_layouts_and_tasks, finalize_execution_plan
 from rs.scheduling.phase_execution_utils import materialize_local_execution_plan, pack_waves
 from rs.scheduling.validation import stable_hash
+from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_diagnostic_bridge, invariant_mode_forbids_legacy_bridge, require_invariant
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ class CompilationOptions:
     p2_hint_weight: float = 1.0
     debug_trace: bool = False
     compiler_id: str = "unified_schedule_compiler"
+    invariant_mode: str = "diagnostic"
+    legacy_compiler_bridge: bool = False
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,30 @@ class UnifiedScheduleCompiler:
         )
         if request.prepared_plan is not None:
             if not request.canonical_tasks:
+                remote_rows = int(
+                    sum(
+                        int(value)
+                        for src, row in enumerate(getattr(request.local_context, "actual_p0_full_row_matrix", ()) or ())
+                        for dst, value in enumerate(row)
+                        if int(src) != int(dst)
+                    )
+                )
+                require_invariant(
+                    not invariant_mode_forbids_legacy_bridge(request.compilation_options.invariant_mode)
+                    and bool(request.compilation_options.legacy_compiler_bridge or invariant_mode_allows_diagnostic_bridge(request.compilation_options.invariant_mode))
+                    and remote_rows == 0,
+                    context=InvariantContext(
+                        stage="compiler",
+                        error_code="RS-COMPILER-MISSING-TASKS",
+                        rank=int(request.local_context.global_rank),
+                        layer_name=str(request.local_context.layer_id),
+                        phase=str(request.phase),
+                        logical_plan_digest=logical_plan_digest,
+                    ),
+                    message="canonical tasks are required for prepared-plan runtime compilation",
+                    expected="non-empty canonical_tasks or diagnostic legacy bridge with remote_rows=0",
+                    actual={"canonical_task_count": 0, "remote_rows": remote_rows, "invariant_mode": request.compilation_options.invariant_mode},
+                )
                 from rs.runtime.online.megatron_ep.pending_window.policy_adapter import (
                     build_phase_policy_fast_path,
                     compile_prepared_window_phase_plan,
@@ -265,6 +292,9 @@ class UnifiedScheduleCompiler:
                 direct_metrics = {
                     "direct_compile_status": "legacy_bridge",
                     "direct_compile_reason": "missing_canonical_tasks",
+                    "legacy_secondary_policy_call_count": 1,
+                    "direct_compiler_selected_count": 0,
+                    "compiler_shadow_compare_count": 0,
                 }
             else:
                 legacy_bridge = True
@@ -288,6 +318,9 @@ class UnifiedScheduleCompiler:
                 plan = direct_plan
                 legacy_bridge = False
                 direct_metrics["direct_cutover_selected"] = True
+                direct_metrics["legacy_secondary_policy_call_count"] = 0
+                direct_metrics["direct_compiler_selected_count"] = 1
+                direct_metrics["compiler_shadow_compare_count"] = 0
         else:
             abstract_plan = request.logical_plan.diagnostics.get("abstract_phase_execution_plan")
             if abstract_plan is None:
@@ -298,7 +331,12 @@ class UnifiedScheduleCompiler:
             )
             legacy_bridge = False
             direct_plan = None
-            direct_metrics = {"direct_compile_status": "not_applicable"}
+            direct_metrics = {
+                "direct_compile_status": "not_applicable",
+                "legacy_secondary_policy_call_count": 0,
+                "direct_compiler_selected_count": 0,
+                "compiler_shadow_compare_count": 0,
+            }
         effective_tasks = request.canonical_tasks
         if not effective_tasks and direct_plan is not None:
             effective_tasks = tuple(task for wave in direct_plan.waves for task in wave.bucket_tasks)
@@ -308,6 +346,9 @@ class UnifiedScheduleCompiler:
         plan_metrics = dict(plan.metrics or {})
         plan_metrics["compiler_id"] = self.compiler_id
         plan_metrics["legacy_secondary_policy_invocation_count"] = int(1 if legacy_bridge else 0)
+        plan_metrics["legacy_secondary_policy_call_count"] = int(direct_metrics.get("legacy_secondary_policy_call_count", 1 if legacy_bridge else 0) or 0)
+        plan_metrics["direct_compiler_selected_count"] = int(direct_metrics.get("direct_compiler_selected_count", 0) or 0)
+        plan_metrics["compiler_shadow_compare_count"] = int(direct_metrics.get("compiler_shadow_compare_count", 0) or 0)
         plan_metrics["logical_plan_policy_id"] = str(request.logical_plan.policy_name)
         plan_metrics.update(direct_metrics)
         if direct_plan is not None:

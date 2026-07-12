@@ -11,6 +11,7 @@ workload:
   prompts: configs/components/workloads/comparison_64_prompts.json
 runtime:
   line: async_release
+  invariant_mode: evaluation_strict
 traffic:
   matrix_unit: rows
   bucket_rows:
@@ -38,4 +39,3 @@ preflight_mode: full
 coalescing_enabled: false
 require_output_parity: true
 require_no_fallback: true
-

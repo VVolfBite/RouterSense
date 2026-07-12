@@ -139,8 +139,15 @@ class MegatronPhaseTransportAdapter:
                             "local_rank": int(state.context.local_rank),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
+                        requested_backend_id="async_release",
                     ),
                     backend="phase_sync",
+                )
+                facade_result = replace(
+                    facade_result,
+                    fallback_used=True,
+                    fallback_reason=str(preflight.reason),
+                    requested_backend_id="async_release",
                 )
                 output = facade_result.output_tensor
                 result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
@@ -156,6 +163,11 @@ class MegatronPhaseTransportAdapter:
                         "preflight_mode": str(preflight.preflight_mode),
                     }
                 ]
+                self.batch_isend_irecv_call_count += int(facade_result.batch_isend_irecv_call_count)
+                self.real_send_op_count += int(facade_result.send_op_count)
+                self.real_recv_op_count += int(facade_result.recv_op_count)
+                self.local_copy_task_count += int(facade_result.local_copy_task_count)
+                self.local_copy_row_count += int(facade_result.local_copy_row_count)
             else:
                 self.async_executor_invocation_count += 1
                 facade_result = execute_transport(
@@ -170,21 +182,18 @@ class MegatronPhaseTransportAdapter:
                             "local_rank": int(state.context.local_rank),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
+                        requested_backend_id="async_release",
                     ),
                     backend="async_release",
                 )
                 output = facade_result.output_tensor
                 result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
                 execution_entries = list(facade_result.execution_entries)
-                summary_entry = next(
-                    (row for row in execution_entries if row.get("record_type") == "async_phase_summary"),
-                    {},
-                )
-                self.batch_isend_irecv_call_count += 1 if (int(summary_entry.get("send_op_count", 0)) + int(summary_entry.get("recv_op_count", 0))) > 0 else 0
-                self.real_send_op_count += int(summary_entry.get("send_op_count", 0) or 0)
-                self.real_recv_op_count += int(summary_entry.get("recv_op_count", 0) or 0)
-                self.local_copy_task_count += int(summary_entry.get("local_copy_task_count", 0) or 0)
-                self.local_copy_row_count += int(summary_entry.get("local_copy_row_count", int(result.local_copy_rows)) or 0)
+                self.batch_isend_irecv_call_count += int(facade_result.batch_isend_irecv_call_count)
+                self.real_send_op_count += int(facade_result.send_op_count)
+                self.real_recv_op_count += int(facade_result.recv_op_count)
+                self.local_copy_task_count += int(facade_result.local_copy_task_count)
+                self.local_copy_row_count += int(facade_result.local_copy_row_count)
                 execution_entries.append(
                     {
                         "record_type": "async_preflight_summary",
@@ -206,12 +215,18 @@ class MegatronPhaseTransportAdapter:
                         "local_rank": int(state.context.local_rank),
                     },
                     event_sink=getattr(self, "timeline_hook", None),
+                    requested_backend_id="phase_sync",
                 ),
                 backend="phase_sync",
             )
             output = facade_result.output_tensor
             result = PhaseExecutionResult.from_dict(facade_result.raw_summary)
             execution_entries = list(facade_result.execution_entries)
+            self.batch_isend_irecv_call_count += int(facade_result.batch_isend_irecv_call_count)
+            self.real_send_op_count += int(facade_result.send_op_count)
+            self.real_recv_op_count += int(facade_result.recv_op_count)
+            self.local_copy_task_count += int(facade_result.local_copy_task_count)
+            self.local_copy_row_count += int(facade_result.local_copy_row_count)
         state.call_index += 1
         base_ordinal = len(self._latest_results)
         for index, entry in enumerate(execution_entries, start=1):
@@ -247,6 +262,11 @@ class MegatronPhaseTransportAdapter:
                 "local_copy_task_count": int(self.local_copy_task_count),
                 "local_copy_row_count": int(self.local_copy_row_count),
                 "phase_sync_fallback_count": int(self.phase_sync_fallback_count),
+                "executed_backend_id": str(facade_result.executed_backend_id),
+                "requested_backend_id": str(facade_result.requested_backend_id),
+                "fallback_used": bool(facade_result.fallback_used),
+                "fallback_reason": str(facade_result.fallback_reason),
+                "timeout": bool(facade_result.timeout),
                 "use_nccl_stream_requested": bool(use_nccl_stream),
                 "use_nccl_stream_effective": bool(use_nccl_stream),
             }

@@ -21,12 +21,12 @@ class ExecutionRequest:
     process_group: dist.ProcessGroup | None
     rank_context: dict[str, Any]
     event_sink: Any | None = None
+    requested_backend_id: str = ""
 
 
 @dataclass(frozen=True)
 class ExecutionResult:
     output_tensor: torch.Tensor
-    backend_id: str
     execution_plan_digest: str
     send_op_count: int
     recv_op_count: int
@@ -39,6 +39,20 @@ class ExecutionResult:
     timeout: bool
     raw_summary: dict[str, Any]
     execution_entries: tuple[dict[str, Any], ...]
+    requested_backend_id: str = ""
+    backend_id: str = ""
+    executed_backend_id: str = ""
+    batch_isend_irecv_call_count: int = 0
+    preflight_collective_count: int = 0
+    preflight_passed: bool = True
+    fallback_reason: str = ""
+    all_work_completed: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.executed_backend_id and self.backend_id:
+            object.__setattr__(self, "executed_backend_id", str(self.backend_id))
+        if not self.backend_id and self.executed_backend_id:
+            object.__setattr__(self, "backend_id", str(self.executed_backend_id))
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -73,17 +87,23 @@ class PhaseSyncTransportExecutor:
         end_ns = time.perf_counter_ns()
         return ExecutionResult(
             output_tensor=output,
-            backend_id=self.backend_id,
+            requested_backend_id=str(request.requested_backend_id or self.backend_id),
+            executed_backend_id=self.backend_id,
             execution_plan_digest=str(request.execution_plan.plan_hash),
             send_op_count=0,
             recv_op_count=0,
             local_copy_task_count=int(summary.local_copy_tasks),
             local_copy_row_count=int(summary.local_copy_rows),
+            batch_isend_irecv_call_count=0,
+            preflight_collective_count=0,
+            preflight_passed=True,
             enqueue_us=0.0,
             wait_us=0.0,
             total_us=(end_ns - start_ns) / 1000.0,
             fallback_used=False,
+            fallback_reason="",
             timeout=False,
+            all_work_completed=True,
             raw_summary=summary.to_dict(),
             execution_entries=tuple(entries),
         )
@@ -105,17 +125,23 @@ class AsyncReleaseTransportExecutor:
         summary_row = next((row for row in result.execution_entries if row.get("record_type") == "async_phase_summary"), {})
         return ExecutionResult(
             output_tensor=result.output,
-            backend_id=self.backend_id,
+            requested_backend_id=str(request.requested_backend_id or self.backend_id),
+            executed_backend_id=self.backend_id,
             execution_plan_digest=str(request.execution_plan.plan_hash),
             send_op_count=int(summary_row.get("send_op_count", 0) or 0),
             recv_op_count=int(summary_row.get("recv_op_count", 0) or 0),
             local_copy_task_count=int(summary_row.get("local_copy_task_count", 0) or 0),
             local_copy_row_count=int(summary_row.get("local_copy_row_count", 0) or 0),
+            batch_isend_irecv_call_count=1 if (int(summary_row.get("send_op_count", 0) or 0) + int(summary_row.get("recv_op_count", 0) or 0)) > 0 else 0,
+            preflight_collective_count=0,
+            preflight_passed=True,
             enqueue_us=float(summary_row.get("enqueue_us", 0.0) or 0.0),
             wait_us=float(summary_row.get("wait_us", 0.0) or 0.0),
             total_us=float(summary_row.get("total_us", 0.0) or 0.0),
             fallback_used=False,
+            fallback_reason="",
             timeout=False,
+            all_work_completed=True,
             raw_summary=result.summary.to_dict(),
             execution_entries=tuple(result.execution_entries),
         )

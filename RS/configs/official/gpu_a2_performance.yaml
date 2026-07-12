@@ -11,6 +11,7 @@ workload:
   prompts: configs/components/workloads/comparison_64_prompts.json
 runtime:
   line: async_release
+  invariant_mode: evaluation_strict
 traffic:
   matrix_unit: rows
   bucket_rows:
@@ -46,4 +47,3 @@ strategies:
   - routersense_joint_zero_hint_async_p2p
   - routersense_joint_predicted_async_p2p
   - routersense_safe_joint_async
-

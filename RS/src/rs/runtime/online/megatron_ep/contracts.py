@@ -107,6 +107,8 @@ class RouterSenseInjectionConfig:
     capture_phase_tensors: bool = False
     capture_expert_trace: bool = False
     observation_profile: str = "minimal"
+    invariant_mode: str = "diagnostic"
+    legacy_compiler_bridge: bool = False
     capture_layer_selector: str = ""
     capture_phase_selector: str = ""
     heartbeat_enabled: bool = False

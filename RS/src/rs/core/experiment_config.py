@@ -496,6 +496,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
         ),
         observation=RuntimeObservationConfig(
             profile=str(observation.get("profile", "minimal")),
+            invariant_mode=str(observation.get("invariant_mode", runtime.get("invariant_mode", "diagnostic"))),
             capture_enabled=bool(observation.get("capture_enabled", False)),
             capture_expert_trace=bool(observation.get("capture_expert_trace", False)),
             capture_layer_selector=str(observation.get("capture_layer_selector", "")),

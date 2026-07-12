@@ -117,6 +117,7 @@ def _single_strategy_config(
         execution_mode = str(strategy_runtime["execution_mode"])
         run_kind = str(strategy_runtime["run_kind"])
         effective_observation = dict(runtime_defaults["observation"])
+        effective_observation["invariant_mode"] = str(runtime.get("invariant_mode", "diagnostic"))
         effective_execution_bucket_rows = int(runtime_defaults["execution"]["bucket_rows"])
     else:
         policy_name = str(strategy.get("policy", ""))
@@ -135,6 +136,7 @@ def _single_strategy_config(
             "heartbeat_enabled": bool(observation.get("heartbeat_enabled", False)),
             "per_wave_timing_enabled": bool(observation.get("per_wave_timing_enabled", False)),
             "replay_trace_enabled": bool(observation.get("replay_trace_enabled", False)),
+            "invariant_mode": str(observation.get("invariant_mode", runtime.get("invariant_mode", "diagnostic"))),
         }
         effective_execution_bucket_rows = 0 if is_native_baseline else int(execution.get("bucket_rows", 0))
     p2_hint_weight = float(execution.get("p2_hint_weight", 1.0))

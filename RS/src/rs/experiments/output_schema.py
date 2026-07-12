@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import sys
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +13,13 @@ from typing import Any
 
 import yaml
 
+from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_dirty_git, normalize_invariant_mode, require_invariant
+from rs.scheduling.catalog import resolve_algorithm_id
+
 
 ARTIFACT_SCHEMA_VERSION = 1
+_CANONICAL_ONLINE_PREDICTORS = {"none", "zero_hint", "copy_current_dispatch", "history_ema"}
+_CANONICAL_OFFLINE_PREDICTORS = _CANONICAL_ONLINE_PREDICTORS | {"ridge_linear_trace_predictor", "perfect_trace_hint", "shuffled_control"}
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,88 @@ def detect_git_state(repo_root: Path) -> tuple[str, bool]:
     sha = _git_output(repo_root, "rev-parse", "HEAD")
     dirty = bool(_git_output(repo_root, "status", "--short"))
     return sha, dirty
+
+
+def _config_digest(config_snapshot: dict[str, Any]) -> str:
+    encoded = json.dumps(config_snapshot, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_official_entrypoint_config(
+    *,
+    config_snapshot: dict[str, Any],
+    expected_runtime_line: str | None,
+    official_entrypoint: str,
+) -> str:
+    schema_version = int(config_snapshot.get("schema_version", 0) or 0)
+    runtime = dict(config_snapshot.get("runtime", {}) or {})
+    traffic = dict(config_snapshot.get("traffic", {}) or {})
+    policy = dict(config_snapshot.get("policy", {}) or {})
+    prediction = dict(config_snapshot.get("prediction", {}) or {})
+    online_policy = dict(config_snapshot.get("online_policy", {}) or {})
+    invariant_mode = normalize_invariant_mode(runtime.get("invariant_mode", "diagnostic"))
+    require_invariant(
+        schema_version == 1,
+        context=InvariantContext(stage="startup", error_code="RS-STARTUP-001"),
+        message="official entrypoints require schema_version=1",
+        expected=1,
+        actual=schema_version,
+    )
+    if expected_runtime_line is not None:
+        require_invariant(
+            str(runtime.get("line", "")) == str(expected_runtime_line),
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-001"),
+            message="runtime.line does not match official entrypoint",
+            expected=expected_runtime_line,
+            actual=runtime.get("line", ""),
+        )
+    bucket_rows = traffic.get("bucket_rows", 0)
+    bucket_values = bucket_rows if isinstance(bucket_rows, list) else [bucket_rows]
+    for value in bucket_values:
+        ivalue = int(value)
+        require_invariant(
+            ivalue > 0,
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-002"),
+            message="bucket_rows must be positive",
+            expected="> 0",
+            actual=ivalue,
+        )
+        require_invariant(
+            (ivalue & (ivalue - 1)) == 0,
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-003"),
+            message="bucket_rows must be a power of two",
+            expected="power_of_two",
+            actual=ivalue,
+        )
+    policy_name = str(policy.get("name", "") or online_policy.get("name", "")).strip()
+    if policy_name and policy_name != "disabled":
+        resolved = resolve_algorithm_id(policy_name)
+        require_invariant(
+            resolved.requested_name == resolved.canonical_name,
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-004"),
+            message="policy name must be canonical in official configs",
+            expected=resolved.canonical_name,
+            actual=policy_name,
+        )
+        if expected_runtime_line in {"phase_sync", "async_release"}:
+            require_invariant(
+                bool(resolved.spec.online_eligible) and not bool(resolved.spec.reference_only),
+                context=InvariantContext(stage="startup", error_code="RS-CONFIG-006"),
+                message="online official config requested a non-deployable policy",
+                expected="online_eligible canonical policy",
+                actual=policy_name,
+            )
+    predictor_name = str(prediction.get("name", "") or online_policy.get("parameters", {}).get("online_p2_predictor", "")).strip()
+    if predictor_name:
+        allowed_predictors = _CANONICAL_OFFLINE_PREDICTORS if expected_runtime_line == "offline_replay" else _CANONICAL_ONLINE_PREDICTORS
+        require_invariant(
+            predictor_name in allowed_predictors,
+            context=InvariantContext(stage="startup", error_code="RS-CONFIG-005"),
+            message="predictor name must be canonical and eligible for this entrypoint",
+            expected=sorted(allowed_predictors),
+            actual=predictor_name,
+        )
+    return invariant_mode
 
 
 def build_output_layout(output_dir: Path) -> OutputLayout:
@@ -100,12 +188,33 @@ def initialize_run_artifacts(
 ) -> OutputLayout:
     layout = build_output_layout(output_dir)
     commit_sha, git_dirty = detect_git_state(repo_root)
+    runtime = dict(config_snapshot.get("runtime", {}) or {})
+    invariant_mode = normalize_invariant_mode(runtime.get("invariant_mode", "diagnostic"))
+    require_invariant(
+        invariant_mode_allows_dirty_git(invariant_mode) or not git_dirty,
+        context=InvariantContext(stage="startup", error_code="RS-STARTUP-002"),
+        message="evaluation_strict/runtime_safe runs require a clean git tree",
+        expected=False,
+        actual=git_dirty,
+    )
+    require_invariant(
+        bool(commit_sha),
+        context=InvariantContext(stage="startup", error_code="RS-STARTUP-003"),
+        message="commit SHA must be available",
+        expected="non-empty",
+        actual=commit_sha,
+    )
     manifest: dict[str, Any] = {
         "run_id": layout.root.name,
         "run_type": str(run_type),
         "commit_sha": commit_sha,
+        "source_commit_sha": commit_sha,
+        "runtime_commit_sha": commit_sha,
+        "result_commit_sha": commit_sha,
         "git_dirty": bool(git_dirty),
         "config_schema_version": int(config_snapshot.get("schema_version", 0) or 0),
+        "config_digest": _config_digest(config_snapshot),
+        "source_tree_digest": commit_sha,
         "official_entrypoint": str(official_entrypoint),
         "runtime_line": str((config_snapshot.get("runtime", {}) or {}).get("line", "")),
         "policy_id": str((config_snapshot.get("policy", {}) or {}).get("name", "")),
@@ -118,6 +227,8 @@ def initialize_run_artifacts(
         "start_time": _utc_now(),
         "end_time": "",
         "status": "running",
+        "invariant_mode": invariant_mode,
+        "valid_for_evaluation": bool(invariant_mode != "diagnostic"),
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
     }
     if manifest_overrides:
@@ -141,4 +252,3 @@ def update_status(layout: OutputLayout, *, status: str, extra: dict[str, Any] | 
     if extra:
         status_payload.update(extra)
     write_json(layout.root / "status.json", status_payload)
-

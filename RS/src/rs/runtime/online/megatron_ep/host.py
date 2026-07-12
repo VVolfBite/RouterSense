@@ -785,6 +785,8 @@ def attach_formal_online_runtime(
         executor_heartbeat_path=str(runtime_config.validation.executor_heartbeat_path),
         executor_phase_timeout_sec=int(runtime_config.validation.executor_phase_timeout_sec),
         observation_profile=str(runtime_config.observation.get("profile", "minimal")),
+        invariant_mode=str(runtime_config.observation.get("invariant_mode", "diagnostic")),
+        legacy_compiler_bridge=bool(runtime_config.observation.get("legacy_compiler_bridge", False)),
         capture_layer_selector=str(runtime_config.observation.get("capture_layer_selector", "")),
         capture_phase_selector=str(runtime_config.observation.get("capture_phase_selector", "")),
         heartbeat_enabled=bool(runtime_config.observation.get("heartbeat_enabled", False)),

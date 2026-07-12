@@ -11,6 +11,7 @@ workload:
   prompts: configs/components/workloads/comparison_64_prompts.json
 runtime:
   line: phase_sync
+  invariant_mode: evaluation_strict
   output_mode: paper
   precision: fp16
   dispatcher: alltoall
@@ -37,4 +38,3 @@ strategies:
   - name: native
   - name: birkhoff_phase_local_sync
   - name: routersense_joint_phase_sync
-

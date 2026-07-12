@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
+from rs.runtime.guards import INVARIANT_MODE_DIAGNOSTIC, InvariantFailure, RuntimeStateFieldError, normalize_invariant_mode
+
 
 MatrixRows = tuple[tuple[int, ...], ...]
 
@@ -23,6 +25,9 @@ class RuntimeExecutionMetrics:
     logical_plan_digest: str = ""
     compiled_plan_digest: str = ""
     legacy_secondary_policy_invocation_count: int = 0
+    legacy_secondary_policy_call_count: int = 0
+    direct_compiler_selected_count: int = 0
+    compiler_shadow_compare_count: int = 0
 
     dispatch_transport_start_ns: int = 0
     dispatch_transport_end_ns: int = 0
@@ -37,12 +42,17 @@ class RuntimeExecutionMetrics:
 
 @dataclass
 class PreparedWindowRuntimeState:
+    invariant_mode: str = INVARIANT_MODE_DIAGNOSTIC
     prepared_plan: Any | None = None
     plan_source_layer: str = ""
     plan_created_at_us: int = 0
 
     stored_p1_plan_digest: str = ""
     consumed_p1_plan_digest: str = ""
+    stored_p1_logical_plan_digest: str = ""
+    consumed_p1_logical_plan_digest: str = ""
+    stored_p1_compile_input_digest: str = ""
+    consumed_p1_compile_input_digest: str = ""
 
     global_joint_window_plan: Any | None = None
     global_joint_plan_wire: Any | None = None
@@ -66,9 +76,53 @@ class PreparedWindowRuntimeState:
     p0_truth_rows: MatrixRows = ()
     p1_truth_rows: MatrixRows = ()
     actual_p0_total_rows: int = 0
+    latest_predictor_name: str = ""
+    latest_prediction_digest: str = ""
+    latest_prediction_target_layer_id: str = ""
+    latest_prediction_matrix_source: str = ""
+    latest_prediction_row_sums: list[int] = field(default_factory=list)
+    latest_prediction_col_sums: list[int] = field(default_factory=list)
+    predictor_name: str = ""
+    prediction_digest: str = ""
+    prediction_confidence: float = 0.0
+    predicted_row_sums: list[int] = field(default_factory=list)
+    predicted_col_sums: list[int] = field(default_factory=list)
+    latest_prediction_audit: dict[str, Any] = field(default_factory=dict)
+    p2_matrix_source: str = ""
+    p2_matrix_total_bytes: int = 0
+    p2_matrix_row_sums: list[int] = field(default_factory=list)
+    p2_matrix_col_sums: list[int] = field(default_factory=list)
+    p2_matrix_is_replicated_local_row: bool = False
+    p2_matrix_shape: list[int] = field(default_factory=list)
+    p2_matrix_gather_time_us: float = 0.0
+    p2_matrix_gather_status: str = ""
+    p2_matrix_gather_call_count: int = 0
+    prepared_priority_mode: str = ""
+    has_real_p1_reservation: bool = False
+    p1_reservation_row_sums: list[int] = field(default_factory=list)
+    p1_reservation_col_sums: list[int] = field(default_factory=list)
+    p1_inferred_from_p0: list[list[int]] = field(default_factory=list)
+    ideal_raw_u_makespan: float = 0.0
+    ideal_paired_b_makespan: float = 0.0
+    host_projected_raw_u_makespan: float = 0.0
+    host_projected_paired_b_makespan: float = 0.0
+    host_projected_estimated_makespan: float = 0.0
+    ideal_estimated_makespan: float = 0.0
+    canonical_task_digest: str = ""
+    canonical_task_count: int = 0
+    canonical_task_total_rows: int = 0
+    compiler_shadow_status: str = ""
+    compiler_shadow_plan_hash_matches_legacy: bool = False
+    compiler_shadow_plan_hash: str = ""
+    compiler_shadow_missing_task_count: int = 0
+    compiler_shadow_extra_task_count: int = 0
+    compiler_shadow_execution_order_matches_legacy: bool = False
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
     extras: dict[str, Any] = field(default_factory=dict)
+
+    def set_invariant_mode(self, mode: str) -> None:
+        self.invariant_mode = normalize_invariant_mode(mode)
 
     def _field_names(self) -> set[str]:
         return {item.name for item in fields(self)}
@@ -81,6 +135,15 @@ class PreparedWindowRuntimeState:
             return getattr(self, key)
         if key in self._metric_names():
             return getattr(self.metrics, key)
+        if self.invariant_mode != INVARIANT_MODE_DIAGNOSTIC:
+            raise RuntimeStateFieldError(
+                InvariantFailure(
+                    error_code="RS-STATE-001",
+                    stage="state",
+                    message=f"unknown runtime state field read: {key}",
+                    actual=key,
+                )
+            )
         return self.extras.get(key, default)
 
     def read(self, key: str, default: Any = None) -> Any:
@@ -99,6 +162,15 @@ class PreparedWindowRuntimeState:
         if key in self._metric_names():
             setattr(self.metrics, key, value)
             return
+        if self.invariant_mode != INVARIANT_MODE_DIAGNOSTIC:
+            raise RuntimeStateFieldError(
+                InvariantFailure(
+                    error_code="RS-STATE-002",
+                    stage="state",
+                    message=f"unknown runtime state field write: {key}",
+                    actual=key,
+                )
+            )
         self.extras[key] = value
 
     def write(self, key: str, value: Any) -> None:
@@ -113,6 +185,15 @@ class PreparedWindowRuntimeState:
             current = getattr(self.metrics, key)
             setattr(self.metrics, key, default if default is not None else 0)
             return current
+        if self.invariant_mode != INVARIANT_MODE_DIAGNOSTIC:
+            raise RuntimeStateFieldError(
+                InvariantFailure(
+                    error_code="RS-STATE-003",
+                    stage="state",
+                    message=f"unknown runtime state field pop: {key}",
+                    actual=key,
+                )
+            )
         return self.extras.pop(key, default)
 
     def remove(self, key: str, default: Any = None) -> Any:

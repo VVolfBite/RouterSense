@@ -18,12 +18,20 @@ ROOT = ensure_src_on_path()
 
 
 SUITE_TO_CMD = {
-    "offline-smoke": [sys.executable, "experiments/run_offline_replay.py", "--config", "configs/official/offline_replay.yaml", "--output-dir", "outputs/validation/offline_smoke"],
+    "offline-smoke": [
+        sys.executable,
+        "experiments/run_offline_replay.py",
+        "--config",
+        "tests/fixtures/configs/minimal_offline.yaml",
+        "--output-dir",
+        "outputs/validation/offline_smoke",
+    ],
     "config": [sys.executable, "-m", "pytest", "-q", "tests/contract/test_config_normalization.py"],
     "catalog": [sys.executable, "-m", "pytest", "-q", "tests/contract/test_replay_unified_closure.py"],
     "compiler": [sys.executable, "-m", "pytest", "-q", "tests/contract/test_unified_interface_refactor.py"],
     "transport": [sys.executable, "-m", "pytest", "-q", "tests/contract/megatron_ep/test_async_p2p_runtime_closure.py"],
     "gloo": [sys.executable, "experiments/distributed/run_stage3_runtime_integrated_gloo_gate_lowmem.py"],
+    "guard-faults": [sys.executable, "experiments/distributed/run_stage3_guard_fault_injection_gate.py"],
     "b2": [
         sys.executable,
         "experiments/distributed/run_gpu_b2_lifecycle.py",

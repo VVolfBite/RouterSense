@@ -153,10 +153,12 @@ class RouterSenseInjectionRuntime:
     # Configuration and policy selection
 
     def __post_init__(self) -> None:
+        self._runtime_state.set_invariant_mode(str(getattr(self.config, "invariant_mode", "diagnostic")))
         if self.observation_recorder is None:
             self.observation_recorder = RuntimeObservationRecorder(
                 config=RuntimeObservationConfig(
                     profile=str(getattr(self.config, "observation_profile", "minimal")),
+                    invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
                     capture_enabled=bool(getattr(self.config, "capture_phase_tensors", False)),
                     capture_expert_trace=bool(getattr(self.config, "capture_expert_trace", False)),
                     capture_layer_selector=str(getattr(self.config, "capture_layer_selector", "")),
@@ -1036,6 +1038,8 @@ class RouterSenseInjectionRuntime:
                         p1_reservation_weight=float(self.config.p1_reservation_weight),
                         p2_hint_weight=float(self.config.p2_hint_weight),
                         debug_trace=not self._is_perf_profile(),
+                        invariant_mode="diagnostic",
+                        legacy_compiler_bridge=True,
                     ),
                     prepared_plan=prepared_plan,
                     prepared_priority_cache=self._runtime_state.read("prepared_priority_cache"),
@@ -1376,8 +1380,21 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("prepared_plan", prepared)
         self._runtime_state.write("plan_created_at_us", int(time.time() * 1e6))
         self._runtime_state.write("plan_source_layer", layer_name)
-        self._runtime_state.write("stored_p1_plan_digest", stable_hash(selected_plan.to_dict()))
+        stored_logical_digest = stable_hash(selected_plan.to_dict())
+        stored_compile_input_digest = stable_hash(
+            {
+                "phase": "P1",
+                "layer_name": str(layer_name),
+                "forward_epoch": int(self._forward_epoch),
+                "matrix": [list(row) for row in inferred_p1],
+            }
+        )
+        self._runtime_state.write("stored_p1_plan_digest", stored_logical_digest)
+        self._runtime_state.write("stored_p1_logical_plan_digest", stored_logical_digest)
+        self._runtime_state.write("stored_p1_compile_input_digest", stored_compile_input_digest)
         self._runtime_state.write("consumed_p1_plan_digest", "")
+        self._runtime_state.write("consumed_p1_logical_plan_digest", "")
+        self._runtime_state.write("consumed_p1_compile_input_digest", "")
         self._runtime_state.write("predictor_name", predictor_name)
         self._runtime_state.write("prediction_digest", prediction_digest)
         self._runtime_state.write("prediction_confidence", float(prediction_confidence))
@@ -1566,6 +1583,8 @@ class RouterSenseInjectionRuntime:
                     p1_reservation_weight=float(self.config.p1_reservation_weight),
                     p2_hint_weight=float(self.config.p2_hint_weight),
                     debug_trace=not self._is_perf_profile(),
+                    invariant_mode=str(getattr(self.config, "invariant_mode", "diagnostic")),
+                    legacy_compiler_bridge=bool(getattr(self.config, "legacy_compiler_bridge", False)),
                 ),
                 prepared_plan=prepared_plan,
                 prepared_priority_cache=self._runtime_state.read("prepared_priority_cache"),
@@ -1582,6 +1601,18 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write(
             "legacy_secondary_policy_invocation_count",
             int(compilation.audit.metrics.get("legacy_secondary_policy_invocation_count", 0) or 0),
+        )
+        self._runtime_state.write(
+            "legacy_secondary_policy_call_count",
+            int(compilation.audit.metrics.get("legacy_secondary_policy_call_count", 0) or 0),
+        )
+        self._runtime_state.write(
+            "direct_compiler_selected_count",
+            int(compilation.audit.metrics.get("direct_compiler_selected_count", 0) or 0),
+        )
+        self._runtime_state.write(
+            "compiler_shadow_compare_count",
+            int(compilation.audit.metrics.get("compiler_shadow_compare_count", 0) or 0),
         )
         self._runtime_state.write("compiler_shadow_status", str(compilation.audit.metrics.get("shadow_status", "")))
         self._runtime_state.write(
@@ -2623,10 +2654,15 @@ class RouterSenseInjectionRuntime:
             if self._is_joint_window_async_mode():
                 binding = self._current_prepared_plan_binding(layer_name=layer_name)
                 stored_digest = str(self._runtime_state.read("stored_p1_plan_digest", "") or "")
+                stored_logical_digest = str(self._runtime_state.read("stored_p1_logical_plan_digest", "") or "")
+                stored_compile_input_digest = str(self._runtime_state.read("stored_p1_compile_input_digest", "") or "")
                 if stored_digest:
                     self._runtime_state.write("consumed_p1_plan_digest", stored_digest)
+                    self._runtime_state.write("consumed_p1_logical_plan_digest", stored_logical_digest or stored_digest)
+                    self._runtime_state.write("consumed_p1_compile_input_digest", stored_compile_input_digest)
                 elif binding is not None:
                     self._runtime_state.write("consumed_p1_plan_digest", str(binding.source_logical_plan_hash))
+                    self._runtime_state.write("consumed_p1_logical_plan_digest", str(binding.source_logical_plan_hash))
                 self._timeline(
                     "prepared_p1_plan_consumed",
                     layer_name=layer_name,

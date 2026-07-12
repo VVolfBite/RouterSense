@@ -7,11 +7,13 @@ from typing import Literal
 
 
 ObservationProfile = Literal["minimal", "perf", "execution", "debug"]
+InvariantMode = Literal["evaluation_strict", "runtime_safe", "diagnostic"]
 
 
 @dataclass(frozen=True)
 class RuntimeObservationConfig:
     profile: ObservationProfile = "minimal"
+    invariant_mode: InvariantMode = "diagnostic"
     capture_enabled: bool = False
     capture_expert_trace: bool = False
     capture_layer_selector: str = ""
