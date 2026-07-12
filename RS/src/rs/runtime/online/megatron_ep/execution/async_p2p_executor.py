@@ -192,6 +192,61 @@ def validate_async_phase_preflight(
     rank_context: dict[str, int],
     mode: str = "full",
 ) -> AsyncPhasePreflightResult:
+    if str(mode) == "local_only":
+        rank = int(rank_context["global_rank"])
+        expected_rows = int(sum(context.recv_splits))
+        coverage = [0] * max(expected_rows, 0)
+        local_reason = _mark_local_copy_coverage(
+            coverage,
+            context=context,
+            tensor_role=tensor_role,
+            rank=rank,
+        )
+        local_send_items: list[tuple[int, ...]] = []
+        local_recv_items: list[tuple[int, ...]] = []
+        for wave in plan.waves:
+            for task in wave.bucket_tasks:
+                payload = next((item for item in task.payload_slices if item.tensor_role == tensor_role), None)
+                if payload is None or int(payload.row_count) <= 0:
+                    continue
+                if int(task.dst_rank) == rank and int(task.src_rank) != int(task.dst_rank):
+                    reason = _mark_coverage(
+                        coverage,
+                        start=int(payload.receiver_offset_rows),
+                        row_count=int(payload.row_count),
+                    )
+                    if reason:
+                        local_reason = reason
+                        break
+                seq = _sequence_entry(
+                    context=context,
+                    phase=str(context.phase),
+                    tensor_role=str(tensor_role),
+                    wave_id=int(wave.wave_id),
+                    task=task,
+                    row_count=int(payload.row_count),
+                    dtype=str(payload.dtype),
+                    shape_suffix=tuple(int(v) for v in payload.shape_suffix),
+                )
+                if int(task.src_rank) == rank and int(task.src_rank) != int(task.dst_rank):
+                    local_send_items.append(tuple(int(v) for v in seq))
+                if int(task.dst_rank) == rank and int(task.src_rank) != int(task.dst_rank):
+                    local_recv_items.append(tuple(int(v) for v in seq))
+            if local_reason:
+                break
+        if not local_reason and coverage and any(value != 1 for value in coverage):
+            local_reason = "recv_coverage_invalid"
+        return AsyncPhasePreflightResult(
+            ok=bool(not local_reason),
+            all_ranks_ok=bool(not local_reason),
+            reason=str(local_reason or "ok"),
+            local_send_count=len(local_send_items),
+            local_recv_count=len(local_recv_items),
+            send_digest=_digest_sequence_items(local_send_items),
+            recv_digest=_digest_sequence_items(local_recv_items),
+            collective_count=0,
+            preflight_mode="local_only",
+        )
     world_group = process_group if process_group is not None else dist.group.WORLD
     rank = int(rank_context["global_rank"])
     world_size = int(len(context.ep_group_ranks) or 1)
@@ -502,11 +557,28 @@ def execute_async_phase_tensor(
             peer_sequence += 1
             if int(task.dst_rank) == rank:
                 remote_copy_rows += int(payload.row_count)
+    session = rank_context.get("async_phase_session") if isinstance(rank_context, dict) else None
+    is_primary_payload = bool(rank_context.get("is_primary_payload", tensor_role == "hidden_states")) if isinstance(rank_context, dict) else (tensor_role == "hidden_states")
+    precomputed_task_order = ()
+    if isinstance(session, dict) and not is_primary_payload:
+        precomputed_task_order = tuple(str(task_id) for task_id in (session.get("final_task_order") or ()))
+    if precomputed_task_order:
+        lookup = {str(task.task_id): task for task in frontier_tasks}
+        ordered: list[ReleaseBatchTask] = []
+        for task_id in precomputed_task_order:
+            task = lookup.pop(str(task_id), None)
+            if task is not None:
+                ordered.append(task)
+        ordered.extend(lookup.values())
+        frontier_tasks = ordered
     frontier = ReleaseBatchFrontier(
         tasks=frontier_tasks,
         max_inflight_release_batches=int((plan.metrics or {}).get("max_inflight_release_batches", 1) or 1),
     )
     late_suffix_provider = rank_context.get("late_suffix_provider") if isinstance(rank_context, dict) else None
+    if not is_primary_payload:
+        late_suffix_provider = None
+    on_release_batch_completed = rank_context.get("on_release_batch_completed") if isinstance(rank_context, dict) else None
     suffix_splice_count = 0
     retained_tensors: list[torch.Tensor] = []
     total_send_ops = 0
@@ -613,6 +685,16 @@ def execute_async_phase_tensor(
         total_recv_ops += int(batch_recv)
         batch_isend_irecv_call_count += int(1 if ops else 0)
         work_handle_count += int(len(work_handles))
+        if callable(on_release_batch_completed):
+            on_release_batch_completed(
+                int(frontier.release_epoch),
+                {
+                    "frontier_digest": str(frontier.frontier_digest()),
+                    "immutable_prefix_ids": list(frontier.immutable_prefix_ids()),
+                    "replaceable_suffix_ids": list(frontier.replaceable_suffix_ids()),
+                    "release_epoch": int(frontier.release_epoch),
+                },
+            )
         if callable(late_suffix_provider) and frontier.pending_count() > 0:
             suffix_result = late_suffix_provider(
                 context=context,
@@ -628,6 +710,7 @@ def execute_async_phase_tensor(
                     suffix_tasks=suffix_tasks,
                     plan_origin="late_spliced",
                     parent_plan_version=int(suffix_result.get("parent_plan_version", 0)),
+                    agreement_token=dict(suffix_result.get("agreement_token", {})),
                 )
                 suffix_splice_count += 1
     total_end_ns = time.monotonic_ns()
@@ -641,6 +724,16 @@ def execute_async_phase_tensor(
             recv_op_count=total_recv_ops,
             send_op_count=total_send_ops,
         )
+
+    final_task_ids = [str(task.task_id) for task in frontier.tasks]
+    if isinstance(session, dict):
+        if is_primary_payload:
+            session["final_task_order"] = list(final_task_ids)
+            session["suffix_splice_count"] = int(suffix_splice_count)
+            session["final_frontier_digest"] = str(frontier.frontier_digest())
+            session["lineage"] = [item.to_dict() for item in frontier.lineage]
+        else:
+            session["secondary_replayed"] = True
 
     execution_entries.append(
         {
@@ -668,6 +761,9 @@ def execute_async_phase_tensor(
             "frontier_digest": str(frontier.frontier_digest()),
             "immutable_prefix_ids": list(frontier.immutable_prefix_ids()),
             "replaceable_suffix_ids": list(frontier.replaceable_suffix_ids()),
+            "final_task_ids": list(final_task_ids),
+            "lineage": [item.to_dict() for item in frontier.lineage],
+            "is_primary_payload": bool(is_primary_payload),
         }
     )
 

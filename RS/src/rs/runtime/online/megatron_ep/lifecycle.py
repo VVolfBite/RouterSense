@@ -170,6 +170,7 @@ class RouterSenseInjectionRuntime:
     perf_counters: dict[str, dict[str, float]] = field(default_factory=dict)
     target_plan_store: TargetPlanStore | None = None
     target_planner_service: TargetLayerPlannerService | None = None
+    target_plan_control_group: Any | None = None
 
     # Configuration and policy selection
 
@@ -782,10 +783,19 @@ class RouterSenseInjectionRuntime:
             return
         if self.target_plan_store is None:
             self.target_plan_store = TargetPlanStore()
+        if self.target_plan_control_group is None and dist.is_available() and dist.is_initialized():
+            try:
+                backend = str(dist.get_backend(self.ep_process_group)) if self.ep_process_group is not None else str(dist.get_backend())
+            except Exception:
+                backend = "gloo"
+            if backend == "gloo":
+                self.target_plan_control_group = self.ep_process_group
+            else:
+                self.target_plan_control_group = dist.new_group(ranks=list(int(v) for v in self.ep_group_ranks), backend="gloo")
         if self.target_planner_service is None:
             self.target_planner_service = TargetLayerPlannerService(
                 store=self.target_plan_store,
-                agreement_fn=lambda digest: str(digest),
+                agreement_fn=self._agree_target_plan_payload,
             )
             self.target_planner_service.start()
 
@@ -794,6 +804,33 @@ class RouterSenseInjectionRuntime:
             self.target_planner_service.shutdown()
         if self.target_plan_store is not None:
             self.target_plan_store.shutdown()
+
+    def _agree_target_plan_payload(self, payload: dict[str, Any]) -> str:
+        digest = str(payload.get("logical_plan_digest", ""))
+        if not dist.is_available() or not dist.is_initialized() or len(self.ep_group_ranks) <= 1:
+            return digest
+        group = self.target_plan_control_group if self.target_plan_control_group is not None else self.ep_process_group
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        device = torch.device("cpu")
+        local_len = torch.tensor([len(encoded)], dtype=torch.int64, device=device)
+        world_size = int(len(self.ep_group_ranks) or dist.get_world_size(group=group))
+        gathered_lens = [torch.empty_like(local_len) for _ in range(world_size)]
+        dist.all_gather(gathered_lens, local_len, group=group)
+        max_len = max(int(item.item()) for item in gathered_lens)
+        padded = torch.zeros(max_len, dtype=torch.uint8, device=device)
+        if encoded:
+            padded[: len(encoded)] = torch.tensor(list(encoded), dtype=torch.uint8, device=device)
+        gathered_payloads = [torch.empty_like(padded) for _ in range(world_size)]
+        dist.all_gather(gathered_payloads, padded, group=group)
+        decoded = []
+        for length_tensor, bytes_tensor in zip(gathered_lens, gathered_payloads, strict=True):
+            length = int(length_tensor.item())
+            decoded.append(bytes(bytes_tensor[:length].tolist()).decode("utf-8"))
+        if len(set(decoded)) != 1:
+            raise RuntimeError(
+                f"target plan agreement mismatch rank={self.rank} payloads={decoded}"
+            )
+        return digest
 
     def _build_release_batch_tasks_from_plan(
         self,
@@ -829,6 +866,73 @@ class RouterSenseInjectionRuntime:
                 previous_task_id = str(task.task_id)
                 peer_sequence += 1
         return tasks
+
+    @staticmethod
+    def _residualize_suffix_tasks(
+        *,
+        candidate_tasks: list[ReleaseBatchTask],
+        frozen_tasks: tuple[ReleaseBatchTask, ...],
+    ) -> list[ReleaseBatchTask]:
+        frozen_ends: dict[tuple[int, int], int] = {}
+        for task in frozen_tasks:
+            edge = (int(task.src_rank), int(task.dst_rank))
+            frozen_ends[edge] = max(
+                int(frozen_ends.get(edge, 0)),
+                int(task.sender_offset) + int(task.row_count),
+            )
+        residual: list[ReleaseBatchTask] = []
+        for task in candidate_tasks:
+            edge = (int(task.src_rank), int(task.dst_rank))
+            frozen_end = int(frozen_ends.get(edge, 0))
+            start = int(task.sender_offset)
+            end = int(task.sender_offset) + int(task.row_count)
+            if end <= frozen_end:
+                continue
+            if start < frozen_end:
+                shrink = int(frozen_end - start)
+                task = replace(
+                    task,
+                    sender_offset=int(task.sender_offset) + shrink,
+                    receiver_offset=int(task.receiver_offset) + shrink,
+                    row_count=int(task.row_count) - shrink,
+                )
+            if int(task.row_count) > 0:
+                residual.append(task)
+        return residual
+
+    def _agree_late_suffix(
+        self,
+        *,
+        key: TargetPlanKey,
+        frontier: Any,
+        residual_digest: str,
+        replacement_tasks: list[ReleaseBatchTask],
+        new_plan_digest: str,
+        release_epoch: int,
+    ) -> dict[str, Any]:
+        payload = {
+            "key": key.to_dict(),
+            "release_epoch": int(release_epoch),
+            "frontier_digest": str(frontier.frontier_digest()),
+            "residual_digest": str(residual_digest),
+            "replacement_suffix_digest": stable_hash(
+                [
+                    (
+                        str(task.task_id),
+                        int(task.src_rank),
+                        int(task.dst_rank),
+                        int(task.row_count),
+                        int(task.sender_offset),
+                        int(task.receiver_offset),
+                        int(task.peer_sequence),
+                    )
+                    for task in replacement_tasks
+                ]
+            ),
+            "new_plan_digest": str(new_plan_digest),
+        }
+        self._agree_target_plan_payload(payload)
+        return {"agreed": True, "payload": payload}
 
     def _compile_async_phase_from_logical_plan(
         self,
@@ -1869,10 +1973,11 @@ class RouterSenseInjectionRuntime:
         if not self._policy_supports_target_layer_preplanning() or self.target_plan_store is None:
             return None
         key = self._target_plan_key(layer_name=layer_name)
-        prepared_plan = self.target_plan_store.peek(key)
-        if prepared_plan is None:
+        peeked = self.target_plan_store.peek(key)
+        if peeked is None:
             self._runtime_state.write("prepared_plan_found", False)
             return None
+        prepared_plan = self.target_plan_store.claim_for_reconciliation(key)
         reconcile_key = (key.run_id, key.forward_epoch, key.microbatch_id, key.target_layer_id)
         if reconcile_key in self._target_plan_reconciled_keys:
             raise RuntimeError(f"target plan reconcile_once double invocation for {reconcile_key}")
@@ -1929,8 +2034,9 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("stored_p1_logical_plan_digest", stored_logical_digest)
         self._runtime_state.write("stored_p1_compile_input_digest", stored_compile_input_digest)
         self._runtime_state.write("p1_inferred_from_p0", [list(row) for row in inferred_p1_rows])
-        self.target_plan_store.consume_once(key)
-        self._runtime_state.write("execution_origin", "prepared_exact" if outcome.status == "exact" else "prepared_repaired")
+        execution_origin = "prepared_exact" if outcome.status == "exact" else "prepared_repaired"
+        self.target_plan_store.consume_once(key, execution_origin=execution_origin)
+        self._runtime_state.write("execution_origin", execution_origin)
         self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
         return compiled
 
@@ -1975,11 +2081,13 @@ class RouterSenseInjectionRuntime:
     ) -> dict[str, Any] | None:
         if not self._policy_supports_target_layer_preplanning() or self.target_plan_store is None:
             return None
+        if str(tensor_role) != "hidden_states":
+            return None
         layer_name = str(context.layer_name)
         key = self._target_plan_key(layer_name=layer_name)
-        prepared_plan = self.target_plan_store.peek(key)
-        if prepared_plan is None:
+        if self.target_plan_store.peek(key) is None:
             return None
+        prepared_plan = self.target_plan_store.claim_for_reconciliation(key)
         if getattr(frontier, "pending_count", lambda: 0)() <= 0:
             self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
             return None
@@ -2009,15 +2117,28 @@ class RouterSenseInjectionRuntime:
             plan_origin="late_spliced",
             plan_version=2,
         )
-        suffix_tasks = [
-            task
-            for task in self._build_release_batch_tasks_from_plan(plan=compiled, tensor_role=tensor_role)
-            if str(task.task_id) in set(frontier.replaceable_suffix_ids())
-        ]
+        compiled_tasks = self._build_release_batch_tasks_from_plan(plan=compiled, tensor_role=tensor_role)
+        suffix_tasks = self._residualize_suffix_tasks(
+            candidate_tasks=compiled_tasks,
+            frozen_tasks=tuple(frontier.immutable_prefix()),
+        )
         if not suffix_tasks:
             self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
             return None
-        self.target_plan_store.consume_once(key)
+        agreement_token = self._agree_late_suffix(
+            key=key,
+            frontier=frontier,
+            residual_digest=stable_hash(
+                [
+                    (int(task.src_rank), int(task.dst_rank), int(task.row_count), int(task.sender_offset), int(task.receiver_offset))
+                    for task in suffix_tasks
+                ]
+            ),
+            replacement_tasks=suffix_tasks,
+            new_plan_digest=str(outcome.logical_plan_digest or compiled.plan_hash),
+            release_epoch=int(release_epoch),
+        )
+        self.target_plan_store.consume_once(key, execution_origin="provisional_then_late_suffix")
         self._runtime_state.write("execution_origin", "provisional_then_late_suffix")
         self._runtime_state.write("suffix_splice_count", 1)
         return {
@@ -2025,6 +2146,7 @@ class RouterSenseInjectionRuntime:
             "suffix_tasks": suffix_tasks,
             "new_plan_version": 2,
             "parent_plan_version": int((plan.metrics or {}).get("plan_version", 0) or 0),
+            "agreement_token": agreement_token,
         }
 
     def _compile_async_local_phase_plan(
@@ -2986,8 +3108,11 @@ class RouterSenseInjectionRuntime:
             self.clear_transport(layer_name=layer_name, phase="P0")
             if self._is_joint_window_async_mode() and self.target_plan_store is not None:
                 key = self._target_plan_key(layer_name=layer_name)
-                if str(self._runtime_state.read("execution_origin", "")) == "provisional_only" and self.target_plan_store.peek(key) is not None:
-                    self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")
+                self.target_plan_store.close_key_if_unclaimed(
+                    key,
+                    final_status="EXPIRED",
+                    execution_origin="too_late_no_effect",
+                )
             if self._is_joint_window_async_mode():
                 self._runtime_state.write("after_async_p2p_phase_count", int(self._runtime_state.read("after_async_p2p_phase_count", 0) or 0) + 1)
                 self._runtime_state.write("all_layer_async_phase_count", int(self._runtime_state.read("all_layer_async_phase_count", 0) or 0) + 1)

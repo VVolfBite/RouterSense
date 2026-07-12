@@ -124,7 +124,17 @@ class ReleaseBatchFrontier:
         suffix_tasks: list[ReleaseBatchTask],
         plan_origin: str,
         parent_plan_version: int,
+        agreement_token: dict[str, Any],
     ) -> PlanVersionLineage:
+        if not bool((agreement_token or {}).get("agreed", False)):
+            raise RouterSenseInvariantError(
+                InvariantFailure(
+                    error_code="RS-TRANSPORT-RB-005",
+                    stage="release_frontier",
+                    message="late suffix requires positive agreement token",
+                    actual=dict(agreement_token or {}),
+                )
+            )
         immutable = [task for task in self.tasks if task.state in {"committed", "in_flight", "completed"}]
         frontier_digest = self.frontier_digest()
         replacement = [replace(task, plan_version=int(new_plan_version), state="pending") for task in suffix_tasks]
@@ -138,7 +148,7 @@ class ReleaseBatchFrontier:
             frontier_digest=str(frontier_digest),
             replacement_suffix_digest=str(suffix_digest),
             switch_epoch=int(self.release_epoch),
-            all_rank_agreement=True,
+            all_rank_agreement=bool(agreement_token.get("agreed", False)),
         )
         self.lineage.append(lineage)
         return lineage

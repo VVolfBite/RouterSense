@@ -20,6 +20,7 @@ def test_release_frontier_committed_prefix_immutable() -> None:
         suffix_tasks=_tasks(version=1)[1:],
         plan_origin="late_spliced",
         parent_plan_version=0,
+        agreement_token={"agreed": True},
     )
     assert frontier.immutable_prefix_ids() == ("t0",)
     assert frontier.tasks[0].state == "in_flight"
@@ -36,7 +37,7 @@ def test_release_frontier_too_late_no_effect_shape() -> None:
         suffix_tasks=[],
         plan_origin="late_spliced",
         parent_plan_version=0,
+        agreement_token={"agreed": True},
     )
     assert frontier.replaceable_suffix_ids() == ()
     assert lineage.replacement_suffix_digest
-

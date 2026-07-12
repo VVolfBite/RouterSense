@@ -33,6 +33,7 @@ class ActivePhaseTransport:
     plan: PhaseExecutionPlan
     call_index: int = 0
     expected_roles: tuple[str, ...] = ()
+    shared_session: dict[str, Any] | None = None
 
 
 class MegatronPhaseTransportAdapter:
@@ -57,9 +58,22 @@ class MegatronPhaseTransportAdapter:
         self.local_copy_task_count = 0
         self.local_copy_row_count = 0
         self.phase_sync_fallback_count = 0
+        self._async_phase_sessions: dict[tuple[str, str], dict[str, Any]] = {}
 
     def activate(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
         expected_roles = ("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",)
+        shared_session = None
+        if str(plan.execution_mode) == "joint_window_async_p2p":
+            session_key = (str(layer_name), str(phase))
+            shared_session = {
+                "session_key": [str(layer_name), str(phase)],
+                "primary_tensor_role": "hidden_states",
+                "suffix_splice_count": 0,
+                "execution_origin": "",
+                "final_task_order": [],
+                "lineage": [],
+            }
+            self._async_phase_sessions[session_key] = shared_session
         self._active = ActivePhaseTransport(
             layer_name=layer_name,
             phase=phase,
@@ -67,6 +81,7 @@ class MegatronPhaseTransportAdapter:
             plan=plan,
             call_index=0,
             expected_roles=expected_roles,
+            shared_session=shared_session,
         )
 
     def deactivate(self, *, layer_name: str, phase: str) -> None:
@@ -78,6 +93,7 @@ class MegatronPhaseTransportAdapter:
                     f"incomplete transport consumption for {layer_name} {phase}: "
                     f"expected {len(self._active.expected_roles)} payloads, saw {self._active.call_index}"
                 )
+            self._async_phase_sessions.pop((layer_name, phase), None)
             self._active = None
 
     def current(self) -> ActivePhaseTransport | None:
@@ -115,17 +131,36 @@ class MegatronPhaseTransportAdapter:
                 f"expected send={expected_send} recv={expected_recv}, got send={actual_send} recv={actual_recv}"
             )
         if str(state.plan.execution_mode) == "joint_window_async_p2p":
-            preflight = validate_async_phase_preflight(
-                context=state.context,
-                plan=state.plan,
-                tensor_role=tensor_role,
-                process_group=self.p2p_group if self.p2p_group is not None else group,
-                rank_context={
-                    "global_rank": int(state.context.global_rank),
-                    "local_rank": int(state.context.local_rank),
-                },
-                mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
-            )
+            should_collective_preflight = bool(state.phase == "P0" and tensor_role == "hidden_states")
+            if should_collective_preflight:
+                preflight = validate_async_phase_preflight(
+                    context=state.context,
+                    plan=state.plan,
+                    tensor_role=tensor_role,
+                    process_group=self.p2p_group if self.p2p_group is not None else group,
+                    rank_context={
+                        "global_rank": int(state.context.global_rank),
+                        "local_rank": int(state.context.local_rank),
+                    },
+                    mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
+                )
+            else:
+                preflight = replace(
+                    validate_async_phase_preflight(
+                        context=state.context,
+                        plan=state.plan,
+                        tensor_role=tensor_role,
+                        process_group=None,
+                        rank_context={
+                            "global_rank": int(state.context.global_rank),
+                            "local_rank": int(state.context.local_rank),
+                        },
+                        mode="local_only",
+                    ),
+                    all_ranks_ok=True,
+                    collective_count=0,
+                    preflight_mode="local_only",
+                )
             if not preflight.all_ranks_ok:
                 facade_result = execute_transport(
                     ExecutionRequest(
@@ -138,6 +173,9 @@ class MegatronPhaseTransportAdapter:
                             "global_rank": int(state.context.global_rank),
                             "local_rank": int(state.context.local_rank),
                             "late_suffix_provider": getattr(self, "late_suffix_provider", None),
+                            "async_phase_session": state.shared_session,
+                            "is_primary_payload": bool(tensor_role == "hidden_states"),
+                            "on_release_batch_completed": getattr(self, "on_release_batch_completed", None),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
                         requested_backend_id="async_release",
@@ -185,6 +223,10 @@ class MegatronPhaseTransportAdapter:
                             "global_rank": int(state.context.global_rank),
                             "local_rank": int(state.context.local_rank),
                             "late_suffix_provider": getattr(self, "late_suffix_provider", None),
+                            "async_phase_session": state.shared_session,
+                            "is_primary_payload": bool(tensor_role == "hidden_states"),
+                            "precomputed_task_order": list((state.shared_session or {}).get("final_task_order", [])),
+                            "on_release_batch_completed": getattr(self, "on_release_batch_completed", None),
                         },
                         event_sink=getattr(self, "timeline_hook", None),
                         requested_backend_id="async_release",
@@ -210,6 +252,7 @@ class MegatronPhaseTransportAdapter:
                         "preflight_mode": str(preflight.preflight_mode),
                         "preflight_collective_count": int(preflight.collective_count),
                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
+                        "shared_session_suffix_splice_count": int((state.shared_session or {}).get("suffix_splice_count", 0) or 0),
                     }
                 )
         else:

@@ -19,6 +19,7 @@ class _StoredTargetPlan:
 class TargetPlanStore:
     def __init__(self) -> None:
         self._plans: dict[tuple[str, int, str, str], _StoredTargetPlan] = {}
+        self._claimed: dict[tuple[str, int, str, str], _StoredTargetPlan] = {}
         self._terminal: dict[tuple[str, int, str, str], TargetPlanTerminalRecord] = {}
         self._lock = threading.RLock()
 
@@ -55,6 +56,22 @@ class TargetPlanStore:
                         },
                     )
                 )
+            claimed = self._claimed.get(skey)
+            if claimed is not None:
+                if str(claimed.plan.logical_plan_digest) == str(plan.logical_plan_digest):
+                    return
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-012",
+                        stage="target_plan_store",
+                        message="target plan overwrite while claimed",
+                        actual={
+                            "key": key.to_dict(),
+                            "existing_digest": str(claimed.plan.logical_plan_digest),
+                            "new_digest": str(plan.logical_plan_digest),
+                        },
+                    )
+                )
             self._plans[skey] = _StoredTargetPlan(plan=plan)
 
     def peek(self, key: TargetPlanKey) -> TargetLayerPreparedJointPlan | None:
@@ -64,10 +81,38 @@ class TargetPlanStore:
                 return None
             return item.plan
 
-    def consume_once(self, key: TargetPlanKey) -> TargetLayerPreparedJointPlan:
+    def claim_for_reconciliation(self, key: TargetPlanKey) -> TargetLayerPreparedJointPlan:
         skey = self._key(key)
         with self._lock:
-            item = self._plans.get(skey)
+            item = self._plans.pop(skey, None)
+            if item is None:
+                if skey in self._claimed:
+                    raise RouterSenseInvariantError(
+                        InvariantFailure(
+                            error_code="RS-PLANNING-TP-013",
+                            stage="target_plan_store",
+                            message="target plan already claimed",
+                            actual={"key": key.to_dict()},
+                        )
+                    )
+                terminal = self._terminal.get(skey)
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-014",
+                        stage="target_plan_store",
+                        message="target plan missing at claim_for_reconciliation",
+                        actual={"key": key.to_dict(), "terminal": terminal.to_dict() if terminal is not None else None},
+                    )
+                )
+            self._claimed[skey] = item
+            return item.plan
+
+    def consume_once(self, key: TargetPlanKey, *, execution_origin: str = "consumed") -> TargetLayerPreparedJointPlan:
+        skey = self._key(key)
+        with self._lock:
+            item = self._claimed.pop(skey, None)
+            if item is None:
+                item = self._plans.pop(skey, None)
             if item is None:
                 terminal = self._terminal.get(skey)
                 raise RouterSenseInvariantError(
@@ -79,12 +124,11 @@ class TargetPlanStore:
                     )
                 )
             plan = item.plan
-            self._plans.pop(skey, None)
             self._terminal[skey] = TargetPlanTerminalRecord(
                 key=key,
                 plan_digest=str(plan.logical_plan_digest),
                 final_status="CONSUMED",
-                execution_origin="consumed",
+                execution_origin=str(execution_origin),
                 terminal_at_ns=int(time.perf_counter_ns()),
             )
             return plan
@@ -124,7 +168,7 @@ class TargetPlanStore:
         with self._lock:
             doomed = [
                 skey
-                for skey in self._plans
+                for skey in tuple(self._plans) + tuple(self._claimed)
                 if skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id)
             ]
         for skey in doomed:
@@ -132,9 +176,32 @@ class TargetPlanStore:
 
     def shutdown(self) -> None:
         with self._lock:
-            doomed = list(self._plans)
+            doomed = list(self._plans) + [key for key in self._claimed if key not in self._plans]
         for skey in doomed:
             self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+
+    def close_key_if_unclaimed(
+        self,
+        key: TargetPlanKey,
+        *,
+        final_status: str = "EXPIRED",
+        execution_origin: str = "too_late_no_effect",
+    ) -> None:
+        skey = self._key(key)
+        with self._lock:
+            if skey in self._terminal:
+                return
+            if skey in self._claimed:
+                return
+            item = self._plans.pop(skey, None)
+            plan_digest = str(item.plan.logical_plan_digest) if item is not None else ""
+            self._terminal[skey] = TargetPlanTerminalRecord(
+                key=key,
+                plan_digest=plan_digest,
+                final_status=str(final_status),
+                execution_origin=str(execution_origin),
+                terminal_at_ns=int(time.perf_counter_ns()),
+            )
 
     def get_terminal_record(self, key: TargetPlanKey) -> TargetPlanTerminalRecord | None:
         with self._lock:
@@ -156,6 +223,19 @@ class TargetPlanStore:
                         "status": "AVAILABLE",
                     }
                 )
+            for key, item in self._claimed.items():
+                rows.append(
+                    {
+                        "key": {
+                            "run_id": key[0],
+                            "forward_epoch": key[1],
+                            "microbatch_id": key[2],
+                            "target_layer_id": key[3],
+                        },
+                        "logical_plan_digest": str(item.plan.logical_plan_digest),
+                        "status": "CLAIMED",
+                    }
+                )
             for record in self._terminal.values():
                 rows.append({"key": record.key.to_dict(), "logical_plan_digest": record.plan_digest, "status": record.final_status, "execution_origin": record.execution_origin})
         return rows
@@ -164,6 +244,8 @@ class TargetPlanStore:
         skey = self._key(key)
         with self._lock:
             item = self._plans.pop(skey, None)
+            if item is None:
+                item = self._claimed.pop(skey, None)
             if item is None:
                 if skey in self._terminal:
                     return

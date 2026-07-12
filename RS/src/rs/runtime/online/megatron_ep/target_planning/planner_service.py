@@ -3,7 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_replay_window
@@ -60,7 +60,7 @@ class TargetLayerPlannerMetrics:
 @dataclass
 class TargetLayerPlannerService:
     store: TargetPlanStore
-    agreement_fn: Callable[[str], str] | None = None
+    agreement_fn: Callable[[dict[str, Any]], str] | None = None
     max_queue_size: int = 16
     _queue: queue.Queue[tuple[float, TargetLayerPlanningRequest] | None] = field(init=False)
     _thread: threading.Thread | None = field(init=False, default=None)
@@ -110,12 +110,15 @@ class TargetLayerPlannerService:
                     microbatch_id=request.microbatch_id,
                     target_layer_id=request.target_layer_id,
                 )
-                self.store.put(key, plan)
+                agreement_start = time.perf_counter_ns()
+                published = self.publish_agreed_plan(key=key, plan=plan)
+                agreement_end = time.perf_counter_ns()
+                metrics.agreement_us = (agreement_end - agreement_start) / 1000.0
                 self._timeline.append(
                     {
                         "event": "target_plan_ready",
                         "target_layer_id": request.target_layer_id,
-                        "logical_plan_digest": plan.logical_plan_digest,
+                        "logical_plan_digest": published.logical_plan_digest,
                         "h1_digest": bundle.h1.matrix_digest,
                         "h2_digest": bundle.h2.matrix_digest,
                         "planner_wall_us": metrics.planner_wall_us,
@@ -125,6 +128,27 @@ class TargetLayerPlannerService:
                 self._last_error = exc
                 self._timeline.append({"event": "planner_error", "error": f"{type(exc).__name__}: {exc}"})
                 return
+
+    def publish_agreed_plan(self, *, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> TargetLayerPreparedJointPlan:
+        agreement_payload = self._agreement_payload(key=key, plan=plan)
+        agreement_start = time.perf_counter_ns()
+        agreed_digest = str(plan.logical_plan_digest)
+        if self.agreement_fn is not None:
+            agreed_digest = str(self.agreement_fn(agreement_payload))
+        agreement_end = time.perf_counter_ns()
+        published = replace(plan, logical_plan_digest=str(agreed_digest), ready_at_ns=int(time.perf_counter_ns()))
+        self.store.put(key, published)
+        self._timeline.append(
+            {
+                "event": "target_plan_agreed_publish",
+                "target_layer_id": key.target_layer_id,
+                "agreement_us": float((agreement_end - agreement_start) / 1000.0),
+                "logical_plan_digest": str(published.logical_plan_digest),
+                "h1_digest": str(published.h1_prediction_digest),
+                "h2_digest": str(published.h2_prediction_digest),
+            }
+        )
+        return published
 
     def _build_target_plan(
         self,
@@ -181,10 +205,6 @@ class TargetLayerPlannerService:
         )
         encode_end = time.perf_counter_ns()
         metrics.encode_us = (encode_end - encode_start) / 1000.0
-        agreement_start = time.perf_counter_ns()
-        agreed_digest = logical_digest if self.agreement_fn is None else str(self.agreement_fn(logical_digest))
-        agreement_end = time.perf_counter_ns()
-        metrics.agreement_us = (agreement_end - agreement_start) / 1000.0
         finished_ns = time.perf_counter_ns()
         metrics.planner_wall_us = (finished_ns - planner_started_ns) / 1000.0
         plan = TargetLayerPreparedJointPlan(
@@ -197,7 +217,7 @@ class TargetLayerPlannerService:
             h2_prediction_digest=str(bundle.h2.matrix_digest),
             target_problem_digest=str(target_problem_digest),
             logical_plan=logical_plan,
-            logical_plan_digest=str(agreed_digest),
+            logical_plan_digest=str(logical_digest),
             policy=str(request.policy_id),
             weights={
                 "residual_weight": float(request.policy_options.residual_weight),
@@ -218,3 +238,15 @@ class TargetLayerPlannerService:
         )
         return bundle, plan
 
+    @staticmethod
+    def _agreement_payload(*, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> dict[str, Any]:
+        return {
+            "key": key.to_dict(),
+            "logical_plan_digest": str(plan.logical_plan_digest),
+            "policy": str(plan.policy),
+            "weights_digest": stable_hash(dict(plan.weights or {})),
+            "topology_digest": str(plan.topology_digest),
+            "bucket_contract_digest": str(plan.bucket_contract_digest),
+            "h1_prediction_digest": str(plan.h1_prediction_digest),
+            "h2_prediction_digest": str(plan.h2_prediction_digest),
+        }

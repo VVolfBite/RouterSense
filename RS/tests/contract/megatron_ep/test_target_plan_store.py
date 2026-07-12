@@ -37,10 +37,24 @@ def test_target_plan_store_put_peek_consume_once() -> None:
     plan = _plan()
     store.put(key, plan)
     assert store.peek(key) is plan
+    claimed = store.claim_for_reconciliation(key)
+    assert claimed.logical_plan_digest == "ld"
+    assert store.peek(key) is None
     consumed = store.consume_once(key)
     assert consumed.logical_plan_digest == "ld"
     with pytest.raises(RouterSenseInvariantError):
         store.consume_once(key)
+
+
+def test_target_plan_store_close_key_if_unclaimed_creates_terminal_tombstone() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    store.close_key_if_unclaimed(key, final_status="EXPIRED", execution_origin="too_late_no_effect")
+    terminal = store.get_terminal_record(key)
+    assert terminal is not None
+    assert terminal.final_status == "EXPIRED"
+    with pytest.raises(RouterSenseInvariantError):
+        store.put(key, _plan())
 
 
 def test_target_plan_store_cancel_and_invalidate() -> None:
