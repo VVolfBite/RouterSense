@@ -1,8 +1,10 @@
-git rev-parse HEAD && git status --short && git branch --show-current
-nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
-python - <<'PY' ... torch cuda/nccl summary ... PY
-python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_gpu1/count_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async
-python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_gpu1/perf_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 3 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async
-python -m compileall src/rs/core/experiment_config.py src/rs/runtime/online/megatron_ep/lifecycle.py src/rs/runtime/online/megatron_ep/execution/audit.py src/rs/scheduling/multiphase/tier1.py
-PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py::test_child_config_carries_requested_and_effective_preflight_mode tests/contract/test_gpu_child_config_and_a2_metrics.py::test_gpu_hotpath_iteration_config_uses_compact_preflight_and_three_strategies
+pwd
+git status --short
+git rev-parse HEAD
+git branch --show-current
+rg -n "compute_token_count_contract|valid_non_padding_tokens|padded_token_count|total_token_slots|token_count_contract" experiments/online/run_policy_correctness.py experiments/online/collect_native_ep_trace.py
+rg -n "work\\.wait\\(|batch_isend_irecv|barrier\\(|all_reduce|all_gather|broadcast|tensor\\.cpu|\\.cpu\\(|\\.item\\(|tolist\\(|torch\\.cuda\\.synchronize|event\\.synchronize|torch\\.empty|torch\\.zeros|clone\\(|contiguous\\(|cat\\(|stack\\(|index_select|scatter" src/rs/runtime/online/megatron_ep experiments/online experiments/distributed
+python -m compileall src experiments tests
+PYTHONPATH=src:. pytest -q tests/contract/test_runtime_timeline_cpu.py
+PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py
 git diff --check

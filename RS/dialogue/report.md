@@ -1,41 +1,47 @@
-# M-HOTPATH-GPU1 Report
+# M-RUNTIME-TIMELINE-CPU Report
 
 ## Goal
-Validate that full 16-layer 4GPU forward only pays RouterSense heavy hook cost on selected layers 0 and 1, then collect small-scale cost attribution for native, B-core async, and U-zero async.
+Prepare perf-safe runtime timeline instrumentation and static evidence for the next 4GPU run. This round does not run CUDA/NCCL and does not change scheduling algorithms.
 
-## Environment
-- GPUs: 4 x NVIDIA GeForce RTX 4090 D
-- Torch/CUDA: 2.8.0+cu128 / 12.8
-- Commit at run start: 9215363a80b7894d84d30a1014f1238562e5ac29
-- Config: configs/official/gpu_hotpath_iteration.yaml
+## Starting SHA
+`8bc5acfea09ce2665c150fff314a237025df3188`
 
-## Workload
-- Prompts: 8
-- Tokenized shape: 8 x 16
-- Padded tokens: 56
-- Valid non-padding tokens: 72
+## What Changed
+- Added explicit token count contract fields: `total_token_slots`, `valid_token_count`, `padding_token_count`, and `token_count_status`.
+- Kept deprecated `padded_token_count` only as a compatibility field with `padded_token_count_unit=padding_token_count`.
+- Added `RuntimePhaseTimeline` schema for per-rank, per-selected-layer, per-phase timestamps and derived intervals.
+- Added async release timing fields for submit queue, submit span, request wait, active transport sum, and active transport critical path.
+- Added task granularity and rank imbalance summary helpers.
+- Added `configs/official/gpu_runtime_timeline.yaml` with `profile=timeline_light`, selected layers `0,1`, 8x16 workload, compact preflight, and B-core/U-zero strategies.
+- Added static audit evidence for likely sources of the 80-90 ms selected communication window.
 
-## Count Smoke
-- B-core selected P0/P1 all-rank: 16 / 16
-- U-zero selected P0/P1 all-rank: 16 / 16
-- Prediction-source P0 all-rank: 0
-- None-heavy all-rank: 0
-- U-zero raw-U build all-rank: 16, per selected layer per rank <= 2
-- Preflight requested/effective: compact / compact
+## Timing Semantics
+`active_transport_sum_us` is batch submit plus work wait wall time accumulated by the async executor. `active_transport_critical_path_us` is first request submitted to all requests completed for that phase. The selected communication window is not pure network busy time; it can include phase gaps and compute/control gaps between P0 and P1.
 
-## Perf Smoke Medians
-- native total forward: 139060.546875 us
-- B-core total forward: 223674.30114746094 us
-- U-zero total forward: 211923.03466796875 us
+## Static Audit Summary
+Confirmed risks include release batches submitted and waited batch-by-batch, P0 matrix gather/plan agreement collectives before execution, preflight collectives in non-local modes, and old span naming that can be misread as network busy time. These are not optimized in this round.
 
-## Cost Attribution
-- Native communication timing is unavailable, not zero.
-- B-core communication span median: 87619.009 us; active transport median: 7992.548999999999 us; control median: 9099.378000000002 us.
-- U-zero communication span median: 89184.663 us; active transport median: 5815.274 us; control median: 6062.950000000001 us.
-- First hotspot for both RouterSense strategies is communication span / rank-level transport span, not raw-U build.
+## Tests
+- `python -m compileall src experiments tests`
+- `PYTHONPATH=src:. pytest -q tests/contract/test_runtime_timeline_cpu.py`
+- `PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py`
 
 ## Not Run
-No full pytest, full first bring-up, full C2, predicted raw/safe, seven-strategy A2, target lifecycle matrix, Nsight, or PyTorch profiler trace.
+No GPU, NCCL, C2, first bring-up, seven-strategy A2, target lifecycle matrix, large workload sweep, profiler, or full pytest was run.
 
-## Conclusion
-HOTPATH_SCOPE_GPU_VALIDATED. This is scope and attribution validation only; it is not a paper performance claim.
+## Next GPU Command
+```bash
+python experiments/distributed/run_gpu_a2_strategy_compare.py \
+  --config configs/official/gpu_runtime_timeline.yaml \
+  --output-dir outputs/tuning/runtime_timeline_gpu \
+  --world-size 4 \
+  --selected-layers 0,1 \
+  --warmup-iters 1 \
+  --measure-iters 1 \
+  --profile timeline_light \
+  --preflight-mode compact \
+  --strategies routersense_b_core_independent_async routersense_u_core_zero_raw_async
+```
+
+## Final Status
+`RUNTIME_TIMELINE_CPU_READY`

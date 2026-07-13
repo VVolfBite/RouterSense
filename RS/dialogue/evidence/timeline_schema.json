@@ -1,0 +1,76 @@
+{
+  "record_identity": [
+    "rank",
+    "forward_epoch",
+    "layer_id",
+    "phase",
+    "strategy",
+    "plan_origin"
+  ],
+  "phases": [
+    "P0_dispatch",
+    "P1_return"
+  ],
+  "timestamp_fields": [
+    "hook_enter_ns",
+    "observation_begin_ns",
+    "observation_end_ns",
+    "plan_begin_ns",
+    "plan_end_ns",
+    "materialize_begin_ns",
+    "materialize_end_ns",
+    "pack_begin_ns",
+    "pack_end_ns",
+    "submit_begin_ns",
+    "first_request_submitted_ns",
+    "last_request_submitted_ns",
+    "first_request_completed_ns",
+    "all_requests_completed_ns",
+    "unpack_begin_ns",
+    "unpack_end_ns",
+    "hook_exit_ns"
+  ],
+  "derived_intervals": {
+    "observation_us": "observation_end_ns - observation_begin_ns",
+    "plan_us": "plan_end_ns - plan_begin_ns",
+    "materialize_us": "materialize_end_ns - materialize_begin_ns",
+    "pack_host_us": "pack_end_ns - pack_begin_ns",
+    "submit_queue_us": "first_request_submitted_ns - submit_begin_ns",
+    "submit_span_us": "last_request_submitted_ns - first_request_submitted_ns",
+    "request_wait_us": "all_requests_completed_ns - last_request_submitted_ns",
+    "post_transport_us": "hook_exit_ns - all_requests_completed_ns",
+    "unpack_host_us": "unpack_end_ns - unpack_begin_ns",
+    "hook_total_us": "hook_exit_ns - hook_enter_ns",
+    "first_to_last_completion_us": "all_requests_completed_ns - first_request_completed_ns",
+    "first_submit_to_all_complete_us": "all_requests_completed_ns - first_request_submitted_ns"
+  },
+  "measurement_status_values": [
+    "measured",
+    "derived",
+    "not_applicable",
+    "unavailable"
+  ],
+  "csv_columns_next_gpu": [
+    "strategy",
+    "rank",
+    "forward_epoch",
+    "layer",
+    "phase",
+    "hook_total_us",
+    "observation_us",
+    "plan_us",
+    "materialize_us",
+    "pack_host_us",
+    "submit_queue_us",
+    "submit_span_us",
+    "request_wait_us",
+    "post_transport_us",
+    "active_transport_sum_us",
+    "active_transport_critical_path_us",
+    "task_count",
+    "wave_count",
+    "rows",
+    "wire_bytes"
+  ],
+  "synchronization_policy": "no new unconditional CUDA synchronization added by this CPU round"
+}

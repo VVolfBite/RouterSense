@@ -453,7 +453,7 @@ def execute_async_phase_tensor(
     rank_context: dict[str, int],
     timeline_hook: Any | None = None,
 ) -> AsyncP2PExecutionResult:
-    total_start_ns = time.monotonic_ns()
+    total_start_ns = time.perf_counter_ns()
     world_group = process_group if process_group is not None else dist.group.WORLD
     rank = int(rank_context["global_rank"])
     total_recv_rows = int(sum(context.recv_splits))
@@ -463,7 +463,7 @@ def execute_async_phase_tensor(
     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
     local_copy_rows = 0
     local_copy_task_count = 0
-    local_copy_start_ns = time.monotonic_ns()
+    local_copy_start_ns = time.perf_counter_ns()
     for bundle in context.transport_bundles:
         segment = bundle.outgoing_segment
         if not segment.is_local or int(segment.row_count) <= 0:
@@ -480,7 +480,7 @@ def execute_async_phase_tensor(
         )
         local_copy_rows += int(segment.row_count)
         local_copy_task_count += 1
-    local_copy_end_ns = time.monotonic_ns()
+    local_copy_end_ns = time.perf_counter_ns()
 
     execution_entries: list[dict[str, Any]] = []
     active_wave_ids: set[int] = set()
@@ -591,6 +591,13 @@ def execute_async_phase_tensor(
     batch_count = 0
     first_transport_submit_ns = 0
     last_transport_complete_ns = 0
+    op_build_begin_ns = 0
+    op_build_end_ns = 0
+    submit_begin_ns = 0
+    first_request_submitted_ns = 0
+    last_request_submitted_ns = 0
+    first_request_completed_ns = 0
+    all_requests_completed_ns = 0
     while True:
         batch = frontier.commit_batch(limit=1)
         if not batch:
@@ -604,7 +611,9 @@ def execute_async_phase_tensor(
                 break
         batch_count += 1
         frontier.mark_in_flight([task.task_id for task in batch])
-        op_build_start_ns = time.monotonic_ns()
+        op_build_start_ns = time.perf_counter_ns()
+        if op_build_begin_ns <= 0:
+            op_build_begin_ns = int(op_build_start_ns)
         ops: list[Any] = []
         batch_send = 0
         batch_recv = 0
@@ -671,17 +680,27 @@ def execute_async_phase_tensor(
                 batch_send += 1
                 if emit_detailed_artifacts:
                     ordered_entries.append({**entry, "op_kind": "send", "release_epoch": int(frontier.release_epoch)})
-        op_build_end_ns = time.monotonic_ns()
-        batch_submit_start_ns = time.monotonic_ns()
+        op_build_end_ns = time.perf_counter_ns()
+        op_build_end_ns = int(op_build_end_ns)
+        batch_submit_start_ns = time.perf_counter_ns()
+        if submit_begin_ns <= 0:
+            submit_begin_ns = int(batch_submit_start_ns)
         if first_transport_submit_ns <= 0 and ops:
             first_transport_submit_ns = int(batch_submit_start_ns)
+        if first_request_submitted_ns <= 0 and ops:
+            first_request_submitted_ns = int(batch_submit_start_ns)
         work_handles: list[Any] = list(dist.batch_isend_irecv(ops)) if ops else []
-        batch_submit_end_ns = time.monotonic_ns()
-        wait_start_ns = time.monotonic_ns()
+        batch_submit_end_ns = time.perf_counter_ns()
+        if ops:
+            last_request_submitted_ns = int(batch_submit_end_ns)
+        wait_start_ns = time.perf_counter_ns()
         for work in work_handles:
             work.wait()
-        wait_end_ns = time.monotonic_ns()
+        wait_end_ns = time.perf_counter_ns()
         if ops:
+            if first_request_completed_ns <= 0:
+                first_request_completed_ns = int(wait_end_ns)
+            all_requests_completed_ns = int(wait_end_ns)
             last_transport_complete_ns = int(wait_end_ns)
         frontier.mark_completed([task.task_id for task in batch])
         op_build_us += float((op_build_end_ns - op_build_start_ns) / 1000.0)
@@ -719,7 +738,12 @@ def execute_async_phase_tensor(
                     agreement_token=dict(suffix_result.get("agreement_token", {})),
                 )
                 suffix_splice_count += 1
-    total_end_ns = time.monotonic_ns()
+    total_end_ns = time.perf_counter_ns()
+    active_transport_critical_path_us = (
+        float((all_requests_completed_ns - first_request_submitted_ns) / 1000.0)
+        if first_request_submitted_ns > 0 and all_requests_completed_ns > 0
+        else None
+    )
 
     if callable(timeline_hook):
         timeline_hook(
@@ -760,6 +784,30 @@ def execute_async_phase_tensor(
             "batch_submit_us": float(batch_submit_us),
             "wait_us": float(wait_us),
             "total_us": float((total_end_ns - total_start_ns) / 1000.0),
+            "op_build_begin_ns": int(op_build_begin_ns),
+            "op_build_end_ns": int(op_build_end_ns),
+            "submit_begin_ns": int(submit_begin_ns),
+            "first_request_submitted_ns": int(first_request_submitted_ns),
+            "last_request_submitted_ns": int(last_request_submitted_ns),
+            "first_request_completed_ns": int(first_request_completed_ns),
+            "all_requests_completed_ns": int(all_requests_completed_ns),
+            "submit_queue_us": (
+                float((first_request_submitted_ns - submit_begin_ns) / 1000.0)
+                if submit_begin_ns > 0 and first_request_submitted_ns > 0
+                else None
+            ),
+            "submit_span_us": (
+                float((last_request_submitted_ns - first_request_submitted_ns) / 1000.0)
+                if first_request_submitted_ns > 0 and last_request_submitted_ns > 0
+                else None
+            ),
+            "request_wait_us": (
+                float((all_requests_completed_ns - last_request_submitted_ns) / 1000.0)
+                if last_request_submitted_ns > 0 and all_requests_completed_ns > 0
+                else None
+            ),
+            "active_transport_sum_us": float(batch_submit_us + wait_us),
+            "active_transport_critical_path_us": active_transport_critical_path_us,
             "batch_isend_irecv_call_count": int(batch_isend_irecv_call_count),
             "all_work_completed": True,
             "first_transport_submit_ns": int(first_transport_submit_ns),

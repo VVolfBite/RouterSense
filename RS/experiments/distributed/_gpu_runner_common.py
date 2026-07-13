@@ -239,7 +239,7 @@ def build_policy_correctness_config(
             "capture_layer_selector": "",
             "capture_phase_selector": "",
             "heartbeat_enabled": profile == "debug",
-            "per_wave_timing_enabled": profile != "perf",
+            "per_wave_timing_enabled": profile not in {"perf", "timeline_light"},
             "replay_trace_enabled": profile == "debug",
         },
         "validation": {

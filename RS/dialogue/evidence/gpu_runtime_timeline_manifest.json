@@ -1,0 +1,41 @@
+{
+  "config_path": "configs/official/gpu_runtime_timeline.yaml",
+  "world_size": 4,
+  "selected_layers": [
+    0,
+    1
+  ],
+  "workload": {
+    "prompt_count": 8,
+    "max_length": 16,
+    "expected_batch_rows": 8,
+    "expected_seq_len": 16
+  },
+  "profile": "timeline_light",
+  "preflight_mode": "compact",
+  "warmup": 1,
+  "measure": 1,
+  "strategies": [
+    "routersense_b_core_independent_async",
+    "routersense_u_core_zero_raw_async"
+  ],
+  "optional_reference_strategies": [
+    "native"
+  ],
+  "timeline_light_contract": {
+    "per_rank_phase_summary": true,
+    "raw_task_jsonl": false,
+    "profiler": false,
+    "tensor_dump": false,
+    "correctness_replay": false,
+    "large_artifacts": false
+  },
+  "expected_output_files_next_gpu": [
+    "dialogue/evidence/timeline_summary.json",
+    "dialogue/evidence/timeline_per_rank.csv",
+    "dialogue/evidence/task_granularity_summary.json",
+    "dialogue/evidence/rank_imbalance_summary.json",
+    "dialogue/evidence/phase_gap_summary.json",
+    "dialogue/evidence/runtime_static_audit.json"
+  ]
+}

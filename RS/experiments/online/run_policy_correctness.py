@@ -40,6 +40,7 @@ from rs.runtime.online.megatron_ep.host import (
     summarize_native_dispatchers,
     summarize_rank_environment,
 )
+from rs.runtime.online.megatron_ep.observation.tokenization import compute_token_count_contract
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop
 from rs.scheduling.registry import resolve_phase_policy
 
@@ -440,8 +441,12 @@ def main(argv: list[str] | None = None) -> int:
         actual_prompt_count = int(len(prompts))
         actual_batch_rows = int(encoded["input_ids"].shape[0])
         actual_seq_len = int(encoded["input_ids"].shape[1])
-        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
-        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
+        attention_mask_sum = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else None
+        token_count_contract = compute_token_count_contract(
+            actual_batch_rows=actual_batch_rows,
+            actual_seq_len=actual_seq_len,
+            attention_mask_sum=attention_mask_sum,
+        )
         tokenization_shape_valid = (
             (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
             and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
@@ -748,8 +753,7 @@ def main(argv: list[str] | None = None) -> int:
             "tokenization_padding_mode": str(tokenization.padding),
             "tokenization_truncation": bool(tokenization.truncation),
             "tokenization_max_length": tokenization.max_length,
-            "padded_token_count": int(padded_token_count),
-            "valid_non_padding_token_count": int(valid_non_padding_tokens),
+            **token_count_contract.to_dict(),
         }
         rank_summary = write_rank_artifacts(
             run_dir=run_dir,
@@ -810,8 +814,7 @@ def main(argv: list[str] | None = None) -> int:
                 "tokenization_padding_mode": str(tokenization.padding),
                 "tokenization_truncation": bool(tokenization.truncation),
                 "tokenization_max_length": tokenization.max_length,
-                "padded_token_count": int(padded_token_count),
-                "valid_non_padding_token_count": int(valid_non_padding_tokens),
+                **token_count_contract.to_dict(),
                 "runtime_line": str(config.runtime.line),
                 "invariant_mode": str(config.runtime.invariant_mode),
                 "transport_mutation": transport_mutation,

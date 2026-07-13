@@ -1,0 +1,26 @@
+{
+  "fields": {
+    "total_token_slots": "actual_batch_rows * actual_seq_len",
+    "valid_token_count": "attention_mask.sum() when attention_mask is available",
+    "padding_token_count": "total_token_slots - valid_token_count",
+    "token_count_status": "measured | unavailable | invalid"
+  },
+  "compatibility": {
+    "padded_token_count": "deprecated compatibility field",
+    "padded_token_count_unit": "padding_token_count"
+  },
+  "example_8x16": {
+    "actual_batch_rows": 8,
+    "actual_seq_len": 16,
+    "total_token_slots": 128,
+    "valid_token_count": 72,
+    "padding_token_count": 56,
+    "valid_plus_padding_equals_total": true
+  },
+  "missing_attention_mask": {
+    "valid_token_count": null,
+    "padding_token_count": null,
+    "token_count_status": "unavailable",
+    "must_not_guess": true
+  }
+}

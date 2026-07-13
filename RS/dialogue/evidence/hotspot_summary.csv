@@ -1,3 +1,0 @@
-strategy,top_component,top_component_us,communication_span_us,control_overhead_us,dispatch_hook_rank0_us,combine_hook_rank0_us,active_transport_us
-routersense_b_core_independent_async,communication_span_us,87619.009,87619.009,9099.378000000002,76606.82900000003,27891.338000000003,7992.548999999999
-routersense_u_core_zero_raw_async,communication_span_us,89184.663,89184.663,6062.950000000001,62172.86200000002,20964.356000000007,5815.274

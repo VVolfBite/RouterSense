@@ -1,0 +1,90 @@
+[
+  {
+    "id": "A1",
+    "category": "request_wait",
+    "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
+    "function": "execute_async_phase_tensor",
+    "finding": "Each release batch is submitted with dist.batch_isend_irecv(ops), then the executor iterates work_handles and calls work.wait() before the next release batch. Requests inside a batch are submitted before waiting, but release batches are serialized by wait completion.",
+    "severity": "high",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A2",
+    "category": "release_granularity",
+    "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
+    "function": "execute_async_phase_tensor",
+    "finding": "The executor uses frontier.commit_batch(limit=1), so timeline_light must measure whether many small release batches inflate submit_span_us and request_wait_us.",
+    "severity": "high",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A3",
+    "category": "hidden_barrier",
+    "file": "src/rs/runtime/online/megatron_ep/lifecycle.py",
+    "function": "_gather_actual_p0_full_row_matrix",
+    "finding": "P0 full row matrix collection uses distributed all_gather and CPU materialization before planning. This is expected control-plane work, but it can contribute to pre-submit delay.",
+    "severity": "medium",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A4",
+    "category": "plan_agreement",
+    "file": "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
+    "function": "run_phase_plan_agreement",
+    "finding": "Plan agreement performs all_gather and broadcast plus CPU decode/materialization. These collectives are outside active P2P transport but can appear inside selected-layer hook wall time.",
+    "severity": "medium",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A5",
+    "category": "preflight_collective",
+    "file": "src/rs/runtime/online/megatron_ep/execution/transport_adapter.py",
+    "function": "execute",
+    "finding": "Async preflight runs collective validation for P0 hidden_states unless the plan/config selects local-only compact behavior. The next timeline must verify effective compact mode and preflight_collective_count.",
+    "severity": "medium",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A6",
+    "category": "pack_unpack_allocation",
+    "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
+    "function": "execute_async_phase_tensor",
+    "finding": "Output tensor allocation and narrow views are created during phase execution. Static audit did not confirm per-task torch.empty allocation beyond the phase output, but pack/materialize timing is needed to separate allocation/view overhead from P2P wait.",
+    "severity": "low",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  },
+  {
+    "id": "A7",
+    "category": "measurement_perturbation",
+    "file": "experiments/online/run_policy_correctness.py",
+    "function": "main",
+    "finding": "Forward timing uses CUDA synchronization around measured forwards and computes checksum after forward. This is acceptable for comparable wall timing, but must not be interpreted as pure async overlap timing.",
+    "severity": "low",
+    "confirmed": true,
+    "requires_gpu_timeline": false,
+    "recommended_next_action": "no_action"
+  },
+  {
+    "id": "A8",
+    "category": "communication_span_definition",
+    "file": "experiments/distributed/run_gpu_a2_strategy_compare.py",
+    "function": "_aggregate_strategy_metrics",
+    "finding": "communication_makespan_us is computed from first transport submit to last transport complete across rank summaries. For selected P0/P1 it can include inter-phase gap and framework/expert/control time, so it must be reported as selected window span, not network busy time.",
+    "severity": "high",
+    "confirmed": true,
+    "requires_gpu_timeline": true,
+    "recommended_next_action": "measure"
+  }
+]

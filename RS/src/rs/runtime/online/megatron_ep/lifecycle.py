@@ -355,7 +355,7 @@ class RouterSenseInjectionRuntime:
         return str(getattr(self.config, "observation_profile", "minimal"))
 
     def _is_perf_profile(self) -> bool:
-        return self._artifact_profile() == "perf"
+        return self._artifact_profile() in {"perf", "timeline_light"}
 
     def _is_debug_profile(self) -> bool:
         return self._artifact_profile() == "debug"

@@ -69,13 +69,13 @@ class ObservationEmitter:
         self.config = config
 
     def includes_execution(self) -> bool:
-        return self.config.profile in {"perf", "execution", "debug"}
+        return self.config.profile in {"perf", "timeline_light", "execution", "debug"}
 
     def includes_debug(self) -> bool:
         return self.config.profile == "debug"
 
     def includes_perf(self) -> bool:
-        return self.config.profile == "perf"
+        return self.config.profile in {"perf", "timeline_light"}
 
 
 @dataclass(frozen=True)

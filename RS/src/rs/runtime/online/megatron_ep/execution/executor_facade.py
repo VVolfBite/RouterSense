@@ -153,6 +153,23 @@ class AsyncReleaseTransportExecutor:
             timeline_hook=request.event_sink,
         )
         summary_row = next((row for row in result.execution_entries if row.get("record_type") == "async_phase_summary"), {})
+        plan_tasks = [
+            task
+            for wave in request.execution_plan.waves
+            for task in wave.bucket_tasks
+        ]
+        task_rows = [
+            int(payload.row_count)
+            for task in plan_tasks
+            for payload in task.payload_slices
+            if str(payload.tensor_role) == str(request.tensor_role)
+        ]
+        task_wire_bytes = [
+            int(payload.payload_byte_count)
+            for task in plan_tasks
+            for payload in task.payload_slices
+            if str(payload.tensor_role) == str(request.tensor_role)
+        ]
         return ExecutionResult(
             output_tensor=result.output,
             requested_backend_id=str(request.requested_backend_id or self.backend_id),
@@ -178,13 +195,33 @@ class AsyncReleaseTransportExecutor:
                 "batch_submit_us": float(summary_row.get("batch_submit_us", 0.0) or 0.0),
                 "work_wait_us": float(summary_row.get("wait_us", 0.0) or 0.0),
                 "wait_us": float(summary_row.get("wait_us", 0.0) or 0.0),
+                "submit_queue_us": float(summary_row.get("submit_queue_us") or 0.0),
+                "submit_span_us": float(summary_row.get("submit_span_us") or 0.0),
+                "request_wait_us": float(summary_row.get("request_wait_us") or 0.0),
+                "active_transport_sum_us": float(summary_row.get("active_transport_sum_us") or 0.0),
+                "active_transport_critical_path_us": float(
+                    summary_row.get("active_transport_critical_path_us") or 0.0
+                ),
                 "communication_us": float(summary_row.get("total_us", 0.0) or 0.0),
                 "total_forward_us": float(summary_row.get("total_us", 0.0) or 0.0),
             },
             phase_metrics={
-                "task_count": int(sum(len(wave.bucket_tasks) for wave in request.execution_plan.waves)),
+                "wave_count": int(len(request.execution_plan.waves)),
+                "task_count": int(len(plan_tasks)),
+                "tensor_role_task_count": int(len(task_rows)),
+                "total_rows": int(sum(task_rows)),
+                "total_wire_bytes": int(sum(task_wire_bytes)),
+                "send_task_count": int(summary_row.get("send_op_count", 0) or 0),
+                "recv_task_count": int(summary_row.get("recv_op_count", 0) or 0),
                 "p2p_op_count": int(summary_row.get("send_op_count", 0) or 0) + int(summary_row.get("recv_op_count", 0) or 0),
                 "work_handle_count": int(summary_row.get("work_handle_count", 0) or 0),
+                "op_build_begin_ns": int(summary_row.get("op_build_begin_ns", 0) or 0),
+                "op_build_end_ns": int(summary_row.get("op_build_end_ns", 0) or 0),
+                "submit_begin_ns": int(summary_row.get("submit_begin_ns", 0) or 0),
+                "first_request_submitted_ns": int(summary_row.get("first_request_submitted_ns", 0) or 0),
+                "last_request_submitted_ns": int(summary_row.get("last_request_submitted_ns", 0) or 0),
+                "first_request_completed_ns": int(summary_row.get("first_request_completed_ns", 0) or 0),
+                "all_requests_completed_ns": int(summary_row.get("all_requests_completed_ns", 0) or 0),
             },
             first_transport_submit_ns=int(summary_row.get("first_transport_submit_ns", 0) or 0),
             last_transport_complete_ns=int(summary_row.get("last_transport_complete_ns", 0) or 0),

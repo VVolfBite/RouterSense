@@ -1,22 +1,22 @@
 {
+  "milestone": "M-RUNTIME-TIMELINE-CPU",
+  "starting_sha": "8bc5acfea09ce2665c150fff314a237025df3188",
+  "final_sha": "see git rev-parse HEAD after commit",
   "branch": "main",
+  "gpu_available": false,
   "completed": [
-    "environment_confirmed",
-    "count_smoke",
-    "full_forward_perf_smoke",
-    "cost_summary",
-    "dialogue_evidence"
+    "token_count_contract",
+    "runtime_phase_timeline_schema",
+    "async_release_submit_wait_timing_fields",
+    "task_granularity_summary_schema",
+    "rank_imbalance_summary_schema",
+    "runtime_static_audit",
+    "gpu_runtime_timeline_config",
+    "targeted_cpu_tests"
   ],
-  "final_sha": "commit containing this dialogue directory; see git log -1 and final response",
-  "final_status": "HOTPATH_SCOPE_GPU_VALIDATED",
-  "gpu_available": true,
-  "gpu_count": 4,
-  "milestone": "M-HOTPATH-GPU1",
   "remaining": [
-    "larger A2 matrix",
-    "C2 matrix",
-    "predicted raw/safe tests"
+    "run timeline_light on 4GPU",
+    "use GPU timeline to localize 80-90 ms selected communication window"
   ],
-  "source_sha_before_commit": "9215363a80b7894d84d30a1014f1238562e5ac29",
-  "starting_sha": "9215363a80b7894d84d30a1014f1238562e5ac29"
+  "final_status": "RUNTIME_TIMELINE_CPU_READY"
 }

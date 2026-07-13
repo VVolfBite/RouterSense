@@ -40,6 +40,7 @@ from rs.runtime.online.megatron_ep.host import (
     summarize_rank_environment,
 )
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
+from rs.runtime.online.megatron_ep.observation.tokenization import compute_token_count_contract
 
 from experiments.online.support.environment_validation import main as verify_env_main
 
@@ -170,8 +171,12 @@ def main(argv: list[str] | None = None) -> int:
         actual_prompt_count = int(len(prompts))
         actual_batch_rows = int(encoded["input_ids"].shape[0])
         actual_seq_len = int(encoded["input_ids"].shape[1])
-        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
-        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
+        attention_mask_sum = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else None
+        token_count_contract = compute_token_count_contract(
+            actual_batch_rows=actual_batch_rows,
+            actual_seq_len=actual_seq_len,
+            attention_mask_sum=attention_mask_sum,
+        )
         tokenization_shape_valid = (
             (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
             and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
@@ -221,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 config.observation.profile == "debug" and bool(config.observation.capture_enabled)
             ),
         )(model)
-        if config.observation.profile in {"perf", "execution", "debug"}:
+        if config.observation.profile in {"perf", "timeline_light", "execution", "debug"}:
             policy_runtime = attach_formal_online_runtime(
                 model=model,
                 runtime_config=OnlineRuntimeConfig(
@@ -344,8 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             "tokenization_padding_mode": str(tokenization.padding),
             "tokenization_truncation": bool(tokenization.truncation),
             "tokenization_max_length": tokenization.max_length,
-            "padded_token_count": int(padded_token_count),
-            "valid_non_padding_token_count": int(valid_non_padding_tokens),
+            **token_count_contract.to_dict(),
             "repeat_records": repeat_records,
         }
         write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
@@ -370,8 +374,7 @@ def main(argv: list[str] | None = None) -> int:
                 "tokenization_padding_mode": str(tokenization.padding),
                 "tokenization_truncation": bool(tokenization.truncation),
                 "tokenization_max_length": tokenization.max_length,
-                "padded_token_count": int(padded_token_count),
-                "valid_non_padding_token_count": int(valid_non_padding_tokens),
+                **token_count_contract.to_dict(),
                 "repeat_records": repeat_records,
                 "warmup_iters": int(warmup_iters),
                 "measure_iters": int(measure_iters),
