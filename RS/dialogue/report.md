@@ -1,91 +1,39 @@
-# M-RUNTIME-DIAG-GPU1 Temporary Report
+# M-RUNTIME-ATTRIBUTION Report
 
-## Goal
+## Scope
+Ran the fixed attribution-light 4GPU matrix on full model forward: native, B-core async, and U-zero raw async. No scheduling, task merge, P2P ordering, expert compute, or model-forward semantics were changed.
 
-Collect the first 4GPU diagnostic run and split the 200+ ms selected window into preflight, hook path, transport, expert compute, inter-phase gap, and task fragmentation.
+## Results
+- Native median full forward: 140834.6 us.
+- B-core median full forward: 207986.7 us, delta vs native 67152.1 us.
+- U-zero median full forward: 213655.9 us, delta vs native 72821.2 us.
+- B-core selected window span: 85744.8 us. Active transport sum: 7967.4 us.
+- U-zero selected window span: 90717.1 us. Active transport sum: 7830.1 us.
+- B-core raw/core build median: 9233.1 us. U-zero raw-U build median: 8176.9 us.
+- B-core preflight median: 103.1 us. U-zero preflight median: 104.9 us.
+- B-core p2p enqueue/wait median: 2020.1 / 239.8 us.
+- U-zero p2p enqueue/wait median: 2002.5 / 231.6 us.
 
-## Starting State
+## Count And Guard Contracts
+- B-core selected P0/P1 all-rank counts: 24 / 24.
+- U-zero selected P0/P1 all-rank counts: 24 / 24.
+- none-heavy count remained 0.
+- U-zero raw-U build count all-rank: 24.
+- Preflight requested/effective/executor mode: compact; collective-count exact: True.
+- fallback=0, timeout=0, all_work_completed=true for B-core and U-zero.
 
-- starting commit: `235fa5a78652afbb0fc84da677e837118b3b414c`
-- GPU run executed with 4 x RTX 4090D.
-- Command used:
+## Attribution Validity
+The GPU run did not produce selected-layer module enter/exit, expert module enter/exit, or per-phase non-overlapping cost-tree rows. Therefore:
+- phase_tree_valid=false
+- selected_layer_tree_valid=false
+- forward_tree_valid=false
 
-```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-python experiments/distributed/run_gpu_a2_strategy_compare.py \
-  --config configs/official/gpu_runtime_diag.yaml \
-  --output-dir outputs/tuning/runtime_diag_gpu \
-  --world-size 4 \
-  --selected-layers 0,1 \
-  --warmup-iters 1 \
-  --measure-iters 1 \
-  --profile timeline_light \
-  --preflight-mode compact \
-  --strategies routersense_b_core_independent_async routersense_u_core_zero_raw_async
-```
+This run is valid as a cost structure smoke, but not a closed non-overlapping attribution tree. The remaining unknown is still inside selected layer/hook/framework intervals, not active P2P transport or compact preflight.
 
-## What Passed
+## Current Hotspots From Available Fields
+1. selected_window_span remains ~85.7 ms for B-core and ~90.7 ms for U-zero, while active transport is only ~8.0 ms and ~7.8 ms.
+2. raw/core build is ~9.2 ms for B-core and ~8.2 ms for U-zero.
+3. p2p enqueue is ~2.0 ms and wait is ~0.24 ms; these are not the 80 ms gap.
 
-- selected layers stayed at `[0,1]`.
-- `none` layers stayed out of the heavy wrapper path.
-- `selected_p0_hook_count` and `selected_p1_hook_count` were exact.
-- compact preflight matched executor mode on every rank.
-- raw-U build count stayed within the per-rank and all-rank upper bounds.
-- tokenization stayed fixed at `8 x 16` with `total_token_slots=128`, `valid_token_count=72`, `padding_token_count=56`.
-
-## Measured Structure
-
-### B-core
-
-- `total_forward_us`: `220791.015625`
-- `dispatch_hook_path_us`: `79371.445`
-- `combine_hook_path_us`: `28175.388`
-- `dispatch_transport_us`: `5206.957`
-- `return_transport_us`: `3965.395`
-- `all_rank_transport_span_us`: `9172.352`
-- `expert_compute_us`: `113244.183`
-- `raw_u_build_us`: `8981.586`
-- `preflight_us`: `118.811`
-- `unattributed_us`: `201788.452`
-- `task_count`: `72`
-- `wave_count`: `18`
-- `p2p_op_count`: `36`
-
-### U-zero
-
-- `total_forward_us`: `225332.001`
-- `dispatch_hook_path_us`: `80635.741`
-- `combine_hook_path_us`: `28846.536`
-- `dispatch_transport_us`: `5252.688`
-- `return_transport_us`: `2622.502`
-- `all_rank_transport_span_us`: `7875.190`
-- `expert_compute_us`: `115266.594`
-- `raw_u_build_us`: `8686.665`
-- `preflight_us`: `101.200`
-- `unattributed_us`: `207928.576`
-- `task_count`: `72`
-- `wave_count`: `24`
-- `p2p_op_count`: `36`
-
-## Interpretation
-
-- Active transport is still only single-digit milliseconds.
-- The remaining selected-window time is dominated by hook path, expert compute, and a 9.8-14.7 ms P0-to-P1 gap.
-- `unattributed_us` is still large, so the current timeline is useful for attribution but not a closed root-cause proof.
-- Rank 3 is not the only critical rank in this run; the slowest rank shifts by strategy and metric.
-
-## Tests
-
-- `python -m compileall src experiments tests`: passed.
-- `PYTHONPATH=src:. pytest -q tests/contract/test_runtime_diag_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py`: 33 passed.
-
-## Not Run
-
-- No full C2.
-- No seven-strategy A2.
-- No target lifecycle matrix.
-- No profiler trace.
-
-## Temporary Conclusion
-
-The first 4GPU diagnostic run is complete and the communication window is now split into measurable pieces. The next step is to use the existing timeline to decide whether the remaining gap is mainly expert compute, hook overhead, or control/synchronization work.
+## Required Next Fix
+Instrument selected MoE module enter/exit and expert module enter/exit, and export `selected_layer_cost_tree.csv` and `phase_cost_tree.csv` from actual runtime summaries. Without these boundaries, RouterSense cannot honestly state where the ~70 ms extra over native falls in the requested cost tree.

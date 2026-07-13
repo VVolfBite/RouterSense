@@ -1,6 +1,15 @@
 """观测面子包：负责原生 observer、运行时观测 schema 与 artifact 落盘。"""
 
 from .artifact_recorder import RuntimeArtifactRecorder
+from .attribution import (
+    ForwardCostTree,
+    PHASE_COMPONENT_FIELDS,
+    PhaseCostTree,
+    SelectedLayerCostTree,
+    aggregate_sync_callsite_cost,
+    attribution_schema,
+    legacy_outside_measured_hooks,
+)
 from .contracts import (
     ExecutionAudit,
     ExecutionAuditStatus,
@@ -26,17 +35,24 @@ from .views import (
 __all__ = [
     "ExecutionAudit",
     "ExecutionAuditStatus",
+    "ForwardCostTree",
     "ObservationEmitter",
     "ObservationProfile",
+    "PHASE_COMPONENT_FIELDS",
+    "PhaseCostTree",
     "PolicyRuntimeRecord",
     "RouterSenseObserver",
     "RuntimeArtifactRecorder",
     "RuntimeObservationRecorder",
     "RuntimeObservationSnapshot",
+    "SelectedLayerCostTree",
+    "aggregate_sync_callsite_cost",
+    "attribution_schema",
     "build_runtime_observation",
     "control_replay_trace_row",
     "digest_text",
     "extract_int_tuple",
+    "legacy_outside_measured_hooks",
     "parse_layer_id",
     "phase_context_artifact",
     "scheduled_plan_artifact",

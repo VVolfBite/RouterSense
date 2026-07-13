@@ -1,9 +1,0 @@
-strategy,rank,selected_window_span_us,p0_to_p1_gap_us,expert_compute_us,selected_hook_dispatch_us,selected_hook_combine_us
-routersense_b_core_independent_async,0,220791.015625,13771.792,1962.817,79371.445,28175.388
-routersense_b_core_independent_async,1,220791.015625,9823.262,1665.815,79371.445,28175.388
-routersense_b_core_independent_async,2,220791.015625,13703.583,1907.596,79371.445,28175.388
-routersense_b_core_independent_async,3,220791.015625,9799.2,1619.238,79371.445,28175.388
-routersense_u_core_zero_raw_async,0,225332.00073242188,14653.564,1911.945,80635.741,28846.536
-routersense_u_core_zero_raw_async,1,225332.00073242188,10705.257,1475.644,80635.741,28846.536
-routersense_u_core_zero_raw_async,2,225332.00073242188,14597.035,1790.668,80635.741,28846.536
-routersense_u_core_zero_raw_async,3,225332.00073242188,14637.692,1924.116,80635.741,28846.536

@@ -47,7 +47,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-iters", type=int, default=None)
     parser.add_argument("--measure-iters", type=int, default=None)
     parser.add_argument("--selected-layers", default=None)
-    parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf", "timeline_light"))
+    parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf", "timeline_light", "attribution_light"))
     parser.add_argument("--preflight-mode", default=None, choices=("full", "compact"))
     parser.add_argument("--world-size", type=int, default=None)
     parser.add_argument("--c2-summary-path", default=None)

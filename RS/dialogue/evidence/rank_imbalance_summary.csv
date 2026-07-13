@@ -1,9 +1,0 @@
-strategy,rank,forward_us,expert_compute_us,inter_phase_gap_us,preflight_collective_count,batch_isend_irecv_count
-routersense_b_core_independent_async,0,221203.341,1962.817,13771.792,4,126
-routersense_b_core_independent_async,1,220883.637,1665.815,9823.262,4,126
-routersense_b_core_independent_async,2,220688.141,1907.596,13703.583,4,126
-routersense_b_core_independent_async,3,220341.438,1619.238,9799.2,4,126
-routersense_u_core_zero_raw_async,0,225223.461,1911.945,14653.564,4,126
-routersense_u_core_zero_raw_async,1,226019.91,1475.644,10705.257,4,126
-routersense_u_core_zero_raw_async,2,225767.496,1790.668,14597.035,4,126
-routersense_u_core_zero_raw_async,3,224816.235,1924.116,14637.692,4,126

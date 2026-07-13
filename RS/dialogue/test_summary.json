@@ -3,28 +3,20 @@
     {
       "test_name": "compileall",
       "command": "python -m compileall src experiments tests",
-      "passed": true,
-      "details": "passed"
+      "passed": true
     },
     {
-      "test_name": "runtime_diag_cpu_bundle",
-      "command": "PYTHONPATH=src:. pytest -q tests/contract/test_runtime_diag_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py",
+      "test_name": "attribution_timeline_child_config_contracts",
+      "command": "PYTHONPATH=src:. pytest -q tests/contract/test_runtime_attribution_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py",
       "passed": true,
-      "details": "33 passed"
+      "passed_count": 36
     },
     {
-      "test_name": "gpu_runtime_diag_light",
-      "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_runtime_diag.yaml --output-dir outputs/tuning/runtime_diag_gpu --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile timeline_light --preflight-mode compact --strategies routersense_b_core_independent_async routersense_u_core_zero_raw_async",
+      "test_name": "4gpu_attribution_light_smoke",
+      "command": "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_runtime_attribution.yaml ...",
       "passed": true,
-      "details": "4GPU diagnostic run completed; full C2 intentionally not run"
+      "strategies": ["native", "routersense_b_core_independent_async", "routersense_u_core_zero_raw_async"]
     }
   ],
-  "not_run": [
-    "full C2",
-    "seven-strategy A2",
-    "predicted strategies",
-    "target lifecycle matrix",
-    "large workload sweep",
-    "profiler"
-  ]
+  "not_run": ["full pytest", "full C2", "predicted raw/safe", "seven-strategy A2", "Nsight", "PyTorch profiler", "large workload sweep"]
 }

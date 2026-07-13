@@ -1,20 +1,19 @@
 {
-  "milestone": "M-RUNTIME-DIAG-GPU1-TEMP",
-  "starting_sha": "235fa5a78652afbb0fc84da677e837118b3b414c",
-  "final_sha": "pending",
+  "milestone": "M-RUNTIME-ATTRIBUTION",
+  "starting_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
+  "current_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
   "branch": "main",
   "gpu_available": true,
   "completed": [
-    "4GPU diagnostic run executed",
-    "compact preflight matched executor mode",
-    "selected layer scope stayed at [0,1]",
-    "exact selected hook counts held",
-    "raw-U upper bound held",
-    "timeline evidence collected"
+    "4GPU attribution_light run",
+    "CPU attribution schema tests",
+    "compact preflight verified in run",
+    "count/guard contracts verified for B-core and U-zero"
   ],
   "remaining": [
-    "review selected-window attribution and rank-skew details",
-    "decide whether another timeline run is needed"
+    "selected-layer module boundary export",
+    "expert module boundary export",
+    "non-overlapping phase cost tree export"
   ],
-  "final_status": "GPU_DIAG_TEMPOARY_REPORT_STAGED"
+  "final_status": "RUNTIME_ATTRIBUTION_INCOMPLETE"
 }

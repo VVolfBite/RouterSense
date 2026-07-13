@@ -1,7 +1,6 @@
 {
-  "starting_sha": "235fa5a78652afbb0fc84da677e837118b3b414c",
-  "final_sha": "recorded_after_commit",
+  "starting_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
+  "current_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
   "branch": "main",
-  "git_clean_at_dialogue_generation": false,
-  "push_succeeded": "pending"
+  "dirty": true
 }

@@ -18,7 +18,7 @@ SUPPORTED_RUN_KINDS = {
     "online_policy_correctness",
 }
 
-SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "timeline_light", "execution", "debug"}
+SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "timeline_light", "attribution_light", "execution", "debug"}
 SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
 SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
 SUPPORTED_ONLINE_PHASE_POLICIES = {
