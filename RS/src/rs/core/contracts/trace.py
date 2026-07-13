@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, Mapping, Protocol
 
 from .online_ep import OnlineExpertPlacement, OnlineLayerRouteTrace, RankManifest, TransportOperationRecord
 from .router_trace import ExpertBucketRecord, LayerRouteTrace
@@ -25,6 +26,12 @@ class FutureInformationMode:
     NONE = "none"
     ORACLE_FULL_TRACE = "oracle_full_trace"
     PREDICTED = "predicted"
+
+
+class AuditEvidenceLevel(str, Enum):
+    FULL = "full"
+    SUMMARY_ONLY = "summary_only"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -70,9 +77,65 @@ class EpExecutionTrace:
         }
 
 
+@dataclass(frozen=True)
+class TraceEvent:
+    event_type: str
+    ts_ns: int
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["details"] = dict(self.details)
+        return payload
+
+
+class TraceSink(Protocol):
+    def record(self, event: TraceEvent) -> None:
+        ...
+
+    def flush(self) -> tuple[TraceEvent, ...]:
+        ...
+
+
+@dataclass(frozen=True)
+class ReferenceTraceBundle:
+    run_identity: Mapping[str, object]
+    topology: Mapping[str, object]
+    traffic_observations: tuple[Mapping[str, object], ...] = ()
+    prediction_records: tuple[Mapping[str, object], ...] = ()
+    planning_records: tuple[Mapping[str, object], ...] = ()
+    published_plan_records: tuple[Mapping[str, object], ...] = ()
+    materialized_summaries: tuple[Mapping[str, object], ...] = ()
+    execution_outcomes: tuple[Mapping[str, object], ...] = ()
+    execution_truth: Mapping[str, object] = field(default_factory=dict)
+    check_results: tuple[Mapping[str, object], ...] = ()
+    measurement_snapshot: Mapping[str, object] = field(default_factory=dict)
+    evidence_level: AuditEvidenceLevel = AuditEvidenceLevel.UNAVAILABLE
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_identity": dict(self.run_identity),
+            "topology": dict(self.topology),
+            "traffic_observations": [dict(item) for item in self.traffic_observations],
+            "prediction_records": [dict(item) for item in self.prediction_records],
+            "planning_records": [dict(item) for item in self.planning_records],
+            "published_plan_records": [dict(item) for item in self.published_plan_records],
+            "materialized_summaries": [dict(item) for item in self.materialized_summaries],
+            "execution_outcomes": [dict(item) for item in self.execution_outcomes],
+            "execution_truth": dict(self.execution_truth),
+            "check_results": [dict(item) for item in self.check_results],
+            "measurement_snapshot": dict(self.measurement_snapshot),
+            "evidence_level": str(self.evidence_level.value),
+        }
+
+
 __all__ = [
+    "AuditEvidenceLevel",
     "EpExecutionTrace",
     "FutureInformationMode",
     "RankStageTiming",
+    "ReferenceTraceBundle",
+    "TraceEvent",
+    "TraceSink",
     "TraceOrigin",
 ]

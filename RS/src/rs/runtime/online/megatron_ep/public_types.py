@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from enum import Enum
+from typing import Any, Callable, Literal, Mapping, Protocol
 
 
 class UnsupportedSchedulerMode(ValueError):
@@ -86,6 +87,135 @@ class RuntimeHandle:
 class RuntimeDecision:
     action: str = "continue"
     details: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeIdentity:
+    run_id: str
+    forward_generation: int
+    microbatch_id: str
+    rank: int
+    world_size: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_id": str(self.run_id),
+            "forward_generation": int(self.forward_generation),
+            "microbatch_id": str(self.microbatch_id),
+            "rank": int(self.rank),
+            "world_size": int(self.world_size),
+        }
+
+
+@dataclass(frozen=True)
+class PublicationSlot:
+    run_id: str
+    forward_generation: int
+    microbatch_id: str
+    source_layer_id: str
+    target_layer_id: str
+    planning_slot: str
+
+    def semantic_payload(self) -> dict[str, object]:
+        return {
+            "run_id": str(self.run_id),
+            "forward_generation": int(self.forward_generation),
+            "microbatch_id": str(self.microbatch_id),
+            "source_layer_id": str(self.source_layer_id),
+            "target_layer_id": str(self.target_layer_id),
+            "planning_slot": str(self.planning_slot),
+        }
+
+    def semantic_digest(self) -> str:
+        import json
+        import hashlib
+
+        encoded = json.dumps(self.semantic_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class LocalPreparationToken:
+    service_session_id: int
+    forward_generation: int
+    target_layer_id: str
+    task_version: int
+    publication_slot_digest: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "service_session_id": int(self.service_session_id),
+            "forward_generation": int(self.forward_generation),
+            "target_layer_id": str(self.target_layer_id),
+            "task_version": int(self.task_version),
+            "publication_slot_digest": str(self.publication_slot_digest),
+        }
+
+
+@dataclass(frozen=True)
+class LocalPublicationCandidate:
+    slot: PublicationSlot
+    planner_id: str
+    logical_plan_digest: str
+    token: LocalPreparationToken
+    status: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "slot": self.slot.semantic_payload(),
+            "planner_id": str(self.planner_id),
+            "logical_plan_digest": str(self.logical_plan_digest),
+            "token": self.token.to_dict(),
+            "status": str(self.status),
+            "metadata": dict(self.metadata),
+        }
+
+
+class PublicationPollStatus(str, Enum):
+    NOT_READY = "not_ready"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True)
+class PublicationPollResult:
+    slot: PublicationSlot
+    status: PublicationPollStatus
+    root_rank: int | None = None
+    published_plan_digest: str | None = None
+    canonical_payload: Mapping[str, object] = field(default_factory=dict)
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "slot": self.slot.semantic_payload(),
+            "status": str(self.status.value),
+            "root_rank": None if self.root_rank is None else int(self.root_rank),
+            "published_plan_digest": self.published_plan_digest,
+            "canonical_payload": dict(self.canonical_payload),
+            "details": dict(self.details),
+        }
+
+
+class ControlCommunicationLane(Protocol):
+    def poll(self, slot: PublicationSlot, local_candidate: LocalPublicationCandidate | None) -> PublicationPollResult:
+        ...
+
+
+class TargetPlanState(str, Enum):
+    EMPTY = "EMPTY"
+    LOGICAL_READY = "LOGICAL_READY"
+    CLAIMED = "CLAIMED"
+    BOUND = "BOUND"
+    EXECUTING = "EXECUTING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
 
 
 @dataclass(frozen=True)

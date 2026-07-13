@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Any
+from dataclasses import asdict, dataclass, field
+from typing import Any, Mapping
 
 
 OFFLINE_PIPELINE = "offline"
@@ -20,6 +20,46 @@ class RunIdentity:
     future_information_mode: str
 
     def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EligibilityResult:
+    correctness_eligible: bool
+    performance_eligible: bool
+    prediction_evaluation_eligible: bool
+    offline_replay_eligible: bool
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ResultBundle:
+    run_identity: RunIdentity
+    status: str
+    eligibility: EligibilityResult
+    summary: Mapping[str, object] = field(default_factory=dict)
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_identity": self.run_identity.to_dict(),
+            "status": str(self.status),
+            "eligibility": self.eligibility.to_dict(),
+            "summary": dict(self.summary),
+            "details": dict(self.details),
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactManifest:
+    schema_digest: str
+    artifact_count: int
+    artifact_paths: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -66,9 +106,12 @@ def build_result_envelope(
 
 
 __all__ = [
+    "ArtifactManifest",
+    "EligibilityResult",
     "LEGACY_TRACE_REPLAY_PIPELINE",
     "OFFLINE_PIPELINE",
     "ONLINE_PIPELINE",
+    "ResultBundle",
     "RunIdentity",
     "build_result_envelope",
 ]

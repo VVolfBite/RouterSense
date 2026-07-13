@@ -1,0 +1,70 @@
+{
+  "starting_branch": "convergence/m1-runtime-lifecycle",
+  "starting_sha": "452f9c62f49cf6e571321f62da58a32480f7c8eb",
+  "modules": {
+    "M0": {
+      "status": "READY",
+      "completed_with_evidence": [
+        "formal prediction/planning contracts",
+        "cpu regression suite at 452f9c6"
+      ],
+      "implemented_unverified": [],
+      "blockers": [],
+      "dependencies": [],
+      "next_entry": "preserve regression during M1/M2/M3"
+    },
+    "M1": {
+      "status": "BLOCKED",
+      "completed_with_evidence": [
+        "submit status handling",
+        "keyed queue",
+        "worker-only prediction path",
+        "harder target plan transitions",
+        "attach and runtime handle invariants"
+      ],
+      "implemented_unverified": [
+        "partial stale publish rejection"
+      ],
+      "blockers": [
+        "deterministic ControlCommunicationLane",
+        "4-rank delayed/failed/cancelled proof",
+        "formal no-late-suffix dynamic proof"
+      ],
+      "dependencies": [
+        "M2 published plan contracts",
+        "M3 passive sink contracts"
+      ],
+      "next_entry": "freeze PublicationSlot and poll result contracts"
+    },
+    "M2": {
+      "status": "PLANNED",
+      "completed_with_evidence": [
+        "ownership identified"
+      ],
+      "implemented_unverified": [],
+      "blockers": [
+        "no unified publisher/materializer/validator/executor path"
+      ],
+      "dependencies": [
+        "M1 publication slot and lane",
+        "M3 evidence sink attachment boundaries"
+      ],
+      "next_entry": "freeze execution contracts"
+    },
+    "M3": {
+      "status": "PLANNED",
+      "completed_with_evidence": [
+        "ownership identified"
+      ],
+      "implemented_unverified": [],
+      "blockers": [
+        "observation, checks, measurement, debug, evidence still coupled"
+      ],
+      "dependencies": [
+        "M1 runtime events",
+        "M2 execution outcomes"
+      ],
+      "next_entry": "freeze checks/measurement/result/trace contracts"
+    }
+  }
+}

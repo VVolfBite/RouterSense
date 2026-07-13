@@ -1,6 +1,26 @@
 """Stable core contract exports for the formal RouteSense package layout."""
 
+from .artifact import ArtifactWriter
+from .debug import DebugEvent, DebugProbe
+from .checks import CheckCode, CheckResult, CheckSeverity, CheckStage
+from .execution import (
+    ActualPhaseContext,
+    ExecutionBatch,
+    ExecutionContext,
+    ExecutionOutcome,
+    ExecutionGuard,
+    Executor,
+    MaterializedPlan,
+    PayloadSpec,
+    PlanMaterializer,
+    PlanPublisher,
+    PlanValidator,
+    PublishedPlan,
+    TransferSlice,
+    ValidationResult as ExecutionValidationResult,
+)
 from .flow import FlowEdge
+from .measurement import MeasurementEvent, MeasurementSink, MeasurementSnapshot
 from .planning import (
     PlanScore,
     PlanWave,
@@ -26,22 +46,65 @@ from .prediction import (
 )
 from .provenance import SourceProvenance
 from .router_trace import ExpertBucketRecord, LayerRouteTrace, RouteIdentity, RouteRecord
-from .result import OFFLINE_PIPELINE, ONLINE_PIPELINE, LEGACY_TRACE_REPLAY_PIPELINE, RunIdentity, build_result_envelope
+from .result import (
+    ArtifactManifest,
+    EligibilityResult,
+    OFFLINE_PIPELINE,
+    ONLINE_PIPELINE,
+    LEGACY_TRACE_REPLAY_PIPELINE,
+    ResultBundle,
+    RunIdentity,
+    build_result_envelope,
+)
 from .topology import PlacementSnapshot, TopologySnapshot
-from .trace import EpExecutionTrace, FutureInformationMode, RankStageTiming, TraceOrigin
+from .trace import (
+    AuditEvidenceLevel,
+    EpExecutionTrace,
+    FutureInformationMode,
+    RankStageTiming,
+    ReferenceTraceBundle,
+    TraceEvent,
+    TraceOrigin,
+    TraceSink,
+)
 
 __all__ = [
+    "ArtifactWriter",
+    "ActualPhaseContext",
+    "ArtifactManifest",
+    "AuditEvidenceLevel",
+    "CheckCode",
+    "CheckResult",
+    "CheckSeverity",
+    "CheckStage",
+    "DebugEvent",
+    "DebugProbe",
+    "ExecutionBatch",
+    "ExecutionContext",
+    "ExecutionGuard",
+    "ExecutionOutcome",
+    "ExecutionValidationResult",
+    "Executor",
     "ExpertBucketRecord",
     "EpExecutionTrace",
+    "EligibilityResult",
     "FlowEdge",
     "FutureInformationMode",
     "LayerRouteTrace",
     "LEGACY_TRACE_REPLAY_PIPELINE",
     "MatrixRows",
+    "MaterializedPlan",
+    "MeasurementEvent",
+    "MeasurementSink",
+    "MeasurementSnapshot",
     "OFFLINE_PIPELINE",
     "ONLINE_PIPELINE",
+    "PayloadSpec",
     "PlacementSnapshot",
     "PlanScore",
+    "PlanMaterializer",
+    "PlanPublisher",
+    "PlanValidator",
     "PlanWave",
     "PlannedFlow",
     "PlanningConstraints",
@@ -58,10 +121,16 @@ __all__ = [
     "RankStageTiming",
     "RouteIdentity",
     "RouteRecord",
+    "PublishedPlan",
+    "ReferenceTraceBundle",
+    "ResultBundle",
     "RunIdentity",
     "SourceProvenance",
     "TopologySnapshot",
     "TraceOrigin",
+    "TraceEvent",
+    "TraceSink",
+    "TransferSlice",
     "TrafficHistoryContext",
     "ExpertRouteContext",
     "ExpertRoutePrediction",
