@@ -1,0 +1,9 @@
+src/rs/planning/runtime_compat.py
+  - THIN_SHIM
+  - re-exports legacy scheduling helpers for runtime import convergence
+  - remove when remaining runtime call sites stop depending on phase-policy helper re-exports
+
+src/rs/scheduling/*
+  - RETAINED_INTERNAL
+  - implementation backend for M0 planners
+  - remove or thin further after Runtime M1/M2 stop importing compatibility helpers and after planner implementations are moved or collapsed

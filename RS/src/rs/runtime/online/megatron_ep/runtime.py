@@ -17,8 +17,7 @@ from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import Joi
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.runtime.online.megatron_ep.observation import PolicyRuntimeRecord
-from rs.scheduling.catalog import ResolvedAlgorithmId, resolve_algorithm_id
-from rs.scheduling.registry import resolve_phase_policy
+from rs.planning.runtime_compat import ResolvedAlgorithmId, resolve_algorithm_id, resolve_phase_policy
 
 
 class UnsupportedSchedulerMode(ValueError):

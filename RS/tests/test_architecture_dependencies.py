@@ -7,7 +7,11 @@ from pathlib import Path
 def _collect_imports(root: Path) -> list[tuple[Path, int, str]]:
     rows: list[tuple[Path, int, str]] = []
     for path in root.rglob("*.py"):
-        tree = ast.parse(path.read_text())
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -61,6 +65,48 @@ def test_scheduling_does_not_import_torch_or_runtime() -> None:
     bad = []
     for path, lineno, module in _collect_imports(Path("src/rs/scheduling")):
         if module.startswith(("torch", "megatron", "experiments", "integrations", "legacy", "rs.runtime")):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
+def test_prediction_package_does_not_import_runtime_or_experiments() -> None:
+    bad = []
+    for path, lineno, module in _collect_imports(Path("src/rs/prediction")):
+        if module.startswith(("rs.runtime", "experiments")):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
+def test_planning_package_does_not_import_runtime_or_offline() -> None:
+    bad = []
+    for path, lineno, module in _collect_imports(Path("src/rs/planning")):
+        if module.startswith(("rs.runtime", "rs.runtime.offline", "experiments")):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
+def test_runtime_does_not_import_legacy_prediction_implementations() -> None:
+    bad = []
+    forbidden = (
+        "rs.runtime.online.megatron_ep.prediction.simple_predictors",
+        "rs.runtime.online.megatron_ep.prediction.gate_replay_predictor",
+    )
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime")):
+        if module.startswith(forbidden):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
+def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
+    bad = []
+    forbidden = (
+        "rs.scheduling.registry",
+        "rs.scheduling.catalog",
+        "rs.scheduling.algorithm_catalog",
+        "rs.scheduling.public_catalog",
+    )
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime")):
+        if module.startswith(forbidden):
             bad.append(f"{path}:{lineno}:{module}")
     assert not bad, bad
 

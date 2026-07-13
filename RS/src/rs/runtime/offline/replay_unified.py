@@ -3,9 +3,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from rs.core.contracts import (
+    PlanningConstraints,
+    PlanningIdentity,
+    PlanningRequest,
+    PlanningTopology,
+    PlanningTraffic,
+    PlanningWeights,
+    PredictionHint as FormalPredictionHint,
+)
+from rs.planning import PlannerRegistry
+from rs.planning.api import to_logical_plan
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
-from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_replay_window
 from rs.scheduling.validation import stable_hash
 from rs.scheduling import (
     FlowDemand,
@@ -205,20 +215,44 @@ class ReplayEngine:
             scheduling_mode=self.scheduling_mode,
             expert_compute_delay=self.expert_compute_delay,
         )
-        request = build_request_from_replay_window(
-            replay_window=replay_window,
-            p2_hint_rows=planning_hint.p2_hint_rows,
-            hint_type=str(planning_hint.hint_type),
-            confidence=float(planning_hint.confidence),
-            bucket_rows=int(self.bucket_rows),
-            policy_options=PolicyOptions(
+        request = PlanningRequest(
+            identity=PlanningIdentity(
+                request_id=f"{replay_window.fixture_id}:{replay_window.window_id}:{policy_name}",
+                run_id=str(replay_window.fixture_id),
+                window_id=str(replay_window.window_id),
+                source_layer_id=str(replay_window.layer_id),
+                target_layer_id=str(planning_hint.target_layer),
+            ),
+            traffic=PlanningTraffic(
+                p0_dispatch_rows=replay_window.p0_truth_rows,
+                p1_return_rows=replay_window.p1_truth_rows,
+            ),
+            prediction_hint=FormalPredictionHint(
+                predictor_id=str(planning_hint.hint_type),
+                hint_type=str(planning_hint.hint_type),
+                target_dispatch_rows=planning_hint.p2_hint_rows,
+                confidence=float(planning_hint.confidence),
+                oracle=bool(planning_hint.hint_type == "perfect_trace_hint"),
+                source_layer_id=None if planning_hint.source_layer is None else str(planning_hint.source_layer),
+                target_layer_id=str(planning_hint.target_layer),
+            ),
+            topology=PlanningTopology(world_size=int(replay_window.group_size)),
+            constraints=PlanningConstraints(
+                bucket_rows=int(self.bucket_rows),
+                max_waves=256,
+                expert_compute_delay=float(self.expert_compute_delay),
+                phase_release_model="p1_return",
+            ),
+            weights=PlanningWeights(
                 p0_weight=1.0,
                 p1_weight=1.0,
-                p2_hint_weight=float(planning_hint.confidence),
+                p2_weight=float(planning_hint.confidence),
             ),
+            information_mode="p0_p1_p2",
         )
-        policy = build_policy(str(policy_name), request.policy_options)
-        logical_plan = policy.plan(request)
+        planner = PlannerRegistry.create(str(policy_name), None)
+        formal_plan = planner.plan(request)
+        logical_plan = to_logical_plan(formal_plan)
         audit = replay_and_audit_logical_plan(problem, logical_plan)
         canonical_tasks = CanonicalBucketizer(bucket_rows=self.bucket_rows).bucketize(replay_window)
         return {
@@ -230,7 +264,8 @@ class ReplayEngine:
             "input_total_rows": int(sum(task.row_count for task in canonical_tasks)),
             "input_task_digest": CanonicalBucketizer.digest(canonical_tasks),
             "logical_plan_policy_name": str(logical_plan.policy_name),
-            "logical_plan_digest": stable_hash(logical_plan.to_dict()),
+            "logical_plan_digest": str(formal_plan.semantic_digest()),
+            "planner_family": str(formal_plan.planner_family),
             "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
             "audit_valid": bool(audit.get("valid", False)),
             "audit": audit,

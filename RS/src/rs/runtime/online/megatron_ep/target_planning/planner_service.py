@@ -6,24 +6,23 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
-from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
-from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_replay_window
+from rs.core.contracts import (
+    PlanningConstraints,
+    PlanningIdentity,
+    PlanningRequest,
+    PlanningTopology,
+    PlanningTraffic,
+    PlanningWeights,
+    PredictionHint,
+)
+from rs.planning import CommonCorePlanEstimator, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel
+from rs.planning.api import to_logical_plan
+from rs.scheduling.unified_interface import PolicyOptions
 from rs.scheduling.validation import stable_hash
 
 from .contracts import MatrixRows, TargetLayerPreparedJointPlan, TargetPlanKey
 from .predictor import SharedTwoHorizonPredictor, TwoHorizonPredictionBundle
 from .store import TargetPlanStore
-
-
-@dataclass(frozen=True)
-class _TargetReplayWindow:
-    fixture_id: str
-    window_id: str
-    layer_id: int
-    p0_truth_rows: MatrixRows
-    p1_truth_rows: MatrixRows
-    p2_truth_rows: MatrixRows
-    group_size: int
 
 
 @dataclass(frozen=True)
@@ -173,35 +172,61 @@ class TargetLayerPlannerService:
         target_problem_start = time.perf_counter_ns()
         h1 = bundle.h1.matrix_rows
         p1 = tuple(tuple(int(h1[col][row]) for col in range(len(h1))) for row in range(len(h1))) if h1 else ()
-        replay_window = _TargetReplayWindow(
-            fixture_id=request.run_id,
-            window_id=f"{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
-            layer_id=int(request.target_layer_id) if str(request.target_layer_id).isdigit() else 0,
-            p0_truth_rows=h1,
-            p1_truth_rows=p1,
-            p2_truth_rows=bundle.h2.matrix_rows,
-            group_size=int(request.group_size),
+        planning_request = PlanningRequest(
+            identity=PlanningIdentity(
+                request_id=f"{request.run_id}:{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
+                run_id=request.run_id,
+                forward_id=str(request.forward_epoch),
+                window_id=f"{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
+                source_layer_id=str(request.source_layer_id),
+                target_layer_id=str(request.target_layer_id),
+            ),
+            traffic=PlanningTraffic(
+                p0_dispatch_rows=h1,
+                p1_return_rows=p1,
+            ),
+            prediction_hint=PredictionHint(
+                predictor_id=str(bundle.h2.predictor),
+                hint_type="traffic_matrix",
+                target_dispatch_rows=bundle.h2.matrix_rows,
+                confidence=float(bundle.h2.confidence),
+                oracle=False,
+                source_layer_id=str(request.source_layer_id),
+                target_layer_id=str(request.target_layer_id),
+            ),
+            topology=PlanningTopology(world_size=int(request.group_size)),
+            constraints=PlanningConstraints(
+                bucket_rows=int(request.bucket_rows),
+                max_waves=256,
+                expert_compute_delay=0.0,
+                phase_release_model="p1_return",
+            ),
+            weights=PlanningWeights(
+                p0_weight=float(request.policy_options.p0_weight),
+                p1_weight=float(request.policy_options.p1_weight),
+                p2_weight=float(request.policy_options.p2_hint_weight),
+                residual_weight=float(request.policy_options.residual_weight),
+                barrier_weight=float(request.policy_options.barrier_weight),
+                age_weight=float(request.policy_options.age_weight),
+                prediction_weight=float(request.policy_options.prediction_weight),
+                criticality_weight=float(request.policy_options.criticality_weight),
+                iteration_budget=request.policy_options.iteration_budget,
+            ),
+            information_mode="p0_p1_p2",
         )
         target_problem_end = time.perf_counter_ns()
         metrics.target_problem_us = (target_problem_end - target_problem_start) / 1000.0
         raw_u_start = time.perf_counter_ns()
-        scheduling_request = build_request_from_replay_window(
-            replay_window=replay_window,
-            p2_hint_rows=bundle.h2.matrix_rows,
-            hint_type=bundle.h1.predictor,
-            confidence=float(bundle.h1.confidence),
-            bucket_rows=int(request.bucket_rows),
-            policy_options=request.policy_options,
-        )
         raw_policy_id = str(request.raw_u_policy_id or request.policy_id)
-        raw_policy = build_policy(raw_policy_id, request.policy_options)
-        raw_logical_plan = raw_policy.plan(scheduling_request)
+        raw_planner = PlannerRegistry.create(raw_policy_id, None)
+        raw_plan = raw_planner.plan(planning_request)
+        raw_logical_plan = to_logical_plan(raw_plan)
         raw_u_end = time.perf_counter_ns()
         metrics.raw_u_us = (raw_u_end - raw_u_start) / 1000.0
         paired_b_logical_plan = raw_logical_plan
-        paired_b_makespan = float((raw_logical_plan.diagnostics or {}).get("makespan", 0.0) or 0.0)
+        paired_b_makespan = float((raw_plan.metadata or {}).get("legacy_makespan", 0.0) or 0.0)
         selected_variant = "raw_u"
-        selected_plan = raw_logical_plan
+        selected_plan = raw_plan
         safe_selection_us = 0.0
         paired_b_us = 0.0
         if str(request.safe_projection_mode) == "host_select":
@@ -209,28 +234,34 @@ class TargetLayerPlannerService:
             paired_policy_id = str(request.paired_b_policy_id or "")
             if not paired_policy_id:
                 raise RuntimeError("safe target planner missing paired_b_policy_id")
-            paired_policy = build_policy(paired_policy_id, request.policy_options)
-            paired_b_logical_plan = paired_policy.plan(scheduling_request)
+            paired_b_planner = PlannerRegistry.create(paired_policy_id, None)
+            paired_b_plan = paired_b_planner.plan(planning_request)
+            paired_b_logical_plan = to_logical_plan(paired_b_plan)
             paired_b_end = time.perf_counter_ns()
             paired_b_us = (paired_b_end - paired_b_start) / 1000.0
             metrics.paired_b_us = float(paired_b_us)
             safe_start = time.perf_counter_ns()
-            safe_projection = host_project_safe_selection(
-                raw_u_plan=raw_logical_plan,
-                paired_b_plan=paired_b_logical_plan,
+            selector = PlannerSelector(
+                local_planner=paired_b_planner,
+                joint_planner=raw_planner,
+                estimator=CommonCorePlanEstimator(),
+                cost_model=PlanningCostModel(
+                    expert_compute_delay=float(planning_request.constraints.expert_compute_delay),
+                    full_duplex=bool(planning_request.topology.full_duplex),
+                    max_outgoing_per_rank_per_wave=int(planning_request.topology.max_outgoing_per_rank_per_wave),
+                    max_incoming_per_rank_per_wave=int(planning_request.topology.max_incoming_per_rank_per_wave),
+                ),
             )
-            selected_variant = (
-                "paired_b"
-                if str(safe_projection["host_projected_safe_selection"]) == str(paired_b_logical_plan.policy_name)
-                else "raw_u"
-            )
-            selected_plan = paired_b_logical_plan if selected_variant == "paired_b" else raw_logical_plan
+            selected = selector.select(planning_request, mode=PlannerSelectionMode.COMPARE)
+            selected_variant = "paired_b" if selected.selected_plan.planner_id == paired_b_plan.planner_id else "raw_u"
+            selected_plan = selected.selected_plan
             safe_end = time.perf_counter_ns()
             safe_selection_us = (safe_end - safe_start) / 1000.0
             metrics.safe_selection_us = float(safe_selection_us)
-            paired_b_makespan = float(safe_projection["host_projected_paired_b_estimated_makespan"])
+            paired_b_makespan = float(selected.local_score.estimated_makespan if selected.local_score is not None else 0.0)
+        selected_logical_plan = to_logical_plan(selected_plan)
         encode_start = time.perf_counter_ns()
-        logical_digest = stable_hash(selected_plan.to_dict())
+        logical_digest = stable_hash(selected_logical_plan.to_dict())
         target_problem_digest = stable_hash(
             {
                 "target_layer_id": request.target_layer_id,
@@ -253,7 +284,7 @@ class TargetLayerPlannerService:
             h1_prediction_digest=str(bundle.h1.matrix_digest),
             h2_prediction_digest=str(bundle.h2.matrix_digest),
             target_problem_digest=str(target_problem_digest),
-            logical_plan=selected_plan,
+            logical_plan=selected_logical_plan,
             logical_plan_digest=str(logical_digest),
             policy=str(raw_policy_id if selected_variant == "raw_u" else (request.paired_b_policy_id or raw_policy_id)),
             weights={
@@ -277,7 +308,7 @@ class TargetLayerPlannerService:
                 else str(stable_hash(paired_b_logical_plan.to_dict()))
             ),
             selected_logical_plan_digest=str(logical_digest),
-            raw_u_estimated_makespan=float((raw_logical_plan.diagnostics or {}).get("makespan", 0.0) or 0.0),
+            raw_u_estimated_makespan=float((raw_plan.metadata or {}).get("legacy_makespan", 0.0) or 0.0),
             paired_b_estimated_makespan=float(paired_b_makespan),
             raw_u_build_us=float(metrics.raw_u_us),
             paired_b_build_us=float(paired_b_us),

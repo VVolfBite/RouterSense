@@ -1,0 +1,12 @@
+{
+  "starting_sha": "e3e5d59a01d7423d94096cefa7cfb4708c396d40",
+  "branch": "convergence/m0-prediction-planning",
+  "status": "M0_PREDICTION_PLANNING_READY",
+  "offline_smoke_status": "completed",
+  "contracts_status": "passed",
+  "parity_status": "passed_on_targeted_cpu_fixtures",
+  "notes": [
+    "workspace was not clean at start by explicit user override",
+    "legacy scheduling implementations remain internal behind rs.planning in M0"
+  ]
+}

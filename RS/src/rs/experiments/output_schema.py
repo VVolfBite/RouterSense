@@ -90,11 +90,12 @@ def validate_official_entrypoint_config(
             actual=runtime.get("line", ""),
         )
     raw_bucket_rows = traffic.get("bucket_rows", 0)
-    bucket_mode_default = (
-        BUCKET_MODE_DYNAMIC_CURRENT
-        if ((isinstance(raw_bucket_rows, list) and all(int(item) == 0 for item in raw_bucket_rows)) or int(raw_bucket_rows or 0) == 0)
-        else BUCKET_MODE_FIXED_ROWS
-    )
+    bucket_rows_are_dynamic = False
+    if isinstance(raw_bucket_rows, list):
+        bucket_rows_are_dynamic = all(int(item) == 0 for item in raw_bucket_rows)
+    else:
+        bucket_rows_are_dynamic = int(raw_bucket_rows or 0) == 0
+    bucket_mode_default = BUCKET_MODE_DYNAMIC_CURRENT if bucket_rows_are_dynamic else BUCKET_MODE_FIXED_ROWS
     bucket_mode = str(traffic.get("bucket_mode", bucket_mode_default))
     require_invariant(
         bucket_mode in {BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS},

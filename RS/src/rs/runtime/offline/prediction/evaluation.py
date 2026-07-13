@@ -4,12 +4,12 @@ import math
 import statistics
 from typing import Any
 
+from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
+from rs.prediction import PredictionRegistry
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_row_sums_remote
 
 from .contracts import Matrix, PredictorEvaluationRecord, PredictorSample
 from .feature_builder import load_fixture_samples
-from .history_predictor import FATEStyleHistoryPredictor
-from .linear_predictor import FATEStyleLinearTrafficPredictor
 
 
 def _flatten(matrix: Matrix) -> list[float]:
@@ -71,40 +71,27 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
     records: list[PredictorEvaluationRecord] = []
     history: list[PredictorSample] = []
     for sample in samples:
-        if predictor_name == "zero_hint":
-            predicted = tuple(tuple(0 for _ in row) for row in sample.target_next_dispatch_matrix)
-            records.append(compare_prediction(predictor_name="zero_hint", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.0))
-        elif predictor_name == "copy_current_dispatch":
-            predicted = sample.current_dispatch_matrix
-            records.append(compare_prediction(predictor_name="copy_current_dispatch", predictor_version="v1", sample=sample, predicted=predicted, confidence=1.0))
-        elif predictor_name in {"history_ema", "fate_style_history"}:
-            if not history:
-                predicted = sample.current_dispatch_matrix
-                records.append(compare_prediction(predictor_name="history_ema", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.25))
-            else:
-                previous_matrix = history[-1].current_dispatch_matrix
-                alpha = 0.5
-                predicted = canonicalize_remote_matrix(
-                    tuple(
-                        tuple(
-                            int(round(alpha * int(cur) + (1.0 - alpha) * int(prev)))
-                            for cur, prev in zip(current_row, previous_row, strict=True)
-                        )
-                        for current_row, previous_row in zip(sample.current_dispatch_matrix, previous_matrix, strict=True)
-                    )
-                )
-                predictor = FATEStyleHistoryPredictor(alpha=alpha)
-                records.append(compare_prediction(predictor_name=predictor.predictor_name, predictor_version=predictor.predictor_version, sample=sample, predicted=predicted, confidence=0.75))
-        elif predictor_name in {"ridge_linear_trace_predictor", "fate_style_linear", "history_linear_trend"}:
-            if len(history) < 2:
-                predicted = sample.current_dispatch_matrix
-                records.append(compare_prediction(predictor_name="ridge_linear_trace_predictor", predictor_version="v1", sample=sample, predicted=predicted, confidence=0.2))
-            else:
-                predictor = FATEStyleLinearTrafficPredictor().fit(history)
-                predicted = predictor.predict_matrix(sample)
-                records.append(compare_prediction(predictor_name=predictor.predictor_name, predictor_version=predictor.predictor_version, sample=sample, predicted=predicted, confidence=0.8))
-        else:
-            raise ValueError(f"unsupported predictor {predictor_name!r}")
+        predictor = PredictionRegistry.create(str(predictor_name), {"alpha": 0.5})
+        context = TrafficHistoryContext(
+            identity=PredictionIdentity(
+                request_id=f"{sample.layer_id}:{sample.next_layer_id}:{predictor_name}",
+                source_layer_id=str(sample.layer_id),
+                target_layer_id=str(sample.next_layer_id),
+            ),
+            current_dispatch_rows=sample.current_dispatch_matrix,
+            history_dispatch_rows=tuple(item.current_dispatch_matrix for item in history),
+            world_size=len(sample.current_dispatch_matrix),
+        )
+        result = predictor.predict(context)
+        records.append(
+            compare_prediction(
+                predictor_name=str(result.hint.predictor_id),
+                predictor_version="v1",
+                sample=sample,
+                predicted=canonicalize_remote_matrix(result.hint.target_dispatch_rows),
+                confidence=float(result.hint.confidence or 0.0),
+            )
+        )
         history.append(sample)
     return records
 

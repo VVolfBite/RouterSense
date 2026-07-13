@@ -22,7 +22,10 @@ import torch.distributed as dist
 
 from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import layer_selected, resolve_layer_selector
+from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
 from rs.core.contracts.observation import RuntimeObservationConfig
+from rs.prediction import PredictionRegistry, resolve_predictor_id
+from rs.planning.runtime_compat import PolicyOptions, build_policy, build_request_from_problem, resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
     InjectionDecision,
@@ -91,10 +94,6 @@ from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import Nat
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
 from rs.runtime.online.megatron_ep.prediction import (
     ActiveNextDispatchPrediction,
-    CopyCurrentDispatchPredictor,
-    HistoryEMATrafficPredictor,
-    PredictionInput,
-    ZeroHintPredictor,
     compare_predicted_to_actual,
     maybe_capture_expert_route_trace,
 )
@@ -108,8 +107,6 @@ from rs.runtime.online.megatron_ep.target_planning import (
     reconcile_once,
 )
 from rs.scheduling.contracts import PreparedWindowPlan
-from rs.scheduling.registry import resolve_phase_policy
-from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 from rs.scheduling.bucketizer import (
     BUCKET_MODE_DYNAMIC_CURRENT,
     BUCKET_MODE_FIXED_ROWS,
@@ -1062,17 +1059,43 @@ class RouterSenseInjectionRuntime:
         return str(getattr(self.config, "online_p2_predictor", "copy_current_dispatch") or "copy_current_dispatch")
 
     def _build_online_predictor(self):
-        name = self._online_p2_predictor_name()
-        if name in {"none", "zero_hint"}:
-            return ZeroHintPredictor()
-        if name == "history_ema":
-            return HistoryEMATrafficPredictor(alpha=0.5)
-        if name == "copy_current_dispatch":
-            return CopyCurrentDispatchPredictor()
-        raise ValueError(
-            "unsupported online_p2_predictor "
-            f"{name!r}; expected one of ('none', 'zero_hint', 'copy_current_dispatch', 'history_ema')"
+        return PredictionRegistry.create(self._online_p2_predictor_name(), {"alpha": 0.5})
+
+    def _predict_dispatch_matrix(
+        self,
+        *,
+        layer_id: str,
+        next_layer_id: str,
+        current_dispatch_matrix: tuple[tuple[int, ...], ...],
+        previous_dispatch_matrix: tuple[tuple[int, ...], ...] | None,
+        fallback: bool = False,
+    ):
+        predictor = self._build_online_predictor()
+        context = TrafficHistoryContext(
+            identity=PredictionIdentity(
+                request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:{next_layer_id}",
+                run_id=self.run_id,
+                forward_id=str(self._forward_epoch),
+                source_layer_id=str(layer_id),
+                target_layer_id=str(next_layer_id),
+            ),
+            current_dispatch_rows=current_dispatch_matrix,
+            history_dispatch_rows=(() if previous_dispatch_matrix is None else (previous_dispatch_matrix,)),
+            world_size=len(current_dispatch_matrix),
         )
+        prediction = predictor.predict(context)
+        return {
+            "matrix": prediction.hint.target_dispatch_rows,
+            "matrix_digest": stable_hash([list(row) for row in prediction.hint.target_dispatch_rows]),
+            "predictor_name": str(prediction.hint.predictor_id),
+            "predictor_version": "v1",
+            "confidence": float(prediction.hint.confidence or 0.0),
+            "evaluation_eligible": not bool(prediction.hint.oracle),
+            "is_oracle": bool(prediction.hint.oracle),
+            "valid": True,
+            "error": "",
+            "fallback": bool(fallback),
+        }
 
     def _resolved_online_policy_family(self) -> str:
         resolved = resolve_online_policy_config(self.config)
@@ -1400,51 +1423,36 @@ class RouterSenseInjectionRuntime:
             predicted_dispatch_by_layer.pop(str(layer_id), None)
         audit_end_ns = time.monotonic_ns()
 
-        predictor = self._build_online_predictor()
-        prediction_input = PredictionInput(
-            run_id_digest=digest_text(self.run_id),
+        prediction_start_ns = time.monotonic_ns()
+        predicted = self._predict_dispatch_matrix(
             layer_id=str(layer_id),
             next_layer_id=str(next_layer_id),
-            rank=int(self.rank),
-            world_size=world_size,
-            current_dispatch_matrix_digest=str(matrix_digest_remote(remote_matrix)),
-            current_dispatch_total_bytes=int(matrix_remote_bytes(remote_matrix)),
-            current_dispatch_nonzero_edges=int(matrix_nonzero_remote_edge_count(remote_matrix)),
-            metadata={
-                "matrix_source": "pre_transport_phase_ready_context",
-                "is_global": True,
-                "traffic_units": "rows",
-                "dispatcher_send_splits": list(observation.send_splits_rows),
-                "dispatcher_recv_splits": list(observation.recv_splits_rows),
-                "payload_roles": [descriptor.tensor_role for descriptor in phase_ctx.payload_specs],
-                "previous_dispatch_matrix": (
-                    actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
-                    if str(layer_id).isdigit()
-                    else None
-                ),
-            },
+            current_dispatch_matrix=remote_matrix,
+            previous_dispatch_matrix=(
+                actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
+                if str(layer_id).isdigit()
+                else None
+            ),
         )
-        prediction_start_ns = time.monotonic_ns()
-        predicted = predictor.predict(prediction_input=prediction_input, current_dispatch_matrix=remote_matrix)
         prediction_end_ns = time.monotonic_ns()
-        predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
+        predicted_dispatch_by_layer[str(next_layer_id)] = dict(predicted)
         self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
         self._increment_state_counter_map("predict_count_by_layer", str(layer_id))
         active_prediction = ActiveNextDispatchPrediction(
             source_layer_id=str(layer_id),
             target_layer_id=str(next_layer_id),
-            forecast_matrix=predicted.matrix,
-            matrix_digest=str(predicted.matrix_digest),
-            predictor_name=str(predicted.predictor_name),
-            predictor_version=str(predicted.predictor_version),
-            confidence=float(predicted.confidence),
-            evaluation_eligible=bool(predicted.evaluation_eligible),
-            is_oracle=bool(predicted.is_oracle),
-            created_at_phase=str(predicted.created_at_phase),
+            forecast_matrix=predicted["matrix"],
+            matrix_digest=str(predicted["matrix_digest"]),
+            predictor_name=str(predicted["predictor_name"]),
+            predictor_version=str(predicted["predictor_version"]),
+            confidence=float(predicted["confidence"]),
+            evaluation_eligible=bool(predicted["evaluation_eligible"]),
+            is_oracle=bool(predicted["is_oracle"]),
+            created_at_phase="P0",
             created_at_stage="after_p0_observation",
             prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
-            valid=bool(predicted.valid),
-            error=str(predicted.error),
+            valid=bool(predicted["valid"]),
+            error=str(predicted["error"]),
         )
         self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
         self._runtime_state.write("latest_predictor_name", predicted.predictor_name)
@@ -2712,34 +2720,24 @@ class RouterSenseInjectionRuntime:
             prediction_evaluation_eligible = bool(prediction_entry.get("evaluation_eligible", True))
             prediction_is_oracle = bool(prediction_entry.get("is_oracle", False))
         else:
-            fallback = self._build_online_predictor().predict(
-                prediction_input=PredictionInput(
-                    run_id_digest=digest_text(self.run_id),
-                    layer_id=str(layer_id),
-                    next_layer_id=str(next_layer_id),
-                    rank=int(self.rank),
-                    world_size=num_peers,
-                    current_dispatch_matrix_digest=str(dispatch_entry.get("matrix_digest", "")),
-                    current_dispatch_total_bytes=int(dispatch_entry.get("total_bytes", 0) or 0),
-                    current_dispatch_nonzero_edges=int(dispatch_entry.get("nonzero_edge_count", 0) or 0),
-                    metadata={
-                        "fallback": True,
-                        "previous_dispatch_matrix": (
-                            actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
-                            if str(layer_id).isdigit()
-                            else None
-                        ),
-                    },
-                ),
+            fallback = self._predict_dispatch_matrix(
+                layer_id=str(layer_id),
+                next_layer_id=str(next_layer_id),
                 current_dispatch_matrix=dispatch_matrix,
+                previous_dispatch_matrix=(
+                    actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
+                    if str(layer_id).isdigit()
+                    else None
+                ),
+                fallback=True,
             )
-            forecast_matrix = fallback.matrix
+            forecast_matrix = fallback["matrix"]
             p2_matrix_source = "copy_current_dispatch_fallback"
-            predictor_name = fallback.predictor_name
-            prediction_digest = fallback.matrix_digest
-            prediction_confidence = float(fallback.confidence)
-            prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
-            prediction_is_oracle = bool(fallback.is_oracle)
+            predictor_name = fallback["predictor_name"]
+            prediction_digest = fallback["matrix_digest"]
+            prediction_confidence = float(fallback["confidence"])
+            prediction_evaluation_eligible = bool(fallback["evaluation_eligible"])
+            prediction_is_oracle = bool(fallback["is_oracle"])
         row_sums = [int(sum(row)) for row in forecast_matrix]
         col_sums = [
             int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))
