@@ -165,6 +165,9 @@ class PreparedWindowRuntimeState:
     target_plan_enqueue_count_by_source_target: dict[str, int] = field(default_factory=dict)
     window_state_count_by_layer: dict[str, int] = field(default_factory=dict)
     shadow_plan_count_by_layer: dict[str, int] = field(default_factory=dict)
+    selected_layer_timing_records: list[dict[str, Any]] = field(default_factory=list)
+    expert_module_timing_records: list[dict[str, Any]] = field(default_factory=list)
+    attribution_boundary_status: dict[str, Any] = field(default_factory=dict)
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
     extras: dict[str, Any] = field(default_factory=dict)

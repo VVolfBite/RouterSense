@@ -6,6 +6,8 @@ import yaml
 
 from experiments.distributed._gpu_runner_common import build_policy_correctness_config
 from rs.core.experiment_config import load_run_config
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
+from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation.attribution import (
     ForwardCostTree,
     PhaseCostTree,
@@ -17,6 +19,67 @@ from rs.runtime.online.megatron_ep.observation.attribution import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _runtime_for_attribution() -> RouterSenseInjectionRuntime:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(
+            policy="routersense_p0p1_reservation",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            bucket_mode="dynamic_current",
+            bucket_rows=0,
+            observation_profile="attribution_light",
+            invariant_mode="evaluation_strict",
+            schedule_layer_selector="selected",
+            selected_layer_ids=("0",),
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="request",
+        hostname="host",
+        ep_group_ranks=(0, 1),
+        ep_group_root_global_rank=0,
+    )
+    runtime.configure_hook_scope(available_layer_names=("module.decoder.layers.0.mlp", "module.decoder.layers.1.mlp"))
+    runtime.begin_forward(forward_epoch=0)
+    return runtime
+
+
+def test_attribution_boundaries_export_from_strict_runtime_state() -> None:
+    runtime = _runtime_for_attribution()
+    runtime.record_selected_layer_enter(layer_name="module.decoder.layers.0.mlp")
+    runtime.record_expert_module_enter(
+        layer_name="module.decoder.layers.0.mlp",
+        expert_module_name="experts",
+    )
+    runtime.record_expert_module_exit(
+        layer_name="module.decoder.layers.0.mlp",
+        expert_module_name="experts",
+    )
+    runtime.record_selected_layer_exit(layer_name="module.decoder.layers.0.mlp")
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["selected_layer_timing_records"][0]["measurement_status"] == "measured"
+    assert summary["selected_layer_timing_records"][0]["selected_layer_total_us"] >= 0.0
+    assert summary["expert_module_timing_records"][0]["measurement_status"] == "measured"
+    assert summary["expert_module_timing_records"][0]["expert_module_wall_us"] >= 0.0
+    assert summary["attribution_boundary_status"]["0"]["expert_boundary_status"] == "hook_registered"
+
+
+def test_expert_boundary_unavailable_is_exported_without_fake_compute() -> None:
+    runtime = _runtime_for_attribution()
+    runtime.record_expert_boundary_unavailable(
+        layer_name="module.decoder.layers.0.mlp",
+        reason="expert_module_not_found",
+    )
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["expert_module_timing_records"] == []
+    assert summary["attribution_boundary_status"]["0"]["expert_boundary_status"] == "unavailable"
+    assert summary["attribution_boundary_status"]["0"]["expert_boundary_reason"] == "expert_module_not_found"
 
 
 def test_phase_cost_tree_accepts_non_overlapping_components() -> None:

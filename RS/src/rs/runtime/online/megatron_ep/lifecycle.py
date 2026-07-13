@@ -183,6 +183,8 @@ class RouterSenseInjectionRuntime:
     _cross_layer_prediction_enabled_cache: bool = False
     _target_preplanning_enabled_cache: bool = False
     _current_plan_build_keys: set[tuple[int, int, str, str, str]] = field(default_factory=set)
+    _selected_layer_active_ns: dict[tuple[int, str], int] = field(default_factory=dict)
+    _expert_module_active_ns: dict[tuple[int, str], int] = field(default_factory=dict)
 
     # Configuration and policy selection
 
@@ -2902,8 +2904,12 @@ class RouterSenseInjectionRuntime:
         else:
             self._forward_epoch = int(forward_epoch)
         self._current_plan_build_keys.clear()
+        self._selected_layer_active_ns.clear()
+        self._expert_module_active_ns.clear()
         self._pending_p0.clear()
         self._pending_p1.clear()
+        self._selected_layer_active_ns.clear()
+        self._expert_module_active_ns.clear()
         self._active_transport = None
         self._runtime_state.write("active_next_dispatch_prediction", None)
         self._runtime_state.write("prediction_consumption_records", [])
@@ -2950,6 +2956,58 @@ class RouterSenseInjectionRuntime:
         }
 
     # Main lifecycle hooks
+
+    def _append_runtime_state_record(self, key: str, record: dict[str, Any]) -> None:
+        rows = list(self._runtime_state.read(key, []) or [])
+        rows.append(dict(record))
+        self._runtime_state.write(key, rows)
+
+    def record_selected_layer_enter(self, *, layer_name: str) -> None:
+        if self.layer_role_for_name(layer_name) != "selected":
+            return
+        layer_id = str(parse_layer_id(layer_name))
+        self._selected_layer_active_ns[(int(self._forward_epoch), layer_id)] = int(time.perf_counter_ns())
+
+    def record_selected_layer_exit(self, *, layer_name: str) -> None:
+        if self.layer_role_for_name(layer_name) != "selected":
+            return
+        end_ns = int(time.perf_counter_ns())
+        layer_id = str(parse_layer_id(layer_name))
+        key = (int(self._forward_epoch), layer_id)
+        start_ns = self._selected_layer_active_ns.pop(key, 0)
+        if start_ns <= 0:
+            self._append_runtime_state_record("selected_layer_timing_records", {"rank": int(self.rank), "forward_epoch": int(self._forward_epoch), "layer_name": str(layer_name), "layer_id": layer_id, "measurement_status": "unavailable", "reason": "missing_selected_layer_enter"})
+            return
+        self._append_runtime_state_record("selected_layer_timing_records", {"rank": int(self.rank), "forward_epoch": int(self._forward_epoch), "layer_name": str(layer_name), "layer_id": layer_id, "selected_layer_enter_ns": int(start_ns), "selected_layer_exit_ns": int(end_ns), "selected_layer_total_us": max(0.0, float(end_ns - start_ns) / 1000.0), "measurement_status": "measured"})
+
+    def record_expert_module_enter(self, *, layer_name: str, expert_module_name: str = "") -> None:
+        if self.layer_role_for_name(layer_name) != "selected":
+            return
+        layer_id = str(parse_layer_id(layer_name))
+        self._expert_module_active_ns[(int(self._forward_epoch), layer_id)] = int(time.perf_counter_ns())
+        status = dict(self._runtime_state.read("attribution_boundary_status", {}) or {})
+        status[layer_id] = {**dict(status.get(layer_id, {}) or {}), "expert_boundary_status": "hook_registered", "expert_module_name": str(expert_module_name)}
+        self._runtime_state.write("attribution_boundary_status", status)
+
+    def record_expert_module_exit(self, *, layer_name: str, expert_module_name: str = "") -> None:
+        if self.layer_role_for_name(layer_name) != "selected":
+            return
+        end_ns = int(time.perf_counter_ns())
+        layer_id = str(parse_layer_id(layer_name))
+        key = (int(self._forward_epoch), layer_id)
+        start_ns = self._expert_module_active_ns.pop(key, 0)
+        if start_ns <= 0:
+            self._append_runtime_state_record("expert_module_timing_records", {"rank": int(self.rank), "forward_epoch": int(self._forward_epoch), "layer_name": str(layer_name), "layer_id": layer_id, "expert_module_name": str(expert_module_name), "measurement_status": "unavailable", "reason": "missing_expert_module_enter"})
+            return
+        self._append_runtime_state_record("expert_module_timing_records", {"rank": int(self.rank), "forward_epoch": int(self._forward_epoch), "layer_name": str(layer_name), "layer_id": layer_id, "expert_module_name": str(expert_module_name), "expert_module_enter_ns": int(start_ns), "expert_module_exit_ns": int(end_ns), "expert_module_wall_us": max(0.0, float(end_ns - start_ns) / 1000.0), "measurement_status": "measured"})
+
+    def record_expert_boundary_unavailable(self, *, layer_name: str, reason: str) -> None:
+        if self.layer_role_for_name(layer_name) != "selected":
+            return
+        layer_id = str(parse_layer_id(layer_name))
+        status = dict(self._runtime_state.read("attribution_boundary_status", {}) or {})
+        status[layer_id] = {**dict(status.get(layer_id, {}) or {}), "expert_boundary_status": "unavailable", "expert_boundary_reason": str(reason)}
+        self._runtime_state.write("attribution_boundary_status", status)
 
     def before_token_dispatch(
         self,

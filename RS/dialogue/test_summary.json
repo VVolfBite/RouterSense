@@ -1,22 +1,19 @@
 {
   "tests": [
     {
-      "test_name": "compileall",
-      "command": "python -m compileall src experiments tests",
+      "name": "compileall attribution files",
+      "command": "python -m compileall src/rs/runtime/online/megatron_ep src/rs/core tests/contract/test_runtime_attribution_cpu.py",
       "passed": true
     },
     {
-      "test_name": "attribution_timeline_child_config_contracts",
+      "name": "targeted attribution/timeline/child-config tests",
       "command": "PYTHONPATH=src:. pytest -q tests/contract/test_runtime_attribution_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py",
       "passed": true,
-      "passed_count": 36
-    },
-    {
-      "test_name": "4gpu_attribution_light_smoke",
-      "command": "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_runtime_attribution.yaml ...",
-      "passed": true,
-      "strategies": ["native", "routersense_b_core_independent_async", "routersense_u_core_zero_raw_async"]
+      "passed_count": 38
     }
   ],
-  "not_run": ["full pytest", "full C2", "predicted raw/safe", "seven-strategy A2", "Nsight", "PyTorch profiler", "large workload sweep"]
+  "gpu_tests": {
+    "attempted": false,
+    "reason": "nvidia-smi returned No devices were found"
+  }
 }

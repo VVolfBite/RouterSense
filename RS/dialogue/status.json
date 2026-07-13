@@ -1,19 +1,18 @@
 {
-  "milestone": "M-RUNTIME-ATTRIBUTION",
-  "starting_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
-  "current_sha": "297722f4a933b1a2d6dc7a7bff2934efea1bbbc6",
-  "branch": "main",
-  "gpu_available": true,
+  "milestone": "M-RUNTIME-ATTRIBUTION-boundary-prep",
+  "starting_sha": "8081d2ebcb8ecc1bd92b2b9b297a662c9c336a5c",
+  "gpu_available": false,
   "completed": [
-    "4GPU attribution_light run",
-    "CPU attribution schema tests",
-    "compact preflight verified in run",
-    "count/guard contracts verified for B-core and U-zero"
+    "selected layer module boundary hooks",
+    "best-effort expert module boundary hooks",
+    "strict runtime-state export fields",
+    "CPU attribution boundary tests"
   ],
   "remaining": [
-    "selected-layer module boundary export",
-    "expert module boundary export",
-    "non-overlapping phase cost tree export"
+    "4GPU attribution_light rerun",
+    "verify selected_layer_timing_records in rank summaries",
+    "verify expert_module_timing_records or explicit unavailable status",
+    "build final non-overlapping cost tree from real GPU artifacts"
   ],
   "final_status": "RUNTIME_ATTRIBUTION_INCOMPLETE"
 }

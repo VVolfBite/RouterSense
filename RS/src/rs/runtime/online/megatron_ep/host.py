@@ -705,6 +705,49 @@ def attach_dispatch_facade(
         token_dispatcher_mod.all_to_all = wrapped_all_to_all
         runtime.transport_adapter = transport_adapter
         runtime.original_all_to_all = original_all_to_all
+    def _find_expert_timing_module(layer_module: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[str, None]:
+        candidates: list[tuple[str, torch.nn.Module]] = []
+        for child_name, child_module in layer_module.named_modules():
+            if not child_name:
+                continue
+            lowered = str(child_name).lower()
+            if any(token in lowered for token in ("local_experts", "experts", "expert")) and getattr(child_module, "forward", None) is not None:
+                candidates.append((str(child_name), child_module))
+        if not candidates:
+            return "", None
+        preferred = [item for item in candidates if item[0].lower().endswith(("experts", "local_experts"))]
+        return (preferred or candidates)[0]
+
+    def _install_selected_layer_attribution_hooks(layer_name: str, layer_module: torch.nn.Module) -> None:
+        if getattr(layer_module, "_routersense_selected_layer_attribution_wrapped", False):
+            return
+
+        def _selected_pre(_module, _args, _name=layer_name):
+            runtime.record_selected_layer_enter(layer_name=str(_name))
+
+        def _selected_post(_module, _args, _output, _name=layer_name):
+            runtime.record_selected_layer_exit(layer_name=str(_name))
+
+        layer_module.register_forward_pre_hook(_selected_pre)
+        layer_module.register_forward_hook(_selected_post)
+        layer_module._routersense_selected_layer_attribution_wrapped = True
+        expert_name, expert_module = _find_expert_timing_module(layer_module)
+        if expert_module is None:
+            runtime.record_expert_boundary_unavailable(layer_name=str(layer_name), reason="expert_module_not_found")
+            return
+        if getattr(expert_module, "_routersense_expert_attribution_wrapped", False):
+            return
+
+        def _expert_pre(_module, _args, _layer_name=layer_name, _expert_name=expert_name):
+            runtime.record_expert_module_enter(layer_name=str(_layer_name), expert_module_name=str(_expert_name))
+
+        def _expert_post(_module, _args, _output, _layer_name=layer_name, _expert_name=expert_name):
+            runtime.record_expert_module_exit(layer_name=str(_layer_name), expert_module_name=str(_expert_name))
+
+        expert_module.register_forward_pre_hook(_expert_pre)
+        expert_module.register_forward_hook(_expert_post)
+        expert_module._routersense_expert_attribution_wrapped = True
+
     dispatcher_layer_names: list[str] = []
     for name, module in model.named_modules():
         if getattr(module, "token_dispatcher", None) is not None:
@@ -717,6 +760,8 @@ def attach_dispatch_facade(
         layer_role = runtime.layer_role_for_name(str(name))
         if layer_role == "none":
             continue
+        if layer_role == "selected":
+            _install_selected_layer_attribution_hooks(str(name), module)
 
         dispatch_facade = RouterSenseDispatcherFacade.from_config(
             native_dispatcher=dispatcher.token_dispatch,
