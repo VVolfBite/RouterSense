@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rs.runtime.offline.prediction import UnsupportedP2Predictor, build_dispatch_forecast
+from rs.planning import PlannerPolicyConfig, build_runtime_policy, build_runtime_request_from_problem
 from rs.runtime.offline.traffic.matrix_builder import (
     build_owner_by_expert,
     build_sample_layer_matrices,
@@ -24,7 +25,6 @@ from rs.scheduling import (
     ReleaseConstraint,
 )
 from rs.scheduling.multiphase.global_ready_set import replay_and_audit_schedule
-from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_problem
 
 
 @dataclass(frozen=True)
@@ -176,19 +176,24 @@ def build_policy_logical_plan(
     p1_reservation_weight: float = 1.0,
     p2_hint_weight: float = 1.0,
 ) -> LogicalSchedulePlan:
-    request = build_request_from_problem(
+    request = build_runtime_request_from_problem(
         request_id=f"offline:{policy_name}",
         problem=problem,
         bucket_rows=int(bucket_rows),
-        policy_options=PolicyOptions(
+        policy_options=PlannerPolicyConfig(
             p0_weight=float(p0_weight),
             p1_weight=float(p1_reservation_weight),
             p2_hint_weight=float(p2_hint_weight),
         ),
         hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
         confidence=float(problem.options.prediction_confidence),
+        layer_id=None,
     )
-    policy = build_policy(policy_name, request.policy_options)
+    policy = build_runtime_policy(policy_name, PlannerPolicyConfig(
+        p0_weight=float(p0_weight),
+        p1_weight=float(p1_reservation_weight),
+        p2_hint_weight=float(p2_hint_weight),
+    ))
     return policy.plan(request)
 
 

@@ -11,6 +11,7 @@ from rs.core.contracts import ExpertRoutePrediction, MatrixRows, PredictionResul
 class PredictionTruth:
     actual_dispatch_rows: MatrixRows
     actual_expert_route: ExpertRoutePrediction | None = None
+    expert_owner_by_id: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,11 @@ class PredictionEvaluator:
         truth: PredictionTruth,
     ) -> PredictionEvaluation:
         if prediction.expert_route is not None and truth.actual_expert_route is not None:
-            metrics = self._evaluate_expert_route(prediction.expert_route, truth.actual_expert_route)
+            metrics = self._evaluate_expert_route(
+                prediction.expert_route,
+                truth.actual_expert_route,
+                expert_owner_by_id=truth.expert_owner_by_id,
+            )
         else:
             metrics = self._evaluate_traffic(prediction.hint.target_dispatch_rows, truth.actual_dispatch_rows)
         return PredictionEvaluation(
@@ -55,29 +60,48 @@ class PredictionEvaluator:
             "row_matrix_error": row_error,
         }
 
-    def _evaluate_expert_route(self, predicted: ExpertRoutePrediction, actual: ExpertRoutePrediction) -> dict[str, float]:
+    def _evaluate_expert_route(
+        self,
+        predicted: ExpertRoutePrediction,
+        actual: ExpertRoutePrediction,
+        *,
+        expert_owner_by_id: tuple[int, ...] | None,
+    ) -> dict[str, float]:
         pair_count = min(len(predicted.expert_ids), len(actual.expert_ids))
         overlap_total = 0.0
         weight_similarity_total = 0.0
-        gpu_accuracy_total = 0.0
+        owner_accuracy_total = 0.0
+        exact_accuracy_total = 0.0
         for index in range(pair_count):
             pred_row = tuple(int(v) for v in predicted.expert_ids[index])
             act_row = tuple(int(v) for v in actual.expert_ids[index])
             pred_set = set(pred_row)
             act_set = set(act_row)
             overlap_total += float(len(pred_set & act_set) / max(len(act_set), 1))
-            gpu_accuracy_total += float(1.0 if pred_row[:1] == act_row[:1] else 0.0)
+            width = min(len(pred_row), len(act_row))
+            if width > 0:
+                exact_accuracy_total += float(sum(1 for i in range(width) if pred_row[i] == act_row[i]) / width)
+                if expert_owner_by_id is not None:
+                    owner_accuracy_total += float(
+                        sum(
+                            1
+                            for i in range(width)
+                            if int(expert_owner_by_id[pred_row[i]]) == int(expert_owner_by_id[act_row[i]])
+                        )
+                        / width
+                    )
             if predicted.route_weights is not None and actual.route_weights is not None:
                 pred_weights = predicted.route_weights[index]
                 act_weights = actual.route_weights[index]
-                width = min(len(pred_weights), len(act_weights))
+                weight_width = min(len(pred_weights), len(act_weights))
                 weight_similarity_total += float(
-                    sum(1.0 - abs(float(pred_weights[i]) - float(act_weights[i])) for i in range(width)) / max(width, 1)
+                    sum(1.0 - abs(float(pred_weights[i]) - float(act_weights[i])) for i in range(weight_width)) / max(weight_width, 1)
                 )
         denom = max(pair_count, 1)
         return {
             "topk_overlap": overlap_total / denom,
-            "expert_owner_gpu_accuracy": gpu_accuracy_total / denom,
+            "exact_expert_accuracy": exact_accuracy_total / denom,
+            "expert_owner_gpu_accuracy": owner_accuracy_total / denom if expert_owner_by_id is not None else 0.0,
             "route_weight_similarity": weight_similarity_total / denom,
         }
 

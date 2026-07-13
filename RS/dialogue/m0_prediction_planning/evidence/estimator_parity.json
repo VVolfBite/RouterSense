@@ -1,0 +1,15 @@
+{
+  "status": "passed_with_expected_model_difference",
+  "source_tests": [
+    "tests/unit/test_plan_estimator.py",
+    "tests/contract/megatron_ep/test_target_planner_service.py"
+  ],
+  "verified": [
+    "CommonCorePlanEstimator no longer uses legacy_makespan as authority",
+    "changing legacy_makespan metadata does not change estimated_makespan",
+    "target planner selection uses formal estimated_makespan"
+  ],
+  "notes": [
+    "legacy-reported makespan is still preserved in plan metadata for parity audit, but it no longer decides selection"
+  ]
+}

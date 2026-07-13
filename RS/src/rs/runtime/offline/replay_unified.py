@@ -27,6 +27,7 @@ from rs.scheduling import (
     ReleaseConstraint,
 )
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_digest_remote, matrix_remote_bytes
+from rs.core.hashing import stable_hash_dict
 
 
 Matrix = tuple[tuple[int, ...], ...]
@@ -190,7 +191,34 @@ def build_multiphase_problem(
         ),
         p0_dispatch_matrix=replay_window.p0_truth_rows,
         p1_return_matrix=replay_window.p1_truth_rows,
-        p2_next_dispatch_forecast_matrix=execution_truth.p2_truth_rows,
+        p2_next_dispatch_forecast_matrix=hint.p2_hint_rows,
+    )
+
+
+@dataclass(frozen=True)
+class _PlanningBucketWindow:
+    p0_truth_rows: Matrix
+    p1_truth_rows: Matrix
+    p2_truth_rows: Matrix
+
+
+def bucketize_planning_request(request: PlanningRequest) -> tuple[CanonicalBucketTask, ...]:
+    planning_window = _PlanningBucketWindow(
+        p0_truth_rows=request.traffic.p0_dispatch_rows,
+        p1_truth_rows=request.traffic.p1_return_rows,
+        p2_truth_rows=request.prediction_hint.target_dispatch_rows,
+    )
+    return CanonicalBucketizer(bucket_rows=int(request.constraints.bucket_rows)).bucketize(planning_window)
+
+
+def execution_truth_digest(execution_truth: ExecutionTruth) -> str:
+    return stable_hash_dict(
+        {
+            "execution_truth_version": "v1",
+            "p0_truth_rows": [list(row) for row in execution_truth.p0_truth_rows],
+            "p1_truth_rows": [list(row) for row in execution_truth.p1_truth_rows],
+            "p2_truth_rows": [list(row) for row in execution_truth.p2_truth_rows],
+        }
     )
 
 
@@ -254,17 +282,24 @@ class ReplayEngine:
         formal_plan = planner.plan(request)
         logical_plan = to_logical_plan(formal_plan)
         audit = replay_and_audit_logical_plan(problem, logical_plan)
-        canonical_tasks = CanonicalBucketizer(bucket_rows=self.bucket_rows).bucketize(replay_window)
+        planning_tasks = bucketize_planning_request(request)
+        truth_digest = execution_truth_digest(execution_truth)
         return {
             "policy_name": str(policy_name),
             "bucket_rows": int(self.bucket_rows),
             "planning_hint": planning_hint.to_dict(),
             "replay_window": replay_window.to_dict(),
-            "input_task_count": len(canonical_tasks),
-            "input_total_rows": int(sum(task.row_count for task in canonical_tasks)),
-            "input_task_digest": CanonicalBucketizer.digest(canonical_tasks),
+            "planning_task_count": len(planning_tasks),
+            "planning_task_total_rows": int(sum(task.row_count for task in planning_tasks)),
+            "planning_task_digest": CanonicalBucketizer.digest(planning_tasks),
+            "execution_truth_digest": truth_digest,
+            "input_task_count": len(planning_tasks),
+            "input_total_rows": int(sum(task.row_count for task in planning_tasks)),
+            "input_task_digest": CanonicalBucketizer.digest(planning_tasks),
+            "input_task_digest_deprecated": True,
             "logical_plan_policy_name": str(logical_plan.policy_name),
             "logical_plan_digest": str(formal_plan.semantic_digest()),
+            "logical_plan_audit_digest": str(formal_plan.audit_digest()),
             "planner_family": str(formal_plan.planner_family),
             "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
             "audit_valid": bool(audit.get("valid", False)),
@@ -281,7 +316,9 @@ __all__ = [
     "PlanningProblem",
     "ReplayEngine",
     "ReplayWindow",
+    "bucketize_planning_request",
     "build_execution_truth",
     "build_multiphase_problem",
     "build_planning_problem",
+    "execution_truth_digest",
 ]

@@ -93,6 +93,16 @@ class ExpertRoutePrediction:
 
 
 @dataclass(frozen=True)
+class RankedExpertRoutes:
+    routes_by_source_rank: tuple[ExpertRoutePrediction, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "routes_by_source_rank": [route.to_dict() for route in self.routes_by_source_rank],
+        }
+
+
+@dataclass(frozen=True)
 class PredictionResult:
     identity: PredictionIdentity
     hint: PredictionHint
@@ -111,6 +121,7 @@ class PredictionResult:
 __all__ = [
     "ExpertRouteContext",
     "ExpertRoutePrediction",
+    "RankedExpertRoutes",
     "MatrixRows",
     "PredictionContext",
     "PredictionHint",

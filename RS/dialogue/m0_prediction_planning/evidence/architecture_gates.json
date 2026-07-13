@@ -6,7 +6,8 @@
     "rs.planning does not import runtime",
     "rs.planning does not import offline",
     "runtime does not directly import legacy predictor implementations",
-    "runtime does not directly import legacy scheduling registry/catalog modules"
+    "runtime does not directly import legacy scheduling registry/catalog modules",
+    "runtime does not directly import rs.scheduling.unified_interface"
   ],
   "source_test": "tests/test_architecture_dependencies.py"
 }

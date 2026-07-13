@@ -50,3 +50,21 @@ def test_selector_compare_returns_both_scores() -> None:
     selected = selector.select(_request(), mode=PlannerSelectionMode.COMPARE)
     assert selected.local_score is not None
     assert selected.joint_score is not None
+
+
+def test_selector_select_prebuilt_does_not_require_replanning() -> None:
+    request = _request()
+    local_plan = PlannerRegistry.create("fifo_bucket", None).plan(request)
+    joint_plan = PlannerRegistry.create("barrier_criticality_joint", None).plan(request)
+    selector = PlannerSelector(
+        local_planner=PlannerRegistry.create("fifo_bucket", None),
+        joint_planner=PlannerRegistry.create("barrier_criticality_joint", None),
+    )
+    selected = selector.select_prebuilt(
+        request=request,
+        local_plan=local_plan,
+        joint_plan=joint_plan,
+        mode=PlannerSelectionMode.COMPARE,
+    )
+    assert selected.local_plan == local_plan
+    assert selected.joint_plan == joint_plan

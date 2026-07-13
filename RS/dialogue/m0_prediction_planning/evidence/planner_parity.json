@@ -18,6 +18,7 @@
   ],
   "notes": [
     "formal planners still execute legacy scheduler implementations through LegacyPlannerAdapter in M0",
-    "compare-mode score normalization uses one estimator + one cost-model path"
+    "compare-mode score normalization uses one estimator + one cost-model path",
+    "legacy reported makespan is retained only for audit/parity visibility"
   ]
 }

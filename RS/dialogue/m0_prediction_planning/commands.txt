@@ -7,3 +7,10 @@ $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
 python -m pytest -q tests\contract\test_prediction_api.py tests\contract\test_planning_api.py tests\contract\test_truth_hint_isolation.py tests\unit\test_planner_selector.py tests\unit\test_plan_estimator.py tests\offline\test_prediction_planning_parity.py tests\test_architecture_dependencies.py
 python -m pytest -q --basetemp .\.tmp_pytest tests\contract\test_hard_fail_guards.py tests\contract\test_fate_style_predictor.py::test_fate_style_linear_predictor_trains_without_target_leak tests\test_formal_reference_contracts.py::test_formal_exact_small_instance_has_real_bounds
 python .\experiments\run_offline_replay.py --config .\tests\fixtures\configs\minimal_offline.yaml --output-dir .\outputs\offline\m0_minimal_offline_smoke
+git branch --show-current
+git rev-parse --short HEAD
+git status --short
+python -m compileall .\src .\experiments .\tests
+PYTHONPATH=src;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests\contract\test_prediction_api.py tests\contract\test_planning_api.py tests\contract\test_truth_hint_isolation.py tests\unit\test_planner_selector.py tests\unit\test_plan_estimator.py tests\offline\test_prediction_planning_parity.py tests\test_architecture_dependencies.py tests\contract\megatron_ep\test_lifecycle_prediction_adapter.py tests\contract\megatron_ep\test_target_planner_service.py tests\contract\megatron_ep\test_target_plan_contracts.py
+PYTHONPATH=src;. python .\experiments\run_offline_replay.py --config .\tests\fixtures\configs\minimal_offline.yaml --output-dir .\outputs\offline\m0_closure_smoke
+git diff --check

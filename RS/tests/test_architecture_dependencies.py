@@ -100,6 +100,7 @@ def test_runtime_does_not_import_legacy_prediction_implementations() -> None:
 def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
     bad = []
     forbidden = (
+        "rs.scheduling.unified_interface",
         "rs.scheduling.registry",
         "rs.scheduling.catalog",
         "rs.scheduling.algorithm_catalog",

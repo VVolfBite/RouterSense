@@ -109,9 +109,28 @@ class PlanningRequest:
             "information_mode": str(self.information_mode),
         }
 
-    def semantic_digest(self) -> str:
+    def semantic_payload(self) -> dict[str, Any]:
         self.validate()
-        return stable_hash_dict(self.to_dict())
+        return {
+            "semantic_version": "planning_request_v2",
+            "traffic": self.traffic.to_dict(),
+            "prediction_hint": self.prediction_hint.to_dict(),
+            "topology": self.topology.to_dict(),
+            "constraints": self.constraints.to_dict(),
+            "weights": self.weights.to_dict(),
+            "information_mode": str(self.information_mode),
+        }
+
+    def semantic_digest(self) -> str:
+        return stable_hash_dict(self.semantic_payload())
+
+    def identity_digest(self) -> str:
+        return stable_hash_dict(
+            {
+                "identity_version": "planning_identity_v1",
+                "identity": self.identity.to_dict(),
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -159,8 +178,25 @@ class WindowPlan:
             "metadata": dict(self.metadata),
         }
 
+    def semantic_payload(self) -> dict[str, Any]:
+        return {
+            "semantic_version": "window_plan_v2",
+            "planner_id": str(self.planner_id),
+            "planner_family": str(self.planner_family),
+            "request_digest": str(self.request_digest),
+            "waves": [wave.to_dict() for wave in self.waves],
+        }
+
     def semantic_digest(self) -> str:
-        return stable_hash_dict(self.to_dict())
+        return stable_hash_dict(self.semantic_payload())
+
+    def audit_digest(self) -> str:
+        return stable_hash_dict(
+            {
+                "audit_version": "window_plan_audit_v1",
+                **self.to_dict(),
+            }
+        )
 
 
 @dataclass(frozen=True)

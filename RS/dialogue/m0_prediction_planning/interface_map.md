@@ -24,12 +24,14 @@
 - Registry: `src/rs/planning/registry.py`
 - Selector: `src/rs/planning/selection.py`
 - Estimator + cost model: `src/rs/planning/estimation.py`
+- Runtime planning config + legacy request builders: `src/rs/planning/api.py`
 - Legacy alias normalization: `src/rs/planning/legacy_aliases.py`
 - Runtime compatibility shim: `src/rs/planning/runtime_compat.py`
 
 ### Migrated callers
 
 - Online target planner service: `src/rs/runtime/online/megatron_ep/target_planning/planner_service.py`
+- Offline runner compatibility entry: `src/rs/runtime/offline/runner.py`
 - Runtime algorithm resolution imports: `src/rs/runtime/online/megatron_ep/runtime.py`
 - Pending-window phase policy adapter: `src/rs/runtime/online/megatron_ep/pending_window/policy_adapter.py`
 - Lifecycle planning imports: `src/rs/runtime/online/megatron_ep/lifecycle.py`

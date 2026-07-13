@@ -21,6 +21,7 @@ from .prediction import (
     PredictionHint,
     PredictionIdentity,
     PredictionResult,
+    RankedExpertRoutes,
     TrafficHistoryContext,
 )
 from .provenance import SourceProvenance
@@ -53,6 +54,7 @@ __all__ = [
     "PredictionHint",
     "PredictionIdentity",
     "PredictionResult",
+    "RankedExpertRoutes",
     "RankStageTiming",
     "RouteIdentity",
     "RouteRecord",

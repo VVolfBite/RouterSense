@@ -5,7 +5,7 @@ import statistics
 from typing import Any
 
 from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
-from rs.prediction import PredictionRegistry
+from rs.prediction import PredictionRegistry, TrafficPredictionTrainingSample, resolve_predictor_id
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_col_sums_remote, matrix_row_sums_remote
 
 from .contracts import Matrix, PredictorEvaluationRecord, PredictorSample
@@ -70,8 +70,26 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
     samples = load_fixture_samples(fixture_dir)
     records: list[PredictorEvaluationRecord] = []
     history: list[PredictorSample] = []
+    resolved_name = resolve_predictor_id(str(predictor_name))
     for sample in samples:
         predictor = PredictionRegistry.create(str(predictor_name), {"alpha": 0.5})
+        cold_start_prediction: Matrix | None = None
+        if resolved_name == "linear":
+            training_samples = tuple(
+                TrafficPredictionTrainingSample(
+                    current_dispatch_rows=item.current_dispatch_matrix,
+                    history_dispatch_rows=(item.previous_dispatch_matrix,),
+                    target_next_dispatch_rows=item.target_next_dispatch_matrix,
+                    current_return_rows=item.current_return_matrix,
+                    layer_id=item.layer_id,
+                    next_layer_id=item.next_layer_id,
+                )
+                for item in history
+            )
+            if training_samples and hasattr(predictor, "fit"):
+                predictor.fit(training_samples)
+            else:
+                cold_start_prediction = canonicalize_remote_matrix(sample.current_dispatch_matrix)
         context = TrafficHistoryContext(
             identity=PredictionIdentity(
                 request_id=f"{sample.layer_id}:{sample.next_layer_id}:{predictor_name}",
@@ -82,14 +100,22 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
             history_dispatch_rows=tuple(item.current_dispatch_matrix for item in history),
             world_size=len(sample.current_dispatch_matrix),
         )
-        result = predictor.predict(context)
+        if cold_start_prediction is None:
+            result = predictor.predict(context)
+            predicted_matrix = canonicalize_remote_matrix(result.hint.target_dispatch_rows)
+            confidence = float(result.hint.confidence or 0.0)
+            result_name = str(result.hint.predictor_id)
+        else:
+            predicted_matrix = cold_start_prediction
+            confidence = 0.0
+            result_name = str(resolve_predictor_id(str(predictor_name)))
         records.append(
             compare_prediction(
-                predictor_name=str(result.hint.predictor_id),
+                predictor_name=result_name,
                 predictor_version="v1",
                 sample=sample,
-                predicted=canonicalize_remote_matrix(result.hint.target_dispatch_rows),
-                confidence=float(result.hint.confidence or 0.0),
+                predicted=predicted_matrix,
+                confidence=confidence,
             )
         )
         history.append(sample)

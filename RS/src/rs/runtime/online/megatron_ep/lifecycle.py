@@ -25,7 +25,8 @@ from rs.core.layer_selection import layer_selected, resolve_layer_selector
 from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.prediction import PredictionRegistry, resolve_predictor_id
-from rs.planning.runtime_compat import PolicyOptions, build_policy, build_request_from_problem, resolve_phase_policy
+from rs.planning import PlannerPolicyConfig, build_runtime_policy, build_runtime_request_from_problem
+from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
     InjectionDecision,
@@ -124,6 +125,54 @@ from rs.scheduling.traffic_matrix import (
 from rs.scheduling.validation import stable_hash
 
 
+@dataclass(frozen=True)
+class RuntimePredictionCompatResult:
+    predictor_id: str
+    matrix: tuple[tuple[int, ...], ...]
+    matrix_digest: str
+    confidence: float
+    predictor_version: str = "v1"
+    evaluation_eligible: bool = True
+    is_oracle: bool = False
+    valid: bool = True
+    error: str = ""
+    fallback: bool = False
+
+    @property
+    def predictor_name(self) -> str:
+        return self.predictor_id
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "matrix": [list(row) for row in self.matrix],
+            "matrix_digest": str(self.matrix_digest),
+            "predictor_name": str(self.predictor_name),
+            "predictor_id": str(self.predictor_id),
+            "predictor_version": str(self.predictor_version),
+            "confidence": float(self.confidence),
+            "evaluation_eligible": bool(self.evaluation_eligible),
+            "is_oracle": bool(self.is_oracle),
+            "valid": bool(self.valid),
+            "error": str(self.error),
+            "fallback": bool(self.fallback),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "RuntimePredictionCompatResult":
+        return cls(
+            predictor_id=str(payload.get("predictor_id", payload.get("predictor_name", ""))),
+            matrix=tuple(tuple(int(value) for value in row) for row in payload.get("matrix", [])),
+            matrix_digest=str(payload.get("matrix_digest", "")),
+            predictor_version=str(payload.get("predictor_version", "v1")),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            evaluation_eligible=bool(payload.get("evaluation_eligible", True)),
+            is_oracle=bool(payload.get("is_oracle", False)),
+            valid=bool(payload.get("valid", False)),
+            error=str(payload.get("error", "")),
+            fallback=bool(payload.get("fallback", False)),
+        )
+
+
 @dataclass
 class RouterSenseInjectionRuntime:
     config: RouterSenseInjectionConfig
@@ -220,9 +269,9 @@ class RouterSenseInjectionRuntime:
             self._target_preplanning_enabled_cache = False
             return
         self._effective_phase_policy_name_cache = str(resolved.builder_key)
-        policy = build_policy(
+        policy = build_runtime_policy(
             str(resolved.canonical_name),
-            PolicyOptions(
+            PlannerPolicyConfig(
                 p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
                 p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
                 p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
@@ -1084,18 +1133,18 @@ class RouterSenseInjectionRuntime:
             world_size=len(current_dispatch_matrix),
         )
         prediction = predictor.predict(context)
-        return {
-            "matrix": prediction.hint.target_dispatch_rows,
-            "matrix_digest": stable_hash([list(row) for row in prediction.hint.target_dispatch_rows]),
-            "predictor_name": str(prediction.hint.predictor_id),
-            "predictor_version": "v1",
-            "confidence": float(prediction.hint.confidence or 0.0),
-            "evaluation_eligible": not bool(prediction.hint.oracle),
-            "is_oracle": bool(prediction.hint.oracle),
-            "valid": True,
-            "error": "",
-            "fallback": bool(fallback),
-        }
+        return RuntimePredictionCompatResult(
+            predictor_id=str(prediction.hint.predictor_id),
+            matrix=prediction.hint.target_dispatch_rows,
+            matrix_digest=stable_hash([list(row) for row in prediction.hint.target_dispatch_rows]),
+            predictor_version="v1",
+            confidence=float(prediction.hint.confidence or 0.0),
+            evaluation_eligible=not bool(prediction.hint.oracle),
+            is_oracle=bool(prediction.hint.oracle),
+            valid=True,
+            error="",
+            fallback=bool(fallback),
+        )
 
     def _resolved_online_policy_family(self) -> str:
         resolved = resolve_online_policy_config(self.config)
@@ -1435,24 +1484,24 @@ class RouterSenseInjectionRuntime:
             ),
         )
         prediction_end_ns = time.monotonic_ns()
-        predicted_dispatch_by_layer[str(next_layer_id)] = dict(predicted)
+        predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
         self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
         self._increment_state_counter_map("predict_count_by_layer", str(layer_id))
         active_prediction = ActiveNextDispatchPrediction(
             source_layer_id=str(layer_id),
             target_layer_id=str(next_layer_id),
-            forecast_matrix=predicted["matrix"],
-            matrix_digest=str(predicted["matrix_digest"]),
-            predictor_name=str(predicted["predictor_name"]),
-            predictor_version=str(predicted["predictor_version"]),
-            confidence=float(predicted["confidence"]),
-            evaluation_eligible=bool(predicted["evaluation_eligible"]),
-            is_oracle=bool(predicted["is_oracle"]),
+            forecast_matrix=predicted.matrix,
+            matrix_digest=str(predicted.matrix_digest),
+            predictor_name=str(predicted.predictor_name),
+            predictor_version=str(predicted.predictor_version),
+            confidence=float(predicted.confidence),
+            evaluation_eligible=bool(predicted.evaluation_eligible),
+            is_oracle=bool(predicted.is_oracle),
             created_at_phase="P0",
             created_at_stage="after_p0_observation",
             prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
-            valid=bool(predicted["valid"]),
-            error=str(predicted["error"]),
+            valid=bool(predicted.valid),
+            error=str(predicted.error),
         )
         self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
         self._runtime_state.write("latest_predictor_name", predicted.predictor_name)
@@ -1512,7 +1561,7 @@ class RouterSenseInjectionRuntime:
                         policy_id=str(self._effective_phase_policy_name() or ""),
                         group_size=int(world_size),
                         bucket_rows=int(self.config.bucket_rows),
-                        policy_options=PolicyOptions(
+                        policy_options=PlannerPolicyConfig(
                             p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
                             p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
                             p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
@@ -1988,7 +2037,7 @@ class RouterSenseInjectionRuntime:
             "phase_barrier_fifo",
             "B_barrier_criticality_core_independent",
         }
-        policy_options = PolicyOptions(
+        policy_options = PlannerPolicyConfig(
             p0_weight=float(self.config.p0_weight),
             p1_weight=float(self.config.p1_reservation_weight),
             p2_hint_weight=float(self.config.p2_hint_weight),
@@ -1998,7 +2047,7 @@ class RouterSenseInjectionRuntime:
             prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
         )
         if effective_policy in phase_local_async_policies:
-            phase_local_request = build_request_from_problem(
+            phase_local_request = build_runtime_request_from_problem(
                 request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:raw_u",
                 problem=problem,
                 bucket_rows=int(self.config.bucket_rows),
@@ -2010,7 +2059,7 @@ class RouterSenseInjectionRuntime:
             raw_u_name = effective_policy
             paired_b_name = effective_policy
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = build_policy(raw_u_name, phase_local_request.policy_options).plan(phase_local_request)
+            raw_u_plan = build_runtime_policy(raw_u_name, policy_options).plan(phase_local_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2047,7 +2096,7 @@ class RouterSenseInjectionRuntime:
         else:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
             safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
-            request = build_request_from_problem(
+            request = build_runtime_request_from_problem(
                 request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:safe_joint",
                 problem=problem,
                 bucket_rows=int(self.config.bucket_rows),
@@ -2057,7 +2106,7 @@ class RouterSenseInjectionRuntime:
                 layer_id=int(layer_id),
             )
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = build_policy(raw_u_name, request.policy_options).plan(request)
+            raw_u_plan = build_runtime_policy(raw_u_name, policy_options).plan(request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2073,7 +2122,7 @@ class RouterSenseInjectionRuntime:
                 paired_b_plan = raw_u_plan
                 paired_b_end_ns = paired_b_start_ns
             else:
-                paired_b_plan = build_policy(paired_b_name, request.policy_options).plan(request)
+                paired_b_plan = build_runtime_policy(paired_b_name, policy_options).plan(request)
                 paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2731,13 +2780,13 @@ class RouterSenseInjectionRuntime:
                 ),
                 fallback=True,
             )
-            forecast_matrix = fallback["matrix"]
+            forecast_matrix = fallback.matrix
             p2_matrix_source = "copy_current_dispatch_fallback"
-            predictor_name = fallback["predictor_name"]
-            prediction_digest = fallback["matrix_digest"]
-            prediction_confidence = float(fallback["confidence"])
-            prediction_evaluation_eligible = bool(fallback["evaluation_eligible"])
-            prediction_is_oracle = bool(fallback["is_oracle"])
+            predictor_name = fallback.predictor_name
+            prediction_digest = fallback.matrix_digest
+            prediction_confidence = float(fallback.confidence)
+            prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
+            prediction_is_oracle = bool(fallback.is_oracle)
         row_sums = [int(sum(row)) for row in forecast_matrix]
         col_sums = [
             int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))

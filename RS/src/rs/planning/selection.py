@@ -47,7 +47,37 @@ class PlannerSelector:
         mode: PlannerSelectionMode,
     ) -> SelectedPlan:
         if mode is PlannerSelectionMode.LOCAL:
-            local_plan = self._local_planner.plan(request)
+            return self.select_prebuilt(
+                request=request,
+                local_plan=self._local_planner.plan(request),
+                joint_plan=None,
+                mode=mode,
+            )
+        if mode is PlannerSelectionMode.JOINT:
+            return self.select_prebuilt(
+                request=request,
+                local_plan=None,
+                joint_plan=self._joint_planner.plan(request),
+                mode=mode,
+            )
+        return self.select_prebuilt(
+            request=request,
+            local_plan=self._local_planner.plan(request),
+            joint_plan=self._joint_planner.plan(request),
+            mode=mode,
+        )
+
+    def select_prebuilt(
+        self,
+        *,
+        request: PlanningRequest,
+        local_plan: WindowPlan | None,
+        joint_plan: WindowPlan | None,
+        mode: PlannerSelectionMode,
+    ) -> SelectedPlan:
+        if mode is PlannerSelectionMode.LOCAL:
+            if local_plan is None:
+                raise ValueError("LOCAL selection requires local_plan")
             local_score = self._estimator.estimate(local_plan, request, self._cost_model)
             return SelectedPlan(
                 selected_plan=local_plan,
@@ -57,7 +87,8 @@ class PlannerSelector:
                 selection_reason="mode=local",
             )
         if mode is PlannerSelectionMode.JOINT:
-            joint_plan = self._joint_planner.plan(request)
+            if joint_plan is None:
+                raise ValueError("JOINT selection requires joint_plan")
             joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
             return SelectedPlan(
                 selected_plan=joint_plan,
@@ -66,8 +97,8 @@ class PlannerSelector:
                 joint_score=joint_score,
                 selection_reason="mode=joint",
             )
-        local_plan = self._local_planner.plan(request)
-        joint_plan = self._joint_planner.plan(request)
+        if local_plan is None or joint_plan is None:
+            raise ValueError("COMPARE selection requires both local_plan and joint_plan")
         local_score = self._estimator.estimate(local_plan, request, self._cost_model)
         joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
         selected_plan = joint_plan if float(joint_score.estimated_makespan) < float(local_score.estimated_makespan) else local_plan

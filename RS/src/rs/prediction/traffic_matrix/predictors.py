@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 from rs.core.contracts import PredictionHint, PredictionIdentity, PredictionResult, TrafficHistoryContext
 from rs.scheduling.traffic_matrix import matrix_col_sums_remote, matrix_row_sums_remote
 import torch
 
-from ..api import Predictor
+from ..api import Predictor, TrafficPredictionTrainingSample, TrainableTrafficPredictor
 
 
 def _zero_matrix(rows: tuple[tuple[int, ...], ...]) -> tuple[tuple[int, ...], ...]:
@@ -114,50 +115,67 @@ class HistoryTrafficPredictor(Predictor):
 
 
 @dataclass
-class LinearTrafficPredictor(Predictor):
+class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
     ridge_lambda: float = 1e-3
     predictor_name: str = "linear"
+    _weight: torch.Tensor | None = None
+    _bias: torch.Tensor | None = None
+    _shape: tuple[int, int] | None = None
 
     @property
     def predictor_id(self) -> str:
         return self.predictor_name
 
+    def fit(self, samples: Sequence[TrafficPredictionTrainingSample]) -> "LinearTrafficPredictor":
+        sample_list = list(samples)
+        if not sample_list:
+            raise ValueError("linear predictor requires at least one training sample")
+        features = torch.tensor(
+            [
+                _feature_vector(
+                    previous_dispatch=(sample.history_dispatch_rows[-1] if sample.history_dispatch_rows else _zero_matrix(sample.current_dispatch_rows)),
+                    current_dispatch=sample.current_dispatch_rows,
+                    layer_id=sample.layer_id,
+                )
+                for sample in sample_list
+            ],
+            dtype=torch.float64,
+        )
+        targets = torch.tensor([_flatten(sample.target_next_dispatch_rows) for sample in sample_list], dtype=torch.float64)
+        ones = torch.ones((features.shape[0], 1), dtype=torch.float64)
+        design = torch.cat([features, ones], dim=1)
+        eye = torch.eye(design.shape[1], dtype=torch.float64)
+        eye[-1, -1] = 0.0
+        normal_matrix = design.T @ design + float(self.ridge_lambda) * eye
+        rhs = design.T @ targets
+        try:
+            solution = torch.linalg.solve(normal_matrix, rhs)
+        except RuntimeError:
+            solution = torch.linalg.pinv(normal_matrix) @ rhs
+        self._weight = solution[:-1, :]
+        self._bias = solution[-1, :]
+        self._shape = (
+            len(sample_list[0].target_next_dispatch_rows),
+            len(sample_list[0].target_next_dispatch_rows[0]) if sample_list[0].target_next_dispatch_rows else 0,
+        )
+        return self
+
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
-        if len(context.history_dispatch_rows) < 2:
-            predicted = context.current_dispatch_rows
-            confidence = 0.2
-        else:
-            history = list(context.history_dispatch_rows)
-            features = []
-            targets = []
-            previous = history[0]
-            for current in history[1:]:
-                features.append(_feature_vector(previous_dispatch=previous, current_dispatch=current, layer_id=context.identity.source_layer_id))
-                targets.append(_flatten(current))
-                previous = current
-            feature_tensor = torch.tensor(features, dtype=torch.float64)
-            target_tensor = torch.tensor(targets, dtype=torch.float64)
-            ones = torch.ones((feature_tensor.shape[0], 1), dtype=torch.float64)
-            design = torch.cat([feature_tensor, ones], dim=1)
-            eye = torch.eye(design.shape[1], dtype=torch.float64)
-            eye[-1, -1] = 0.0
-            normal_matrix = design.T @ design + float(self.ridge_lambda) * eye
-            rhs = design.T @ target_tensor
-            try:
-                solution = torch.linalg.solve(normal_matrix, rhs)
-            except RuntimeError:
-                solution = torch.linalg.pinv(normal_matrix) @ rhs
-            weight = solution[:-1, :]
-            bias = solution[-1, :]
-            infer_feature = torch.tensor(
-                _feature_vector(previous_dispatch=history[-1], current_dispatch=context.current_dispatch_rows, layer_id=context.identity.source_layer_id),
-                dtype=torch.float64,
-            )
-            output = infer_feature @ weight + bias
-            rows = len(context.current_dispatch_rows)
-            cols = len(context.current_dispatch_rows[0]) if context.current_dispatch_rows else 0
-            predicted = _reshape(output.tolist(), rows=rows, cols=cols)
-            confidence = 0.8
+        if self._weight is None or self._bias is None or self._shape is None:
+            raise ValueError("linear predictor must be fit before predict; it remains offline_only in M0")
+        previous_dispatch = context.history_dispatch_rows[-1] if context.history_dispatch_rows else _zero_matrix(context.current_dispatch_rows)
+        infer_feature = torch.tensor(
+            _feature_vector(
+                previous_dispatch=previous_dispatch,
+                current_dispatch=context.current_dispatch_rows,
+                layer_id=context.identity.source_layer_id,
+            ),
+            dtype=torch.float64,
+        )
+        output = infer_feature @ self._weight + self._bias
+        rows, cols = self._shape
+        predicted = _reshape(output.tolist(), rows=rows, cols=cols)
+        confidence = 0.8
         hint = PredictionHint(
             predictor_id=self.predictor_id,
             hint_type="traffic_matrix",

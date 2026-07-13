@@ -7,6 +7,7 @@
   "parity_status": "passed_on_targeted_cpu_fixtures",
   "notes": [
     "workspace was not clean at start by explicit user override",
-    "legacy scheduling implementations remain internal behind rs.planning in M0"
+    "legacy scheduling implementations remain internal behind rs.planning in M0",
+    "expert-route remains test_only in M0 closure; no deployable formal expert-route predictor is claimed"
   ]
 }

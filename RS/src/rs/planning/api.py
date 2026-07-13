@@ -5,12 +5,7 @@ from typing import Any, Protocol
 
 from rs.core.contracts import PlanWave, PlannedFlow, PlanningRequest, WindowPlan
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave
-from rs.scheduling.unified_interface import (
-    PolicyOptions,
-    SchedulingRequest,
-    SchedulingTopology,
-    build_policy as build_legacy_policy,
-)
+from rs.scheduling.unified_interface import SchedulingRequest, SchedulingTopology, build_policy as build_legacy_policy
 
 from .legacy_aliases import normalize_family_name
 
@@ -39,11 +34,24 @@ class PlannerSpec:
     historical_aliases: tuple[str, ...] = ()
 
 
-def planner_family_for_spec(*, family: str, scheduling_scope: str, reference_only: bool, deployable: bool, supports_p2_hint: bool, canonical_id: str) -> str:
+@dataclass(frozen=True)
+class PlannerPolicyConfig:
+    p0_weight: float = 1.0
+    p1_weight: float = 1.0
+    p2_hint_weight: float = 1.0
+    residual_weight: float = 0.75
+    barrier_weight: float = 1.75
+    age_weight: float = 0.15
+    prediction_weight: float = 0.35
+    criticality_weight: float = 0.0
+    iteration_budget: int | None = None
+
+
+def planner_family_for_spec(*, family: str, scheduling_scope: str, reference_only: bool, deployable: bool, supports_p2_hint: bool, canonical_id: str, execution_model: str = "") -> str:
     if reference_only:
-        if "local" in canonical_id or "phase_local" in scheduling_scope:
-            return "exact_local"
-        return "exact_joint"
+        if execution_model == "exact_reference" or family == "oracle":
+            return "exact_local" if ("local" in canonical_id or "phase_local" in scheduling_scope) else "exact_joint"
+        return "reference_local" if "local" in canonical_id or "phase_local" in scheduling_scope else "reference_joint"
     if scheduling_scope == "phase_local":
         if family.startswith("phase_local_baseline"):
             return "baseline"
@@ -56,7 +64,7 @@ def planner_family_for_spec(*, family: str, scheduling_scope: str, reference_onl
 
 
 def to_legacy_request(request: PlanningRequest) -> SchedulingRequest:
-    from rs.scheduling.unified_interface import PlanningHintMetadata
+    from rs.scheduling.unified_interface import PlanningHintMetadata, PolicyOptions
 
     request.validate()
     return SchedulingRequest(
@@ -91,6 +99,72 @@ def to_legacy_request(request: PlanningRequest) -> SchedulingRequest:
         fixture_id=str(request.identity.run_id or "runtime"),
         window_id=str(request.identity.window_id or request.identity.request_id),
         layer_id=None if request.identity.source_layer_id is None or not str(request.identity.source_layer_id).isdigit() else int(request.identity.source_layer_id),
+    )
+
+
+def build_runtime_policy(policy_name: str, options: PlannerPolicyConfig):
+    from rs.scheduling.unified_interface import PolicyOptions
+
+    return build_legacy_policy(
+        policy_name,
+        PolicyOptions(
+            p0_weight=float(options.p0_weight),
+            p1_weight=float(options.p1_weight),
+            p2_hint_weight=float(options.p2_hint_weight),
+            residual_weight=float(options.residual_weight),
+            barrier_weight=float(options.barrier_weight),
+            age_weight=float(options.age_weight),
+            prediction_weight=float(options.prediction_weight),
+            criticality_weight=float(options.criticality_weight),
+            iteration_budget=options.iteration_budget,
+        ),
+    )
+
+
+def build_runtime_request_from_problem(
+    *,
+    request_id: str,
+    problem,
+    bucket_rows: int,
+    policy_options: PlannerPolicyConfig,
+    hint_type: str,
+    confidence: float,
+    layer_id: int | None,
+):
+    from rs.scheduling.unified_interface import PlanningHintMetadata, PolicyOptions, SchedulingRequest, SchedulingTopology
+
+    return SchedulingRequest(
+        request_id=str(request_id),
+        tasks=(),
+        p0_truth_rows=problem.p0_dispatch_matrix,
+        p1_truth_rows=problem.p1_return_matrix,
+        p2_hint_rows=problem.p2_next_dispatch_forecast_matrix,
+        topology=SchedulingTopology(group_size=int(problem.topology.num_gpus)),
+        release_model=problem.release_model,
+        policy_options=PolicyOptions(
+            p0_weight=float(policy_options.p0_weight),
+            p1_weight=float(policy_options.p1_weight),
+            p2_hint_weight=float(policy_options.p2_hint_weight),
+            residual_weight=float(policy_options.residual_weight),
+            barrier_weight=float(policy_options.barrier_weight),
+            age_weight=float(policy_options.age_weight),
+            prediction_weight=float(policy_options.prediction_weight),
+            criticality_weight=float(policy_options.criticality_weight),
+            iteration_budget=policy_options.iteration_budget,
+        ),
+        hint_metadata=PlanningHintMetadata(
+            hint_type=str(hint_type),
+            confidence=float(confidence),
+            source_layer=int(layer_id) if layer_id is not None else None,
+            target_layer=(int(layer_id) + 1) if layer_id is not None else None,
+        ),
+        scheduling_mode=str(problem.options.scheduling_mode),
+        information_mode=str(problem.options.information_mode),
+        max_waves=int(problem.options.max_waves),
+        task_quantum_rows=int(bucket_rows),
+        fixture_id=str(getattr(problem.forecast, "metadata", {}).get("fixture_id", "runtime")),
+        window_id=str(getattr(problem.forecast, "metadata", {}).get("replay_window_id", request_id)),
+        layer_id=None if layer_id is None else int(layer_id),
     )
 
 
@@ -200,7 +274,10 @@ class LegacyPlannerAdapter(Planner):
 __all__ = [
     "LegacyPlannerAdapter",
     "Planner",
+    "PlannerPolicyConfig",
     "PlannerSpec",
+    "build_runtime_policy",
+    "build_runtime_request_from_problem",
     "from_logical_plan",
     "planner_family_for_spec",
     "to_logical_plan",

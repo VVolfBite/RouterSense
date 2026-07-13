@@ -16,6 +16,7 @@
 - Public scheduling entrypoints converged into `rs.planning.registry.PlannerRegistry`
 - Selection logic converged into `rs.planning.selection.PlannerSelector`
 - Cross-planner score normalization converged into `rs.planning.estimation.CommonCorePlanEstimator`
+- Runtime policy option/request construction converged into `rs.planning.api.PlannerPolicyConfig`, `build_runtime_policy(...)`, and `build_runtime_request_from_problem(...)`
 - Legacy scheduling implementations remain internal behind `rs.planning.api.LegacyPlannerAdapter`
 
 ## Runtime caller migration
@@ -30,3 +31,4 @@
 - `rs.scheduling` retained as internal implementation layer
 - `rs.planning.runtime_compat` retained as a thin shim for unresolved runtime import sites
 - runtime output adapters still translate `PredictionResult` and `WindowPlan` back to legacy metadata/object shapes where the surrounding runtime still expects them
+- lifecycle prediction adapter now uses a typed runtime compatibility object rather than a dict

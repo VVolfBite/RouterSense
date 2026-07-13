@@ -15,9 +15,8 @@ from rs.core.contracts import (
     PlanningWeights,
     PredictionHint,
 )
-from rs.planning import CommonCorePlanEstimator, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel
+from rs.planning import CommonCorePlanEstimator, PlannerPolicyConfig, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel, SelectedPlan
 from rs.planning.api import to_logical_plan
-from rs.scheduling.unified_interface import PolicyOptions
 from rs.scheduling.validation import stable_hash
 
 from .contracts import MatrixRows, TargetLayerPreparedJointPlan, TargetPlanKey
@@ -38,7 +37,7 @@ class TargetLayerPlanningRequest:
     policy_id: str
     group_size: int
     bucket_rows: int
-    policy_options: PolicyOptions
+    policy_options: PlannerPolicyConfig
     topology_digest: str
     bucket_contract_digest: str
     raw_u_policy_id: str = ""
@@ -64,6 +63,7 @@ class TargetLayerPlannerMetrics:
 class TargetLayerPlannerService:
     store: TargetPlanStore
     agreement_fn: Callable[[dict[str, Any]], str] | None = None
+    planner_factory: Callable[[str, Any | None], Any] = PlannerRegistry.create
     max_queue_size: int = 16
     _queue: queue.Queue[tuple[float, TargetLayerPlanningRequest] | None] = field(init=False)
     _thread: threading.Thread | None = field(init=False, default=None)
@@ -153,6 +153,32 @@ class TargetLayerPlannerService:
         )
         return published
 
+    def _select_candidate_plans(
+        self,
+        *,
+        planning_request: PlanningRequest,
+        local_plan,
+        joint_plan,
+        mode: PlannerSelectionMode,
+    ) -> SelectedPlan:
+        selector = PlannerSelector(
+            local_planner=self.planner_factory("fifo_bucket", None) if local_plan is None else self.planner_factory(getattr(local_plan, "planner_id", "fifo_bucket"), None),
+            joint_planner=self.planner_factory("barrier_criticality_joint", None) if joint_plan is None else self.planner_factory(getattr(joint_plan, "planner_id", "barrier_criticality_joint"), None),
+            estimator=CommonCorePlanEstimator(),
+            cost_model=PlanningCostModel(
+                expert_compute_delay=float(planning_request.constraints.expert_compute_delay),
+                full_duplex=bool(planning_request.topology.full_duplex),
+                max_outgoing_per_rank_per_wave=int(planning_request.topology.max_outgoing_per_rank_per_wave),
+                max_incoming_per_rank_per_wave=int(planning_request.topology.max_incoming_per_rank_per_wave),
+            ),
+        )
+        return selector.select_prebuilt(
+            request=planning_request,
+            local_plan=local_plan,
+            joint_plan=joint_plan,
+            mode=mode,
+        )
+
     def _build_target_plan(
         self,
         *,
@@ -218,15 +244,24 @@ class TargetLayerPlannerService:
         metrics.target_problem_us = (target_problem_end - target_problem_start) / 1000.0
         raw_u_start = time.perf_counter_ns()
         raw_policy_id = str(request.raw_u_policy_id or request.policy_id)
-        raw_planner = PlannerRegistry.create(raw_policy_id, None)
+        raw_planner = self.planner_factory(raw_policy_id, None)
         raw_plan = raw_planner.plan(planning_request)
         raw_logical_plan = to_logical_plan(raw_plan)
         raw_u_end = time.perf_counter_ns()
         metrics.raw_u_us = (raw_u_end - raw_u_start) / 1000.0
         paired_b_logical_plan = raw_logical_plan
-        paired_b_makespan = float((raw_plan.metadata or {}).get("legacy_makespan", 0.0) or 0.0)
+        estimator = CommonCorePlanEstimator()
+        cost_model = PlanningCostModel(
+            expert_compute_delay=float(planning_request.constraints.expert_compute_delay),
+            full_duplex=bool(planning_request.topology.full_duplex),
+            max_outgoing_per_rank_per_wave=int(planning_request.topology.max_outgoing_per_rank_per_wave),
+            max_incoming_per_rank_per_wave=int(planning_request.topology.max_incoming_per_rank_per_wave),
+        )
+        raw_score = estimator.estimate(raw_plan, planning_request, cost_model)
+        paired_b_makespan = float(raw_score.estimated_makespan)
         selected_variant = "raw_u"
         selected_plan = raw_plan
+        selected_score = raw_score
         safe_selection_us = 0.0
         paired_b_us = 0.0
         if str(request.safe_projection_mode) == "host_select":
@@ -234,27 +269,22 @@ class TargetLayerPlannerService:
             paired_policy_id = str(request.paired_b_policy_id or "")
             if not paired_policy_id:
                 raise RuntimeError("safe target planner missing paired_b_policy_id")
-            paired_b_planner = PlannerRegistry.create(paired_policy_id, None)
+            paired_b_planner = self.planner_factory(paired_policy_id, None)
             paired_b_plan = paired_b_planner.plan(planning_request)
             paired_b_logical_plan = to_logical_plan(paired_b_plan)
             paired_b_end = time.perf_counter_ns()
             paired_b_us = (paired_b_end - paired_b_start) / 1000.0
             metrics.paired_b_us = float(paired_b_us)
             safe_start = time.perf_counter_ns()
-            selector = PlannerSelector(
-                local_planner=paired_b_planner,
-                joint_planner=raw_planner,
-                estimator=CommonCorePlanEstimator(),
-                cost_model=PlanningCostModel(
-                    expert_compute_delay=float(planning_request.constraints.expert_compute_delay),
-                    full_duplex=bool(planning_request.topology.full_duplex),
-                    max_outgoing_per_rank_per_wave=int(planning_request.topology.max_outgoing_per_rank_per_wave),
-                    max_incoming_per_rank_per_wave=int(planning_request.topology.max_incoming_per_rank_per_wave),
-                ),
+            selected = self._select_candidate_plans(
+                planning_request=planning_request,
+                local_plan=paired_b_plan,
+                joint_plan=raw_plan,
+                mode=PlannerSelectionMode.COMPARE,
             )
-            selected = selector.select(planning_request, mode=PlannerSelectionMode.COMPARE)
             selected_variant = "paired_b" if selected.selected_plan.planner_id == paired_b_plan.planner_id else "raw_u"
             selected_plan = selected.selected_plan
+            selected_score = selected.selected_score
             safe_end = time.perf_counter_ns()
             safe_selection_us = (safe_end - safe_start) / 1000.0
             metrics.safe_selection_us = float(safe_selection_us)
@@ -308,7 +338,7 @@ class TargetLayerPlannerService:
                 else str(stable_hash(paired_b_logical_plan.to_dict()))
             ),
             selected_logical_plan_digest=str(logical_digest),
-            raw_u_estimated_makespan=float((raw_plan.metadata or {}).get("legacy_makespan", 0.0) or 0.0),
+            raw_u_estimated_makespan=float(raw_score.estimated_makespan),
             paired_b_estimated_makespan=float(paired_b_makespan),
             raw_u_build_us=float(metrics.raw_u_us),
             paired_b_build_us=float(paired_b_us),

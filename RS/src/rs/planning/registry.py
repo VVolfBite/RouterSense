@@ -20,11 +20,12 @@ class PlannerRegistry:
                         deployable=bool(spec.deployable),
                         supports_p2_hint=bool(spec.supports_p2_hint),
                         canonical_id=str(spec.canonical_id),
+                        execution_model=str(spec.execution_model),
                     ),
                     deployable=bool(spec.deployable),
                     reference_only=bool(spec.reference_only),
                     requires_prediction=bool(spec.supports_p2_hint),
-                    exact=bool(spec.reference_only),
+                    exact=bool(str(spec.execution_model) == "exact_reference"),
                     historical_aliases=tuple(spec.aliases + spec.deprecated_aliases),
                 )
             )
@@ -41,6 +42,7 @@ class PlannerRegistry:
             deployable=bool(spec.deployable),
             supports_p2_hint=bool(spec.supports_p2_hint),
             canonical_id=str(spec.canonical_id),
+            execution_model=str(spec.execution_model),
         )
         return LegacyPlannerAdapter(
             _planner_id=str(spec.canonical_id),
