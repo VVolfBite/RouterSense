@@ -1,0 +1,17 @@
+[
+  {
+    "test_name": "compile_and_diff_check",
+    "command": "python -m compileall src experiments tests && git diff --check",
+    "passed": true,
+    "failed": 0,
+    "skipped": 0
+  },
+  {
+    "test_name": "hotpath_contract_tests",
+    "command": "PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py",
+    "passed": true,
+    "failed": 0,
+    "skipped": 0,
+    "result": "24 passed"
+  }
+]

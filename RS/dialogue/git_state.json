@@ -1,0 +1,13 @@
+{
+  "branch": "main",
+  "head_before_commit": "e3b5750650889d568474243a2c555cee82a59bf1",
+  "status_short": [
+    " M experiments/dev/build_hotpath_cpu_contract_closure.py",
+    " M experiments/distributed/run_gpu_a2_strategy_compare.py",
+    " M src/rs/runtime/online/megatron_ep/lifecycle.py",
+    " M src/rs/runtime/online/megatron_ep/observation/runtime_export.py",
+    " M tests/contract/test_gpu_child_config_and_a2_metrics.py",
+    "?? dialogue/",
+    "?? src/rs/core/layer_ids.py"
+  ]
+}

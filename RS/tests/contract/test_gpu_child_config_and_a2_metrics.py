@@ -5,6 +5,7 @@ from pathlib import Path
 
 from experiments.distributed._gpu_runner_common import build_policy_correctness_config, load_official_config
 from experiments.distributed.run_gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
+from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import resolve_layer_selector
 
 
@@ -68,15 +69,88 @@ def test_synthetic_hotpath_aggregate_uses_all_ranks() -> None:
         }
         for rank in range(4)
     ]
-    aggregate = aggregate_hotpath_rank_counts(ranks, expected_world_size=4)
+    aggregate = aggregate_hotpath_rank_counts(
+        ranks,
+        expected_world_size=4,
+        warmup_iters=1,
+        measure_iters=1,
+        selected_layer_ids=["0", "1"],
+        prediction_source_layer_ids=[],
+        strategy="routersense_u_core_zero_raw_async",
+    )
     assert aggregate["selected_p0_hook_count_per_rank"] == [4, 4, 4, 4]
     assert aggregate["selected_p0_hook_count_all_rank_sum"] == 16
     assert aggregate["selected_p1_hook_count_per_rank"] == [4, 4, 4, 4]
     assert aggregate["selected_p1_hook_count_all_rank_sum"] == 16
+    assert aggregate["expected_selected_p0_hook_count_per_rank"] == 4
+    assert aggregate["selected_p0_hook_count_exact"] is True
+    assert aggregate["expected_prediction_source_p0_hook_count_per_rank"] == 0
+    assert aggregate["prediction_source_p0_hook_count_all_rank_exact"] is True
     assert aggregate["none_heavy_hook_count_all_rank_sum"] == 0
     assert aggregate["raw_u_build_count_all_rank_sum"] == 16
+    assert aggregate["expected_raw_u_build_upper_bound_all_rank"] == 16
+    assert aggregate["raw_u_build_count_all_rank_valid"] is True
+    assert aggregate["raw_u_build_count_by_layer_per_rank_valid"] is True
     assert aggregate["rank_count_observed"] == 4
     assert aggregate["hotpath_eligible"] is True
+
+
+def test_synthetic_hotpath_exact_count_mismatch_is_ineligible() -> None:
+    ranks = [
+        {
+            "rank": rank,
+            "selected_p0_hook_count": 3 if rank == 1 else 4,
+            "selected_p1_hook_count": 4,
+            "prediction_source_p0_hook_count": 0,
+            "none_heavy_hook_count": 0,
+            "raw_u_build_count": 4,
+            "raw_u_build_count_by_layer_per_rank": {"0": 2, "1": 2},
+            "paired_b_build_count": 0,
+            "predict_count": 0,
+        }
+        for rank in range(4)
+    ]
+    aggregate = aggregate_hotpath_rank_counts(
+        ranks,
+        expected_world_size=4,
+        warmup_iters=1,
+        measure_iters=1,
+        selected_layer_ids=["0", "1"],
+        prediction_source_layer_ids=[],
+        strategy="routersense_u_core_zero_raw_async",
+    )
+    assert aggregate["hotpath_eligible"] is False
+    assert any("selected_p0_hook_count:rank=1:expected=4:actual=3" in item for item in aggregate["eligibility_reasons"])
+
+
+def test_synthetic_hotpath_raw_u_layer_upper_bound_is_ineligible() -> None:
+    ranks = [
+        {
+            "rank": rank,
+            "selected_p0_hook_count": 4,
+            "selected_p1_hook_count": 4,
+            "prediction_source_p0_hook_count": 0,
+            "none_heavy_hook_count": 0,
+            "raw_u_build_count": 5 if rank == 0 else 4,
+            "raw_u_build_count_by_layer_per_rank": {"0": 3, "1": 2} if rank == 0 else {"0": 2, "1": 2},
+            "paired_b_build_count": 0,
+            "predict_count": 0,
+        }
+        for rank in range(4)
+    ]
+    aggregate = aggregate_hotpath_rank_counts(
+        ranks,
+        expected_world_size=4,
+        warmup_iters=1,
+        measure_iters=1,
+        selected_layer_ids=["0", "1"],
+        prediction_source_layer_ids=[],
+        strategy="routersense_u_core_zero_raw_async",
+    )
+    assert aggregate["hotpath_eligible"] is False
+    assert aggregate["raw_u_build_count_per_rank_valid"] is False
+    assert aggregate["raw_u_build_count_by_layer_per_rank_valid"] is False
+    assert any("raw_u_build_count_by_layer:rank=0:layer=0:upper=2:actual=3" in item for item in aggregate["eligibility_reasons"])
 
 
 def test_synthetic_hotpath_aggregate_rejects_missing_duplicate_and_none_heavy() -> None:
@@ -110,6 +184,11 @@ def test_synthetic_hotpath_aggregate_rejects_missing_duplicate_and_none_heavy() 
     )
     assert none_heavy["hotpath_eligible"] is False
     assert "none_heavy_hook_count_positive" in none_heavy["eligibility_reasons"]
+
+
+def test_stable_layer_id_sorting_numeric_and_mixed_names() -> None:
+    assert stable_layer_ids({"10", "2", "1"}) == ["1", "2", "10"]
+    assert stable_layer_ids({"layer10", "layer2", "alpha"}) == ["alpha", "layer2", "layer10"]
 
 
 def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:

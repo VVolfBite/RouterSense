@@ -24,6 +24,7 @@ from experiments.distributed._gpu_runner_common import (
     write_json,
 )
 from experiments.online.support.runtime_presets import resolve_strategy_runtime
+from rs.core.layer_ids import stable_layer_count_map, stable_layer_ids
 
 
 DEFAULT_STRATEGIES = (
@@ -269,7 +270,130 @@ def _normalize_safe_projection_mode(value: object) -> str:
     return text
 
 
-def aggregate_hotpath_rank_counts(rank_summaries: list[dict], *, expected_world_size: int | None = None) -> dict:
+def _expected_count_contract(
+    *,
+    rank_summaries: list[dict],
+    expected_world_size: int | None,
+    warmup_iters: int | None,
+    measure_iters: int | None,
+    selected_layer_ids: list[str] | None,
+    prediction_source_layer_ids: list[str] | None,
+    strategy: str | None,
+) -> dict:
+    reasons: list[str] = []
+    if expected_world_size is None or warmup_iters is None or measure_iters is None or selected_layer_ids is None:
+        return {"available": False, "eligibility_reasons": ["expected_count_contract_missing_inputs"]}
+    forward_count = int(warmup_iters) + int(measure_iters)
+    selected_layers = stable_layer_ids(selected_layer_ids)
+    prediction_layers = stable_layer_ids(prediction_source_layer_ids or [])
+    expected_selected_per_rank = int(forward_count * len(selected_layers))
+    expected_prediction_per_rank = int(forward_count * len(prediction_layers))
+    expected_selected_all = int(expected_selected_per_rank * int(expected_world_size))
+    expected_prediction_all = int(expected_prediction_per_rank * int(expected_world_size))
+
+    def _actual_list(field: str) -> list[int | None]:
+        values: list[int | None] = []
+        for item in rank_summaries:
+            values.append(int(item[field]) if field in item else None)
+        return values
+
+    selected_p0 = _actual_list("selected_p0_hook_count")
+    selected_p1 = _actual_list("selected_p1_hook_count")
+    prediction_p0 = _actual_list("prediction_source_p0_hook_count")
+    for field, values, expected in (
+        ("selected_p0_hook_count", selected_p0, expected_selected_per_rank),
+        ("selected_p1_hook_count", selected_p1, expected_selected_per_rank),
+        ("prediction_source_p0_hook_count", prediction_p0, expected_prediction_per_rank),
+    ):
+        for index, actual in enumerate(values):
+            rank = int(rank_summaries[index].get("rank", index))
+            if actual is None:
+                reasons.append(f"{field}:rank={rank}:missing")
+            elif int(actual) != int(expected):
+                reasons.append(f"{field}:rank={rank}:expected={expected}:actual={actual}")
+    selected_p0_sum = None if any(value is None for value in selected_p0) else int(sum(int(value) for value in selected_p0))
+    selected_p1_sum = None if any(value is None for value in selected_p1) else int(sum(int(value) for value in selected_p1))
+    prediction_p0_sum = None if any(value is None for value in prediction_p0) else int(sum(int(value) for value in prediction_p0))
+    if selected_p0_sum is not None and selected_p0_sum != expected_selected_all:
+        reasons.append(f"selected_p0_hook_count_all_rank:expected={expected_selected_all}:actual={selected_p0_sum}")
+    if selected_p1_sum is not None and selected_p1_sum != expected_selected_all:
+        reasons.append(f"selected_p1_hook_count_all_rank:expected={expected_selected_all}:actual={selected_p1_sum}")
+    if prediction_p0_sum is not None and prediction_p0_sum != expected_prediction_all:
+        reasons.append(f"prediction_source_p0_hook_count_all_rank:expected={expected_prediction_all}:actual={prediction_p0_sum}")
+    payload: dict[str, object] = {
+        "forward_count": int(forward_count),
+        "selected_layer_count": int(len(selected_layers)),
+        "prediction_source_layer_count": int(len(prediction_layers)),
+        "expected_selected_p0_hook_count_per_rank": expected_selected_per_rank,
+        "actual_selected_p0_hook_count_per_rank": selected_p0,
+        "selected_p0_hook_count_exact": all(value == expected_selected_per_rank for value in selected_p0),
+        "expected_selected_p1_hook_count_per_rank": expected_selected_per_rank,
+        "actual_selected_p1_hook_count_per_rank": selected_p1,
+        "selected_p1_hook_count_exact": all(value == expected_selected_per_rank for value in selected_p1),
+        "expected_selected_p0_hook_count_all_rank": expected_selected_all,
+        "actual_selected_p0_hook_count_all_rank": selected_p0_sum,
+        "selected_p0_hook_count_all_rank_exact": selected_p0_sum == expected_selected_all,
+        "expected_selected_p1_hook_count_all_rank": expected_selected_all,
+        "actual_selected_p1_hook_count_all_rank": selected_p1_sum,
+        "selected_p1_hook_count_all_rank_exact": selected_p1_sum == expected_selected_all,
+        "expected_prediction_source_p0_hook_count_per_rank": expected_prediction_per_rank,
+        "actual_prediction_source_p0_hook_count_per_rank": prediction_p0,
+        "prediction_source_p0_hook_count_exact": all(value == expected_prediction_per_rank for value in prediction_p0),
+        "expected_prediction_source_p0_hook_count_all_rank": expected_prediction_all,
+        "actual_prediction_source_p0_hook_count_all_rank": prediction_p0_sum,
+        "prediction_source_p0_hook_count_all_rank_exact": prediction_p0_sum == expected_prediction_all,
+    }
+    if str(strategy) == "routersense_u_core_zero_raw_async":
+        raw_per_rank = _actual_list("raw_u_build_count")
+        raw_all = None if any(value is None for value in raw_per_rank) else int(sum(int(value) for value in raw_per_rank))
+        raw_layer_valid = True
+        raw_layer_payload: list[dict[str, object]] = []
+        for item in rank_summaries:
+            rank = int(item.get("rank", len(raw_layer_payload)))
+            by_layer = stable_layer_count_map(dict(item.get("raw_u_build_count_by_layer_per_rank") or item.get("raw_u_build_count_by_layer") or {}))
+            for layer_id in selected_layers:
+                actual = int(by_layer.get(layer_id, 0))
+                valid = actual <= forward_count
+                raw_layer_payload.append({"rank": rank, "layer": layer_id, "expected_upper_bound": forward_count, "actual": actual, "valid": valid})
+                if not valid:
+                    raw_layer_valid = False
+                    reasons.append(f"raw_u_build_count_by_layer:rank={rank}:layer={layer_id}:upper={forward_count}:actual={actual}")
+        for index, actual in enumerate(raw_per_rank):
+            rank = int(rank_summaries[index].get("rank", index))
+            if actual is None:
+                reasons.append(f"raw_u_build_count:rank={rank}:missing")
+            elif int(actual) > expected_selected_per_rank:
+                reasons.append(f"raw_u_build_count:rank={rank}:upper={expected_selected_per_rank}:actual={actual}")
+        if raw_all is not None and raw_all > expected_selected_all:
+            reasons.append(f"raw_u_build_count_all_rank:upper={expected_selected_all}:actual={raw_all}")
+        payload.update(
+            {
+                "expected_raw_u_build_upper_bound_per_rank": expected_selected_per_rank,
+                "actual_raw_u_build_count_per_rank": raw_per_rank,
+                "raw_u_build_count_per_rank_valid": all(value is not None and int(value) <= expected_selected_per_rank for value in raw_per_rank),
+                "expected_raw_u_build_upper_bound_all_rank": expected_selected_all,
+                "actual_raw_u_build_count_all_rank": raw_all,
+                "raw_u_build_count_all_rank_valid": raw_all is not None and raw_all <= expected_selected_all,
+                "raw_u_build_count_by_layer_per_rank_valid": bool(raw_layer_valid),
+                "raw_u_build_count_by_layer_per_rank_contract": raw_layer_payload,
+            }
+        )
+    payload["available"] = not reasons
+    payload["hotpath_exact_count_eligible"] = not reasons
+    payload["eligibility_reasons"] = reasons
+    return payload
+
+
+def aggregate_hotpath_rank_counts(
+    rank_summaries: list[dict],
+    *,
+    expected_world_size: int | None = None,
+    warmup_iters: int | None = None,
+    measure_iters: int | None = None,
+    selected_layer_ids: list[str] | None = None,
+    prediction_source_layer_ids: list[str] | None = None,
+    strategy: str | None = None,
+) -> dict:
     fields = (
         "selected_p0_hook_count",
         "selected_p1_hook_count",
@@ -319,6 +443,17 @@ def aggregate_hotpath_rank_counts(rank_summaries: list[dict], *, expected_world_
         payload[f"{base}_all_rank_sum"] = int(sum(int(v or 0) for v in per_rank))
     if int(payload.get("none_heavy_hook_count_all_rank_sum") or 0) > 0:
         reasons.append("none_heavy_hook_count_positive")
+    exact_contract = _expected_count_contract(
+        rank_summaries=ordered,
+        expected_world_size=expected_world_size,
+        warmup_iters=warmup_iters,
+        measure_iters=measure_iters,
+        selected_layer_ids=selected_layer_ids,
+        prediction_source_layer_ids=prediction_source_layer_ids,
+        strategy=strategy,
+    )
+    payload.update(exact_contract)
+    reasons.extend(str(item) for item in exact_contract.get("eligibility_reasons", []) or [])
     payload["available"] = not reasons
     payload["hotpath_eligible"] = not reasons
     payload["eligibility_reasons"] = reasons
@@ -341,6 +476,11 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     hotpath_counts = aggregate_hotpath_rank_counts(
         rank_summaries,
         expected_world_size=int(details.get("world_size", 0) or 0) or None,
+        warmup_iters=int(details.get("warmup_iters", 0) or 0),
+        measure_iters=int(details.get("measure_iters", 0) or 0),
+        selected_layer_ids=[str(item) for item in (details.get("selected_layer_ids") or [])],
+        prediction_source_layer_ids=[str(item) for item in (rank0_summary.get("prediction_source_layer_ids") or [])],
+        strategy=str(strategy),
     )
     raw_series = _metric_series(rank_summaries, run_dir)
     metrics = {name: _summary_stats(values) for name, values in raw_series.items()}

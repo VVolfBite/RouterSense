@@ -1,0 +1,20 @@
+{
+  "milestone": "M-HOTPATH-CPU2",
+  "starting_sha": "e3b5750650889d568474243a2c555cee82a59bf1",
+  "final_sha": "commit containing this dialogue directory; see final response and git log -1 after commit",
+  "source_head_before_commit": "e3b5750650889d568474243a2c555cee82a59bf1",
+  "branch": "main",
+  "git_clean": false,
+  "push_succeeded": false,
+  "gpu_available": false,
+  "completed": [
+    "exact hook-count contract",
+    "raw-U build upper-bound contract",
+    "stable layer sorting",
+    "dialogue evidence directory"
+  ],
+  "remaining": [
+    "run frozen GPU validation manifest on 4GPU machine"
+  ],
+  "final_status": "HOTPATH_CPU_GPU_CONTRACT_READY"
+}

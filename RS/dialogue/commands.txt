@@ -1,0 +1,6 @@
+python -m compileall src experiments tests
+git diff --check
+PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py
+PYTHONPATH=src:. python experiments/dev/build_hotpath_cpu_contract_closure.py --output-dir /tmp/hotpath_cpu2_closure
+find dialogue -type f -printf '%s %p\n' | sort -nr
+git status --short

@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from rs.core.layer_ids import stable_layer_count_map, stable_layer_ids
+
+
+def _layer_map(runtime_state: Any, key: str) -> dict[str, int]:
+    return stable_layer_count_map(dict(runtime_state.read(key, {}) or {}))
+
 
 def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
     active_prediction = runtime_state.read("active_next_dispatch_prediction") or {}
@@ -83,18 +89,18 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
         "forward_start_ns": int(runtime_state.read("forward_start_ns", 0) or 0),
         "forward_end_ns": int(runtime_state.read("forward_end_ns", 0) or 0),
         "total_model_moe_layers": int(runtime_state.read("total_model_moe_layers", 0) or 0),
-        "selected_layer_ids": list(runtime_state.read("selected_layer_ids", []) or []),
-        "prediction_source_layer_ids": list(runtime_state.read("prediction_source_layer_ids", []) or []),
-        "none_layer_ids": list(runtime_state.read("none_layer_ids", []) or []),
-        "wrapped_selected_layer_ids": list(runtime_state.read("wrapped_selected_layer_ids", []) or []),
-        "wrapped_prediction_source_layer_ids": list(runtime_state.read("wrapped_prediction_source_layer_ids", []) or []),
-        "unwrapped_none_layer_ids": list(runtime_state.read("unwrapped_none_layer_ids", []) or []),
+        "selected_layer_ids": stable_layer_ids(runtime_state.read("selected_layer_ids", []) or []),
+        "prediction_source_layer_ids": stable_layer_ids(runtime_state.read("prediction_source_layer_ids", []) or []),
+        "none_layer_ids": stable_layer_ids(runtime_state.read("none_layer_ids", []) or []),
+        "wrapped_selected_layer_ids": stable_layer_ids(runtime_state.read("wrapped_selected_layer_ids", []) or []),
+        "wrapped_prediction_source_layer_ids": stable_layer_ids(runtime_state.read("wrapped_prediction_source_layer_ids", []) or []),
+        "unwrapped_none_layer_ids": stable_layer_ids(runtime_state.read("unwrapped_none_layer_ids", []) or []),
         "effective_policy_name": str(runtime_state.read("effective_policy_name", "")),
         "requested_preflight_mode": str(runtime_state.read("requested_preflight_mode", "")),
         "effective_preflight_mode": str(runtime_state.read("effective_preflight_mode", "")),
-        "raw_u_build_count_by_layer": dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}),
-        "paired_b_build_count_by_layer": dict(runtime_state.read("paired_b_build_count_by_layer", {}) or {}),
-        "predict_count_by_layer": dict(runtime_state.read("predict_count_by_layer", {}) or {}),
+        "raw_u_build_count_by_layer": _layer_map(runtime_state, "raw_u_build_count_by_layer"),
+        "paired_b_build_count_by_layer": _layer_map(runtime_state, "paired_b_build_count_by_layer"),
+        "predict_count_by_layer": _layer_map(runtime_state, "predict_count_by_layer"),
         "target_plan_enqueue_count_by_source_target": dict(runtime_state.read("target_plan_enqueue_count_by_source_target", {}) or {}),
         "window_state_count_by_layer": dict(runtime_state.read("window_state_count_by_layer", {}) or {}),
         "shadow_plan_count_by_layer": dict(runtime_state.read("shadow_plan_count_by_layer", {}) or {}),
@@ -106,13 +112,13 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
         "none_heavy_hook_count_per_rank": int(runtime_state.read("none_heavy_hook_count", 0) or 0),
         "selected_p0_hook_count_per_rank": int(runtime_state.read("selected_p0_hook_count", 0) or 0),
         "selected_p1_hook_count_per_rank": int(runtime_state.read("selected_p1_hook_count", 0) or 0),
-        "raw_u_build_count": int(sum(int(v) for v in dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}).values())),
-        "raw_u_build_count_per_rank": int(sum(int(v) for v in dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}).values())),
-        "raw_u_build_count_by_layer_per_rank": dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}),
+        "raw_u_build_count": int(sum(_layer_map(runtime_state, "raw_u_build_count_by_layer").values())),
+        "raw_u_build_count_per_rank": int(sum(_layer_map(runtime_state, "raw_u_build_count_by_layer").values())),
+        "raw_u_build_count_by_layer_per_rank": _layer_map(runtime_state, "raw_u_build_count_by_layer"),
         "paired_b_build_count_per_rank": int(runtime_state.read("paired_b_build_count", 0) or 0),
-        "predict_count": int(sum(int(v) for v in dict(runtime_state.read("predict_count_by_layer", {}) or {}).values())),
-        "predict_count_per_rank": int(sum(int(v) for v in dict(runtime_state.read("predict_count_by_layer", {}) or {}).values())),
-        "predict_count_by_layer_per_rank": dict(runtime_state.read("predict_count_by_layer", {}) or {}),
+        "predict_count": int(sum(_layer_map(runtime_state, "predict_count_by_layer").values())),
+        "predict_count_per_rank": int(sum(_layer_map(runtime_state, "predict_count_by_layer").values())),
+        "predict_count_by_layer_per_rank": _layer_map(runtime_state, "predict_count_by_layer"),
         "rank_release_lead_us": None,
         "expert_compute_start_lead_us": None,
         "communication_compute_overlap_us": None,

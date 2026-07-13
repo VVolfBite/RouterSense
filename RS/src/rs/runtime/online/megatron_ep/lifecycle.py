@@ -20,6 +20,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import layer_selected, resolve_layer_selector
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
@@ -307,12 +308,12 @@ class RouterSenseInjectionRuntime:
             if layer_id not in self._selected_layer_id_set and layer_id not in self._prediction_source_layer_id_set
         )
         self._runtime_state.write("total_model_moe_layers", int(len(self._available_moe_layer_ids)))
-        self._runtime_state.write("selected_layer_ids", list(self._selected_layer_id_set))
-        self._runtime_state.write("prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
-        self._runtime_state.write("none_layer_ids", list(self._none_layer_id_set))
-        self._runtime_state.write("wrapped_selected_layer_ids", list(self._selected_layer_id_set))
-        self._runtime_state.write("wrapped_prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
-        self._runtime_state.write("unwrapped_none_layer_ids", list(self._none_layer_id_set))
+        self._runtime_state.write("selected_layer_ids", stable_layer_ids(self._selected_layer_id_set))
+        self._runtime_state.write("prediction_source_layer_ids", stable_layer_ids(self._prediction_source_layer_id_set))
+        self._runtime_state.write("none_layer_ids", stable_layer_ids(self._none_layer_id_set))
+        self._runtime_state.write("wrapped_selected_layer_ids", stable_layer_ids(self._selected_layer_id_set))
+        self._runtime_state.write("wrapped_prediction_source_layer_ids", stable_layer_ids(self._prediction_source_layer_id_set))
+        self._runtime_state.write("unwrapped_none_layer_ids", stable_layer_ids(self._none_layer_id_set))
 
     def layer_role_for_name(self, layer_name: str) -> str:
         layer_id = str(parse_layer_id(layer_name))
