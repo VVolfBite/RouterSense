@@ -28,9 +28,9 @@ class PredictorSpec:
 @dataclass(frozen=True)
 class TrafficPredictionTrainingSample:
     current_dispatch_rows: MatrixRows
+    current_return_rows: MatrixRows
     history_dispatch_rows: tuple[MatrixRows, ...]
     target_next_dispatch_rows: MatrixRows
-    current_return_rows: MatrixRows | None = None
     layer_id: str | None = None
     next_layer_id: str | None = None
 

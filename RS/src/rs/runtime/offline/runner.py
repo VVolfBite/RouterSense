@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rs.runtime.offline.prediction import UnsupportedP2Predictor, build_dispatch_forecast
-from rs.planning import PlannerPolicyConfig, build_runtime_policy, build_runtime_request_from_problem
+from rs.planning._legacy_runtime import PlannerPolicyConfig, build_runtime_policy, build_runtime_request_from_problem
 from rs.runtime.offline.traffic.matrix_builder import (
     build_owner_by_expert,
     build_sample_layer_matrices,

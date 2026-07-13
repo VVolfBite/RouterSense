@@ -276,8 +276,6 @@ __all__ = [
     "Planner",
     "PlannerPolicyConfig",
     "PlannerSpec",
-    "build_runtime_policy",
-    "build_runtime_request_from_problem",
     "from_logical_plan",
     "planner_family_for_spec",
     "to_logical_plan",

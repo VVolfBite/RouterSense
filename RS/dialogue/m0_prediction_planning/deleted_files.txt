@@ -1,3 +1,1 @@
-None in this round.
-
-Pre-existing workspace deletions were left untouched and were not folded into the M0 refactor commit.
+(no additional source files deleted in M0-CLOSURE-2)

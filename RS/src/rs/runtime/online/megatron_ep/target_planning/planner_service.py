@@ -198,14 +198,19 @@ class TargetLayerPlannerService:
         target_problem_start = time.perf_counter_ns()
         h1 = bundle.h1.matrix_rows
         p1 = tuple(tuple(int(h1[col][row]) for col in range(len(h1))) for row in range(len(h1))) if h1 else ()
+        h1_source_layer_id = str(bundle.h1.source_layer_id)
+        h1_target_layer_id = str(bundle.h1.target_layer_id)
+        h2_source_layer_id = str(bundle.h2.source_layer_id)
+        h2_target_layer_id = str(bundle.h2.target_layer_id)
+        safe_projection_mode = str(request.safe_projection_mode)
         planning_request = PlanningRequest(
             identity=PlanningIdentity(
                 request_id=f"{request.run_id}:{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
                 run_id=request.run_id,
                 forward_id=str(request.forward_epoch),
                 window_id=f"{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
-                source_layer_id=str(request.source_layer_id),
-                target_layer_id=str(request.target_layer_id),
+                source_layer_id=h2_source_layer_id,
+                target_layer_id=h2_target_layer_id,
             ),
             traffic=PlanningTraffic(
                 p0_dispatch_rows=h1,
@@ -217,8 +222,8 @@ class TargetLayerPlannerService:
                 target_dispatch_rows=bundle.h2.matrix_rows,
                 confidence=float(bundle.h2.confidence),
                 oracle=False,
-                source_layer_id=str(request.source_layer_id),
-                target_layer_id=str(request.target_layer_id),
+                source_layer_id=h2_source_layer_id,
+                target_layer_id=h2_target_layer_id,
             ),
             topology=PlanningTopology(world_size=int(request.group_size)),
             constraints=PlanningConstraints(
@@ -264,7 +269,7 @@ class TargetLayerPlannerService:
         selected_score = raw_score
         safe_selection_us = 0.0
         paired_b_us = 0.0
-        if str(request.safe_projection_mode) == "host_select":
+        if safe_projection_mode == "host_select":
             paired_b_start = time.perf_counter_ns()
             paired_policy_id = str(request.paired_b_policy_id or "")
             if not paired_policy_id:
@@ -305,6 +310,10 @@ class TargetLayerPlannerService:
         metrics.encode_us = (encode_end - encode_start) / 1000.0
         finished_ns = time.perf_counter_ns()
         metrics.planner_wall_us = (finished_ns - planner_started_ns) / 1000.0
+        paired_b_plan_was_built = safe_projection_mode == "host_select"
+        paired_b_plan_was_scored = paired_b_plan_was_built
+        paired_b_plan_was_selected = selected_variant == "paired_b"
+        raw_u_plan_was_selected = selected_variant == "raw_u"
         plan = TargetLayerPreparedJointPlan(
             source_layer_id=str(request.source_layer_id),
             target_layer_id=str(request.target_layer_id),
@@ -330,19 +339,26 @@ class TargetLayerPlannerService:
             h2_rows=bundle.h2.matrix_rows,
             created_at_ns=int(planner_started_ns),
             ready_at_ns=int(finished_ns),
+            safe_projection_mode=safe_projection_mode,
             selected_variant=str(selected_variant),
             raw_logical_plan_digest=str(stable_hash(raw_logical_plan.to_dict())),
             paired_b_logical_plan_digest=(
                 ""
-                if str(request.safe_projection_mode) != "host_select"
+                if safe_projection_mode != "host_select"
                 else str(stable_hash(paired_b_logical_plan.to_dict()))
             ),
             selected_logical_plan_digest=str(logical_digest),
             raw_u_estimated_makespan=float(raw_score.estimated_makespan),
-            paired_b_estimated_makespan=float(paired_b_makespan),
+            paired_b_estimated_makespan=0.0 if not paired_b_plan_was_scored else float(paired_b_makespan),
             raw_u_build_us=float(metrics.raw_u_us),
             paired_b_build_us=float(paired_b_us),
             safe_selection_us=float(safe_selection_us),
+            raw_u_plan_was_built=True,
+            raw_u_plan_was_scored=True,
+            raw_u_plan_was_selected=raw_u_plan_was_selected,
+            paired_b_plan_was_built=paired_b_plan_was_built,
+            paired_b_plan_was_scored=paired_b_plan_was_scored,
+            paired_b_plan_was_selected=paired_b_plan_was_selected,
         )
         return bundle, plan
 

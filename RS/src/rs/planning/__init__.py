@@ -1,7 +1,7 @@
-from .api import Planner, PlannerPolicyConfig, PlannerSpec, build_runtime_policy, build_runtime_request_from_problem
+from .api import Planner, PlannerPolicyConfig, PlannerSpec
 from .estimation import CommonCorePlanEstimator, PlanEstimator, PlanningCostModel
 from .registry import PlannerRegistry
-from .selection import PlannerSelectionMode, PlannerSelector, SelectedPlan
+from .selection import PlanningSelectionError, PlannerSelectionMode, PlannerSelector, SelectedPlan
 
 __all__ = [
     "CommonCorePlanEstimator",
@@ -9,11 +9,10 @@ __all__ = [
     "Planner",
     "PlannerPolicyConfig",
     "PlannerRegistry",
+    "PlanningSelectionError",
     "PlannerSelectionMode",
     "PlannerSelector",
     "PlannerSpec",
     "PlanningCostModel",
     "SelectedPlan",
-    "build_runtime_policy",
-    "build_runtime_request_from_problem",
 ]

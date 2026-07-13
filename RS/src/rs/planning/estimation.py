@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Protocol
 
 from rs.core.contracts import PlanScore, PlanningRequest, WindowPlan
@@ -42,16 +43,35 @@ class CommonCorePlanEstimator:
         request: PlanningRequest,
         cost_model: PlanningCostModel,
     ) -> PlanScore:
+        try:
+            request.validate()
+            plan.validate()
+        except ValueError as exc:
+            return PlanScore(
+                estimated_makespan=float("inf"),
+                estimator_id=self.estimator_id,
+                cost_model_id=str(cost_model.cost_model_id),
+                valid=False,
+                reason=str(exc),
+            )
+        if str(plan.request_digest) != str(request.semantic_digest()):
+            return PlanScore(
+                estimated_makespan=float("inf"),
+                estimator_id=self.estimator_id,
+                cost_model_id=str(cost_model.cost_model_id),
+                valid=False,
+                reason="request_digest_mismatch",
+            )
         estimated = 0.0
         invalid_reason: str | None = None
         for wave in plan.waves:
             wave_duration = self._estimate_wave_duration(wave=wave, request=request, cost_model=cost_model)
             if wave_duration is None:
-                invalid_reason = f"non_executable_flow_in_wave:{wave.wave_id}"
+                invalid_reason = f"invalid_wave:{wave.wave_id}"
                 break
             estimated += float(wave_duration)
         return PlanScore(
-            estimated_makespan=float(estimated),
+            estimated_makespan=float("inf") if invalid_reason is not None else float(estimated),
             estimator_id=self.estimator_id,
             cost_model_id=str(cost_model.cost_model_id),
             valid=invalid_reason is None,
@@ -65,16 +85,37 @@ class CommonCorePlanEstimator:
         request: PlanningRequest,
         cost_model: PlanningCostModel,
     ) -> float | None:
+        seen_flow_ids: set[str] = set()
         send_loads: dict[int, int] = {}
         recv_loads: dict[int, int] = {}
         combined_rank_loads: dict[int, int] = {}
-        max_flow_rows = 0
         has_expert_release = False
+        used_src: set[int] = set()
+        used_dst: set[int] = set()
+        world_size = int(request.topology.world_size)
         for flow in wave.flows:
-            if not bool(flow.executable):
+            if flow.flow_id in seen_flow_ids:
+                return None
+            seen_flow_ids.add(flow.flow_id)
+            if int(flow.src_rank) < 0 or int(flow.src_rank) >= world_size:
+                return None
+            if int(flow.dst_rank) < 0 or int(flow.dst_rank) >= world_size:
                 return None
             rows = int(flow.row_count)
-            max_flow_rows = max(max_flow_rows, rows)
+            if rows < 0:
+                return None
+            if str(flow.phase) not in {"p0_dispatch", "p1_return", "p2_next_dispatch_forecast", "p2_next_dispatch"}:
+                return None
+            if str(flow.release_state) not in {"ready", "none", "blocked", "after_p1", "advisory_only"}:
+                return None
+            if not bool(flow.executable) and str(flow.release_state) in {"ready", "none"}:
+                return None
+            if bool(flow.executable) and str(flow.release_state) == "advisory_only":
+                return None
+            if int(flow.src_rank) in used_src or int(flow.dst_rank) in used_dst:
+                return None
+            used_src.add(int(flow.src_rank))
+            used_dst.add(int(flow.dst_rank))
             send_loads[int(flow.src_rank)] = int(send_loads.get(int(flow.src_rank), 0)) + rows
             recv_loads[int(flow.dst_rank)] = int(recv_loads.get(int(flow.dst_rank), 0)) + rows
             combined_rank_loads[int(flow.src_rank)] = int(combined_rank_loads.get(int(flow.src_rank), 0)) + rows
@@ -92,10 +133,8 @@ class CommonCorePlanEstimator:
         computed = float(cost_model.launch_cost) + float(cost_model.row_transfer_cost) * float(port_bound_rows)
         if has_expert_release:
             computed += float(cost_model.expert_compute_delay)
-        if float(wave.estimated_duration) > 0.0:
-            computed = max(float(wave.estimated_duration), computed)
-        if max_flow_rows == 0:
-            computed = max(float(wave.estimated_duration), float(cost_model.launch_cost))
+        if not math.isfinite(computed) or computed < 0.0:
+            return None
         return float(computed)
 
 

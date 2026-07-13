@@ -1,10 +1,9 @@
-src/rs/planning/runtime_compat.py
-  - THIN_SHIM
-  - re-exports only algorithm resolution / phase-policy helper lookups
-  - no longer re-exports legacy planner construction or unified-interface request builders
-  - remove when remaining runtime call sites stop depending on phase-policy helper lookups
+RS/src/rs/planning/runtime_compat.py
+  - alias / phase-policy lookup only
+  - no planner construction
+  - delete target: M1 after runtime alias consumers move to direct config resolution
 
-src/rs/scheduling/*
-  - RETAINED_INTERNAL
-  - implementation backend for M0 planners
-  - remove or thin further after Runtime M1/M2 stop importing compatibility helpers and after planner implementations are moved or collapsed
+RS/src/rs/planning/_legacy_runtime.py
+  - private runtime/offline compatibility bridge
+  - not exported from rs.planning
+  - delete target: M1 after current-window lifecycle path and offline study runner migrate off legacy scheduling requests

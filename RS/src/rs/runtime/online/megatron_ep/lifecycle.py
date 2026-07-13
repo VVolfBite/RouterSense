@@ -25,7 +25,8 @@ from rs.core.layer_selection import layer_selected, resolve_layer_selector
 from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.prediction import PredictionRegistry, resolve_predictor_id
-from rs.planning import PlannerPolicyConfig, build_runtime_policy, build_runtime_request_from_problem
+from rs.planning import PlannerPolicyConfig
+from rs.planning._legacy_runtime import build_runtime_policy, build_runtime_request_from_problem
 from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
@@ -1108,7 +1109,7 @@ class RouterSenseInjectionRuntime:
         return str(getattr(self.config, "online_p2_predictor", "copy_current_dispatch") or "copy_current_dispatch")
 
     def _build_online_predictor(self):
-        return PredictionRegistry.create(self._online_p2_predictor_name(), {"alpha": 0.5})
+        return PredictionRegistry.create(self._online_p2_predictor_name(), {"alpha": 0.5}, usage="runtime")
 
     def _predict_dispatch_matrix(
         self,
@@ -1129,6 +1130,10 @@ class RouterSenseInjectionRuntime:
                 target_layer_id=str(next_layer_id),
             ),
             current_dispatch_rows=current_dispatch_matrix,
+            current_return_rows=tuple(
+                tuple(int(current_dispatch_matrix[col][row]) for col in range(len(current_dispatch_matrix)))
+                for row in range(len(current_dispatch_matrix))
+            ),
             history_dispatch_rows=(() if previous_dispatch_matrix is None else (previous_dispatch_matrix,)),
             world_size=len(current_dispatch_matrix),
         )
@@ -2409,7 +2414,7 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("prepared_target_selected_variant", str(getattr(prepared_plan, "selected_variant", "")))
         self._runtime_state.write(
             "prepared_target_safe_projection_mode",
-            "host_select" if str(getattr(prepared_plan, "paired_b_logical_plan_digest", "")) else "disabled",
+            str(getattr(prepared_plan, "safe_projection_mode", "disabled") or "disabled"),
         )
         if outcome.status == "rejected" or outcome.logical_plan is None:
             self.target_plan_store.reject(key, execution_origin="prepared_rejected")
@@ -2510,7 +2515,7 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("prepared_target_selected_variant", str(getattr(prepared_plan, "selected_variant", "")))
         self._runtime_state.write(
             "prepared_target_safe_projection_mode",
-            "host_select" if str(getattr(prepared_plan, "paired_b_logical_plan_digest", "")) else "disabled",
+            str(getattr(prepared_plan, "safe_projection_mode", "disabled") or "disabled"),
         )
         if getattr(frontier, "pending_count", lambda: 0)() <= 0:
             self.target_plan_store.expire_key(key, execution_origin="too_late_no_effect")

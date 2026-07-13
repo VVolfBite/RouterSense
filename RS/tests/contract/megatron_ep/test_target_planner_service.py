@@ -42,6 +42,9 @@ def test_raw_target_planner_does_not_build_paired_b() -> None:
     )
     assert plan.selected_variant == "raw_u"
     assert plan.paired_b_logical_plan_digest == ""
+    assert plan.safe_projection_mode == "disabled"
+    assert plan.paired_b_plan_was_built is False
+    assert plan.paired_b_plan_was_scored is False
     assert plan.safe_selection_us == 0.0
     assert plan.paired_b_build_us == 0.0
 
@@ -55,6 +58,9 @@ def test_safe_target_planner_builds_paired_b_and_records_selection() -> None:
     assert plan.raw_logical_plan_digest != ""
     assert plan.paired_b_logical_plan_digest != ""
     assert plan.selected_logical_plan_digest != ""
+    assert plan.safe_projection_mode == "host_select"
+    assert plan.paired_b_plan_was_built is True
+    assert plan.paired_b_plan_was_scored is True
     assert plan.selected_variant in {"raw_u", "paired_b"}
     assert plan.paired_b_build_us >= 0.0
     assert plan.safe_selection_us >= 0.0

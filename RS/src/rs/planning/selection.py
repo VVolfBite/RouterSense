@@ -15,6 +15,10 @@ class PlannerSelectionMode(Enum):
     COMPARE = "compare"
 
 
+class PlanningSelectionError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SelectedPlan:
     selected_plan: WindowPlan
@@ -79,6 +83,8 @@ class PlannerSelector:
             if local_plan is None:
                 raise ValueError("LOCAL selection requires local_plan")
             local_score = self._estimator.estimate(local_plan, request, self._cost_model)
+            if not local_score.valid:
+                raise PlanningSelectionError(f"local_plan_invalid:{local_score.reason or 'unknown'}")
             return SelectedPlan(
                 selected_plan=local_plan,
                 selected_score=local_score,
@@ -90,6 +96,8 @@ class PlannerSelector:
             if joint_plan is None:
                 raise ValueError("JOINT selection requires joint_plan")
             joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
+            if not joint_score.valid:
+                raise PlanningSelectionError(f"joint_plan_invalid:{joint_score.reason or 'unknown'}")
             return SelectedPlan(
                 selected_plan=joint_plan,
                 selected_score=joint_score,
@@ -101,9 +109,22 @@ class PlannerSelector:
             raise ValueError("COMPARE selection requires both local_plan and joint_plan")
         local_score = self._estimator.estimate(local_plan, request, self._cost_model)
         joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
-        selected_plan = joint_plan if float(joint_score.estimated_makespan) < float(local_score.estimated_makespan) else local_plan
-        selected_score = joint_score if selected_plan is joint_plan else local_score
-        reason = "compare:joint_better" if selected_plan is joint_plan else "compare:local_better_or_equal"
+        if local_score.valid and joint_score.valid:
+            selected_plan = joint_plan if float(joint_score.estimated_makespan) < float(local_score.estimated_makespan) else local_plan
+            selected_score = joint_score if selected_plan is joint_plan else local_score
+            reason = "compare:joint_better" if selected_plan is joint_plan else "compare:local_better_or_equal"
+        elif local_score.valid and not joint_score.valid:
+            selected_plan = local_plan
+            selected_score = local_score
+            reason = f"compare:joint_invalid:{joint_score.reason or 'unknown'}"
+        elif joint_score.valid and not local_score.valid:
+            selected_plan = joint_plan
+            selected_score = joint_score
+            reason = f"compare:local_invalid:{local_score.reason or 'unknown'}"
+        else:
+            raise PlanningSelectionError(
+                f"compare:no_valid_plan local={local_score.reason or 'unknown'} joint={joint_score.reason or 'unknown'}"
+            )
         return SelectedPlan(
             selected_plan=selected_plan,
             selected_score=selected_score,
@@ -114,5 +135,4 @@ class PlannerSelector:
             selection_reason=reason,
         )
 
-
-__all__ = ["PlannerSelectionMode", "PlannerSelector", "SelectedPlan"]
+__all__ = ["PlannerSelectionMode", "PlannerSelector", "PlanningSelectionError", "SelectedPlan"]

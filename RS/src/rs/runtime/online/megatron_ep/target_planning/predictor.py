@@ -4,12 +4,20 @@ import time
 from dataclasses import dataclass
 
 from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
+from rs.core.hashing import stable_hash_dict
 from rs.prediction import PredictionRegistry, resolve_predictor_id
 
 from .contracts import TwoHorizonPrediction
 
 
 Matrix = tuple[tuple[int, ...], ...]
+
+
+def _return_from_dispatch(matrix: Matrix) -> Matrix:
+    return tuple(
+        tuple(int(matrix[col][row]) for col in range(len(matrix)))
+        for row in range(len(matrix))
+    )
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,7 @@ class SharedTwoHorizonPredictor:
         self._predictor = PredictionRegistry.create(
             self.predictor_name,
             {"alpha": self.history_ema_alpha},
+            usage="runtime",
         )
 
     def _predict_once(
@@ -48,6 +57,7 @@ class SharedTwoHorizonPredictor:
                 target_layer_id=str(target_layer_id),
             ),
             current_dispatch_rows=current_dispatch_matrix,
+            current_return_rows=_return_from_dispatch(current_dispatch_matrix),
             history_dispatch_rows=history_matrices,
             world_size=len(current_dispatch_matrix),
         )
@@ -60,7 +70,12 @@ class SharedTwoHorizonPredictor:
             target_layer_id=str(target_layer_id),
             matrix_unit="rows",
             matrix_rows=prediction.hint.target_dispatch_rows,
-            matrix_digest=str(hash(tuple(tuple(int(v) for v in row) for row in prediction.hint.target_dispatch_rows))),
+            matrix_digest=stable_hash_dict(
+                {
+                    "matrix_unit": "rows",
+                    "matrix_rows": [list(row) for row in prediction.hint.target_dispatch_rows],
+                }
+            ),
             predictor=str(prediction.hint.predictor_id),
             confidence=float(prediction.hint.confidence or 0.0),
             created_at_ns=int(created_at_ns),
@@ -87,7 +102,7 @@ class SharedTwoHorizonPredictor:
         )
         h2 = self._predict_once(
             horizon=2,
-            source_layer_id=source_layer_id,
+            source_layer_id=h1.target_layer_id,
             target_layer_id=str(int(source_layer_id) + 2) if str(source_layer_id).isdigit() else f"{source_layer_id}+2",
             current_dispatch_matrix=h1.matrix_rows,
             history_matrices=first_history + (current,),

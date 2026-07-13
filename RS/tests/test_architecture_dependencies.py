@@ -112,6 +112,13 @@ def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
     assert not bad, bad
 
 
+def test_formal_planning_package_does_not_export_legacy_runtime_builders() -> None:
+    import rs.planning as planning
+
+    assert not hasattr(planning, "build_runtime_policy")
+    assert not hasattr(planning, "build_runtime_request_from_problem")
+
+
 def test_formal_experiments_do_not_import_integrations_or_poc_line1() -> None:
     bad = []
     forbidden = (

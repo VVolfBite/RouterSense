@@ -72,7 +72,7 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
     history: list[PredictorSample] = []
     resolved_name = resolve_predictor_id(str(predictor_name))
     for sample in samples:
-        predictor = PredictionRegistry.create(str(predictor_name), {"alpha": 0.5})
+        predictor = PredictionRegistry.create(str(predictor_name), {"alpha": 0.5}, usage="offline")
         cold_start_prediction: Matrix | None = None
         if resolved_name == "linear":
             training_samples = tuple(
@@ -97,6 +97,7 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
                 target_layer_id=str(sample.next_layer_id),
             ),
             current_dispatch_rows=sample.current_dispatch_matrix,
+            current_return_rows=sample.current_return_matrix,
             history_dispatch_rows=tuple(item.current_dispatch_matrix for item in history),
             world_size=len(sample.current_dispatch_matrix),
         )

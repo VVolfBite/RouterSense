@@ -1,24 +1,18 @@
 {
   "compileall": {
-    "command": "python -m compileall .\\src .\\experiments .\\tests",
-    "result": "passed"
+    "command": "python -m compileall RS/src RS/experiments RS/tests",
+    "status": "passed"
   },
-  "contracts_and_architecture": {
-    "command": "PYTHONPATH=src;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests\\contract\\test_prediction_api.py tests\\contract\\test_planning_api.py tests\\contract\\test_truth_hint_isolation.py tests\\unit\\test_planner_selector.py tests\\unit\\test_plan_estimator.py tests\\offline\\test_prediction_planning_parity.py tests\\test_architecture_dependencies.py tests\\contract\\megatron_ep\\test_lifecycle_prediction_adapter.py tests\\contract\\megatron_ep\\test_target_planner_service.py tests\\contract\\megatron_ep\\test_target_plan_contracts.py",
-    "result": "39 passed"
-  },
-  "runtime_cpu_tests": {
-    "command": "Included in the 39-pass targeted pytest run above: tests\\contract\\megatron_ep\\test_lifecycle_prediction_adapter.py and tests\\contract\\megatron_ep\\test_target_planner_service.py",
-    "result": "passed"
+  "targeted_pytest": {
+    "command": "python -m pytest -q RS/tests/contract/test_prediction_api.py RS/tests/contract/test_planning_api.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/unit/test_planner_selector.py RS/tests/unit/test_plan_estimator.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/contract/megatron_ep/test_target_plan_contracts.py RS/tests/contract/megatron_ep/test_two_horizon_prediction.py RS/tests/test_architecture_dependencies.py",
+    "status": "passed",
+    "summary": "60 passed, 2 warnings"
   },
   "offline_smoke": {
-    "command": "PYTHONPATH=src;. python .\\experiments\\run_offline_replay.py --config .\\tests\\fixtures\\configs\\minimal_offline.yaml --output-dir .\\outputs\\offline\\m0_closure_smoke",
-    "result": "completed",
-    "row_count": 8,
+    "command": "python experiments/run_offline_replay.py --config tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m0_final_closure_smoke",
+    "status": "passed",
+    "summary_path": "RS/outputs/offline/m0_final_closure_smoke/summary.json",
+    "run_valid": true,
     "audit_invalid_count": 0
-  },
-  "notes": [
-    "pytest host plugin autoload was disabled because external host-side hydra/omegaconf plugins crashed before repository tests started",
-    "pytest cache warnings remained because this environment denied writes under .pytest_cache, but test execution completed successfully"
-  ]
+  }
 }

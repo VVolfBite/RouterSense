@@ -29,10 +29,11 @@ def _feature_vector(
     *,
     previous_dispatch: tuple[tuple[int, ...], ...],
     current_dispatch: tuple[tuple[int, ...], ...],
+    current_return: tuple[tuple[int, ...], ...],
     layer_id: str | None,
 ) -> list[float]:
     current = _flatten(current_dispatch)
-    returns = [float(current_dispatch[col][row]) for row in range(len(current_dispatch)) for col in range(len(current_dispatch))]
+    returns = _flatten(current_return)
     previous = _flatten(previous_dispatch)
     return [
         *current,
@@ -40,8 +41,8 @@ def _feature_vector(
         *previous,
         *[float(value) for value in matrix_row_sums_remote(current_dispatch)],
         *[float(value) for value in matrix_col_sums_remote(current_dispatch)],
-        *[float(value) for value in matrix_row_sums_remote(tuple(tuple(int(current_dispatch[col][row]) for col in range(len(current_dispatch))) for row in range(len(current_dispatch))))],
-        *[float(value) for value in matrix_col_sums_remote(tuple(tuple(int(current_dispatch[col][row]) for col in range(len(current_dispatch))) for row in range(len(current_dispatch))))],
+        *[float(value) for value in matrix_row_sums_remote(current_return)],
+        *[float(value) for value in matrix_col_sums_remote(current_return)],
         float(sum(current)),
         float(sum(returns)),
         float(int(layer_id) if layer_id is not None and str(layer_id).isdigit() else 0),
@@ -60,6 +61,7 @@ class ZeroTrafficPredictor(Predictor):
         return "zero"
 
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
+        context.validate()
         hint = PredictionHint(
             predictor_id=self.predictor_id,
             hint_type="traffic_matrix",
@@ -79,6 +81,7 @@ class CopyCurrentTrafficPredictor(Predictor):
         return "copy_current"
 
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
+        context.validate()
         hint = PredictionHint(
             predictor_id=self.predictor_id,
             hint_type="traffic_matrix",
@@ -100,6 +103,7 @@ class HistoryTrafficPredictor(Predictor):
         return "history"
 
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
+        context.validate()
         previous = context.history_dispatch_rows[-1] if context.history_dispatch_rows else context.current_dispatch_rows
         predicted = _blend(context.current_dispatch_rows, previous, self.alpha)
         hint = PredictionHint(
@@ -135,6 +139,7 @@ class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
                 _feature_vector(
                     previous_dispatch=(sample.history_dispatch_rows[-1] if sample.history_dispatch_rows else _zero_matrix(sample.current_dispatch_rows)),
                     current_dispatch=sample.current_dispatch_rows,
+                    current_return=sample.current_return_rows,
                     layer_id=sample.layer_id,
                 )
                 for sample in sample_list
@@ -161,6 +166,7 @@ class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
         return self
 
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
+        context.validate()
         if self._weight is None or self._bias is None or self._shape is None:
             raise ValueError("linear predictor must be fit before predict; it remains offline_only in M0")
         previous_dispatch = context.history_dispatch_rows[-1] if context.history_dispatch_rows else _zero_matrix(context.current_dispatch_rows)
@@ -168,6 +174,7 @@ class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
             _feature_vector(
                 previous_dispatch=previous_dispatch,
                 current_dispatch=context.current_dispatch_rows,
+                current_return=context.current_return_rows,
                 layer_id=context.identity.source_layer_id,
             ),
             dtype=torch.float64,

@@ -1,13 +1,26 @@
 {
-  "starting_sha": "e3e5d59a01d7423d94096cefa7cfb4708c396d40",
-  "branch": "convergence/m0-prediction-planning",
-  "status": "M0_PREDICTION_PLANNING_READY",
-  "offline_smoke_status": "completed",
-  "contracts_status": "passed",
-  "parity_status": "passed_on_targeted_cpu_fixtures",
-  "notes": [
-    "workspace was not clean at start by explicit user override",
-    "legacy scheduling implementations remain internal behind rs.planning in M0",
-    "expert-route remains test_only in M0 closure; no deployable formal expert-route predictor is claimed"
+  "round": "M0-CLOSURE-2",
+  "starting_branch": "convergence/m0-prediction-planning",
+  "starting_sha": "50b76d7",
+  "current_status": "READY_FOR_COMMIT",
+  "final_status_target": "M0_PREDICTION_PLANNING_READY",
+  "fixed_prompt_issues": [
+    "invalid plan selection",
+    "prediction evaluator incomplete input handling",
+    "route-to-traffic rank validation",
+    "linear current_return_rows semantics",
+    "estimator independence from legacy duration",
+    "formal planning API legacy export cleanup",
+    "test_only predictor usage gate",
+    "contract validate completion",
+    "semantic digest provenance removal",
+    "H2 identity alignment",
+    "safe-disabled paired-plan metadata fix",
+    "stable digest replaces builtin hash"
+  ],
+  "prompt_external_fixes": [
+    "PlanningTraffic.to_dict validation bug",
+    "offline parity fixture path bug",
+    "legacy phase alias p2_next_dispatch validation compatibility"
   ]
 }

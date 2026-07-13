@@ -19,7 +19,7 @@ from rs.prediction import PredictionRegistry
 from rs.runtime.offline.prediction.evaluation import rolling_predictor_records
 
 
-FIXTURE_DIR = Path("tests/fixtures/offline_replay_smoke")
+FIXTURE_DIR = Path("RS/tests/fixtures/offline_replay_smoke")
 
 
 def _fixture_rows(name: str) -> tuple[tuple[int, ...], ...]:
@@ -29,11 +29,12 @@ def _fixture_rows(name: str) -> tuple[tuple[int, ...], ...]:
 
 def test_prediction_parity_for_copy_current_fixture() -> None:
     current = _fixture_rows("replay_layer_1.json")
-    predictor = PredictionRegistry.create("copy_current")
+    predictor = PredictionRegistry.create("copy_current", usage="offline")
     result = predictor.predict(
         TrafficHistoryContext(
             identity=PredictionIdentity(request_id="fixture", source_layer_id="1", target_layer_id="2"),
             current_dispatch_rows=current,
+            current_return_rows=tuple(tuple(int(current[col][row]) for col in range(len(current))) for row in range(len(current))),
             history_dispatch_rows=(),
             world_size=len(current),
         )

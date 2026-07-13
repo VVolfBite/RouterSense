@@ -1,0 +1,17 @@
+{
+  "stable_digest_checks": [
+    {
+      "target": "PlanningRequest.semantic_digest",
+      "test": "RS/tests/contract/test_planning_api.py::test_planning_request_digest_is_stable_across_processes",
+      "result": "passed"
+    },
+    {
+      "target": "SharedTwoHorizonPredictor h1 matrix_digest",
+      "test": "RS/tests/contract/megatron_ep/test_two_horizon_prediction.py::test_two_horizon_prediction_digest_is_stable_across_processes",
+      "result": "passed"
+    }
+  ],
+  "removed_unstable_usage": [
+    "builtin hash(...) in target_planning/predictor.py"
+  ]
+}

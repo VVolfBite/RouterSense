@@ -17,6 +17,7 @@ class MockGateReplayExpertRoutePredictor(Predictor):
         return "mock_gate_replay"
 
     def predict(self, context: ExpertRouteContext) -> PredictionResult:
+        context.validate()
         hidden = context.hidden_features
         expert_ids = getattr(hidden, "expert_ids", None)
         route_weights = getattr(hidden, "route_weights", None)

@@ -1,91 +1,136 @@
-## M0 closure summary
+# M0-CLOSURE-2 Report
 
-1. lifecycle dict/object 崩溃如何修复
-   - `lifecycle.py` 的 `_predict_dispatch_matrix()` 不再返回裸 dict。
-   - 现在返回不可变 `RuntimePredictionCompatResult`，下游统一用属性访问；写入 runtime state 时显式 `to_dict()`。
+## Baseline
 
-2. Runtime 正式使用哪种 prediction result
-   - formal predictor 仍返回 `PredictionResult`。
-   - lifecycle 过渡层消费 `PredictionResult` 后，转换成明确的 typed compatibility object：`RuntimePredictionCompatResult`。
+- branch: `convergence/m0-prediction-planning`
+- starting commit: `50b76d7`
 
-3. target planner 在三种模式下实际调用次数
-   - `LOCAL`: Local=1, Joint=0
-   - `JOINT`: Local=0, Joint=1
-   - `COMPARE`: Local=1, Joint=1
-   - 证据：`tests/contract/megatron_ep/test_target_planner_service.py`
+## Issues fixed from prompt
 
-4. COMPARE 是否只执行一次 Local 和一次 Joint
-   - 是。`PlannerSelector.select_prebuilt(...)` 已加入，service compare 路径只比较预构建计划，不再二次 `plan()`
+1. `PlannerSelector` invalid-plan selection
+   - fixed in `src/rs/planning/selection.py`
+   - compare now uses explicit valid/invalid rules
+   - both invalid now raise `PlanningSelectionError`
 
-5. truth 原先从哪里泄漏
-   - `runtime/offline/replay_unified.py` 中 `build_multiphase_problem(...)` 原先把 `execution_truth.p2_truth_rows` 写回 `p2_next_dispatch_forecast_matrix`
-   - 这会把真实 P2 注入 formal planning-visible forecast 字段
+2. `PredictionEvaluator` incomplete input handling
+   - fixed in `src/rs/prediction/evaluation.py`
+   - traffic shape mismatch now returns invalid evaluation
+   - expert-route token/top-k mismatch now returns invalid evaluation
+   - metrics now carry `valid`, `reason`, `predicted_shape`, `truth_shape`
 
-6. planning_task_digest 和 execution_truth_digest 如何拆分
-   - 新增 `bucketize_planning_request(request)`：只读取 `P0 actual + P1 actual + P2 hint`
-   - 新增 `execution_truth_digest(execution_truth)`：单独哈希真实执行真值
-   - `input_task_digest` 仍保留，但只作为 deprecated compatibility alias
+3. `RouteToTrafficMapper` invalid rank / owner acceptance
+   - fixed in `src/rs/prediction/route_to_traffic.py`
+   - rejects negative `source_rank`
+   - rejects negative / out-of-range owner rank
+   - rejects world-size mismatch in ranked input
+   - rejects invalid expert id
+   - keeps diagonal/self traffic at zero
 
-7. truth isolation 测试是否真正构造了不同 truth
-   - 是。新 `tests/contract/test_truth_hint_isolation.py` 显式构造不同 `ReplayWindow.p2_truth_rows`
-   - 同时验证 `planning_task_digest` 不变、`execution_truth_digest` 改变
+4. Linear predictor feature semantics
+   - fixed in `src/rs/prediction/traffic_matrix/predictors.py`
+   - formal linear predictor now uses real `current_return_rows`
+   - training and inference use the same feature builder
+   - parity test added against legacy FATE-style linear predictor
 
-8. 正式 estimator 是否完全不依赖 legacy_makespan 决策
-   - 是。`CommonCorePlanEstimator` 现在只依据 `WindowPlan + PlanningRequest + PlanningCostModel` 统一计算
-   - `legacy_makespan` 不再决定 selector 结果
+5. `CommonCorePlanEstimator` legacy duration influence
+   - fixed in `src/rs/planning/estimation.py`
+   - no longer trusts `legacy_makespan`
+   - no longer trusts `wave.estimated_duration`
+   - selection estimate now depends only on flows + request + cost model
 
-9. formal 和 legacy makespan 差异
-   - formal `estimated_makespan` 使用统一 launch/row-transfer/port/full-duplex/expert-delay 口径
-   - legacy 数值仍可保留在 metadata 里做 parity audit，但不会覆盖 formal 结果
-   - 本轮没有新增自动回退到 legacy 值的逻辑
+6. Formal planning API still exposing legacy scheduling objects
+   - fixed by removing runtime builder helpers from `rs.planning` exports
+   - legacy builders downgraded to private `rs.planning._legacy_runtime`
 
-10. linear predictor 的训练目标
-   - 已修正为 `target_next_dispatch_rows`
-   - formal linear predictor 新增 `fit(samples)`，`predict(context)` 不再临时训练
-   - 它仍明确标记 `offline_only`
+7. `test_only` predictor still directly constructible
+   - fixed in `src/rs/prediction/registry.py`
+   - `PredictionRegistry.create(..., usage=...)` added
+   - rules:
+     - `test_only`: only `usage="test"`
+     - `offline_only`: `offline` / `test`, not `runtime`
+     - deployable: all three
 
-11. expert-route 是真实迁移还是降级为 test-only
-   - 本轮选择诚实降级
-   - `mock_gate_replay` 保留为 `test_only=true`、`deployable=false`
-   - M0 closure 不再声称“deployable expert-route predictor 已迁移完成”
+8. Incomplete contract validation
+   - fixed in:
+     - `src/rs/core/contracts/prediction.py`
+     - `src/rs/core/contracts/planning.py`
+   - prediction and planning contracts now validate matrix shape, non-negativity, ranges, confidence, topology, constraints, weights, and identity basics
 
-12. RouteToTrafficMapper 如何表达 source rank
-   - 保留单源 `map(route_prediction, source_rank=...)`
-   - 新增 `map_ranked(RankedExpertRoutes, ...)`，用于显式表达 source-rank x route
+9. Semantic digest still mixed predictor provenance
+   - fixed in `src/rs/core/contracts/planning.py`
+   - `PlanningRequest.semantic_digest()` now excludes:
+     - `predictor_id`
+     - `hint_type`
+     - `confidence`
+     - source/target provenance
+     - runtime identity
+   - only planner-visible matrix semantics remain
 
-13. diagonal traffic 如何处理
-   - 正式 mapper 现在默认跳过 diagonal/self traffic，只统计远端通信矩阵
+10. H2 identity wrong
+   - fixed in `src/rs/runtime/online/megatron_ep/target_planning/predictor.py`
+   - H2 now has:
+     - `source_layer_id = H1.target_layer_id`
+     - `target_layer_id = source+2`
+   - target-planning formal request now aligns planning identity with H2 semantics
 
-14. exact 和 reference 如何区分
-   - `reference_only` 不再等价于 `exact`
-   - `execution_model == exact_reference` 或 oracle family 才标记 `exact=True`
-   - family 现在正确区分：
-     - `reference_local`
-     - `reference_joint`
-     - `exact_local`
-     - `exact_joint`
+11. safe-disabled metadata pretended paired local plan existed
+   - fixed in `src/rs/runtime/online/megatron_ep/target_planning/contracts.py`
+   - fixed in `src/rs/runtime/online/megatron_ep/target_planning/planner_service.py`
+   - prepared target plan now records:
+     - `safe_projection_mode`
+     - `raw_u_plan_was_built/scored/selected`
+     - `paired_b_plan_was_built/scored/selected`
+   - disabled mode no longer implies paired local build
 
-15. semantic digest 排除了哪些身份和 metadata
-   - `PlanningRequest.semantic_digest()` 排除了 `request_id/run_id/forward_id/window_id/source_layer_id/target_layer_id`
-   - `WindowPlan.semantic_digest()` 排除了全部 metadata
-   - 另新增：
-     - `PlanningRequest.identity_digest()`
-     - `WindowPlan.audit_digest()`
+12. runtime-safe policy overlap with formal compare owner
+   - formal target-layer prepared path now uses `PlannerSelector.COMPARE`
+   - current-window lifecycle path still has old host-projected safe logic and is listed in remaining legacy surface, not claimed as converged
 
-16. Runtime 是否仍直接 import 旧 unified interface
-   - 否。架构测试已覆盖 `rs.scheduling.unified_interface`
-   - runtime 当前直接 import 已收敛到 formal `rs.planning` / `rs.prediction` / `rs.core.contracts`
+13. built-in `hash(...)` in formal digest path
+   - fixed in `src/rs/runtime/online/megatron_ep/target_planning/predictor.py`
+   - replaced with stable SHA-256 based digest helper
+   - cross-process stability tests added
 
-17. 哪些 shim 仍保留
-   - `src/rs/planning/runtime_compat.py`
-   - 现在只剩 algorithm resolution / phase-policy helper lookup，不再承载 legacy planner construction
+## Prompt-external issues found and fixed
 
-18. M0 是否真正满足合并条件
-   - 在本轮要求范围内，满足
-   - 关键条件已验证：typed lifecycle adapter、compare 单次规划、truth/hint 隔离、formal estimator、linear next-target、expert-route 诚实标注、owner GPU accuracy、exact/reference 分类、semantic digest 分离、runtime direct import gate、targeted tests、offline smoke
+1. `PlanningTraffic.to_dict()` validation path assumed `world_size` was always passed and broke `semantic_digest()`.
+2. offline parity fixture path still pointed to `tests/...` instead of `RS/tests/...` in this workspace layout.
+3. legacy planners emit phase name `p2_next_dispatch`; validation initially rejected it although it is a real retained legacy internal phase label.
 
-## Uncertain-but-executed changes
+## Unfixed items
 
-- `LinearTrafficPredictor` 没有完整迁回旧 offline artifact API；本轮只把“训练目标错误”和“predict 内临时 fit”两件硬缺口修正，并保持 `offline_only`
-- `RouteToTrafficMapper` 的 ranked-source 语义已落地，但真实 deployable expert-route predictor 迁移没有在本轮完成，因此只保留 test-only 路径
-- `CommonCorePlanEstimator` 的统一模型仍是最小成本模型，不是高保真网络模拟器；这属于本轮允许范围内的统一口径，而不是新 simulator 设计
+- current-window runtime path in `lifecycle.py` still uses private legacy scheduling builders
+- offline study runner in `runtime/offline/runner.py` still uses private legacy scheduling builders
+- deployable expert-route predictor is still not migrated; registry now marks `mock_gate_replay` as `test_only`
+
+These are recorded in `remaining_legacy_surface.md`.
+
+## Formal API after this round
+
+### Prediction
+
+- contracts: `src/rs/core/contracts/prediction.py`
+- public package: `src/rs/prediction`
+- runtime/offline construction gate: `PredictionRegistry.create(..., usage=...)`
+
+### Planning
+
+- contracts: `src/rs/core/contracts/planning.py`
+- public package: `src/rs/planning`
+- selection owner: `PlannerSelector`
+- cost owner: `CommonCorePlanEstimator`
+
+## Tests
+
+- `python -m compileall RS/src RS/experiments RS/tests`
+- targeted pytest:
+  - `60 passed, 2 warnings`
+- offline smoke:
+  - `experiments/run_offline_replay.py --config tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m0_final_closure_smoke`
+  - `run_valid = true`
+  - `audit_invalid_count = 0`
+
+## Merge status
+
+- M0 prediction/planning semantic closure conditions requested in this round are satisfied
+- remaining legacy surface is explicitly isolated and documented

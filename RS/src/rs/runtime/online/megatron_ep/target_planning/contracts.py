@@ -65,6 +65,7 @@ class TargetLayerPreparedJointPlan:
     h2_rows: MatrixRows
     created_at_ns: int
     ready_at_ns: int
+    safe_projection_mode: str = "disabled"
     selected_variant: str = "raw_u"
     raw_logical_plan_digest: str = ""
     paired_b_logical_plan_digest: str = ""
@@ -74,6 +75,12 @@ class TargetLayerPreparedJointPlan:
     raw_u_build_us: float = 0.0
     paired_b_build_us: float = 0.0
     safe_selection_us: float = 0.0
+    raw_u_plan_was_built: bool = True
+    raw_u_plan_was_scored: bool = True
+    raw_u_plan_was_selected: bool = True
+    paired_b_plan_was_built: bool = False
+    paired_b_plan_was_scored: bool = False
+    paired_b_plan_was_selected: bool = False
     plan_origin: PlanOrigin = "target_prepared"
     plan_version: int = 1
     parent_plan_version: int = 0

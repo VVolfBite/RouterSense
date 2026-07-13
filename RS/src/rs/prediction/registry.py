@@ -34,8 +34,16 @@ class PredictionRegistry:
         return tuple(_SPECS.values())
 
     @staticmethod
-    def create(predictor_id: str, config: Any | None = None) -> Predictor:
+    def create(predictor_id: str, config: Any | None = None, *, usage: str = "runtime") -> Predictor:
         resolved = resolve_predictor_id(predictor_id)
+        spec = _SPECS[resolved]
+        normalized_usage = str(usage)
+        if normalized_usage not in {"runtime", "offline", "test"}:
+            raise ValueError(f"unsupported predictor usage {usage!r}")
+        if spec.test_only and normalized_usage != "test":
+            raise ValueError(f"predictor {resolved!r} is test_only and may only be used with usage='test'")
+        if spec.offline_only and normalized_usage == "runtime":
+            raise ValueError(f"predictor {resolved!r} is offline_only and may not be used with usage='runtime'")
         if resolved == "zero":
             return ZeroTrafficPredictor()
         if resolved == "copy_current":
@@ -72,12 +80,12 @@ def _coerce_training_sample(value: object) -> TrafficPredictionTrainingSample:
         raise TypeError(f"unsupported training sample {type(value).__name__}")
     return TrafficPredictionTrainingSample(
         current_dispatch_rows=tuple(tuple(int(item) for item in row) for row in sample["current_dispatch_rows"]),
+        current_return_rows=tuple(tuple(int(item) for item in row) for row in sample["current_return_rows"]),
         history_dispatch_rows=tuple(
             tuple(tuple(int(item) for item in row) for row in matrix)
             for matrix in sample.get("history_dispatch_rows", ())
         ),
         target_next_dispatch_rows=tuple(tuple(int(item) for item in row) for row in sample["target_next_dispatch_rows"]),
-        current_return_rows=None if sample.get("current_return_rows") is None else tuple(tuple(int(item) for item in row) for row in sample["current_return_rows"]),
         layer_id=None if sample.get("layer_id") is None else str(sample.get("layer_id")),
         next_layer_id=None if sample.get("next_layer_id") is None else str(sample.get("next_layer_id")),
     )
