@@ -63,10 +63,10 @@ class PlanningTopology:
     def validate(self) -> None:
         if int(self.world_size) <= 0:
             raise ValueError("world_size must be > 0")
-        if int(self.max_outgoing_per_rank_per_wave) <= 0:
-            raise ValueError("max_outgoing_per_rank_per_wave must be > 0")
-        if int(self.max_incoming_per_rank_per_wave) <= 0:
-            raise ValueError("max_incoming_per_rank_per_wave must be > 0")
+        if int(self.max_outgoing_per_rank_per_wave) != 1:
+            raise ValueError("formal port model requires max_outgoing_per_rank_per_wave == 1")
+        if int(self.max_incoming_per_rank_per_wave) != 1:
+            raise ValueError("formal port model requires max_incoming_per_rank_per_wave == 1")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()

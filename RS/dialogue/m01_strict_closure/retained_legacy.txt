@@ -1,0 +1,5 @@
+﻿Retained legacy surface:
+- rs.planning._legacy_runtime
+- TargetPlanStore.claim_for_reconciliation
+- TargetPlanStore.consume_once
+- lifecycle late-suffix compatibility functions

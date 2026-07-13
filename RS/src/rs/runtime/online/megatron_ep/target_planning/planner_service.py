@@ -20,7 +20,7 @@ from rs.planning import CommonCorePlanEstimator, PlannerPolicyConfig, PlannerReg
 from rs.planning.api import to_logical_plan
 from rs.scheduling.validation import stable_hash
 
-from .contracts import MatrixRows, TargetLayerPreparedJointPlan, TargetPlanKey
+from .contracts import MatrixRows, PreparationToken, TargetLayerPreparedJointPlan, TargetPlanKey
 from .predictor import SharedTwoHorizonPredictor, TwoHorizonPredictionBundle
 from .store import TargetPlanStore
 
@@ -79,6 +79,9 @@ class _QueuedPlanningTask:
     queued_at_us: float
     request: TargetLayerPlanningRequest
     task_key: str
+    task_version: int
+    service_session_id: int
+    publish_sequence: int
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,7 @@ class _BuiltPlanningResult:
     bundle: TwoHorizonPredictionBundle
     plan: TargetLayerPreparedJointPlan
     metrics: TargetLayerPlannerMetrics
+    token: PreparationToken
 
 
 @dataclass
@@ -96,17 +100,23 @@ class TargetLayerPlannerService:
     store: TargetPlanStore
     agreement_fn: Callable[[dict[str, Any]], str] | None = None
     planner_factory: Callable[[str, Any | None], Any] = PlannerRegistry.create
+    two_horizon_predictor_factory: Callable[[str], SharedTwoHorizonPredictor] | None = None
     max_queue_size: int = 16
-    _queue: queue.Queue[_QueuedPlanningTask | None] = field(init=False)
+    _queue: queue.Queue[str | None] = field(init=False)
     _thread: threading.Thread | None = field(init=False, default=None)
     _stop: threading.Event = field(init=False, default_factory=threading.Event)
     _last_error: BaseException | None = field(init=False, default=None)
     _timeline: list[dict[str, Any]] = field(init=False, default_factory=list)
     _lock: threading.RLock = field(init=False, default_factory=threading.RLock)
     _pending_by_key: dict[str, _QueuedPlanningTask] = field(init=False, default_factory=dict)
+    _queued_keys: set[str] = field(init=False, default_factory=set)
+    _inflight_by_key: dict[str, _QueuedPlanningTask] = field(init=False, default_factory=dict)
     _ready_results: list[_BuiltPlanningResult] = field(init=False, default_factory=list)
     _cancelled_generations: set[tuple[str, int, str]] = field(init=False, default_factory=set)
     _closed: bool = field(init=False, default=False)
+    _service_session_id: int = field(init=False, default=0)
+    _next_task_version: int = field(init=False, default=0)
+    _next_publish_sequence: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
         self._queue = queue.Queue(maxsize=int(self.max_queue_size))
@@ -117,7 +127,16 @@ class TargetLayerPlannerService:
         self._stop.clear()
         self._closed = False
         self._last_error = None
+        self._service_session_id += 1
+        self._next_task_version = 0
+        self._next_publish_sequence = 0
         self._queue = queue.Queue(maxsize=int(self.max_queue_size))
+        with self._lock:
+            self._pending_by_key.clear()
+            self._queued_keys.clear()
+            self._inflight_by_key.clear()
+            self._ready_results.clear()
+            self._cancelled_generations.clear()
         self._thread = threading.Thread(target=self._worker, name="target-layer-planner", daemon=True)
         self._thread.start()
 
@@ -126,6 +145,8 @@ class TargetLayerPlannerService:
         self._stop.set()
         with self._lock:
             self._pending_by_key.clear()
+            self._queued_keys.clear()
+            self._inflight_by_key.clear()
             self._ready_results.clear()
         while True:
             try:
@@ -163,21 +184,39 @@ class TargetLayerPlannerService:
                 return PreparationSubmitResult(status=PreparationSubmitStatus.REJECTED_CLOSED, task_key=task_key)
             if generation_key in self._cancelled_generations:
                 return PreparationSubmitResult(status=PreparationSubmitStatus.REJECTED_EXPIRED, task_key=task_key)
-            replaced = task_key in self._pending_by_key
-            if not replaced and len(self._pending_by_key) >= int(self.max_queue_size):
-                return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
+            self._next_task_version += 1
+            self._next_publish_sequence += 1
             queued = _QueuedPlanningTask(
                 queued_at_us=(time.perf_counter_ns() / 1000.0),
                 request=request,
                 task_key=task_key,
+                task_version=int(self._next_task_version),
+                service_session_id=int(self._service_session_id),
+                publish_sequence=int(self._next_publish_sequence),
             )
+            replaced = task_key in self._pending_by_key or task_key in self._inflight_by_key
+            needs_queue_slot = task_key not in self._queued_keys
+            if needs_queue_slot:
+                try:
+                    self._queue.put_nowait(task_key)
+                except queue.Full:
+                    return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
+                self._queued_keys.add(task_key)
             self._pending_by_key[task_key] = queued
-        try:
-            self._queue.put_nowait(queued)
-        except queue.Full:
-            with self._lock:
-                self._pending_by_key.pop(task_key, None)
-            return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
+            self.store.register_expected_publication(
+                PreparationToken(
+                    service_session_id=int(queued.service_session_id),
+                    forward_generation=int(request.forward_epoch),
+                    target_key=TargetPlanKey(
+                        run_id=request.run_id,
+                        forward_epoch=int(request.forward_epoch),
+                        microbatch_id=request.microbatch_id,
+                        target_layer_id=request.target_layer_id,
+                    ),
+                    task_version=int(queued.task_version),
+                    publish_sequence=int(queued.publish_sequence),
+                )
+            )
         return PreparationSubmitResult(
             status=PreparationSubmitStatus.REPLACED_STALE if replaced else PreparationSubmitStatus.ACCEPTED,
             task_key=task_key,
@@ -198,6 +237,7 @@ class TargetLayerPlannerService:
             doomed = [task_key for task_key, item in self._pending_by_key.items() if self._generation_key(item.request) == generation_key]
             for task_key in doomed:
                 self._pending_by_key.pop(task_key, None)
+                self._queued_keys.discard(task_key)
             self._ready_results = [item for item in self._ready_results if self._generation_key(item.request) != generation_key]
 
     def drain_ready_publications(self) -> list[_BuiltPlanningResult]:
@@ -208,17 +248,18 @@ class TargetLayerPlannerService:
 
     def _worker(self) -> None:
         while True:
-            item = self._queue.get()
-            if item is None:
+            task_key = self._queue.get()
+            if task_key is None:
                 return
             if self._stop.is_set():
                 continue
-            request = item.request
-            task_key = str(item.task_key)
             with self._lock:
-                latest = self._pending_by_key.get(task_key)
-                if latest is None or latest is not item:
+                self._queued_keys.discard(task_key)
+                item = self._pending_by_key.pop(task_key, None)
+                if item is None:
                     continue
+                self._inflight_by_key[task_key] = item
+            request = item.request
             started_ns = time.perf_counter_ns()
             metrics = TargetLayerPlannerMetrics(queue_wait_us=max(0.0, (started_ns / 1000.0) - float(item.queued_at_us)))
             try:
@@ -229,11 +270,23 @@ class TargetLayerPlannerService:
                     microbatch_id=request.microbatch_id,
                     target_layer_id=request.target_layer_id,
                 )
+                token = PreparationToken(
+                    service_session_id=int(item.service_session_id),
+                    forward_generation=int(request.forward_epoch),
+                    target_key=key,
+                    task_version=int(item.task_version),
+                    publish_sequence=int(item.publish_sequence),
+                )
                 with self._lock:
-                    latest = self._pending_by_key.get(task_key)
-                    if latest is None or latest is not item or self._generation_key(request) in self._cancelled_generations:
+                    current = self._inflight_by_key.get(task_key)
+                    if current is None or current.task_version != item.task_version:
                         continue
-                    self._pending_by_key.pop(task_key, None)
+                    self._inflight_by_key.pop(task_key, None)
+                    if (
+                        self._generation_key(request) in self._cancelled_generations
+                        or int(item.service_session_id) != int(self._service_session_id)
+                    ):
+                        continue
                     self._ready_results.append(
                         _BuiltPlanningResult(
                             key=key,
@@ -242,6 +295,7 @@ class TargetLayerPlannerService:
                             bundle=bundle,
                             plan=plan,
                             metrics=metrics,
+                            token=token,
                         )
                     )
                 self._timeline.append(
@@ -262,14 +316,18 @@ class TargetLayerPlannerService:
                     target_layer_id=request.target_layer_id,
                 )
                 with self._lock:
-                    current = self._pending_by_key.get(task_key)
-                    if current is item:
-                        self._pending_by_key.pop(task_key, None)
-                self.store.close_key_if_unclaimed(
-                    key,
-                    final_status="FAILED",
-                    execution_origin=f"task_failure:{type(exc).__name__}",
-                )
+                    current = self._inflight_by_key.get(task_key)
+                    if current is not None and current.task_version == item.task_version:
+                        self._inflight_by_key.pop(task_key, None)
+                    newer_pending_exists = task_key in self._pending_by_key
+                    stale_session = int(item.service_session_id) != int(self._service_session_id)
+                    cancelled = self._generation_key(request) in self._cancelled_generations
+                if not newer_pending_exists and not stale_session and not cancelled:
+                    self.store.close_key_if_unclaimed(
+                        key,
+                        final_status="FAILED",
+                        execution_origin=f"task_failure:{type(exc).__name__}",
+                    )
                 self._timeline.append(
                     {
                         "event": "planner_task_failed",
@@ -290,9 +348,19 @@ class TargetLayerPlannerService:
                 }
             )
             return None
-        return self.publish_agreed_plan(key=ready.key, plan=ready.plan)
+        with self._lock:
+            if int(ready.token.service_session_id) != int(self._service_session_id):
+                self._timeline.append(
+                    {
+                        "event": "target_plan_publish_stale_session",
+                        "target_layer_id": ready.key.target_layer_id,
+                        "task_key": ready.task_key,
+                    }
+                )
+                return None
+        return self.publish_agreed_plan(key=ready.key, plan=ready.plan, token=ready.token)
 
-    def publish_agreed_plan(self, *, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> TargetLayerPreparedJointPlan:
+    def publish_agreed_plan(self, *, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan, token: PreparationToken | None = None) -> TargetLayerPreparedJointPlan | None:
         agreement_payload = self._agreement_payload(key=key, plan=plan)
         agreement_start = time.perf_counter_ns()
         agreed_digest = str(plan.logical_plan_digest)
@@ -300,7 +368,17 @@ class TargetLayerPlannerService:
             agreed_digest = str(self.agreement_fn(agreement_payload))
         agreement_end = time.perf_counter_ns()
         published = replace(plan, logical_plan_digest=str(agreed_digest), ready_at_ns=int(time.perf_counter_ns()))
-        self.store.put(key, published)
+        if token is not None and not self.store.publish_if_current(token=token, plan=published):
+            self._timeline.append(
+                {
+                    "event": "target_plan_publish_rejected_stale",
+                    "target_layer_id": key.target_layer_id,
+                    "logical_plan_digest": str(published.logical_plan_digest),
+                }
+            )
+            return None
+        if token is None:
+            self.store.put(key, published)
         self._timeline.append(
             {
                 "event": "target_plan_agreed_publish",
@@ -346,7 +424,8 @@ class TargetLayerPlannerService:
         metrics: TargetLayerPlannerMetrics,
     ) -> tuple[TwoHorizonPredictionBundle, TargetLayerPreparedJointPlan]:
         planner_started_ns = time.perf_counter_ns()
-        predictor = SharedTwoHorizonPredictor(predictor_name=request.predictor_name)
+        predictor_factory = self.two_horizon_predictor_factory or (lambda predictor_name: SharedTwoHorizonPredictor(predictor_name=predictor_name))
+        predictor = predictor_factory(request.predictor_name)
         bundle = predictor.predict_two_horizon(
             source_layer_id=str(request.source_layer_id),
             current_dispatch_matrix=request.current_p0_rows,

@@ -1,0 +1,5 @@
+﻿{
+  "aggregate_close_error": true,
+  "restore_callbacks_run_after_close_failure": true,
+  "idempotent_second_close": true
+}

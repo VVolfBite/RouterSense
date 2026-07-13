@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from rs.core.contracts import (
     PlanWave,
     PlannedFlow,
@@ -161,3 +163,39 @@ def test_plan_estimator_rejects_same_wave_port_conflict() -> None:
     )
     score = CommonCorePlanEstimator().estimate(conflict, request, PlanningCostModel())
     assert score.valid is False
+
+
+def test_plan_estimator_allows_full_duplex_send_and_receive_same_rank() -> None:
+    request = PlanningRequest(
+        identity=PlanningIdentity(request_id="req"),
+        traffic=PlanningTraffic(p0_dispatch_rows=((0, 1, 0), (0, 0, 1), (1, 0, 0)), p1_return_rows=((0, 0, 1), (1, 0, 0), (0, 1, 0))),
+        prediction_hint=PredictionHint(predictor_id="zero", hint_type="traffic_matrix", target_dispatch_rows=((0, 0, 0), (0, 0, 0), (0, 0, 0)), confidence=0.0),
+        topology=PlanningTopology(world_size=3),
+        constraints=PlanningConstraints(bucket_rows=4, max_waves=8, expert_compute_delay=0.0, phase_release_model="p1_return"),
+        weights=PlanningWeights(),
+        information_mode="p0_p1_p2",
+    )
+    duplex = WindowPlan(
+        planner_id="test",
+        planner_family="baseline",
+        request_digest=request.semantic_digest(),
+        waves=(
+            PlanWave(
+                wave_id=0,
+                flows=(
+                    PlannedFlow(flow_id="f1", phase="p0_dispatch", src_rank=0, dst_rank=1, row_count=1, release_state="ready", executable=True),
+                    PlannedFlow(flow_id="f2", phase="p0_dispatch", src_rank=2, dst_rank=0, row_count=1, release_state="ready", executable=True),
+                ),
+                estimated_duration=0.0,
+            ),
+        ),
+    )
+    score = CommonCorePlanEstimator().estimate(duplex, request, PlanningCostModel())
+    assert score.valid is True
+
+
+def test_planning_cost_model_rejects_multi_port_configuration() -> None:
+    with pytest.raises(ValueError, match="max_outgoing_per_rank_per_wave == 1"):
+        PlanningCostModel(max_outgoing_per_rank_per_wave=2).validate()
+    with pytest.raises(ValueError, match="max_incoming_per_rank_per_wave == 1"):
+        PlanningCostModel(max_incoming_per_rank_per_wave=2).validate()

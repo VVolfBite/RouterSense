@@ -153,6 +153,20 @@ class TargetPlanKey:
 
 
 @dataclass(frozen=True)
+class PreparationToken:
+    service_session_id: int
+    forward_generation: int
+    target_key: TargetPlanKey
+    task_version: int
+    publish_sequence: int
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["target_key"] = self.target_key.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
 class ReconciliationOutcome:
     status: ReconciliationStatus
     matched_edges: int

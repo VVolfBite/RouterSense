@@ -102,6 +102,11 @@ class HistoryTrafficPredictor(Predictor):
     def predictor_id(self) -> str:
         return "history"
 
+    def __post_init__(self) -> None:
+        alpha = float(self.alpha)
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("HistoryTrafficPredictor alpha must be within [0, 1]")
+
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:
         context.validate()
         previous = context.history_dispatch_rows[-1] if context.history_dispatch_rows else context.current_dispatch_rows
@@ -130,10 +135,31 @@ class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
     def predictor_id(self) -> str:
         return self.predictor_name
 
+    def __post_init__(self) -> None:
+        ridge = float(self.ridge_lambda)
+        if not torch.isfinite(torch.tensor(ridge, dtype=torch.float64)) or ridge < 0.0:
+            raise ValueError("ridge_lambda must be finite and >= 0")
+
     def fit(self, samples: Sequence[TrafficPredictionTrainingSample]) -> "LinearTrafficPredictor":
         sample_list = list(samples)
         if not sample_list:
             raise ValueError("linear predictor requires at least one training sample")
+        for sample in sample_list:
+            sample.validate()
+        world_size = len(sample_list[0].current_dispatch_rows)
+        shape = (
+            len(sample_list[0].target_next_dispatch_rows),
+            len(sample_list[0].target_next_dispatch_rows[0]) if sample_list[0].target_next_dispatch_rows else 0,
+        )
+        for sample in sample_list[1:]:
+            if len(sample.current_dispatch_rows) != world_size:
+                raise ValueError("all training samples must share world_size")
+            sample_shape = (
+                len(sample.target_next_dispatch_rows),
+                len(sample.target_next_dispatch_rows[0]) if sample.target_next_dispatch_rows else 0,
+            )
+            if sample_shape != shape:
+                raise ValueError("all training targets must share shape")
         features = torch.tensor(
             [
                 _feature_vector(
@@ -157,12 +183,11 @@ class LinearTrafficPredictor(Predictor, TrainableTrafficPredictor):
             solution = torch.linalg.solve(normal_matrix, rhs)
         except RuntimeError:
             solution = torch.linalg.pinv(normal_matrix) @ rhs
+        if not torch.isfinite(solution).all():
+            raise ValueError("linear predictor fit produced non-finite parameters")
         self._weight = solution[:-1, :]
         self._bias = solution[-1, :]
-        self._shape = (
-            len(sample_list[0].target_next_dispatch_rows),
-            len(sample_list[0].target_next_dispatch_rows[0]) if sample_list[0].target_next_dispatch_rows else 0,
-        )
+        self._shape = shape
         return self
 
     def predict(self, context: TrafficHistoryContext) -> PredictionResult:

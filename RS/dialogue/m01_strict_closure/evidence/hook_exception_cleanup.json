@@ -1,0 +1,6 @@
+﻿{
+  "dispatch_failed_event": true,
+  "combine_failed_event": true,
+  "forward_failed_event": true,
+  "original_exception_reraised": true
+}

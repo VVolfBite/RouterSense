@@ -12,6 +12,8 @@ from rs.runtime.online.megatron_ep.target_planning.planner_service import (
     TargetLayerPlannerService,
     TargetLayerPlanningRequest,
 )
+from rs.runtime.online.megatron_ep.target_planning.predictor import TwoHorizonPredictionBundle
+from rs.runtime.online.megatron_ep.target_planning.contracts import TwoHorizonPrediction
 from rs.runtime.online.megatron_ep.target_planning.store import TargetPlanStore
 from rs.planning import PlannerRegistry
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
@@ -359,4 +361,140 @@ def test_target_planner_can_restart_after_close() -> None:
     service.close()
     service.start()
     assert service.is_alive() is True
+    service.shutdown()
+
+
+@dataclass
+class _CountingTwoHorizonPredictor:
+    counter: dict[str, int]
+
+    def predict_two_horizon(
+        self,
+        *,
+        source_layer_id: str,
+        current_dispatch_matrix,
+        previous_dispatch_matrix=None,
+        history_matrices=(),
+    ) -> TwoHorizonPredictionBundle:
+        self.counter["predict_calls"] = int(self.counter.get("predict_calls", 0)) + 1
+        current = tuple(tuple(int(value) for value in row) for row in current_dispatch_matrix)
+        next_layer_id = str(int(source_layer_id) + 1) if str(source_layer_id).isdigit() else f"{source_layer_id}+1"
+        h2_target = str(int(source_layer_id) + 2) if str(source_layer_id).isdigit() else f"{source_layer_id}+2"
+        return TwoHorizonPredictionBundle(
+            h1=TwoHorizonPrediction(
+                forecast_horizon=1,
+                source_layer_id=str(source_layer_id),
+                target_layer_id=str(next_layer_id),
+                matrix_unit="rows",
+                matrix_rows=current,
+                matrix_digest=f"h1:{source_layer_id}",
+                predictor="copy_current",
+                confidence=1.0,
+                created_at_ns=1,
+                prediction_us=10.0,
+            ),
+            h2=TwoHorizonPrediction(
+                forecast_horizon=2,
+                source_layer_id=str(next_layer_id),
+                target_layer_id=str(h2_target),
+                matrix_unit="rows",
+                matrix_rows=current,
+                matrix_digest=f"h2:{source_layer_id}",
+                predictor="copy_current",
+                confidence=1.0,
+                created_at_ns=2,
+                prediction_us=10.0,
+            ),
+        )
+
+
+def test_target_planner_keyed_queue_preserves_latest_same_key_once() -> None:
+    counter: dict[str, int] = {}
+    service = TargetLayerPlannerService(
+        store=TargetPlanStore(),
+        max_queue_size=1,
+        two_horizon_predictor_factory=lambda _name: _CountingTwoHorizonPredictor(counter),
+    )
+    service.start()
+    for _ in range(100):
+        result = service.submit(_request(safe_projection_mode="disabled"))
+        assert result.status in {PreparationSubmitStatus.ACCEPTED, PreparationSubmitStatus.REPLACED_STALE}
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready = service.drain_ready_publications()
+        if ready:
+            break
+        time.sleep(0.01)
+    assert ready
+    assert counter["predict_calls"] == 1
+    service.shutdown()
+
+
+def test_target_planner_queue_full_new_key_drops_without_losing_existing_key() -> None:
+    counter: dict[str, int] = {}
+    service = TargetLayerPlannerService(
+        store=TargetPlanStore(),
+        max_queue_size=1,
+        two_horizon_predictor_factory=lambda _name: _CountingTwoHorizonPredictor(counter),
+    )
+    service.start()
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "target_layer_id": "2"})
+    assert service.submit(first).status is PreparationSubmitStatus.ACCEPTED
+    assert service.submit(second).status is PreparationSubmitStatus.DROPPED_OVERLOAD
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready = service.drain_ready_publications()
+        if ready:
+            break
+        time.sleep(0.01)
+    assert ready
+    assert ready[0].request.target_layer_id == "1"
+    assert counter["predict_calls"] == 1
+    service.shutdown()
+
+
+def test_target_planner_stale_inflight_version_cannot_publish() -> None:
+    counter: dict[str, int] = {}
+    release_first = {"value": False}
+
+    @dataclass
+    class _SlowFirstPredictor(_CountingTwoHorizonPredictor):
+        def predict_two_horizon(self, **kwargs) -> TwoHorizonPredictionBundle:
+            call_index = int(self.counter.get("predict_calls", 0))
+            if call_index == 0:
+                deadline = time.time() + 2.0
+                while not release_first["value"] and time.time() < deadline:
+                    time.sleep(0.01)
+            return super().predict_two_horizon(**kwargs)
+
+    service = TargetLayerPlannerService(
+        store=TargetPlanStore(),
+        max_queue_size=2,
+        two_horizon_predictor_factory=lambda _name: _SlowFirstPredictor(counter),
+    )
+    request = _request(safe_projection_mode="disabled")
+    service.start()
+    assert service.submit(request).status is PreparationSubmitStatus.ACCEPTED
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if service._inflight_by_key:  # noqa: SLF001
+            break
+        time.sleep(0.01)
+    assert service.submit(request).status is PreparationSubmitStatus.REPLACED_STALE
+    release_first["value"] = True
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready.extend(service.drain_ready_publications())
+        if len(ready) >= 2:
+            break
+        time.sleep(0.01)
+    assert len(ready) >= 2
+    first = service.publish_ready_plan(ready[0])
+    second = service.publish_ready_plan(ready[1])
+    assert first is None
+    assert second is not None
     service.shutdown()

@@ -105,12 +105,15 @@ from rs.runtime.online.megatron_ep.phase import (
     reconstruct_global_phase_contexts_from_byte_matrix,
 )
 from rs.runtime.online.megatron_ep.public_types import (
+    CombineFailedEvent,
     CombineCompleteEvent,
     CombineReadyEvent,
+    DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
     ForwardBeginEvent,
     ForwardEndEvent,
+    ForwardFailedEvent,
     RuntimeDecision,
     RuntimeEvent,
     SelectedLayerStop,
@@ -133,6 +136,7 @@ from rs.runtime.online.megatron_ep.target_planning import (
     TargetPlanStore,
     reconcile_once,
 )
+from rs.runtime.online.megatron_ep.target_planning.planner_service import PreparationSubmitStatus
 from rs.scheduling.contracts import PreparedWindowPlan
 from rs.scheduling.bucketizer import (
     BUCKET_MODE_DYNAMIC_CURRENT,
@@ -1234,6 +1238,7 @@ class RouterSenseInjectionRuntime:
             published = self.target_planner_service.publish_ready_plan(ready)
             if published is None:
                 continue
+            self._store_target_planner_predictions(ready=ready)
             self._timeline(
                 "target_plan_ready",
                 layer_name=str(ready.request.target_layer_id),
@@ -1243,6 +1248,67 @@ class RouterSenseInjectionRuntime:
                 h2_digest=str(ready.bundle.h2.matrix_digest),
                 planner_wall_us=float(ready.metrics.planner_wall_us),
             )
+
+    def _store_target_planner_predictions(self, *, ready) -> None:
+        from rs.runtime.online.megatron_ep.prediction.contracts import ActiveNextDispatchPrediction, PredictedTrafficMatrix
+
+        predicted_dispatch_by_layer = dict(self._runtime_state.read("predicted_dispatch_by_layer", {}) or {})
+
+        def _to_predicted(prediction) -> PredictedTrafficMatrix:
+            matrix = tuple(tuple(int(value) for value in row) for row in prediction.matrix_rows)
+            return PredictedTrafficMatrix(
+                predictor_name=str(prediction.predictor),
+                predictor_version="v1",
+                source_layer_id=str(prediction.source_layer_id),
+                predicted_layer_id=str(prediction.target_layer_id),
+                matrix=matrix,
+                matrix_digest=str(prediction.matrix_digest),
+                total_bytes=int(matrix_remote_bytes(matrix)),
+                nonzero_edge_count=int(matrix_nonzero_remote_edge_count(matrix)),
+                confidence=float(prediction.confidence),
+                is_oracle=False,
+                evaluation_eligible=True,
+                created_at_phase="P0",
+                valid=True,
+                error="",
+            )
+
+        h1_prediction = _to_predicted(ready.bundle.h1)
+        predicted_dispatch_by_layer[str(ready.bundle.h1.target_layer_id)] = h1_prediction.to_dict()
+        h2_prediction = _to_predicted(ready.bundle.h2)
+        predicted_dispatch_by_layer[str(ready.bundle.h2.target_layer_id)] = h2_prediction.to_dict()
+        self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
+        self._increment_state_counter_map("predict_count_by_layer", str(ready.request.source_layer_id))
+
+        active_prediction = ActiveNextDispatchPrediction(
+            source_layer_id=str(ready.bundle.h1.source_layer_id),
+            target_layer_id=str(ready.bundle.h1.target_layer_id),
+            forecast_matrix=h1_prediction.matrix,
+            matrix_digest=str(h1_prediction.matrix_digest),
+            predictor_name=str(h1_prediction.predictor_name),
+            predictor_version=str(h1_prediction.predictor_version),
+            confidence=float(h1_prediction.confidence),
+            evaluation_eligible=bool(h1_prediction.evaluation_eligible),
+            is_oracle=bool(h1_prediction.is_oracle),
+            created_at_phase="P0",
+            created_at_stage="target_planner_worker",
+            prediction_time_us=max(0.0, float(ready.bundle.h1.prediction_us)),
+            valid=True,
+            error="",
+        )
+        self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
+        self._runtime_state.write("latest_predictor_name", str(h1_prediction.predictor_name))
+        self._runtime_state.write("latest_prediction_digest", str(h1_prediction.matrix_digest))
+        self._runtime_state.write("latest_prediction_target_layer_id", str(ready.bundle.h1.target_layer_id))
+        self._runtime_state.write("latest_prediction_matrix_source", "target_planner_worker_h1")
+        self._runtime_state.write("latest_prediction_row_sums", [int(sum(row)) for row in h1_prediction.matrix])
+        self._runtime_state.write(
+            "latest_prediction_col_sums",
+            [
+                int(sum(h1_prediction.matrix[row_idx][col_idx] for row_idx in range(len(h1_prediction.matrix))))
+                for col_idx in range(len(h1_prediction.matrix[0]) if h1_prediction.matrix else 0)
+            ],
+        )
 
     def _agree_target_plan_payload(self, payload: dict[str, Any]) -> str:
         digest = str(payload.get("logical_plan_digest", ""))
@@ -1370,6 +1436,9 @@ class RouterSenseInjectionRuntime:
                 )
                 self.after_token_dispatch(layer_name=event.layer_name)
             return RuntimeDecision(action="dispatch_complete", details={"layer_role": event.layer_role})
+        if isinstance(event, DispatchFailedEvent):
+            self._active_transport = None
+            return RuntimeDecision(action="dispatch_failed", details={"layer_role": event.layer_role, "error": type(event.error).__name__})
         if isinstance(event, CombineReadyEvent):
             self.before_token_combine(
                 layer_name=event.layer_name,
@@ -1386,9 +1455,15 @@ class RouterSenseInjectionRuntime:
             )
             self.after_token_combine(layer_name=event.layer_name)
             return RuntimeDecision(action="combine_complete")
+        if isinstance(event, CombineFailedEvent):
+            self._active_transport = None
+            return RuntimeDecision(action="combine_failed", details={"error": type(event.error).__name__})
         if isinstance(event, ForwardEndEvent):
             self.end_forward()
             return RuntimeDecision(action="forward_end")
+        if isinstance(event, ForwardFailedEvent):
+            self.end_forward()
+            return RuntimeDecision(action="forward_failed", details={"error": type(event.error).__name__})
         raise TypeError(f"unsupported runtime event: {type(event).__name__}")
 
     def _agree_late_suffix(
@@ -1569,50 +1644,6 @@ class RouterSenseInjectionRuntime:
             predicted_dispatch_by_layer.pop(str(layer_id), None)
         audit_end_ns = time.monotonic_ns()
 
-        prediction_start_ns = time.monotonic_ns()
-        predicted = self._predict_dispatch_matrix(
-            layer_id=str(layer_id),
-            next_layer_id=str(next_layer_id),
-            current_dispatch_matrix=remote_matrix,
-            previous_dispatch_matrix=(
-                actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
-                if str(layer_id).isdigit()
-                else None
-            ),
-        )
-        prediction_end_ns = time.monotonic_ns()
-        predicted_dispatch_by_layer[str(next_layer_id)] = predicted.to_dict()
-        self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
-        self._increment_state_counter_map("predict_count_by_layer", str(layer_id))
-        active_prediction = ActiveNextDispatchPrediction(
-            source_layer_id=str(layer_id),
-            target_layer_id=str(next_layer_id),
-            forecast_matrix=predicted.matrix,
-            matrix_digest=str(predicted.matrix_digest),
-            predictor_name=str(predicted.predictor_name),
-            predictor_version=str(predicted.predictor_version),
-            confidence=float(predicted.confidence),
-            evaluation_eligible=bool(predicted.evaluation_eligible),
-            is_oracle=bool(predicted.is_oracle),
-            created_at_phase="P0",
-            created_at_stage="after_p0_observation",
-            prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
-            valid=bool(predicted.valid),
-            error=str(predicted.error),
-        )
-        self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
-        self._runtime_state.write("latest_predictor_name", predicted.predictor_name)
-        self._runtime_state.write("latest_prediction_digest", predicted.matrix_digest)
-        self._runtime_state.write("latest_prediction_target_layer_id", str(next_layer_id))
-        self._runtime_state.write("latest_prediction_matrix_source", "pre_transport_phase_ready_context")
-        self._runtime_state.write("latest_prediction_row_sums", [int(sum(row)) for row in predicted.matrix])
-        self._runtime_state.write(
-            "latest_prediction_col_sums",
-            [
-            int(sum(predicted.matrix[row_idx][col_idx] for row_idx in range(len(predicted.matrix))))
-            for col_idx in range(len(predicted.matrix[0]) if predicted.matrix else 0)
-            ],
-        )
         stage_end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -1625,12 +1656,12 @@ class RouterSenseInjectionRuntime:
             matrix_nonzero_edge_count=int(matrix_nonzero_remote_edge_count(remote_matrix)),
             p2_matrix_gather_time_us=0.0,
             p2_matrix_gather_call_count=0,
-            predictor_name=str(predicted.predictor_name),
+            predictor_name="target_planner_worker",
             predicted_layer_id=str(next_layer_id),
-            prediction_confidence=float(predicted.confidence),
-            prediction_valid=bool(predicted.valid),
-            prediction_error=str(predicted.error),
-            prediction_time_us=max(0.0, float(prediction_end_ns - prediction_start_ns) / 1000.0),
+            prediction_confidence=0.0,
+            prediction_valid=True,
+            prediction_error="",
+            prediction_time_us=0.0,
             audit_time_us=max(0.0, float(audit_end_ns - audit_start_ns) / 1000.0),
             prediction_audit_emitted=bool(existing_prediction is not None),
         )
@@ -1645,7 +1676,7 @@ class RouterSenseInjectionRuntime:
                 paired_b_name = ""
                 if str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select") == "host_select":
                     raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
-                self.target_planner_service.enqueue(
+                result = self.target_planner_service.submit(
                     TargetLayerPlanningRequest(
                         run_id=str(self.run_id),
                         forward_epoch=int(self._forward_epoch),
@@ -1674,10 +1705,16 @@ class RouterSenseInjectionRuntime:
                         safe_projection_mode=str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select"),
                     )
                 )
-                self._increment_state_counter_map(
-                    "target_plan_enqueue_count_by_source_target",
-                    f"{layer_id}->{next_layer_id}",
-                )
+                self._runtime_state.write("latest_target_plan_submit_status", str(result.status.value))
+                self._runtime_state.write("latest_target_plan_submit_task_key", str(result.task_key))
+                self._increment_state_counter_map("target_plan_submit_count_by_source_target", f"{layer_id}->{next_layer_id}")
+                if result.status in {PreparationSubmitStatus.ACCEPTED, PreparationSubmitStatus.REPLACED_STALE}:
+                    self._increment_state_counter_map(
+                        "target_plan_enqueue_count_by_source_target",
+                        f"{layer_id}->{next_layer_id}",
+                    )
+                elif result.status is PreparationSubmitStatus.REJECTED_CLOSED:
+                    raise RuntimeError(f"target_planner_submit_failed:{result.status.value}:{result.task_key}")
 
     # Hint, shadow, and pending-window state
 
@@ -2898,24 +2935,13 @@ class RouterSenseInjectionRuntime:
             prediction_evaluation_eligible = bool(prediction_entry.get("evaluation_eligible", True))
             prediction_is_oracle = bool(prediction_entry.get("is_oracle", False))
         else:
-            fallback = self._predict_dispatch_matrix(
-                layer_id=str(layer_id),
-                next_layer_id=str(next_layer_id),
-                current_dispatch_matrix=dispatch_matrix,
-                previous_dispatch_matrix=(
-                    actual_dispatch_by_layer.get(str(int(layer_id) - 1), {}).get("matrix")
-                    if str(layer_id).isdigit()
-                    else None
-                ),
-                fallback=True,
-            )
-            forecast_matrix = fallback.matrix
+            forecast_matrix = tuple(tuple(int(value) for value in row) for row in dispatch_matrix)
             p2_matrix_source = "copy_current_dispatch_fallback"
-            predictor_name = fallback.predictor_name
-            prediction_digest = fallback.matrix_digest
-            prediction_confidence = float(fallback.confidence)
-            prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
-            prediction_is_oracle = bool(fallback.is_oracle)
+            predictor_name = "copy_current_dispatch"
+            prediction_digest = stable_hash([list(row) for row in forecast_matrix])
+            prediction_confidence = 1.0
+            prediction_evaluation_eligible = True
+            prediction_is_oracle = False
         if predictor_name == "copy_current" and self._online_p2_predictor_name() == "copy_current_dispatch":
             predictor_name = "copy_current_dispatch"
         row_sums = [int(sum(row)) for row in forecast_matrix]

@@ -4,6 +4,7 @@ import pytest
 import subprocess
 import sys
 import os
+from pathlib import Path
 
 from rs.core.contracts import (
     PlanningConstraints,
@@ -153,7 +154,20 @@ request = PlanningRequest(
 print(request.semantic_digest())
 """
     env = dict(os.environ)
-    env["PYTHONPATH"] = f"src;.{';' + env['PYTHONPATH'] if env.get('PYTHONPATH') else ''}"
-    first = subprocess.run([sys.executable, "-c", code], cwd="RS", env=env, capture_output=True, text=True, check=True)
-    second = subprocess.run([sys.executable, "-c", code], cwd="RS", env=env, capture_output=True, text=True, check=True)
+    cwd = Path(__file__).resolve().parents[2]
+    pythonpath_entries = [str(cwd / "src"), str(cwd)]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    env["PYTHONHASHSEED"] = "123"
+    first = subprocess.run([sys.executable, "-c", code], cwd=str(cwd), env=env, capture_output=True, text=True, check=True)
+    env["PYTHONHASHSEED"] = "456"
+    second = subprocess.run([sys.executable, "-c", code], cwd=str(cwd), env=env, capture_output=True, text=True, check=True)
     assert first.stdout.strip() == second.stdout.strip()
+
+
+def test_planning_topology_rejects_multi_port_contract() -> None:
+    with pytest.raises(ValueError, match="max_outgoing_per_rank_per_wave == 1"):
+        PlanningTopology(world_size=2, max_outgoing_per_rank_per_wave=2).validate()
+    with pytest.raises(ValueError, match="max_incoming_per_rank_per_wave == 1"):
+        PlanningTopology(world_size=2, max_incoming_per_rank_per_wave=2).validate()

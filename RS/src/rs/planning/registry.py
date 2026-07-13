@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from rs.scheduling.catalog import algorithm_specs, resolve_algorithm_id
 
-from .api import LegacyPlannerAdapter, PlannerSpec, planner_family_for_spec
+from ._legacy_runtime import LegacyPlannerAdapter
+from .api import PlannerSpec, planner_family_for_spec
 
 
 class PlannerRegistry:

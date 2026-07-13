@@ -19,7 +19,7 @@ from rs.prediction import PredictionRegistry
 from rs.runtime.offline.prediction.evaluation import rolling_predictor_records
 
 
-FIXTURE_DIR = Path("RS/tests/fixtures/offline_replay_smoke")
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "offline_replay_smoke"
 
 
 def _fixture_rows(name: str) -> tuple[tuple[int, ...], ...]:

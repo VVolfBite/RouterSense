@@ -99,3 +99,16 @@ def test_target_plan_store_fail_after_claim_records_failed_terminal() -> None:
     terminal = store.get_terminal_record(key)
     assert terminal is not None
     assert terminal.final_status == "FAILED"
+
+
+def test_target_plan_store_rejects_illegal_transitions() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    store.publish_logical(key, _plan())
+    with pytest.raises(RouterSenseInvariantError):
+        store.start_execution(key, execution_origin="bad_direct_start")
+    with pytest.raises(RouterSenseInvariantError):
+        store.complete(key, execution_origin="bad_direct_complete")
+    store.claim(key, claim_owner="runtime")
+    with pytest.raises(RouterSenseInvariantError):
+        store.complete(key, execution_origin="bad_claim_complete")

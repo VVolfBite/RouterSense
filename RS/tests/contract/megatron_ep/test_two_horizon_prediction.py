@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from rs.runtime.online.megatron_ep.target_planning import SharedTwoHorizonPredictor
 
@@ -45,9 +46,15 @@ bundle = SharedTwoHorizonPredictor(predictor_name="copy_current_dispatch").predi
 print(bundle.h1.matrix_digest)
 """
     env = dict(os.environ)
-    env["PYTHONPATH"] = f"src;.{';' + env['PYTHONPATH'] if env.get('PYTHONPATH') else ''}"
-    first = subprocess.run([sys.executable, "-c", code], cwd="RS", env=env, capture_output=True, text=True, check=True)
-    second = subprocess.run([sys.executable, "-c", code], cwd="RS", env=env, capture_output=True, text=True, check=True)
+    cwd = Path(__file__).resolve().parents[3]
+    pythonpath_entries = [str(cwd / "src"), str(cwd)]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    env["PYTHONHASHSEED"] = "111"
+    first = subprocess.run([sys.executable, "-c", code], cwd=str(cwd), env=env, capture_output=True, text=True, check=True)
+    env["PYTHONHASHSEED"] = "999"
+    second = subprocess.run([sys.executable, "-c", code], cwd=str(cwd), env=env, capture_output=True, text=True, check=True)
     assert first.stdout.strip()
     assert first.stdout.strip() == second.stdout.strip()
 

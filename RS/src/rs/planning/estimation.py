@@ -17,6 +17,22 @@ class PlanningCostModel:
     max_incoming_per_rank_per_wave: int = 1
     expert_compute_delay: float = 0.0
 
+    def validate(self) -> None:
+        if not str(self.cost_model_id):
+            raise ValueError("cost_model_id must be non-empty")
+        for name, value in {
+            "row_transfer_cost": self.row_transfer_cost,
+            "launch_cost": self.launch_cost,
+            "expert_compute_delay": self.expert_compute_delay,
+        }.items():
+            numeric = float(value)
+            if not math.isfinite(numeric) or numeric < 0.0:
+                raise ValueError(f"{name} must be finite and >= 0")
+        if int(self.max_outgoing_per_rank_per_wave) != 1:
+            raise ValueError("formal cost model requires max_outgoing_per_rank_per_wave == 1")
+        if int(self.max_incoming_per_rank_per_wave) != 1:
+            raise ValueError("formal cost model requires max_incoming_per_rank_per_wave == 1")
+
 
 class PlanEstimator(Protocol):
     @property
@@ -46,6 +62,7 @@ class CommonCorePlanEstimator:
         try:
             request.validate()
             plan.validate()
+            cost_model.validate()
         except ValueError as exc:
             return PlanScore(
                 estimated_makespan=float("inf"),
@@ -122,8 +139,8 @@ class CommonCorePlanEstimator:
             combined_rank_loads[int(flow.dst_rank)] = int(combined_rank_loads.get(int(flow.dst_rank), 0)) + rows
             if str(flow.release_state) not in {"ready", "none"}:
                 has_expert_release = True
-        outgoing_ports = max(1, int(cost_model.max_outgoing_per_rank_per_wave))
-        incoming_ports = max(1, int(cost_model.max_incoming_per_rank_per_wave))
+        outgoing_ports = int(cost_model.max_outgoing_per_rank_per_wave)
+        incoming_ports = int(cost_model.max_incoming_per_rank_per_wave)
         send_bound = max((float(rows) / float(outgoing_ports) for rows in send_loads.values()), default=0.0)
         recv_bound = max((float(rows) / float(incoming_ports) for rows in recv_loads.values()), default=0.0)
         if bool(cost_model.full_duplex):

@@ -12,6 +12,20 @@ class SelectedLayerStop(RuntimeError):
     pass
 
 
+class AggregateRuntimeCloseError(RuntimeError):
+    def __init__(self, errors: list[BaseException]) -> None:
+        self.errors = list(errors)
+        super().__init__("runtime close encountered callback failures")
+
+
+class RuntimeAlreadyAttachedError(RuntimeError):
+    pass
+
+
+class LegacyObserverConflictError(RuntimeError):
+    pass
+
+
 @dataclass
 class RuntimeHandle:
     runtime: Any
@@ -35,20 +49,37 @@ class RuntimeHandle:
     def detach(self) -> None:
         if self._closed:
             return
+        errors: list[BaseException] = []
         while self._restore_callbacks:
             callback = self._restore_callbacks.pop()
-            callback()
+            try:
+                callback()
+            except BaseException as exc:  # pragma: no cover - exercised via close tests
+                errors.append(exc)
+        if errors:
+            raise AggregateRuntimeCloseError(errors)
 
     def close(self) -> None:
         if self._closed:
             return
+        errors: list[BaseException] = []
         try:
             while self._close_callbacks:
                 callback = self._close_callbacks.pop()
-                callback()
-            self.detach()
+                try:
+                    callback()
+                except BaseException as exc:  # pragma: no cover - exercised via close tests
+                    errors.append(exc)
+            while self._restore_callbacks:
+                callback = self._restore_callbacks.pop()
+                try:
+                    callback()
+                except BaseException as exc:  # pragma: no cover - exercised via close tests
+                    errors.append(exc)
         finally:
             self._closed = True
+        if errors:
+            raise AggregateRuntimeCloseError(errors)
 
 
 @dataclass(frozen=True)
@@ -81,6 +112,15 @@ class DispatchCompleteEvent:
 
 
 @dataclass(frozen=True)
+class DispatchFailedEvent:
+    layer_name: str
+    dispatcher: Any
+    packed_hidden_states: Any
+    error: BaseException
+    layer_role: Literal["prediction_source", "selected", "none"]
+
+
+@dataclass(frozen=True)
 class CombineReadyEvent:
     layer_name: str
     dispatcher: Any
@@ -96,15 +136,31 @@ class CombineCompleteEvent:
 
 
 @dataclass(frozen=True)
+class CombineFailedEvent:
+    layer_name: str
+    dispatcher: Any
+    packed_hidden_states: Any
+    error: BaseException
+
+
+@dataclass(frozen=True)
 class ForwardEndEvent:
     pass
+
+
+@dataclass(frozen=True)
+class ForwardFailedEvent:
+    error: BaseException
 
 
 RuntimeEvent = (
     ForwardBeginEvent
     | DispatchReadyEvent
     | DispatchCompleteEvent
+    | DispatchFailedEvent
     | CombineReadyEvent
     | CombineCompleteEvent
+    | CombineFailedEvent
     | ForwardEndEvent
+    | ForwardFailedEvent
 )

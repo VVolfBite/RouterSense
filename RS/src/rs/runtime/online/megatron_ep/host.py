@@ -30,12 +30,17 @@ from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapte
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 from rs.runtime.online.megatron_ep.public_types import (
+    CombineFailedEvent,
     CombineCompleteEvent,
     CombineReadyEvent,
+    DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
     ForwardBeginEvent,
     ForwardEndEvent,
+    ForwardFailedEvent,
+    LegacyObserverConflictError,
+    RuntimeAlreadyAttachedError,
     RuntimeHandle,
 )
 from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
@@ -651,6 +656,12 @@ def attach_dispatch_facade(
     hostname: str,
     observer: RouterSenseObserver | None = None,
 ) -> RuntimeHandle:
+    if getattr(model, "_routersense_runtime_owner", None) is not None:
+        raise RuntimeAlreadyAttachedError("formal runtime already attached to model")
+    for name, module in model.named_modules():
+        dispatcher = getattr(module, "token_dispatcher", None)
+        if dispatcher is not None and getattr(dispatcher, "_routersense_wrapped", False):
+            raise LegacyObserverConflictError(f"legacy observer wrapper already attached at {name}")
     sample_dispatcher = None
     for module in model.named_modules():
         dispatcher = getattr(module[1], "token_dispatcher", None)
@@ -677,6 +688,10 @@ def attach_dispatch_facade(
         ep_process_group=ep_process_group,
     )
     handle = RuntimeHandle(runtime=runtime)
+    model._routersense_runtime_owner = str(run_id)
+    handle.add_restore_callback(
+        lambda _model=model: hasattr(_model, "_routersense_runtime_owner") and delattr(_model, "_routersense_runtime_owner")
+    )
     transport_adapter = None
     original_all_to_all = None
     resolved_online_policy = resolve_online_policy_config(config)
@@ -782,19 +797,23 @@ def attach_dispatch_facade(
             dispatcher_layer_names.append(str(name))
     runtime.configure_hook_scope(available_layer_names=tuple(dispatcher_layer_names))
     if not getattr(model, "_routersense_forward_wrapped", False):
-        def _forward_pre(_module, _args):
+        original_forward = model.forward
+
+        def wrapped_forward(*args: Any, _orig=original_forward, **kwargs: Any):
             runtime.handle(ForwardBeginEvent())
-
-        def _forward_post(_module, _args, _output):
+            try:
+                result = _orig(*args, **kwargs)
+            except BaseException as exc:
+                runtime.handle(ForwardFailedEvent(error=exc))
+                raise
             runtime.handle(ForwardEndEvent())
+            return result
 
-        forward_pre_handle = model.register_forward_pre_hook(_forward_pre)
-        forward_post_handle = model.register_forward_hook(_forward_post)
+        model.forward = wrapped_forward
         model._routersense_forward_wrapped = True
 
-        def _restore_forward_hooks(_model=model, _pre=forward_pre_handle, _post=forward_post_handle):
-            _pre.remove()
-            _post.remove()
+        def _restore_forward_hooks(_model=model, _orig=original_forward):
+            _model.forward = _orig
             if hasattr(_model, "_routersense_forward_wrapped"):
                 delattr(_model, "_routersense_forward_wrapped")
 
@@ -830,7 +849,19 @@ def attach_dispatch_facade(
                     layer_role=str(_role),
                 )
             )
-            result = _facade.dispatch(*args, **kwargs)
+            try:
+                result = _facade.dispatch(*args, **kwargs)
+            except BaseException as exc:
+                runtime.handle(
+                    DispatchFailedEvent(
+                        layer_name=str(_name),
+                        dispatcher=_dispatcher,
+                        packed_hidden_states=hidden_states,
+                        error=exc,
+                        layer_role=str(_role),
+                    )
+                )
+                raise
             runtime.handle(
                 DispatchCompleteEvent(
                     layer_name=str(_name),
@@ -851,7 +882,18 @@ def attach_dispatch_facade(
                     packed_hidden_states=hidden_states,
                 )
             )
-            result = _facade.dispatch(*args, **kwargs)
+            try:
+                result = _facade.dispatch(*args, **kwargs)
+            except BaseException as exc:
+                runtime.handle(
+                    CombineFailedEvent(
+                        layer_name=str(_name),
+                        dispatcher=_dispatcher,
+                        packed_hidden_states=hidden_states,
+                        error=exc,
+                    )
+                )
+                raise
             runtime.handle(
                 CombineCompleteEvent(
                     layer_name=str(_name),

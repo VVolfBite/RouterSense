@@ -78,7 +78,7 @@ def _coerce_training_sample(value: object) -> TrafficPredictionTrainingSample:
         sample = value
     if not isinstance(sample, dict):
         raise TypeError(f"unsupported training sample {type(value).__name__}")
-    return TrafficPredictionTrainingSample(
+    coerced = TrafficPredictionTrainingSample(
         current_dispatch_rows=tuple(tuple(int(item) for item in row) for row in sample["current_dispatch_rows"]),
         current_return_rows=tuple(tuple(int(item) for item in row) for row in sample["current_return_rows"]),
         history_dispatch_rows=tuple(
@@ -89,3 +89,5 @@ def _coerce_training_sample(value: object) -> TrafficPredictionTrainingSample:
         layer_id=None if sample.get("layer_id") is None else str(sample.get("layer_id")),
         next_layer_id=None if sample.get("next_layer_id") is None else str(sample.get("next_layer_id")),
     )
+    coerced.validate()
+    return coerced

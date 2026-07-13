@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig
-from rs.runtime.online.megatron_ep.host import attach_formal_online_runtime
-from rs.runtime.online.megatron_ep.public_types import RuntimeDecision, RuntimeHandle
+from rs.runtime.online.megatron_ep.host import attach_dispatch_observer, attach_formal_online_runtime
+from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
+from rs.runtime.online.megatron_ep.public_types import (
+    AggregateRuntimeCloseError,
+    LegacyObserverConflictError,
+    RuntimeAlreadyAttachedError,
+    RuntimeDecision,
+    RuntimeHandle,
+)
 
 
 class _TokenDispatcherStub:
@@ -151,3 +159,124 @@ def test_runtime_handle_close_restores_model_forward_hooks() -> None:
     assert getattr(model, "_routersense_forward_wrapped", False) is True
     handle.close()
     assert getattr(model, "_routersense_forward_wrapped", False) is False
+
+
+def test_duplicate_formal_attach_is_rejected_until_close() -> None:
+    model = _ScopeModelStub()
+    handle = attach_formal_online_runtime(
+        model=model,
+        runtime_config=_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    with pytest.raises(RuntimeAlreadyAttachedError):
+        attach_formal_online_runtime(
+            model=model,
+            runtime_config=_config(),
+            rank=0,
+            local_rank=0,
+            run_id="run-2",
+            model_revision="model",
+            request_table_hash="request",
+            hostname="host",
+        )
+    handle.close()
+    reopened = attach_formal_online_runtime(
+        model=model,
+        runtime_config=_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run-3",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    reopened.close()
+
+
+def test_legacy_observer_conflicts_with_formal_attach() -> None:
+    model = _ScopeModelStub()
+    attach_dispatch_observer(RouterSenseObserver(), rank=0, local_rank=0)(model)
+    with pytest.raises(LegacyObserverConflictError):
+        attach_formal_online_runtime(
+            model=model,
+            runtime_config=_config(),
+            rank=0,
+            local_rank=0,
+            run_id="run",
+            model_revision="model",
+            request_table_hash="request",
+            hostname="host",
+        )
+
+
+def test_runtime_handle_close_restores_all_callbacks_even_after_failure() -> None:
+    model = _ScopeModelStub()
+    handle = attach_formal_online_runtime(
+        model=model,
+        runtime_config=_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    restored = {"close": 0}
+
+    def _failing_close() -> None:
+        restored["close"] += 1
+        raise RuntimeError("close boom")
+
+    handle.add_close_callback(_failing_close)
+    with pytest.raises(AggregateRuntimeCloseError):
+        handle.close()
+    assert restored["close"] == 1
+    assert getattr(model, "_routersense_forward_wrapped", False) is False
+    assert getattr(model, "_routersense_runtime_owner", None) is None
+    handle.close()
+
+
+class _FailingDispatchModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList([_LayerContainerStub(), _LayerContainerStub()])
+        self.layers[1].mlp.token_dispatcher.token_dispatch = self._boom_dispatch
+
+    @staticmethod
+    def _boom_dispatch(*_args, **_kwargs):
+        raise RuntimeError("dispatch boom")
+
+    def forward(self):
+        self.layers[1].mlp.token_dispatcher.token_dispatch("hidden", "probs")
+        return "ok"
+
+
+def test_runtime_handle_emits_failure_events_and_reraises() -> None:
+    model = _FailingDispatchModel()
+    handle = attach_formal_online_runtime(
+        model=model,
+        runtime_config=_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    recorded: list[str] = []
+
+    def _recording_handle(event) -> RuntimeDecision:
+        recorded.append(type(event).__name__)
+        return RuntimeDecision()
+
+    handle.runtime.handle = _recording_handle
+    with pytest.raises(RuntimeError, match="dispatch boom"):
+        model()
+    assert "ForwardBeginEvent" in recorded
+    assert "DispatchFailedEvent" in recorded
+    assert "ForwardFailedEvent" in recorded

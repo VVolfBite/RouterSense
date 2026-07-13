@@ -85,6 +85,24 @@ def test_planning_package_does_not_import_runtime_or_offline() -> None:
     assert not bad, bad
 
 
+def test_planning_api_does_not_import_legacy_unified_interface() -> None:
+    bad = []
+    for path, lineno, module in _collect_imports(Path("src/rs/planning")):
+        if path.name != "api.py":
+            continue
+        if module.startswith("rs.scheduling.unified_interface"):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
+def test_runtime_formal_modules_do_not_import_private_legacy_planning_runtime() -> None:
+    bad = []
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime/online/megatron_ep")):
+        if module.startswith("rs.planning._legacy_runtime"):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
 def test_runtime_does_not_import_legacy_prediction_implementations() -> None:
     bad = []
     forbidden = (
@@ -110,6 +128,12 @@ def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
         if module.startswith(forbidden):
             bad.append(f"{path}:{lineno}:{module}")
     assert not bad, bad
+
+
+def test_lifecycle_does_not_use_legacy_enqueue_or_main_thread_prediction() -> None:
+    source = (Path(__file__).resolve().parents[1] / "src/rs/runtime/online/megatron_ep/lifecycle.py").read_text(encoding="utf-8")
+    assert ".enqueue(" not in source
+    assert source.count("_predict_dispatch_matrix(") == 1
 
 
 def test_lifecycle_does_not_import_runtime_module() -> None:
