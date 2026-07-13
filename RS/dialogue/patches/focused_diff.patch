@@ -1,359 +1,55 @@
-diff --git a/RS/experiments/distributed/_gpu_runner_common.py b/RS/experiments/distributed/_gpu_runner_common.py
-index b485a52..f4e71b2 100644
---- a/RS/experiments/distributed/_gpu_runner_common.py
-+++ b/RS/experiments/distributed/_gpu_runner_common.py
-@@ -239,7 +239,7 @@ def build_policy_correctness_config(
-             "capture_layer_selector": "",
-             "capture_phase_selector": "",
-             "heartbeat_enabled": profile == "debug",
--            "per_wave_timing_enabled": profile != "perf",
-+            "per_wave_timing_enabled": profile not in {"perf", "timeline_light"},
-             "replay_trace_enabled": profile == "debug",
-         },
-         "validation": {
-diff --git a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-index 5422d91..9943402 100644
---- a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-+++ b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-@@ -47,7 +47,7 @@ def _parse_args() -> argparse.Namespace:
-     parser.add_argument("--warmup-iters", type=int, default=None)
-     parser.add_argument("--measure-iters", type=int, default=None)
-     parser.add_argument("--selected-layers", default=None)
--    parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf"))
-+    parser.add_argument("--profile", default=None, choices=("debug", "execution", "perf", "timeline_light"))
-     parser.add_argument("--preflight-mode", default=None, choices=("full", "compact"))
-     parser.add_argument("--world-size", type=int, default=None)
-     parser.add_argument("--c2-summary-path", default=None)
-diff --git a/RS/experiments/online/collect_native_ep_trace.py b/RS/experiments/online/collect_native_ep_trace.py
-index e23a45a..150aa24 100644
---- a/RS/experiments/online/collect_native_ep_trace.py
-+++ b/RS/experiments/online/collect_native_ep_trace.py
-@@ -40,6 +40,7 @@ from rs.runtime.online.megatron_ep.host import (
-     summarize_rank_environment,
- )
- from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
-+from rs.runtime.online.megatron_ep.observation.tokenization import compute_token_count_contract
+diff --git a/RS/src/rs/core/experiment_config.py b/RS/src/rs/core/experiment_config.py
+index 4780983..2f0facf 100644
+--- a/RS/src/rs/core/experiment_config.py
++++ b/RS/src/rs/core/experiment_config.py
+@@ -18,7 +18,7 @@ SUPPORTED_RUN_KINDS = {
+     "online_policy_correctness",
+ }
 
- from experiments.online.support.environment_validation import main as verify_env_main
+-SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "execution", "debug"}
++SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "timeline_light", "execution", "debug"}
+ SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
+ SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
+ SUPPORTED_ONLINE_PHASE_POLICIES = {
+diff --git a/RS/tests/contract/test_runtime_timeline_cpu.py b/RS/tests/contract/test_runtime_timeline_cpu.py
+index 2321c80..f0f42a3 100644
+--- a/RS/tests/contract/test_runtime_timeline_cpu.py
++++ b/RS/tests/contract/test_runtime_timeline_cpu.py
+@@ -5,6 +5,8 @@ from pathlib import Path
+ import pytest
+ import yaml
 
-@@ -170,8 +171,12 @@ def main(argv: list[str] | None = None) -> int:
-         actual_prompt_count = int(len(prompts))
-         actual_batch_rows = int(encoded["input_ids"].shape[0])
-         actual_seq_len = int(encoded["input_ids"].shape[1])
--        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
--        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
-+        attention_mask_sum = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else None
-+        token_count_contract = compute_token_count_contract(
-+            actual_batch_rows=actual_batch_rows,
-+            actual_seq_len=actual_seq_len,
-+            attention_mask_sum=attention_mask_sum,
-+        )
-         tokenization_shape_valid = (
-             (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
-             and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
-@@ -221,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
-                 config.observation.profile == "debug" and bool(config.observation.capture_enabled)
-             ),
-         )(model)
--        if config.observation.profile in {"perf", "execution", "debug"}:
-+        if config.observation.profile in {"perf", "timeline_light", "execution", "debug"}:
-             policy_runtime = attach_formal_online_runtime(
-                 model=model,
-                 runtime_config=OnlineRuntimeConfig(
-@@ -344,8 +349,7 @@ def main(argv: list[str] | None = None) -> int:
-             "tokenization_padding_mode": str(tokenization.padding),
-             "tokenization_truncation": bool(tokenization.truncation),
-             "tokenization_max_length": tokenization.max_length,
--            "padded_token_count": int(padded_token_count),
--            "valid_non_padding_token_count": int(valid_non_padding_tokens),
-+            **token_count_contract.to_dict(),
-             "repeat_records": repeat_records,
-         }
-         write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
-@@ -370,8 +374,7 @@ def main(argv: list[str] | None = None) -> int:
-                 "tokenization_padding_mode": str(tokenization.padding),
-                 "tokenization_truncation": bool(tokenization.truncation),
-                 "tokenization_max_length": tokenization.max_length,
--                "padded_token_count": int(padded_token_count),
--                "valid_non_padding_token_count": int(valid_non_padding_tokens),
-+                **token_count_contract.to_dict(),
-                 "repeat_records": repeat_records,
-                 "warmup_iters": int(warmup_iters),
-                 "measure_iters": int(measure_iters),
-diff --git a/RS/experiments/online/run_policy_correctness.py b/RS/experiments/online/run_policy_correctness.py
-index 1efcf51..c4aedf6 100644
---- a/RS/experiments/online/run_policy_correctness.py
-+++ b/RS/experiments/online/run_policy_correctness.py
-@@ -40,6 +40,7 @@ from rs.runtime.online.megatron_ep.host import (
-     summarize_native_dispatchers,
-     summarize_rank_environment,
- )
-+from rs.runtime.online.megatron_ep.observation.tokenization import compute_token_count_contract
- from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop
- from rs.scheduling.registry import resolve_phase_policy
-
-@@ -440,8 +441,12 @@ def main(argv: list[str] | None = None) -> int:
-         actual_prompt_count = int(len(prompts))
-         actual_batch_rows = int(encoded["input_ids"].shape[0])
-         actual_seq_len = int(encoded["input_ids"].shape[1])
--        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
--        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
-+        attention_mask_sum = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else None
-+        token_count_contract = compute_token_count_contract(
-+            actual_batch_rows=actual_batch_rows,
-+            actual_seq_len=actual_seq_len,
-+            attention_mask_sum=attention_mask_sum,
-+        )
-         tokenization_shape_valid = (
-             (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
-             and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
-@@ -748,8 +753,7 @@ def main(argv: list[str] | None = None) -> int:
-             "tokenization_padding_mode": str(tokenization.padding),
-             "tokenization_truncation": bool(tokenization.truncation),
-             "tokenization_max_length": tokenization.max_length,
--            "padded_token_count": int(padded_token_count),
--            "valid_non_padding_token_count": int(valid_non_padding_tokens),
-+            **token_count_contract.to_dict(),
-         }
-         rank_summary = write_rank_artifacts(
-             run_dir=run_dir,
-@@ -810,8 +814,7 @@ def main(argv: list[str] | None = None) -> int:
-                 "tokenization_padding_mode": str(tokenization.padding),
-                 "tokenization_truncation": bool(tokenization.truncation),
-                 "tokenization_max_length": tokenization.max_length,
--                "padded_token_count": int(padded_token_count),
--                "valid_non_padding_token_count": int(valid_non_padding_tokens),
-+                **token_count_contract.to_dict(),
-                 "runtime_line": str(config.runtime.line),
-                 "invariant_mode": str(config.runtime.invariant_mode),
-                 "transport_mutation": transport_mutation,
-diff --git a/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py b/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
-index f26ff94..654a50f 100644
---- a/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
-+++ b/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
-@@ -453,7 +453,7 @@ def execute_async_phase_tensor(
-     rank_context: dict[str, int],
-     timeline_hook: Any | None = None,
- ) -> AsyncP2PExecutionResult:
--    total_start_ns = time.monotonic_ns()
-+    total_start_ns = time.perf_counter_ns()
-     world_group = process_group if process_group is not None else dist.group.WORLD
-     rank = int(rank_context["global_rank"])
-     total_recv_rows = int(sum(context.recv_splits))
-@@ -463,7 +463,7 @@ def execute_async_phase_tensor(
-     incoming_by_src = {int(slot.src_rank): slot for slot in context.incoming_slots}
-     local_copy_rows = 0
-     local_copy_task_count = 0
--    local_copy_start_ns = time.monotonic_ns()
-+    local_copy_start_ns = time.perf_counter_ns()
-     for bundle in context.transport_bundles:
-         segment = bundle.outgoing_segment
-         if not segment.is_local or int(segment.row_count) <= 0:
-@@ -480,7 +480,7 @@ def execute_async_phase_tensor(
-         )
-         local_copy_rows += int(segment.row_count)
-         local_copy_task_count += 1
--    local_copy_end_ns = time.monotonic_ns()
-+    local_copy_end_ns = time.perf_counter_ns()
-
-     execution_entries: list[dict[str, Any]] = []
-     active_wave_ids: set[int] = set()
-@@ -591,6 +591,13 @@ def execute_async_phase_tensor(
-     batch_count = 0
-     first_transport_submit_ns = 0
-     last_transport_complete_ns = 0
-+    op_build_begin_ns = 0
-+    op_build_end_ns = 0
-+    submit_begin_ns = 0
-+    first_request_submitted_ns = 0
-+    last_request_submitted_ns = 0
-+    first_request_completed_ns = 0
-+    all_requests_completed_ns = 0
-     while True:
-         batch = frontier.commit_batch(limit=1)
-         if not batch:
-@@ -604,7 +611,9 @@ def execute_async_phase_tensor(
-                 break
-         batch_count += 1
-         frontier.mark_in_flight([task.task_id for task in batch])
--        op_build_start_ns = time.monotonic_ns()
-+        op_build_start_ns = time.perf_counter_ns()
-+        if op_build_begin_ns <= 0:
-+            op_build_begin_ns = int(op_build_start_ns)
-         ops: list[Any] = []
-         batch_send = 0
-         batch_recv = 0
-@@ -671,17 +680,27 @@ def execute_async_phase_tensor(
-                 batch_send += 1
-                 if emit_detailed_artifacts:
-                     ordered_entries.append({**entry, "op_kind": "send", "release_epoch": int(frontier.release_epoch)})
--        op_build_end_ns = time.monotonic_ns()
--        batch_submit_start_ns = time.monotonic_ns()
-+        op_build_end_ns = time.perf_counter_ns()
-+        op_build_end_ns = int(op_build_end_ns)
-+        batch_submit_start_ns = time.perf_counter_ns()
-+        if submit_begin_ns <= 0:
-+            submit_begin_ns = int(batch_submit_start_ns)
-         if first_transport_submit_ns <= 0 and ops:
-             first_transport_submit_ns = int(batch_submit_start_ns)
-+        if first_request_submitted_ns <= 0 and ops:
-+            first_request_submitted_ns = int(batch_submit_start_ns)
-         work_handles: list[Any] = list(dist.batch_isend_irecv(ops)) if ops else []
--        batch_submit_end_ns = time.monotonic_ns()
--        wait_start_ns = time.monotonic_ns()
-+        batch_submit_end_ns = time.perf_counter_ns()
-+        if ops:
-+            last_request_submitted_ns = int(batch_submit_end_ns)
-+        wait_start_ns = time.perf_counter_ns()
-         for work in work_handles:
-             work.wait()
--        wait_end_ns = time.monotonic_ns()
-+        wait_end_ns = time.perf_counter_ns()
-         if ops:
-+            if first_request_completed_ns <= 0:
-+                first_request_completed_ns = int(wait_end_ns)
-+            all_requests_completed_ns = int(wait_end_ns)
-             last_transport_complete_ns = int(wait_end_ns)
-         frontier.mark_completed([task.task_id for task in batch])
-         op_build_us += float((op_build_end_ns - op_build_start_ns) / 1000.0)
-@@ -719,7 +738,12 @@ def execute_async_phase_tensor(
-                     agreement_token=dict(suffix_result.get("agreement_token", {})),
-                 )
-                 suffix_splice_count += 1
--    total_end_ns = time.monotonic_ns()
-+    total_end_ns = time.perf_counter_ns()
-+    active_transport_critical_path_us = (
-+        float((all_requests_completed_ns - first_request_submitted_ns) / 1000.0)
-+        if first_request_submitted_ns > 0 and all_requests_completed_ns > 0
-+        else None
++from experiments.distributed._gpu_runner_common import build_policy_correctness_config
++from rs.core.experiment_config import load_run_config
+ from rs.runtime.online.megatron_ep.observation.runtime_timeline import (
+     MEASUREMENT_STATUSES,
+     RuntimePhaseTimeline,
+@@ -183,3 +185,28 @@ def test_gpu_runtime_timeline_config_is_timeline_light_and_perf_safe() -> None:
+         "routersense_b_core_independent_async",
+         "routersense_u_core_zero_raw_async",
+     ]
++
++
++def test_gpu_runtime_timeline_child_config_loads_timeline_light_profile(tmp_path: Path) -> None:
++    base = yaml.safe_load((REPO_ROOT / "configs/official/gpu_runtime_timeline.yaml").read_text())
++    base["model"] = {
++        "model_id": "test-model",
++        "local_path": "/tmp/test-model",
++        "trust_remote_code": False,
++    }
++    child = build_policy_correctness_config(
++        base_comparison=base,
++        strategy_name="routersense_b_core_independent_async",
++        run_name="timeline_child",
++        output_root=tmp_path / "out",
++        profile="timeline_light",
++        selected_layers="0,1",
++        save_logits=False,
++        preflight_mode="compact",
 +    )
-
-     if callable(timeline_hook):
-         timeline_hook(
-@@ -760,6 +784,30 @@ def execute_async_phase_tensor(
-             "batch_submit_us": float(batch_submit_us),
-             "wait_us": float(wait_us),
-             "total_us": float((total_end_ns - total_start_ns) / 1000.0),
-+            "op_build_begin_ns": int(op_build_begin_ns),
-+            "op_build_end_ns": int(op_build_end_ns),
-+            "submit_begin_ns": int(submit_begin_ns),
-+            "first_request_submitted_ns": int(first_request_submitted_ns),
-+            "last_request_submitted_ns": int(last_request_submitted_ns),
-+            "first_request_completed_ns": int(first_request_completed_ns),
-+            "all_requests_completed_ns": int(all_requests_completed_ns),
-+            "submit_queue_us": (
-+                float((first_request_submitted_ns - submit_begin_ns) / 1000.0)
-+                if submit_begin_ns > 0 and first_request_submitted_ns > 0
-+                else None
-+            ),
-+            "submit_span_us": (
-+                float((last_request_submitted_ns - first_request_submitted_ns) / 1000.0)
-+                if first_request_submitted_ns > 0 and last_request_submitted_ns > 0
-+                else None
-+            ),
-+            "request_wait_us": (
-+                float((all_requests_completed_ns - last_request_submitted_ns) / 1000.0)
-+                if last_request_submitted_ns > 0 and all_requests_completed_ns > 0
-+                else None
-+            ),
-+            "active_transport_sum_us": float(batch_submit_us + wait_us),
-+            "active_transport_critical_path_us": active_transport_critical_path_us,
-             "batch_isend_irecv_call_count": int(batch_isend_irecv_call_count),
-             "all_work_completed": True,
-             "first_transport_submit_ns": int(first_transport_submit_ns),
-diff --git a/RS/src/rs/runtime/online/megatron_ep/execution/executor_facade.py b/RS/src/rs/runtime/online/megatron_ep/execution/executor_facade.py
-index 5ad3a62..1809879 100644
---- a/RS/src/rs/runtime/online/megatron_ep/execution/executor_facade.py
-+++ b/RS/src/rs/runtime/online/megatron_ep/execution/executor_facade.py
-@@ -153,6 +153,23 @@ class AsyncReleaseTransportExecutor:
-             timeline_hook=request.event_sink,
-         )
-         summary_row = next((row for row in result.execution_entries if row.get("record_type") == "async_phase_summary"), {})
-+        plan_tasks = [
-+            task
-+            for wave in request.execution_plan.waves
-+            for task in wave.bucket_tasks
-+        ]
-+        task_rows = [
-+            int(payload.row_count)
-+            for task in plan_tasks
-+            for payload in task.payload_slices
-+            if str(payload.tensor_role) == str(request.tensor_role)
-+        ]
-+        task_wire_bytes = [
-+            int(payload.payload_byte_count)
-+            for task in plan_tasks
-+            for payload in task.payload_slices
-+            if str(payload.tensor_role) == str(request.tensor_role)
-+        ]
-         return ExecutionResult(
-             output_tensor=result.output,
-             requested_backend_id=str(request.requested_backend_id or self.backend_id),
-@@ -178,13 +195,33 @@ class AsyncReleaseTransportExecutor:
-                 "batch_submit_us": float(summary_row.get("batch_submit_us", 0.0) or 0.0),
-                 "work_wait_us": float(summary_row.get("wait_us", 0.0) or 0.0),
-                 "wait_us": float(summary_row.get("wait_us", 0.0) or 0.0),
-+                "submit_queue_us": float(summary_row.get("submit_queue_us") or 0.0),
-+                "submit_span_us": float(summary_row.get("submit_span_us") or 0.0),
-+                "request_wait_us": float(summary_row.get("request_wait_us") or 0.0),
-+                "active_transport_sum_us": float(summary_row.get("active_transport_sum_us") or 0.0),
-+                "active_transport_critical_path_us": float(
-+                    summary_row.get("active_transport_critical_path_us") or 0.0
-+                ),
-                 "communication_us": float(summary_row.get("total_us", 0.0) or 0.0),
-                 "total_forward_us": float(summary_row.get("total_us", 0.0) or 0.0),
-             },
-             phase_metrics={
--                "task_count": int(sum(len(wave.bucket_tasks) for wave in request.execution_plan.waves)),
-+                "wave_count": int(len(request.execution_plan.waves)),
-+                "task_count": int(len(plan_tasks)),
-+                "tensor_role_task_count": int(len(task_rows)),
-+                "total_rows": int(sum(task_rows)),
-+                "total_wire_bytes": int(sum(task_wire_bytes)),
-+                "send_task_count": int(summary_row.get("send_op_count", 0) or 0),
-+                "recv_task_count": int(summary_row.get("recv_op_count", 0) or 0),
-                 "p2p_op_count": int(summary_row.get("send_op_count", 0) or 0) + int(summary_row.get("recv_op_count", 0) or 0),
-                 "work_handle_count": int(summary_row.get("work_handle_count", 0) or 0),
-+                "op_build_begin_ns": int(summary_row.get("op_build_begin_ns", 0) or 0),
-+                "op_build_end_ns": int(summary_row.get("op_build_end_ns", 0) or 0),
-+                "submit_begin_ns": int(summary_row.get("submit_begin_ns", 0) or 0),
-+                "first_request_submitted_ns": int(summary_row.get("first_request_submitted_ns", 0) or 0),
-+                "last_request_submitted_ns": int(summary_row.get("last_request_submitted_ns", 0) or 0),
-+                "first_request_completed_ns": int(summary_row.get("first_request_completed_ns", 0) or 0),
-+                "all_requests_completed_ns": int(summary_row.get("all_requests_completed_ns", 0) or 0),
-             },
-             first_transport_submit_ns=int(summary_row.get("first_transport_submit_ns", 0) or 0),
-             last_transport_complete_ns=int(summary_row.get("last_transport_complete_ns", 0) or 0),
-diff --git a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
-index 4c8b2f9..63da221 100644
---- a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
-+++ b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
-@@ -355,7 +355,7 @@ class RouterSenseInjectionRuntime:
-         return str(getattr(self.config, "observation_profile", "minimal"))
-
-     def _is_perf_profile(self) -> bool:
--        return self._artifact_profile() == "perf"
-+        return self._artifact_profile() in {"perf", "timeline_light"}
-
-     def _is_debug_profile(self) -> bool:
-         return self._artifact_profile() == "debug"
-diff --git a/RS/src/rs/runtime/online/megatron_ep/observation/contracts.py b/RS/src/rs/runtime/online/megatron_ep/observation/contracts.py
-index 24bda02..083b9ed 100644
---- a/RS/src/rs/runtime/online/megatron_ep/observation/contracts.py
-+++ b/RS/src/rs/runtime/online/megatron_ep/observation/contracts.py
-@@ -69,13 +69,13 @@ class ObservationEmitter:
-         self.config = config
-
-     def includes_execution(self) -> bool:
--        return self.config.profile in {"perf", "execution", "debug"}
-+        return self.config.profile in {"perf", "timeline_light", "execution", "debug"}
-
-     def includes_debug(self) -> bool:
-         return self.config.profile == "debug"
-
-     def includes_perf(self) -> bool:
--        return self.config.profile == "perf"
-+        return self.config.profile in {"perf", "timeline_light"}
-
-
- @dataclass(frozen=True)
++    child_path = tmp_path / "child.yaml"
++    child_path.write_text(yaml.safe_dump(child, sort_keys=False))
++    config = load_run_config(config_path=child_path)
++    assert config.observation.profile == "timeline_light"
++    assert config.execution.preflight_mode == "compact"
++    assert config.execution.schedule.selected_layer_ids == ("0", "1")

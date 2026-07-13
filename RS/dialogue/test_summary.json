@@ -1,34 +1,21 @@
 {
-  "tests": [
-    {
-      "test_name": "compileall",
-      "command": "python -m compileall src experiments tests",
-      "passed": true,
-      "failed": 0,
-      "skipped": 0
-    },
-    {
-      "test_name": "runtime_timeline_cpu",
-      "command": "PYTHONPATH=src:. pytest -q tests/contract/test_runtime_timeline_cpu.py",
-      "passed": true,
-      "failed": 0,
-      "skipped": 0,
-      "summary": "10 passed"
-    },
-    {
-      "test_name": "gpu_child_config_and_measurement_semantics",
-      "command": "PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py",
-      "passed": true,
-      "failed": 0,
-      "skipped": 0,
-      "summary": "24 passed"
-    },
-    {
-      "test_name": "diff_check",
-      "command": "git diff --check",
-      "passed": true,
-      "failed": 0,
-      "skipped": 0
-    }
-  ]
+  "gpu_timeline_run": {
+    "passed": true,
+    "status": "executed",
+    "strategies": [
+      {
+        "name": "routersense_b_core_independent_async",
+        "status": "ineligible"
+      },
+      {
+        "name": "routersense_u_core_zero_raw_async",
+        "status": "ineligible"
+      }
+    ]
+  },
+  "cpu_validation": {
+    "compileall": "passed",
+    "runtime_timeline_cpu": "passed",
+    "diff_check": "passed"
+  }
 }

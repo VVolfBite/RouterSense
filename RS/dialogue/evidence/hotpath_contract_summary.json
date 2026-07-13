@@ -1,0 +1,72 @@
+{
+  "routersense_b_core_independent_async": {
+    "selected_p0_hook_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "selected_p0_hook_count_all_rank_sum": 16,
+    "selected_p1_hook_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "selected_p1_hook_count_all_rank_sum": 16,
+    "prediction_source_p0_hook_count_all_rank_sum": 0,
+    "none_heavy_hook_count_all_rank_sum": 0,
+    "raw_u_build_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "raw_u_build_count_all_rank_sum": 16,
+    "raw_u_build_count_all_rank_valid": null,
+    "raw_u_build_count_by_layer_per_rank_valid": null,
+    "hotpath_exact_count_eligible": true,
+    "hotpath_eligible": true,
+    "fallback_count": 0,
+    "timeout_count": 0,
+    "all_work_completed": true,
+    "requested_preflight_mode": "compact",
+    "effective_preflight_mode": "compact",
+    "tokenization_shape_valid_all_ranks": true
+  },
+  "routersense_u_core_zero_raw_async": {
+    "selected_p0_hook_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "selected_p0_hook_count_all_rank_sum": 16,
+    "selected_p1_hook_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "selected_p1_hook_count_all_rank_sum": 16,
+    "prediction_source_p0_hook_count_all_rank_sum": 0,
+    "none_heavy_hook_count_all_rank_sum": 0,
+    "raw_u_build_count_per_rank": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "raw_u_build_count_all_rank_sum": 16,
+    "raw_u_build_count_all_rank_valid": true,
+    "raw_u_build_count_by_layer_per_rank_valid": true,
+    "hotpath_exact_count_eligible": true,
+    "hotpath_eligible": true,
+    "fallback_count": 0,
+    "timeout_count": 0,
+    "all_work_completed": true,
+    "requested_preflight_mode": "compact",
+    "effective_preflight_mode": "compact",
+    "tokenization_shape_valid_all_ranks": true
+  }
+}

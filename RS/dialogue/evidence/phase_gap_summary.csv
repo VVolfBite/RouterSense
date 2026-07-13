@@ -1,0 +1,17 @@
+strategy,rank,layer,p0_complete_to_p1_submit_us
+routersense_b_core_independent_async,0,0,16793.954
+routersense_b_core_independent_async,0,1,16926.894
+routersense_b_core_independent_async,1,0,18033.615
+routersense_b_core_independent_async,1,1,16876.326
+routersense_b_core_independent_async,2,0,17798.979
+routersense_b_core_independent_async,2,1,17023.936
+routersense_b_core_independent_async,3,0,17501.936
+routersense_b_core_independent_async,3,1,17059.54
+routersense_u_core_zero_raw_async,0,0,12437.789
+routersense_u_core_zero_raw_async,0,1,13012.591
+routersense_u_core_zero_raw_async,1,0,17615.312
+routersense_u_core_zero_raw_async,1,1,18232.048
+routersense_u_core_zero_raw_async,2,0,12844.286
+routersense_u_core_zero_raw_async,2,1,12840.911
+routersense_u_core_zero_raw_async,3,0,17501.906
+routersense_u_core_zero_raw_async,3,1,18758.185

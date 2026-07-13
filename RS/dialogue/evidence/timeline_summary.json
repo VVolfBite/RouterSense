@@ -1,0 +1,112 @@
+{
+  "overall": [
+    {
+      "strategy": "routersense_b_core_independent_async",
+      "global_forward_us": 244968.1854248047,
+      "all_rank_selected_window_us": 88784.016,
+      "p0_window_us": 70783.935,
+      "p1_window_us": 69192.233,
+      "rank_skew_us": 274.8420000000042,
+      "dispatch_transport_sum_us": 5188.471,
+      "return_transport_sum_us": 2624.661,
+      "transport_sum_us": 7813.132,
+      "p2p_enqueue_us": 1955.018,
+      "p2p_wait_us": 218.158,
+      "raw_u_build_us": 8960.089,
+      "control_overhead_us": 9098.101,
+      "batch_isend_irecv_call_count": 72,
+      "send_recv_ops": 72,
+      "phase_submit_span_us": {
+        "min": 736.84,
+        "median": 926.7165,
+        "max": 1049.71,
+        "sum": 22268.486,
+        "mean": 927.8535833333334,
+        "count": 24
+      },
+      "phase_request_wait_us": {
+        "min": 5.057,
+        "median": 5.4545,
+        "max": 6.217,
+        "sum": 132.14000000000001,
+        "mean": 5.505833333333334,
+        "count": 24
+      },
+      "phase_active_critical_path_us": {
+        "min": 742.276,
+        "median": 932.2605,
+        "max": 1055.294,
+        "sum": 22400.626,
+        "mean": 933.3594166666667,
+        "count": 24
+      },
+      "inter_phase_gap_us": {
+        "min": 16793.954,
+        "median": 17041.738,
+        "max": 18033.615,
+        "sum": 138015.18,
+        "mean": 17251.8975,
+        "count": 8
+      },
+      "critical_rank": 3,
+      "hotpath_counts_ok": true,
+      "fallback_count": 0,
+      "timeout_count": 0,
+      "preflight_mode": "compact"
+    },
+    {
+      "strategy": "routersense_u_core_zero_raw_async",
+      "global_forward_us": 234289.5050048828,
+      "all_rank_selected_window_us": 91478.66,
+      "p0_window_us": 71707.485,
+      "p1_window_us": 77153.481,
+      "rank_skew_us": 6812.012000000002,
+      "dispatch_transport_sum_us": 3718.987,
+      "return_transport_sum_us": 1898.4879999999998,
+      "transport_sum_us": 5617.475,
+      "p2p_enqueue_us": 1452.4869999999996,
+      "p2p_wait_us": 157.10700000000003,
+      "raw_u_build_us": 5839.6,
+      "control_overhead_us": 5945.777,
+      "batch_isend_irecv_call_count": 72,
+      "send_recv_ops": 72,
+      "phase_submit_span_us": {
+        "min": 542.807,
+        "median": 739.809,
+        "max": 1150.822,
+        "sum": 18501.32,
+        "mean": 770.8883333333333,
+        "count": 24
+      },
+      "phase_request_wait_us": {
+        "min": 3.407,
+        "median": 4.7125,
+        "max": 7.458,
+        "sum": 116.377,
+        "mean": 4.8490416666666665,
+        "count": 24
+      },
+      "phase_active_critical_path_us": {
+        "min": 546.656,
+        "median": 744.486,
+        "max": 1158.28,
+        "sum": 18617.697,
+        "mean": 775.737375,
+        "count": 24
+      },
+      "inter_phase_gap_us": {
+        "min": 12437.789,
+        "median": 15257.2485,
+        "max": 18758.185,
+        "sum": 123243.028,
+        "mean": 15405.3785,
+        "count": 8
+      },
+      "critical_rank": 3,
+      "hotpath_counts_ok": true,
+      "fallback_count": 0,
+      "timeout_count": 0,
+      "preflight_mode": "compact"
+    }
+  ]
+}

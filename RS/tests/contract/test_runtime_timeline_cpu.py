@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from experiments.distributed._gpu_runner_common import build_policy_correctness_config
+from rs.core.experiment_config import load_run_config
 from rs.runtime.online.megatron_ep.observation.runtime_timeline import (
     MEASUREMENT_STATUSES,
     RuntimePhaseTimeline,
@@ -183,3 +185,28 @@ def test_gpu_runtime_timeline_config_is_timeline_light_and_perf_safe() -> None:
         "routersense_b_core_independent_async",
         "routersense_u_core_zero_raw_async",
     ]
+
+
+def test_gpu_runtime_timeline_child_config_loads_timeline_light_profile(tmp_path: Path) -> None:
+    base = yaml.safe_load((REPO_ROOT / "configs/official/gpu_runtime_timeline.yaml").read_text())
+    base["model"] = {
+        "model_id": "test-model",
+        "local_path": "/tmp/test-model",
+        "trust_remote_code": False,
+    }
+    child = build_policy_correctness_config(
+        base_comparison=base,
+        strategy_name="routersense_b_core_independent_async",
+        run_name="timeline_child",
+        output_root=tmp_path / "out",
+        profile="timeline_light",
+        selected_layers="0,1",
+        save_logits=False,
+        preflight_mode="compact",
+    )
+    child_path = tmp_path / "child.yaml"
+    child_path.write_text(yaml.safe_dump(child, sort_keys=False))
+    config = load_run_config(config_path=child_path)
+    assert config.observation.profile == "timeline_light"
+    assert config.execution.preflight_mode == "compact"
+    assert config.execution.schedule.selected_layer_ids == ("0", "1")

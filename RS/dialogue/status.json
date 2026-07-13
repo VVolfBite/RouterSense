@@ -1,22 +1,12 @@
 {
-  "milestone": "M-RUNTIME-TIMELINE-CPU",
-  "starting_sha": "8bc5acfea09ce2665c150fff314a237025df3188",
-  "final_sha": "see git rev-parse HEAD after commit",
-  "branch": "main",
-  "gpu_available": false,
-  "completed": [
-    "token_count_contract",
-    "runtime_phase_timeline_schema",
-    "async_release_submit_wait_timing_fields",
-    "task_granularity_summary_schema",
-    "rank_imbalance_summary_schema",
-    "runtime_static_audit",
-    "gpu_runtime_timeline_config",
-    "targeted_cpu_tests"
-  ],
-  "remaining": [
-    "run timeline_light on 4GPU",
-    "use GPU timeline to localize 80-90 ms selected communication window"
-  ],
-  "final_status": "RUNTIME_TIMELINE_CPU_READY"
+  "milestone": "M-RUNTIME-TIMELINE-GPU",
+  "starting_sha": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
+  "current_sha": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
+  "runner_status": "executed",
+  "final_status": "RUNTIME_TIMELINE_GPU_CAPTURED",
+  "gpu_available": true,
+  "strategies": [
+    "routersense_b_core_independent_async",
+    "routersense_u_core_zero_raw_async"
+  ]
 }
