@@ -310,6 +310,9 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("selected_layer_ids", list(self._selected_layer_id_set))
         self._runtime_state.write("prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
         self._runtime_state.write("none_layer_ids", list(self._none_layer_id_set))
+        self._runtime_state.write("wrapped_selected_layer_ids", list(self._selected_layer_id_set))
+        self._runtime_state.write("wrapped_prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
+        self._runtime_state.write("unwrapped_none_layer_ids", list(self._none_layer_id_set))
 
     def layer_role_for_name(self, layer_name: str) -> str:
         layer_id = str(parse_layer_id(layer_name))
@@ -648,6 +651,25 @@ class RouterSenseInjectionRuntime:
         if build_key in self._current_plan_build_keys:
             raise RuntimeError(f"duplicate current plan build detected for {build_key}")
         self._current_plan_build_keys.add(build_key)
+
+    def _record_none_heavy_hook(self, *, layer_name: str, phase: str, hook_name: str, start_ns: int) -> None:
+        self._runtime_state.metrics.none_heavy_hook_count = int(self._runtime_state.metrics.none_heavy_hook_count) + 1
+        end_ns = time.monotonic_ns()
+        self._record_hook_timing(
+            layer_name=layer_name,
+            phase=phase,
+            hook_name=hook_name,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            scheduled=False,
+            reason="layer_role_none_defensive_entry",
+        )
+        self._timeline(
+            f"{hook_name}_none_heavy_defensive_exit",
+            layer_name=layer_name,
+            phase_name=phase,
+            scheduled=False,
+        )
 
     def before_prediction_source_dispatch(
         self,
@@ -2860,6 +2882,7 @@ class RouterSenseInjectionRuntime:
             self._forward_epoch += 1
         else:
             self._forward_epoch = int(forward_epoch)
+        self._current_plan_build_keys.clear()
         self._pending_p0.clear()
         self._pending_p1.clear()
         self._active_transport = None
@@ -2923,15 +2946,11 @@ class RouterSenseInjectionRuntime:
             self._runtime_state.metrics.selected_p0_hook_count = int(self._runtime_state.metrics.selected_p0_hook_count) + 1
         self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
         if layer_role == "none":
-            hook_end_ns = time.monotonic_ns()
-            self._record_hook_timing(
+            self._record_none_heavy_hook(
                 layer_name=layer_name,
                 phase="P0",
                 hook_name="before_token_dispatch_total",
                 start_ns=hook_start_ns,
-                end_ns=hook_end_ns,
-                scheduled=False,
-                reason="layer_role_none",
             )
             self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
             return
@@ -3329,6 +3348,15 @@ class RouterSenseInjectionRuntime:
     def after_token_dispatch(self, *, layer_name: str) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("after_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
+        if self.layer_role_for_name(layer_name) == "none":
+            self._record_none_heavy_hook(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="after_token_dispatch_total",
+                start_ns=hook_start_ns,
+            )
+            self._timeline("after_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
+            return
         active_transport = self.current_transport()
         if self.layer_role_for_name(layer_name) == "selected" and active_transport is not None and str(active_transport.get("layer_name")) == str(layer_name) and str(active_transport.get("phase")) == "P0":
             clear_start_ns = time.monotonic_ns()
@@ -3419,6 +3447,15 @@ class RouterSenseInjectionRuntime:
         if layer_role == "selected":
             self._runtime_state.metrics.selected_p1_hook_count = int(self._runtime_state.metrics.selected_p1_hook_count) + 1
         self._timeline("before_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        if layer_role == "none":
+            self._record_none_heavy_hook(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="before_token_combine_total",
+                start_ns=hook_start_ns,
+            )
+            self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
+            return
         if layer_role != "selected":
             hook_end_ns = time.monotonic_ns()
             self._record_hook_timing(
@@ -3730,6 +3767,15 @@ class RouterSenseInjectionRuntime:
     def after_token_combine(self, *, layer_name: str) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        if self.layer_role_for_name(layer_name) == "none":
+            self._record_none_heavy_hook(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="after_token_combine_total",
+                start_ns=hook_start_ns,
+            )
+            self._timeline("after_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
+            return
         active_transport = self.current_transport()
         if self.layer_role_for_name(layer_name) == "selected" and active_transport is not None and str(active_transport.get("layer_name")) == str(layer_name) and str(active_transport.get("phase")) == "P1":
             clear_start_ns = time.monotonic_ns()
@@ -3784,7 +3830,17 @@ class RouterSenseInjectionRuntime:
     # Shadow-only native observation hooks
 
     def on_dispatch(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or self.layer_role_for_name(layer_name) != "selected":
+        hook_start_ns = time.monotonic_ns()
+        layer_role = self.layer_role_for_name(layer_name)
+        if layer_role == "none":
+            self._record_none_heavy_hook(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="on_dispatch_total",
+                start_ns=hook_start_ns,
+            )
+            return
+        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or layer_role != "selected":
             return
         observation = build_runtime_observation(
             run_id=self.run_id,
@@ -3805,7 +3861,17 @@ class RouterSenseInjectionRuntime:
         self._pending_p0[layer_name] = observation
 
     def on_combine(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or self.layer_role_for_name(layer_name) != "selected":
+        hook_start_ns = time.monotonic_ns()
+        layer_role = self.layer_role_for_name(layer_name)
+        if layer_role == "none":
+            self._record_none_heavy_hook(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="on_combine_total",
+                start_ns=hook_start_ns,
+            )
+            return
+        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or layer_role != "selected":
             return
         if layer_name not in self._pending_p0:
             return

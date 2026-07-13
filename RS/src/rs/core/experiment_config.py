@@ -74,10 +74,21 @@ class TopologyConfig:
 
 
 @dataclass(frozen=True)
+class TokenizationConfig:
+    padding: str = "longest"
+    truncation: bool = False
+    max_length: int | None = None
+    expected_prompt_count: int | None = None
+    expected_batch_rows: int | None = None
+    expected_seq_len: int | None = None
+
+
+@dataclass(frozen=True)
 class WorkloadConfig:
     prompts: str = ""
     trace_artifact_dir: str = ""
     num_prompts: int | None = None
+    tokenization: TokenizationConfig = field(default_factory=TokenizationConfig)
 
 
 @dataclass(frozen=True)
@@ -375,7 +386,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
             "network",
             "interface_hint",
         },
-        "workload": {"prompts", "trace_artifact_dir", "num_prompts"},
+        "workload": {"prompts", "trace_artifact_dir", "num_prompts", "tokenization"},
         "runtime": {"line", "precision", "invariant_mode", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
         "online_policy": {"name", "parameters", "p2"},
         "offline_study": {"policies", "reference_policies", "p2_source", "window"},
@@ -414,6 +425,14 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         ("online_policy", "p2"): {"mode", "artifact"},
         ("offline_study", "window"): {"sample_selector", "start_layer_selector"},
         ("execution", "schedule"): {"layer_selector", "phase_selector", "selected_layer_ids"},
+        ("workload", "tokenization"): {
+            "padding",
+            "truncation",
+            "max_length",
+            "expected_prompt_count",
+            "expected_batch_rows",
+            "expected_seq_len",
+        },
     }
 
     def _walk(mapping: dict[str, Any], path: tuple[str, ...] = ()) -> None:
@@ -457,6 +476,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
     model = payload.get("model", {})
     topology = payload.get("topology", {})
     workload = payload.get("workload", {})
+    tokenization = workload.get("tokenization", {}) or {}
     runtime = payload.get("runtime", {})
     online_policy = payload.get("online_policy", {})
     offline_study = payload.get("offline_study", {})
@@ -465,6 +485,9 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
     validation = payload.get("validation", {})
     artifact = payload.get("artifact", {})
     topology_launcher = topology.get("launcher", {})
+    preflight_mode = str(execution.get("preflight_mode", "full"))
+    if preflight_mode not in {"full", "compact"}:
+        raise ValueError(f"unsupported execution.preflight_mode: {preflight_mode!r}")
     return RunConfig(
         run=RunConfigSection(kind=str(run.get("kind", "")), name=str(run.get("name", ""))),
         model=ModelConfig(
@@ -493,6 +516,24 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             prompts=str(workload.get("prompts", "")),
             trace_artifact_dir=str(workload.get("trace_artifact_dir", "")),
             num_prompts=None if workload.get("num_prompts") is None else int(workload.get("num_prompts")),
+            tokenization=TokenizationConfig(
+                padding=str(tokenization.get("padding", "longest")),
+                truncation=bool(tokenization.get("truncation", False)),
+                max_length=None if tokenization.get("max_length") is None else int(tokenization.get("max_length")),
+                expected_prompt_count=(
+                    None
+                    if tokenization.get("expected_prompt_count") is None
+                    else int(tokenization.get("expected_prompt_count"))
+                ),
+                expected_batch_rows=(
+                    None
+                    if tokenization.get("expected_batch_rows") is None
+                    else int(tokenization.get("expected_batch_rows"))
+                ),
+                expected_seq_len=(
+                    None if tokenization.get("expected_seq_len") is None else int(tokenization.get("expected_seq_len"))
+                ),
+            ),
         ),
         runtime=RuntimeConfig(
             line=str(runtime.get("line", "")),
@@ -534,7 +575,7 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             bucket_mode=str(execution.get("bucket_mode", "dynamic_current")),
             bucket_rows=int(execution.get("bucket_rows", 0)),
             safe_projection_mode=str(execution.get("safe_projection_mode", "host_select")),
-            preflight_mode=str(execution.get("preflight_mode", "full")),
+            preflight_mode=preflight_mode,
             schedule=ExecutionScheduleConfig(
                 layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
                 phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),

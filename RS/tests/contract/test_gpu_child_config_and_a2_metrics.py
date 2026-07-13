@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from experiments.distributed._gpu_runner_common import build_policy_correctness_config, load_official_config
-from experiments.distributed.run_gpu_a2_strategy_compare import _metric_series
+from experiments.distributed.run_gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
 from rs.core.layer_selection import resolve_layer_selector
 
 
@@ -52,6 +52,64 @@ def test_a2_metric_series_uses_repeat_records_without_transport_jsonl(tmp_path: 
     assert metrics["return_transport_us"] == [12.0]
     assert metrics["p2p_enqueue_us"] == [3.0]
     assert metrics["p2p_wait_us"] == [4.0]
+
+
+def test_synthetic_hotpath_aggregate_uses_all_ranks() -> None:
+    ranks = [
+        {
+            "rank": rank,
+            "selected_p0_hook_count": 4,
+            "selected_p1_hook_count": 4,
+            "prediction_source_p0_hook_count": 0,
+            "none_heavy_hook_count": 0,
+            "raw_u_build_count": 4,
+            "paired_b_build_count": 0,
+            "predict_count": 0,
+        }
+        for rank in range(4)
+    ]
+    aggregate = aggregate_hotpath_rank_counts(ranks, expected_world_size=4)
+    assert aggregate["selected_p0_hook_count_per_rank"] == [4, 4, 4, 4]
+    assert aggregate["selected_p0_hook_count_all_rank_sum"] == 16
+    assert aggregate["selected_p1_hook_count_per_rank"] == [4, 4, 4, 4]
+    assert aggregate["selected_p1_hook_count_all_rank_sum"] == 16
+    assert aggregate["none_heavy_hook_count_all_rank_sum"] == 0
+    assert aggregate["raw_u_build_count_all_rank_sum"] == 16
+    assert aggregate["rank_count_observed"] == 4
+    assert aggregate["hotpath_eligible"] is True
+
+
+def test_synthetic_hotpath_aggregate_rejects_missing_duplicate_and_none_heavy() -> None:
+    missing = aggregate_hotpath_rank_counts([{"rank": 0, "selected_p0_hook_count": 4}], expected_world_size=4)
+    assert missing["hotpath_eligible"] is False
+    assert any("rank_count_mismatch" in item for item in missing["eligibility_reasons"])
+    duplicate = aggregate_hotpath_rank_counts(
+        [
+            {"rank": 0, "selected_p0_hook_count": 4, "none_heavy_hook_count": 0},
+            {"rank": 0, "selected_p0_hook_count": 4, "none_heavy_hook_count": 0},
+        ],
+        expected_world_size=2,
+    )
+    assert duplicate["hotpath_eligible"] is False
+    assert any("duplicate_rank" in item for item in duplicate["eligibility_reasons"])
+    none_heavy = aggregate_hotpath_rank_counts(
+        [
+            {
+                "rank": rank,
+                "selected_p0_hook_count": 4,
+                "selected_p1_hook_count": 4,
+                "prediction_source_p0_hook_count": 0,
+                "none_heavy_hook_count": 1 if rank == 2 else 0,
+                "raw_u_build_count": 4,
+                "paired_b_build_count": 0,
+                "predict_count": 0,
+            }
+            for rank in range(4)
+        ],
+        expected_world_size=4,
+    )
+    assert none_heavy["hotpath_eligible"] is False
+    assert "none_heavy_hook_count_positive" in none_heavy["eligibility_reasons"]
 
 
 def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
@@ -143,6 +201,14 @@ def test_gpu_hotpath_iteration_config_uses_compact_preflight_and_three_strategie
     payload = load_official_config(REPO_ROOT / "configs/official/gpu_hotpath_iteration.yaml")
     assert payload["preflight_mode"] == "compact"
     assert payload["workload"]["prompts"] == "configs/components/workloads/comparison_8x16_prompts.json"
+    assert payload["workload"]["tokenization"] == {
+        "padding": "max_length",
+        "truncation": True,
+        "max_length": 16,
+        "expected_prompt_count": 8,
+        "expected_batch_rows": 8,
+        "expected_seq_len": 16,
+    }
     assert payload["strategies"] == [
         "native",
         "routersense_b_core_independent_async",
@@ -174,3 +240,65 @@ def test_child_config_carries_requested_and_effective_preflight_mode() -> None:
     assert cfg["execution"]["preflight_mode"] == "compact"
     assert cfg["requested_preflight_mode"] == "compact"
     assert cfg["effective_preflight_mode"] == "compact"
+
+
+def test_child_config_carries_workload_tokenization_contract() -> None:
+    cfg = build_policy_correctness_config(
+        base_comparison={
+            "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+            "topology": {"world_size": 4, "ep_size": 4},
+            "runtime": {"line": "async_release", "invariant_mode": "evaluation_strict", "precision": "bf16", "dispatcher": "alltoall"},
+            "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+            "policy": {"options": {}},
+            "workload": {
+                "prompts": "configs/components/workloads/comparison_8x16_prompts.json",
+                "tokenization": {
+                    "padding": "max_length",
+                    "truncation": True,
+                    "max_length": 16,
+                    "expected_prompt_count": 8,
+                    "expected_batch_rows": 8,
+                    "expected_seq_len": 16,
+                },
+            },
+            "execution": {"schedule_phase_selector": "both"},
+            "evaluation": {"selected_layer_ids": [0, 1]},
+        },
+        strategy_name="routersense_b_core_independent_async",
+        run_name="tokenization",
+        output_root=Path("/tmp/tokenization"),
+        profile="perf",
+        selected_layers="selected",
+        save_logits=False,
+        preflight_mode="compact",
+    )
+    assert cfg["workload"]["tokenization"]["padding"] == "max_length"
+    assert cfg["workload"]["tokenization"]["max_length"] == 16
+    assert cfg["workload"]["tokenization"]["expected_batch_rows"] == 8
+
+
+def test_child_config_rejects_invalid_preflight_mode() -> None:
+    try:
+        build_policy_correctness_config(
+            base_comparison={
+                "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+                "topology": {"world_size": 4, "ep_size": 4},
+                "runtime": {"line": "async_release", "invariant_mode": "evaluation_strict"},
+                "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+                "policy": {"options": {}},
+                "workload": {"prompts": "configs/workload/smoke_prompts.json"},
+                "execution": {"schedule_phase_selector": "both"},
+                "evaluation": {"selected_layer_ids": [0, 1]},
+            },
+            strategy_name="routersense_b_core_independent_async",
+            run_name="bad",
+            output_root=Path("/tmp/bad"),
+            profile="perf",
+            selected_layers="selected",
+            save_logits=False,
+            preflight_mode="invalid",
+        )
+    except ValueError as exc:
+        assert "preflight_mode" in str(exc)
+    else:
+        raise AssertionError("expected invalid preflight mode to fail")

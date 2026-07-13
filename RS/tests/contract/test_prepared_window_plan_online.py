@@ -875,6 +875,14 @@ def test_current_plan_build_is_deduplicated_per_rank_epoch_layer() -> None:
         assert "duplicate current plan build" in str(exc)
     else:
         raise AssertionError("expected duplicate current plan build to fail")
+    runtime.begin_forward(forward_epoch=2)
+    runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
+        layer_name="model.layers.0.mlp",
+        phase_ctx=context,
+        observation_p0=observation,
+        actual_p0_full_row_matrix=matrix,
+        plan_origin="provisional_current_plan",
+    )
 
 
 def test_runtime_exports_planning_timing_records() -> None:

@@ -157,12 +157,39 @@ def main(argv: list[str] | None = None) -> int:
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        encoded = tokenizer(prompts, return_tensors="pt", padding=True)
+        tokenization = config.workload.tokenization
+        tokenizer_kwargs = {
+            "return_tensors": "pt",
+            "padding": tokenization.padding if tokenization.padding else True,
+            "truncation": bool(tokenization.truncation),
+        }
+        if tokenization.max_length is not None:
+            tokenizer_kwargs["max_length"] = int(tokenization.max_length)
+        encoded = tokenizer(prompts, **tokenizer_kwargs)
         tokenizer_end_ns = time.monotonic_ns()
-        record_event("tokenizer_and_encode_done", duration_us=(tokenizer_end_ns - tokenizer_start_ns) / 1000.0, batch_rows=int(encoded["input_ids"].shape[0]), seq_len=int(encoded["input_ids"].shape[1]))
+        actual_prompt_count = int(len(prompts))
+        actual_batch_rows = int(encoded["input_ids"].shape[0])
+        actual_seq_len = int(encoded["input_ids"].shape[1])
+        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
+        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
+        tokenization_shape_valid = (
+            (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
+            and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
+            and (tokenization.expected_seq_len is None or actual_seq_len == int(tokenization.expected_seq_len))
+        )
+        record_event(
+            "tokenizer_and_encode_done",
+            duration_us=(tokenizer_end_ns - tokenizer_start_ns) / 1000.0,
+            batch_rows=actual_batch_rows,
+            seq_len=actual_seq_len,
+            tokenization_shape_valid=bool(tokenization_shape_valid),
+        )
         tokens = encoded["input_ids"].to(device=f"cuda:{local_rank}")
         request_table_hash = hashlib.sha256(tokens.detach().cpu().numpy().tobytes()).hexdigest()
         position_ids = build_position_ids(tokens)
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=f"cuda:{local_rank}")
 
         model_load_start_ns = time.monotonic_ns()
         bridge = AutoBridge.from_hf_pretrained(model_path, trust_remote_code=config.model.trust_remote_code)
@@ -240,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             policy_runtime.begin_forward(forward_epoch=forward_epoch)
             start_event.record()
             with torch.inference_mode():
-                logits = model(tokens, position_ids, None)
+                logits = model(tokens, position_ids, attention_mask)
             end_event.record()
             end_event.synchronize()
             policy_runtime.end_forward()
@@ -309,6 +336,16 @@ def main(argv: list[str] | None = None) -> int:
             "local_combine_rows": observer_summary["local_combine_rows"],
             "observer_warning_count": observer_summary["observer_warning_count"],
             "observer_phase_counts": observer_summary["observer_phase_counts"],
+            "requested_prompt_count": tokenization.expected_prompt_count,
+            "actual_prompt_count": actual_prompt_count,
+            "actual_batch_rows": actual_batch_rows,
+            "actual_seq_len": actual_seq_len,
+            "tokenization_shape_valid": bool(tokenization_shape_valid),
+            "tokenization_padding_mode": str(tokenization.padding),
+            "tokenization_truncation": bool(tokenization.truncation),
+            "tokenization_max_length": tokenization.max_length,
+            "padded_token_count": int(padded_token_count),
+            "valid_non_padding_token_count": int(valid_non_padding_tokens),
             "repeat_records": repeat_records,
         }
         write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
@@ -325,6 +362,16 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "ready",
                 "policy_name": "disabled",
                 "transport_mutation": False,
+                "requested_prompt_count": tokenization.expected_prompt_count,
+                "actual_prompt_count": actual_prompt_count,
+                "actual_batch_rows": actual_batch_rows,
+                "actual_seq_len": actual_seq_len,
+                "tokenization_shape_valid": bool(tokenization_shape_valid),
+                "tokenization_padding_mode": str(tokenization.padding),
+                "tokenization_truncation": bool(tokenization.truncation),
+                "tokenization_max_length": tokenization.max_length,
+                "padded_token_count": int(padded_token_count),
+                "valid_non_padding_token_count": int(valid_non_padding_tokens),
                 "repeat_records": repeat_records,
                 "warmup_iters": int(warmup_iters),
                 "measure_iters": int(measure_iters),

@@ -106,6 +106,8 @@ def build_policy_correctness_config(
 ) -> dict[str, Any]:
     from rs.core.layer_selection import resolve_layer_selector
 
+    if str(preflight_mode) not in {"full", "compact"}:
+        raise ValueError(f"unsupported preflight_mode: {preflight_mode!r}")
     model = dict(base_comparison.get("model", {}) or {})
     topology = dict(base_comparison.get("topology", {}) or {})
     topology_ep = dict(topology.get("ep", {}) or {})
@@ -115,6 +117,7 @@ def build_policy_correctness_config(
     policy_options = dict(policy.get("options", {}) or {})
     prediction = dict(base_comparison.get("prediction", {}) or {})
     workload = dict(base_comparison.get("workload", {}) or {})
+    tokenization = dict(workload.get("tokenization", {}) or {})
     execution = dict(base_comparison.get("execution", {}) or {})
     selected_ep_size = int(topology.get("ep_size", topology_ep.get("size", topology.get("world_size", 1))) or 1)
     from experiments.online.support.runtime_presets import resolve_strategy_runtime
@@ -185,7 +188,17 @@ def build_policy_correctness_config(
             "ep": {"size": selected_ep_size},
             "network": {"scope": "single_node", "interface_hint": ""},
         },
-        "workload": {"prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json"))},
+        "workload": {
+            "prompts": str(workload.get("prompts", "configs/workload/smoke_prompts.json")),
+            "tokenization": {
+                "padding": str(tokenization.get("padding", "longest")),
+                "truncation": bool(tokenization.get("truncation", False)),
+                "max_length": tokenization.get("max_length"),
+                "expected_prompt_count": tokenization.get("expected_prompt_count"),
+                "expected_batch_rows": tokenization.get("expected_batch_rows"),
+                "expected_seq_len": tokenization.get("expected_seq_len"),
+            },
+        },
         "runtime": {
             "line": effective_runtime_line,
             "precision": requested_precision,

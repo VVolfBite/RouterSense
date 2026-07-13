@@ -427,12 +427,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        encoded = tokenizer(prompts, return_tensors="pt", padding=True)
+        tokenization = config.workload.tokenization
+        tokenizer_kwargs = {
+            "return_tensors": "pt",
+            "padding": tokenization.padding if tokenization.padding else True,
+            "truncation": bool(tokenization.truncation),
+        }
+        if tokenization.max_length is not None:
+            tokenizer_kwargs["max_length"] = int(tokenization.max_length)
+        encoded = tokenizer(prompts, **tokenizer_kwargs)
         tokenizer_end_ns = time.monotonic_ns()
-        record_event("tokenizer_and_encode_done", duration_us=(tokenizer_end_ns - tokenizer_start_ns) / 1000.0, batch_rows=int(encoded["input_ids"].shape[0]), seq_len=int(encoded["input_ids"].shape[1]))
+        actual_prompt_count = int(len(prompts))
+        actual_batch_rows = int(encoded["input_ids"].shape[0])
+        actual_seq_len = int(encoded["input_ids"].shape[1])
+        valid_non_padding_tokens = int(encoded.get("attention_mask").sum().item()) if encoded.get("attention_mask") is not None else actual_batch_rows * actual_seq_len
+        padded_token_count = int(actual_batch_rows * actual_seq_len - valid_non_padding_tokens)
+        tokenization_shape_valid = (
+            (tokenization.expected_prompt_count is None or actual_prompt_count == int(tokenization.expected_prompt_count))
+            and (tokenization.expected_batch_rows is None or actual_batch_rows == int(tokenization.expected_batch_rows))
+            and (tokenization.expected_seq_len is None or actual_seq_len == int(tokenization.expected_seq_len))
+        )
+        record_event(
+            "tokenizer_and_encode_done",
+            duration_us=(tokenizer_end_ns - tokenizer_start_ns) / 1000.0,
+            batch_rows=actual_batch_rows,
+            seq_len=actual_seq_len,
+            tokenization_shape_valid=bool(tokenization_shape_valid),
+        )
         tokens = encoded["input_ids"].to(device=f"cuda:{local_rank}")
         position_ids = build_position_ids(tokens)
-        attention_mask = None
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=f"cuda:{local_rank}")
         request_table_hash = hashlib.sha256(tokens.detach().cpu().numpy().tobytes()).hexdigest()
 
         model_load_start_ns = time.monotonic_ns()
@@ -714,6 +740,16 @@ def main(argv: list[str] | None = None) -> int:
             "transport_execution_count": len(transport_results),
             "execution_audit_status": audit_payload["status"],
             "repeat_records": repeat_records,
+            "requested_prompt_count": tokenization.expected_prompt_count,
+            "actual_prompt_count": actual_prompt_count,
+            "actual_batch_rows": actual_batch_rows,
+            "actual_seq_len": actual_seq_len,
+            "tokenization_shape_valid": bool(tokenization_shape_valid),
+            "tokenization_padding_mode": str(tokenization.padding),
+            "tokenization_truncation": bool(tokenization.truncation),
+            "tokenization_max_length": tokenization.max_length,
+            "padded_token_count": int(padded_token_count),
+            "valid_non_padding_token_count": int(valid_non_padding_tokens),
         }
         rank_summary = write_rank_artifacts(
             run_dir=run_dir,
@@ -766,6 +802,16 @@ def main(argv: list[str] | None = None) -> int:
                 "selected_p0_hook_count": int(getattr(runtime._runtime_state.metrics, "selected_p0_hook_count", 0) if runtime is not None else 0),
                 "selected_p1_hook_count": int(getattr(runtime._runtime_state.metrics, "selected_p1_hook_count", 0) if runtime is not None else 0),
                 "selected_transport_execution_count": int(getattr(runtime._runtime_state.metrics, "selected_transport_execution_count", 0) if runtime is not None else 0),
+                "requested_prompt_count": tokenization.expected_prompt_count,
+                "actual_prompt_count": actual_prompt_count,
+                "actual_batch_rows": actual_batch_rows,
+                "actual_seq_len": actual_seq_len,
+                "tokenization_shape_valid": bool(tokenization_shape_valid),
+                "tokenization_padding_mode": str(tokenization.padding),
+                "tokenization_truncation": bool(tokenization.truncation),
+                "tokenization_max_length": tokenization.max_length,
+                "padded_token_count": int(padded_token_count),
+                "valid_non_padding_token_count": int(valid_non_padding_tokens),
                 "runtime_line": str(config.runtime.line),
                 "invariant_mode": str(config.runtime.invariant_mode),
                 "transport_mutation": transport_mutation,

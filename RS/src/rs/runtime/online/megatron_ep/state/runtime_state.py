@@ -153,6 +153,9 @@ class PreparedWindowRuntimeState:
     selected_layer_ids: list[str] = field(default_factory=list)
     prediction_source_layer_ids: list[str] = field(default_factory=list)
     none_layer_ids: list[str] = field(default_factory=list)
+    wrapped_selected_layer_ids: list[str] = field(default_factory=list)
+    wrapped_prediction_source_layer_ids: list[str] = field(default_factory=list)
+    unwrapped_none_layer_ids: list[str] = field(default_factory=list)
     effective_policy_name: str = ""
     requested_preflight_mode: str = ""
     effective_preflight_mode: str = ""

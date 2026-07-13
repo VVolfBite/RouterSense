@@ -108,6 +108,72 @@ def test_runtime_presets_distinguish_raw_and_safe_async_joint_paths() -> None:
     assert legacy_safe["safe_projection_mode"] == "host_select"
 
 
+def test_runtime_exports_static_layer_role_and_wrapper_scope() -> None:
+    runtime = _runtime(safe_projection_mode="disabled")
+    runtime.configure_hook_scope(
+        available_layer_names=(
+            "model.layers.0.mlp",
+            "model.layers.1.mlp",
+            "model.layers.2.mlp",
+        )
+    )
+    summary = runtime.export_prepared_plan_summary()
+    selected = set(summary["selected_layer_ids"])
+    prediction_source = set(summary["prediction_source_layer_ids"])
+    none_layers = set(summary["none_layer_ids"])
+    assert selected == set(summary["wrapped_selected_layer_ids"])
+    assert prediction_source == set(summary["wrapped_prediction_source_layer_ids"])
+    assert none_layers == set(summary["unwrapped_none_layer_ids"])
+    assert selected.isdisjoint(prediction_source)
+    assert selected.isdisjoint(none_layers)
+    assert prediction_source.isdisjoint(none_layers)
+    assert selected | prediction_source | none_layers == {"0", "1", "2"}
+
+
+def test_none_layer_heavy_hook_defensive_counter_increments() -> None:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(
+            policy="routersense_p0p1p2_hint",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            p2_hint_mode="none",
+            bucket_mode="dynamic_current",
+            bucket_rows=0,
+            safe_projection_mode="disabled",
+            p2_hint_weight=0.0,
+            observation_profile="execution",
+            invariant_mode="evaluation_strict",
+            schedule_layer_selector="selected",
+            selected_layer_ids=("0",),
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="request",
+        hostname="host",
+        ep_group_ranks=(0, 1),
+        ep_group_root_global_rank=0,
+    )
+    runtime.configure_hook_scope(available_layer_names=("model.layers.0.mlp", "model.layers.1.mlp"))
+    runtime.before_token_dispatch(
+        layer_name="model.layers.1.mlp",
+        dispatcher=object(),
+        packed_hidden_states=None,
+        packed_probs=None,
+    )
+    runtime.after_token_dispatch(layer_name="model.layers.1.mlp")
+    runtime.before_token_combine(layer_name="model.layers.1.mlp", dispatcher=object(), packed_hidden_states=None)
+    runtime.after_token_combine(layer_name="model.layers.1.mlp")
+    runtime.on_dispatch(layer_name="model.layers.1.mlp", dispatcher=object(), hidden_states=None)
+    runtime.on_combine(layer_name="model.layers.1.mlp", dispatcher=object(), hidden_states=None)
+    summary = runtime.export_prepared_plan_summary()
+    assert summary["none_heavy_hook_count"] == 6
+    assert summary["none_heavy_hook_count_per_rank"] == 6
+
+
 def test_bucket_mode_mismatch_hard_fails() -> None:
     runtime = RouterSenseInjectionRuntime(
         config=RouterSenseInjectionConfig(

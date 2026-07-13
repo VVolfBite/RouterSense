@@ -269,6 +269,62 @@ def _normalize_safe_projection_mode(value: object) -> str:
     return text
 
 
+def aggregate_hotpath_rank_counts(rank_summaries: list[dict], *, expected_world_size: int | None = None) -> dict:
+    fields = (
+        "selected_p0_hook_count",
+        "selected_p1_hook_count",
+        "prediction_source_p0_hook_count",
+        "none_heavy_hook_count",
+        "raw_u_build_count",
+        "paired_b_build_count",
+        "predict_count",
+    )
+    reasons: list[str] = []
+    observed_ranks: list[int] = []
+    by_rank: dict[int, dict] = {}
+    for item in rank_summaries:
+        if "rank" not in item:
+            reasons.append("rank_summary_missing_rank")
+            continue
+        rank = int(item["rank"])
+        if rank in by_rank:
+            reasons.append(f"duplicate_rank:{rank}")
+        by_rank[rank] = item
+        observed_ranks.append(rank)
+    if expected_world_size is not None and len(by_rank) != int(expected_world_size):
+        reasons.append(f"rank_count_mismatch:observed={len(by_rank)} expected={int(expected_world_size)}")
+    payload: dict[str, object] = {
+        "rank_count_observed": int(len(by_rank)),
+        "rank_ids_observed": sorted(by_rank),
+        "available": not reasons,
+        "eligibility_reasons": reasons,
+    }
+    ordered = [by_rank[rank] for rank in sorted(by_rank)]
+    for field in fields:
+        per_rank: list[int | None] = []
+        missing: list[int] = []
+        for rank, item in zip(sorted(by_rank), ordered, strict=True):
+            if field in item:
+                per_rank.append(int(item.get(field, 0) or 0))
+            else:
+                per_rank.append(None)
+                missing.append(rank)
+        base = field
+        if missing:
+            reasons.append(f"{field}_missing_ranks:{missing}")
+            payload[f"{base}_per_rank"] = per_rank
+            payload[f"{base}_all_rank_sum"] = None
+            continue
+        payload[f"{base}_per_rank"] = per_rank
+        payload[f"{base}_all_rank_sum"] = int(sum(int(v or 0) for v in per_rank))
+    if int(payload.get("none_heavy_hook_count_all_rank_sum") or 0) > 0:
+        reasons.append("none_heavy_hook_count_positive")
+    payload["available"] = not reasons
+    payload["hotpath_eligible"] = not reasons
+    payload["eligibility_reasons"] = reasons
+    return payload
+
+
 def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dict, c2_passed: bool) -> dict:
     details = summary_payload.get("details", {}) if isinstance(summary_payload, dict) else {}
     rank_summaries = _load_rank_summaries(run_dir)
@@ -282,8 +338,13 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
             "eligibility_checks": {"rank_summaries_present": False},
         }
     rank0_summary = rank_summaries[0]
+    hotpath_counts = aggregate_hotpath_rank_counts(
+        rank_summaries,
+        expected_world_size=int(details.get("world_size", 0) or 0) or None,
+    )
     raw_series = _metric_series(rank_summaries, run_dir)
     metrics = {name: _summary_stats(values) for name, values in raw_series.items()}
+    metrics.update(hotpath_counts)
     metrics["safe_selected_policy"] = rank0_summary.get("safe_selected_policy")
     metrics["fallback_count"] = int(rank0_summary.get("phase_sync_fallback_count", 0) or 0)
     metrics["timeout_count"] = int(rank0_summary.get("timeout_count", 0) or 0)
@@ -318,6 +379,17 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     metrics["c2_passed"] = bool(c2_passed)
     metrics["requested_preflight_mode"] = str(rank0_summary.get("requested_preflight_mode", ""))
     metrics["effective_preflight_mode"] = str(rank0_summary.get("effective_preflight_mode", ""))
+    metrics["preflight_mode_per_rank"] = [
+        {
+            "rank": int(item.get("rank", -1)),
+            "requested": str(item.get("requested_preflight_mode", "")),
+            "effective": str(item.get("effective_preflight_mode", "")),
+        }
+        for item in rank_summaries
+    ]
+    metrics["tokenization_shape_valid_all_ranks"] = all(
+        bool(item.get("tokenization_shape_valid", False)) for item in rank_summaries
+    )
     expected = resolve_strategy_runtime(strategy_name=str(strategy), runtime_line="async_release" if "async" in str(strategy) else "phase_sync")
     expected_policy_name = str(expected.get("policy", ""))
     observed_policy_name = str(rank0_summary.get("policy_name", ""))
@@ -369,9 +441,14 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
             )
         ),
         "preflight_mode_matches": (
-            str(metrics["requested_preflight_mode"]) != ""
-            and str(metrics["requested_preflight_mode"]) == str(metrics["effective_preflight_mode"])
+            all(
+                str(item.get("requested_preflight_mode", "")) != ""
+                and str(item.get("requested_preflight_mode", "")) == str(item.get("effective_preflight_mode", ""))
+                for item in rank_summaries
+            )
         ),
+        "tokenization_shape_valid": bool(metrics["tokenization_shape_valid_all_ranks"]),
+        "hotpath_rank_aggregate_available": bool(hotpath_counts.get("available", False)) if not is_native else True,
         "c2_passed": bool(c2_passed),
     }
     expected_predictor = str(expected.get("online_p2_predictor", "none"))
