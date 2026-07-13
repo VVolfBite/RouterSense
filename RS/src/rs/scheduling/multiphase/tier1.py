@@ -111,7 +111,7 @@ class Tier1MultiphasePolicy:
     capabilities = PolicyCapabilities(
         supports_offline=True,
         supports_online_phase_local_execution=False,
-        supports_online_multiphase_execution=False,
+        supports_online_multiphase_execution=True,
         uses_current_ready_flows=True,
         uses_blocked_p1_dependency=True,
         uses_p2_forecast=True,

@@ -407,6 +407,8 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "requested_layer_selector": set(),
         "resolved_layer_selector": set(),
         "resolved_layer_ids": set(),
+        "requested_preflight_mode": set(),
+        "effective_preflight_mode": set(),
     }
     nested: dict[tuple[str, ...], set[str]] = {
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},

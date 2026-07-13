@@ -251,13 +251,13 @@ class RouterSenseInjectionRuntime:
         )
         self._resolved_policy_capabilities_cache = base.with_runtime_flags(
             supports_current_window_joint_planning=bool(
-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+                is_joint_window and base.supports_online_multiphase_execution
             ),
             supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
             supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
             supports_target_layer_preplanning=bool(supports_target_preplanning),
             supports_p1_plan_reuse=bool(
-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
+                is_joint_window and base.supports_online_multiphase_execution
             ),
             supports_late_suffix_splice=bool(supports_target_preplanning),
             supports_rank_release_batch=bool(is_joint_window),
@@ -1845,7 +1845,13 @@ class RouterSenseInjectionRuntime:
             p2_next_dispatch_forecast_matrix=forecast_matrix,
         )
         effective_policy = str(self._effective_phase_policy_name() or "")
-        phase_local_async_policies = {"bucketed_fifo", "greedy_ready_set", "birkhoff_phase_local", "phase_barrier_fifo"}
+        phase_local_async_policies = {
+            "bucketed_fifo",
+            "greedy_ready_set",
+            "birkhoff_phase_local",
+            "phase_barrier_fifo",
+            "B_barrier_criticality_core_independent",
+        }
         policy_options = PolicyOptions(
             p0_weight=float(self.config.p0_weight),
             p1_weight=float(self.config.p1_reservation_weight),

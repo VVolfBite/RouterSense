@@ -1,0 +1,116 @@
+{
+  "native": {
+    "actual_batch_rows": 8,
+    "actual_prompt_count": 8,
+    "actual_seq_len": 16,
+    "none_layer_ids": null,
+    "padded_token_count": 56,
+    "prediction_source_layer_ids": null,
+    "selected_layer_ids": null,
+    "tokenization_shape_valid": true,
+    "unwrapped_none_layer_ids": null,
+    "valid_non_padding_token_count": 72,
+    "wrapped_prediction_source_layer_ids": null,
+    "wrapped_selected_layer_ids": null
+  },
+  "routersense_b_core_independent_async": {
+    "actual_batch_rows": 8,
+    "actual_prompt_count": 8,
+    "actual_seq_len": 16,
+    "none_layer_ids": [
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "padded_token_count": 56,
+    "prediction_source_layer_ids": [],
+    "selected_layer_ids": [
+      "0",
+      "1"
+    ],
+    "tokenization_shape_valid": true,
+    "unwrapped_none_layer_ids": [
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "valid_non_padding_token_count": 72,
+    "wrapped_prediction_source_layer_ids": [],
+    "wrapped_selected_layer_ids": [
+      "0",
+      "1"
+    ]
+  },
+  "routersense_u_core_zero_raw_async": {
+    "actual_batch_rows": 8,
+    "actual_prompt_count": 8,
+    "actual_seq_len": 16,
+    "none_layer_ids": [
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "padded_token_count": 56,
+    "prediction_source_layer_ids": [],
+    "selected_layer_ids": [
+      "0",
+      "1"
+    ],
+    "tokenization_shape_valid": true,
+    "unwrapped_none_layer_ids": [
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "valid_non_padding_token_count": 72,
+    "wrapped_prediction_source_layer_ids": [],
+    "wrapped_selected_layer_ids": [
+      "0",
+      "1"
+    ]
+  }
+}

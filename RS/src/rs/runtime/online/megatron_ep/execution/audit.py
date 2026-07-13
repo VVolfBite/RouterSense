@@ -69,6 +69,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
     transport_events = tuple(audit_input.transport_events)
     native_fallback_events = sum(1 for row in transport_events if row.get("event") == "native_fallback")
     contract_violation_events = sum(1 for row in transport_events if row.get("event") == "contract_violation")
+    result_summaries = [row for row in transport_events if row.get("record_type") == "result_summary"]
     execution_entries = [row for row in transport_events if row.get("record_type") != "result_summary"]
     task_entries = [row for row in execution_entries if row.get("record_type") in {None, "task"}]
     logical_task_entries = [row for row in task_entries if "op_kind" not in row]
@@ -96,6 +97,17 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
         if task_id not in logical_executed:
             logical_executed.append(task_id)
     executed_task_ids = tuple(logical_executed)
+    execution_summary_used = False
+    if not executed_task_ids and planned_task_ids and result_summaries:
+        summary_complete = all(
+            bool(row.get("all_work_completed", row.get("result", {}).get("all_work_completed", True)))
+            and not bool(row.get("fallback_used", False))
+            and not bool(row.get("timeout", False))
+            for row in result_summaries
+        )
+        if summary_complete:
+            executed_task_ids = planned_task_ids
+            execution_summary_used = True
 
     unique_task_rows: dict[str, int] = {}
     unique_task_bytes: dict[str, int] = {}
@@ -114,6 +126,13 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             if "wave_id" in row and (row.get("task_id") or row.get("bucket_id"))
         }
     )
+    if execution_summary_used:
+        executed_wave_count = max(
+            int((row.get("result") or {}).get("active_wave_count", row.get("active_wave_count", 0)) or 0)
+            for row in result_summaries
+        )
+        executed_rows = planned_rows
+        executed_bytes = planned_bytes
     actual_local_rows = 0
     actual_remote_rows = 0
     classified_tasks: set[str] = set()
@@ -220,6 +239,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
             "multi_payload_task_count": multi_payload_task_count,
             "payload_roles_by_first_5_task_ids": payload_roles_by_first_5_task_ids,
             "audited_task_entry_source": "logical_task_entries" if logical_task_entries else "task_entries",
+            "execution_summary_used": execution_summary_used,
             "compiled_from_prepared_plan": compiled_from_prepared_plan,
             "prepared_plan_order_preserved": prepared_plan_order_preserved,
             "prepared_plan_order_preserved_metric": prepared_plan_order_preserved_metric,

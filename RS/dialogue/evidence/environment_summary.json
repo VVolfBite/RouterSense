@@ -1,0 +1,16 @@
+{
+  "commit": "9215363a80b7894d84d30a1014f1238562e5ac29",
+  "config": "configs/official/gpu_hotpath_iteration.yaml",
+  "cuda_version": "12.8",
+  "gpu_count": 4,
+  "gpus": [
+    "NVIDIA GeForce RTX 4090 D, 570.124.04, 24564 MiB",
+    "NVIDIA GeForce RTX 4090 D, 570.124.04, 24564 MiB",
+    "NVIDIA GeForce RTX 4090 D, 570.124.04, 24564 MiB",
+    "NVIDIA GeForce RTX 4090 D, 570.124.04, 24564 MiB"
+  ],
+  "hostname": "autodl-container-43df4dbbb8-b31320c7",
+  "nccl_available": true,
+  "timestamp_utc": "2026-07-13T03:56:19Z",
+  "torch_version": "2.8.0+cu128"
+}

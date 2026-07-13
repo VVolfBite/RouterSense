@@ -1,17 +1,37 @@
 [
   {
-    "test_name": "compile_and_diff_check",
-    "command": "python -m compileall src experiments tests && git diff --check",
+    "test_name": "compile modified modules",
+    "command": "python -m compileall src/rs/core/experiment_config.py src/rs/runtime/online/megatron_ep/lifecycle.py src/rs/runtime/online/megatron_ep/execution/audit.py src/rs/scheduling/multiphase/tier1.py",
     "passed": true,
     "failed": 0,
     "skipped": 0
   },
   {
-    "test_name": "hotpath_contract_tests",
-    "command": "PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py",
+    "test_name": "preflight child config contract",
+    "command": "PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py::test_child_config_carries_requested_and_effective_preflight_mode",
     "passed": true,
     "failed": 0,
-    "skipped": 0,
-    "result": "24 passed"
+    "skipped": 0
+  },
+  {
+    "test_name": "hotpath config contract",
+    "command": "PYTHONPATH=src:. pytest -q tests/contract/test_gpu_child_config_and_a2_metrics.py::test_gpu_hotpath_iteration_config_uses_compact_preflight_and_three_strategies",
+    "passed": true,
+    "failed": 0,
+    "skipped": 0
+  },
+  {
+    "test_name": "4GPU count smoke",
+    "command": "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_gpu1/count_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async",
+    "passed": true,
+    "failed": 0,
+    "skipped": 0
+  },
+  {
+    "test_name": "4GPU perf smoke",
+    "command": "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_gpu1/perf_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 3 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async",
+    "passed": true,
+    "failed": 0,
+    "skipped": 0
   }
 ]

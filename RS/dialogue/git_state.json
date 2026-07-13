@@ -1,15 +1,28 @@
 {
   "branch": "main",
-  "head_before_commit": "e3b5750650889d568474243a2c555cee82a59bf1",
+  "head_before_commit": "9215363a80b7894d84d30a1014f1238562e5ac29",
   "status_short": [
-    " M experiments/dev/build_hotpath_cpu_contract_closure.py",
-    " M experiments/distributed/run_gpu_a2_strategy_compare.py",
+    " M dialogue/README.md",
+    " M dialogue/changed_files.txt",
+    " M dialogue/commands.txt",
+    " D dialogue/evidence/gpu_validation_manifest.json",
+    " D dialogue/evidence/hotpath_contract.json",
+    " D dialogue/evidence/perf_profile_feature_audit.json",
+    " M dialogue/git_state.json",
+    " M dialogue/patches/focused_diff.patch",
+    " M dialogue/report.md",
+    " M dialogue/status.json",
+    " M dialogue/test_summary.json",
+    " M src/rs/core/experiment_config.py",
+    " M src/rs/runtime/online/megatron_ep/execution/audit.py",
     " M src/rs/runtime/online/megatron_ep/lifecycle.py",
-    " M src/rs/runtime/online/megatron_ep/observation/runtime_export.py",
-    " M tests/contract/test_gpu_child_config_and_a2_metrics.py",
-    "?? dialogue/",
-    "?? src/rs/core/layer_ids.py"
-  ],
-  "pushed_commit": "f7fdeb46c086710324809bee4e2cd0e43462eb71",
-  "note": "This dialogue status file is updated in a follow-up evidence commit; use git log -1 for the final repository SHA."
+    " M src/rs/scheduling/multiphase/tier1.py",
+    "?? dialogue/evidence/cost_breakdown.json",
+    "?? dialogue/evidence/count_smoke_summary.json",
+    "?? dialogue/evidence/environment_summary.json",
+    "?? dialogue/evidence/hook_scope_contract.json",
+    "?? dialogue/evidence/hotspot_summary.csv",
+    "?? dialogue/evidence/performance_summary.json",
+    "?? dialogue/evidence/rank_breakdown.csv"
+  ]
 }

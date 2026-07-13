@@ -1,439 +1,113 @@
-diff --git a/RS/experiments/dev/build_hotpath_cpu_contract_closure.py b/RS/experiments/dev/build_hotpath_cpu_contract_closure.py
-index 0190269..9068b91 100644
---- a/RS/experiments/dev/build_hotpath_cpu_contract_closure.py
-+++ b/RS/experiments/dev/build_hotpath_cpu_contract_closure.py
-@@ -78,17 +78,48 @@ def _gpu_validation_manifest(*, commit: str) -> dict[str, Any]:
-             "routersense_u_core_zero_raw_async",
-         ],
-         "expected_hook_counts": {
-+            "forward_count": 2,
-             "selected_p0_per_rank": 4,
-             "selected_p1_per_rank": 4,
-             "selected_p0_all_rank": 16,
-             "selected_p1_all_rank": 16,
-+            "prediction_source_p0_per_rank": 0,
-             "prediction_source_p0_all_rank": 0,
-             "none_heavy_all_rank": 0,
-             "u_zero_raw_u_all_rank_upper_bound": 16,
-         },
-         "expected_plan_build_upper_bound": {
-+            "forward_count": 2,
-+            "selected_layer_ids": [0, 1],
-+            "routersense_u_core_zero_raw_async_per_rank": 4,
-+            "routersense_u_core_zero_raw_async_per_selected_layer": 2,
-             "routersense_u_core_zero_raw_async": 16,
-         },
-+        "tokenization_contract": {
-+            "padding": "max_length",
-+            "truncation": True,
-+            "max_length": 16,
-+            "expected_prompt_count": 8,
-+            "expected_batch_rows": 8,
-+            "expected_seq_len": 16,
-+        },
-+        "preflight_contract": {
-+            "requested_preflight_mode": "compact",
-+            "effective_preflight_mode": "compact",
-+            "mismatch_is_eligible": False,
-+        },
-+        "eligible_ineligible_rules": {
-+            "missing_rank_summary": "ineligible",
-+            "duplicate_rank_id": "ineligible",
-+            "missing_count_field": "ineligible",
-+            "none_heavy_hook_count_positive": "ineligible",
-+            "exact_hook_count_mismatch": "ineligible",
-+            "raw_u_build_upper_bound_exceeded": "ineligible",
-+        },
-+        "exact_gpu_commands": [
-+            "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_count_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async",
-+            "python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_hotpath_iteration.yaml --output-dir outputs/tuning/hotpath_perf_smoke --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 2 --profile perf --preflight-mode compact --strategies native routersense_b_core_independent_async routersense_u_core_zero_raw_async",
-+        ],
-         "forbidden_tests": [
-             "full first 4GPU bring-up",
-             "GPU C2",
-diff --git a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-index 1717c34..5422d91 100644
---- a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-+++ b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
-@@ -24,6 +24,7 @@ from experiments.distributed._gpu_runner_common import (
-     write_json,
- )
- from experiments.online.support.runtime_presets import resolve_strategy_runtime
-+from rs.core.layer_ids import stable_layer_count_map, stable_layer_ids
- 
- 
- DEFAULT_STRATEGIES = (
-@@ -269,7 +270,130 @@ def _normalize_safe_projection_mode(value: object) -> str:
-     return text
- 
- 
--def aggregate_hotpath_rank_counts(rank_summaries: list[dict], *, expected_world_size: int | None = None) -> dict:
-+def _expected_count_contract(
-+    *,
-+    rank_summaries: list[dict],
-+    expected_world_size: int | None,
-+    warmup_iters: int | None,
-+    measure_iters: int | None,
-+    selected_layer_ids: list[str] | None,
-+    prediction_source_layer_ids: list[str] | None,
-+    strategy: str | None,
-+) -> dict:
-+    reasons: list[str] = []
-+    if expected_world_size is None or warmup_iters is None or measure_iters is None or selected_layer_ids is None:
-+        return {"available": False, "eligibility_reasons": ["expected_count_contract_missing_inputs"]}
-+    forward_count = int(warmup_iters) + int(measure_iters)
-+    selected_layers = stable_layer_ids(selected_layer_ids)
-+    prediction_layers = stable_layer_ids(prediction_source_layer_ids or [])
-+    expected_selected_per_rank = int(forward_count * len(selected_layers))
-+    expected_prediction_per_rank = int(forward_count * len(prediction_layers))
-+    expected_selected_all = int(expected_selected_per_rank * int(expected_world_size))
-+    expected_prediction_all = int(expected_prediction_per_rank * int(expected_world_size))
-+
-+    def _actual_list(field: str) -> list[int | None]:
-+        values: list[int | None] = []
-+        for item in rank_summaries:
-+            values.append(int(item[field]) if field in item else None)
-+        return values
-+
-+    selected_p0 = _actual_list("selected_p0_hook_count")
-+    selected_p1 = _actual_list("selected_p1_hook_count")
-+    prediction_p0 = _actual_list("prediction_source_p0_hook_count")
-+    for field, values, expected in (
-+        ("selected_p0_hook_count", selected_p0, expected_selected_per_rank),
-+        ("selected_p1_hook_count", selected_p1, expected_selected_per_rank),
-+        ("prediction_source_p0_hook_count", prediction_p0, expected_prediction_per_rank),
-+    ):
-+        for index, actual in enumerate(values):
-+            rank = int(rank_summaries[index].get("rank", index))
-+            if actual is None:
-+                reasons.append(f"{field}:rank={rank}:missing")
-+            elif int(actual) != int(expected):
-+                reasons.append(f"{field}:rank={rank}:expected={expected}:actual={actual}")
-+    selected_p0_sum = None if any(value is None for value in selected_p0) else int(sum(int(value) for value in selected_p0))
-+    selected_p1_sum = None if any(value is None for value in selected_p1) else int(sum(int(value) for value in selected_p1))
-+    prediction_p0_sum = None if any(value is None for value in prediction_p0) else int(sum(int(value) for value in prediction_p0))
-+    if selected_p0_sum is not None and selected_p0_sum != expected_selected_all:
-+        reasons.append(f"selected_p0_hook_count_all_rank:expected={expected_selected_all}:actual={selected_p0_sum}")
-+    if selected_p1_sum is not None and selected_p1_sum != expected_selected_all:
-+        reasons.append(f"selected_p1_hook_count_all_rank:expected={expected_selected_all}:actual={selected_p1_sum}")
-+    if prediction_p0_sum is not None and prediction_p0_sum != expected_prediction_all:
-+        reasons.append(f"prediction_source_p0_hook_count_all_rank:expected={expected_prediction_all}:actual={prediction_p0_sum}")
-+    payload: dict[str, object] = {
-+        "forward_count": int(forward_count),
-+        "selected_layer_count": int(len(selected_layers)),
-+        "prediction_source_layer_count": int(len(prediction_layers)),
-+        "expected_selected_p0_hook_count_per_rank": expected_selected_per_rank,
-+        "actual_selected_p0_hook_count_per_rank": selected_p0,
-+        "selected_p0_hook_count_exact": all(value == expected_selected_per_rank for value in selected_p0),
-+        "expected_selected_p1_hook_count_per_rank": expected_selected_per_rank,
-+        "actual_selected_p1_hook_count_per_rank": selected_p1,
-+        "selected_p1_hook_count_exact": all(value == expected_selected_per_rank for value in selected_p1),
-+        "expected_selected_p0_hook_count_all_rank": expected_selected_all,
-+        "actual_selected_p0_hook_count_all_rank": selected_p0_sum,
-+        "selected_p0_hook_count_all_rank_exact": selected_p0_sum == expected_selected_all,
-+        "expected_selected_p1_hook_count_all_rank": expected_selected_all,
-+        "actual_selected_p1_hook_count_all_rank": selected_p1_sum,
-+        "selected_p1_hook_count_all_rank_exact": selected_p1_sum == expected_selected_all,
-+        "expected_prediction_source_p0_hook_count_per_rank": expected_prediction_per_rank,
-+        "actual_prediction_source_p0_hook_count_per_rank": prediction_p0,
-+        "prediction_source_p0_hook_count_exact": all(value == expected_prediction_per_rank for value in prediction_p0),
-+        "expected_prediction_source_p0_hook_count_all_rank": expected_prediction_all,
-+        "actual_prediction_source_p0_hook_count_all_rank": prediction_p0_sum,
-+        "prediction_source_p0_hook_count_all_rank_exact": prediction_p0_sum == expected_prediction_all,
-+    }
-+    if str(strategy) == "routersense_u_core_zero_raw_async":
-+        raw_per_rank = _actual_list("raw_u_build_count")
-+        raw_all = None if any(value is None for value in raw_per_rank) else int(sum(int(value) for value in raw_per_rank))
-+        raw_layer_valid = True
-+        raw_layer_payload: list[dict[str, object]] = []
-+        for item in rank_summaries:
-+            rank = int(item.get("rank", len(raw_layer_payload)))
-+            by_layer = stable_layer_count_map(dict(item.get("raw_u_build_count_by_layer_per_rank") or item.get("raw_u_build_count_by_layer") or {}))
-+            for layer_id in selected_layers:
-+                actual = int(by_layer.get(layer_id, 0))
-+                valid = actual <= forward_count
-+                raw_layer_payload.append({"rank": rank, "layer": layer_id, "expected_upper_bound": forward_count, "actual": actual, "valid": valid})
-+                if not valid:
-+                    raw_layer_valid = False
-+                    reasons.append(f"raw_u_build_count_by_layer:rank={rank}:layer={layer_id}:upper={forward_count}:actual={actual}")
-+        for index, actual in enumerate(raw_per_rank):
-+            rank = int(rank_summaries[index].get("rank", index))
-+            if actual is None:
-+                reasons.append(f"raw_u_build_count:rank={rank}:missing")
-+            elif int(actual) > expected_selected_per_rank:
-+                reasons.append(f"raw_u_build_count:rank={rank}:upper={expected_selected_per_rank}:actual={actual}")
-+        if raw_all is not None and raw_all > expected_selected_all:
-+            reasons.append(f"raw_u_build_count_all_rank:upper={expected_selected_all}:actual={raw_all}")
-+        payload.update(
-+            {
-+                "expected_raw_u_build_upper_bound_per_rank": expected_selected_per_rank,
-+                "actual_raw_u_build_count_per_rank": raw_per_rank,
-+                "raw_u_build_count_per_rank_valid": all(value is not None and int(value) <= expected_selected_per_rank for value in raw_per_rank),
-+                "expected_raw_u_build_upper_bound_all_rank": expected_selected_all,
-+                "actual_raw_u_build_count_all_rank": raw_all,
-+                "raw_u_build_count_all_rank_valid": raw_all is not None and raw_all <= expected_selected_all,
-+                "raw_u_build_count_by_layer_per_rank_valid": bool(raw_layer_valid),
-+                "raw_u_build_count_by_layer_per_rank_contract": raw_layer_payload,
-+            }
+diff --git a/RS/src/rs/core/experiment_config.py b/RS/src/rs/core/experiment_config.py
+index 55ac510..4780983 100644
+--- a/RS/src/rs/core/experiment_config.py
++++ b/RS/src/rs/core/experiment_config.py
+@@ -407,6 +407,8 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
+         "requested_layer_selector": set(),
+         "resolved_layer_selector": set(),
+         "resolved_layer_ids": set(),
++        "requested_preflight_mode": set(),
++        "effective_preflight_mode": set(),
+     }
+     nested: dict[tuple[str, ...], set[str]] = {
+         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
+diff --git a/RS/src/rs/runtime/online/megatron_ep/execution/audit.py b/RS/src/rs/runtime/online/megatron_ep/execution/audit.py
+index 5a823c4..92f9f67 100644
+--- a/RS/src/rs/runtime/online/megatron_ep/execution/audit.py
++++ b/RS/src/rs/runtime/online/megatron_ep/execution/audit.py
+@@ -69,6 +69,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
+     transport_events = tuple(audit_input.transport_events)
+     native_fallback_events = sum(1 for row in transport_events if row.get("event") == "native_fallback")
+     contract_violation_events = sum(1 for row in transport_events if row.get("event") == "contract_violation")
++    result_summaries = [row for row in transport_events if row.get("record_type") == "result_summary"]
+     execution_entries = [row for row in transport_events if row.get("record_type") != "result_summary"]
+     task_entries = [row for row in execution_entries if row.get("record_type") in {None, "task"}]
+     logical_task_entries = [row for row in task_entries if "op_kind" not in row]
+@@ -96,6 +97,17 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
+         if task_id not in logical_executed:
+             logical_executed.append(task_id)
+     executed_task_ids = tuple(logical_executed)
++    execution_summary_used = False
++    if not executed_task_ids and planned_task_ids and result_summaries:
++        summary_complete = all(
++            bool(row.get("all_work_completed", row.get("result", {}).get("all_work_completed", True)))
++            and not bool(row.get("fallback_used", False))
++            and not bool(row.get("timeout", False))
++            for row in result_summaries
 +        )
-+    payload["available"] = not reasons
-+    payload["hotpath_exact_count_eligible"] = not reasons
-+    payload["eligibility_reasons"] = reasons
-+    return payload
-+
-+
-+def aggregate_hotpath_rank_counts(
-+    rank_summaries: list[dict],
-+    *,
-+    expected_world_size: int | None = None,
-+    warmup_iters: int | None = None,
-+    measure_iters: int | None = None,
-+    selected_layer_ids: list[str] | None = None,
-+    prediction_source_layer_ids: list[str] | None = None,
-+    strategy: str | None = None,
-+) -> dict:
-     fields = (
-         "selected_p0_hook_count",
-         "selected_p1_hook_count",
-@@ -319,6 +443,17 @@ def aggregate_hotpath_rank_counts(rank_summaries: list[dict], *, expected_world_
-         payload[f"{base}_all_rank_sum"] = int(sum(int(v or 0) for v in per_rank))
-     if int(payload.get("none_heavy_hook_count_all_rank_sum") or 0) > 0:
-         reasons.append("none_heavy_hook_count_positive")
-+    exact_contract = _expected_count_contract(
-+        rank_summaries=ordered,
-+        expected_world_size=expected_world_size,
-+        warmup_iters=warmup_iters,
-+        measure_iters=measure_iters,
-+        selected_layer_ids=selected_layer_ids,
-+        prediction_source_layer_ids=prediction_source_layer_ids,
-+        strategy=strategy,
-+    )
-+    payload.update(exact_contract)
-+    reasons.extend(str(item) for item in exact_contract.get("eligibility_reasons", []) or [])
-     payload["available"] = not reasons
-     payload["hotpath_eligible"] = not reasons
-     payload["eligibility_reasons"] = reasons
-@@ -341,6 +476,11 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
-     hotpath_counts = aggregate_hotpath_rank_counts(
-         rank_summaries,
-         expected_world_size=int(details.get("world_size", 0) or 0) or None,
-+        warmup_iters=int(details.get("warmup_iters", 0) or 0),
-+        measure_iters=int(details.get("measure_iters", 0) or 0),
-+        selected_layer_ids=[str(item) for item in (details.get("selected_layer_ids") or [])],
-+        prediction_source_layer_ids=[str(item) for item in (rank0_summary.get("prediction_source_layer_ids") or [])],
-+        strategy=str(strategy),
++        if summary_complete:
++            executed_task_ids = planned_task_ids
++            execution_summary_used = True
+
+     unique_task_rows: dict[str, int] = {}
+     unique_task_bytes: dict[str, int] = {}
+@@ -114,6 +126,13 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
+             if "wave_id" in row and (row.get("task_id") or row.get("bucket_id"))
+         }
      )
-     raw_series = _metric_series(rank_summaries, run_dir)
-     metrics = {name: _summary_stats(values) for name, values in raw_series.items()}
++    if execution_summary_used:
++        executed_wave_count = max(
++            int((row.get("result") or {}).get("active_wave_count", row.get("active_wave_count", 0)) or 0)
++            for row in result_summaries
++        )
++        executed_rows = planned_rows
++        executed_bytes = planned_bytes
+     actual_local_rows = 0
+     actual_remote_rows = 0
+     classified_tasks: set[str] = set()
+@@ -220,6 +239,7 @@ def build_execution_audit(audit_input: ExecutionAuditInput) -> ExecutionAudit:
+             "multi_payload_task_count": multi_payload_task_count,
+             "payload_roles_by_first_5_task_ids": payload_roles_by_first_5_task_ids,
+             "audited_task_entry_source": "logical_task_entries" if logical_task_entries else "task_entries",
++            "execution_summary_used": execution_summary_used,
+             "compiled_from_prepared_plan": compiled_from_prepared_plan,
+             "prepared_plan_order_preserved": prepared_plan_order_preserved,
+             "prepared_plan_order_preserved_metric": prepared_plan_order_preserved_metric,
 diff --git a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
-index ba0d190..c867ef9 100644
+index c867ef9..4c8b2f9 100644
 --- a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
 +++ b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
-@@ -20,6 +20,7 @@ from typing import Any
- import torch
- import torch.distributed as dist
- 
-+from rs.core.layer_ids import stable_layer_ids
- from rs.core.layer_selection import layer_selected, resolve_layer_selector
- from rs.core.contracts.observation import RuntimeObservationConfig
- from rs.runtime.online.megatron_ep.contracts import (
-@@ -307,12 +308,12 @@ class RouterSenseInjectionRuntime:
-             if layer_id not in self._selected_layer_id_set and layer_id not in self._prediction_source_layer_id_set
+@@ -251,13 +251,13 @@ class RouterSenseInjectionRuntime:
          )
-         self._runtime_state.write("total_model_moe_layers", int(len(self._available_moe_layer_ids)))
--        self._runtime_state.write("selected_layer_ids", list(self._selected_layer_id_set))
--        self._runtime_state.write("prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
--        self._runtime_state.write("none_layer_ids", list(self._none_layer_id_set))
--        self._runtime_state.write("wrapped_selected_layer_ids", list(self._selected_layer_id_set))
--        self._runtime_state.write("wrapped_prediction_source_layer_ids", list(self._prediction_source_layer_id_set))
--        self._runtime_state.write("unwrapped_none_layer_ids", list(self._none_layer_id_set))
-+        self._runtime_state.write("selected_layer_ids", stable_layer_ids(self._selected_layer_id_set))
-+        self._runtime_state.write("prediction_source_layer_ids", stable_layer_ids(self._prediction_source_layer_id_set))
-+        self._runtime_state.write("none_layer_ids", stable_layer_ids(self._none_layer_id_set))
-+        self._runtime_state.write("wrapped_selected_layer_ids", stable_layer_ids(self._selected_layer_id_set))
-+        self._runtime_state.write("wrapped_prediction_source_layer_ids", stable_layer_ids(self._prediction_source_layer_id_set))
-+        self._runtime_state.write("unwrapped_none_layer_ids", stable_layer_ids(self._none_layer_id_set))
- 
-     def layer_role_for_name(self, layer_name: str) -> str:
-         layer_id = str(parse_layer_id(layer_name))
-diff --git a/RS/src/rs/runtime/online/megatron_ep/observation/runtime_export.py b/RS/src/rs/runtime/online/megatron_ep/observation/runtime_export.py
-index 468f538..0ed3dab 100644
---- a/RS/src/rs/runtime/online/megatron_ep/observation/runtime_export.py
-+++ b/RS/src/rs/runtime/online/megatron_ep/observation/runtime_export.py
-@@ -2,6 +2,12 @@ from __future__ import annotations
- 
- from typing import Any
- 
-+from rs.core.layer_ids import stable_layer_count_map, stable_layer_ids
-+
-+
-+def _layer_map(runtime_state: Any, key: str) -> dict[str, int]:
-+    return stable_layer_count_map(dict(runtime_state.read(key, {}) or {}))
-+
- 
- def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
-     active_prediction = runtime_state.read("active_next_dispatch_prediction") or {}
-@@ -83,18 +89,18 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
-         "forward_start_ns": int(runtime_state.read("forward_start_ns", 0) or 0),
-         "forward_end_ns": int(runtime_state.read("forward_end_ns", 0) or 0),
-         "total_model_moe_layers": int(runtime_state.read("total_model_moe_layers", 0) or 0),
--        "selected_layer_ids": list(runtime_state.read("selected_layer_ids", []) or []),
--        "prediction_source_layer_ids": list(runtime_state.read("prediction_source_layer_ids", []) or []),
--        "none_layer_ids": list(runtime_state.read("none_layer_ids", []) or []),
--        "wrapped_selected_layer_ids": list(runtime_state.read("wrapped_selected_layer_ids", []) or []),
--        "wrapped_prediction_source_layer_ids": list(runtime_state.read("wrapped_prediction_source_layer_ids", []) or []),
--        "unwrapped_none_layer_ids": list(runtime_state.read("unwrapped_none_layer_ids", []) or []),
-+        "selected_layer_ids": stable_layer_ids(runtime_state.read("selected_layer_ids", []) or []),
-+        "prediction_source_layer_ids": stable_layer_ids(runtime_state.read("prediction_source_layer_ids", []) or []),
-+        "none_layer_ids": stable_layer_ids(runtime_state.read("none_layer_ids", []) or []),
-+        "wrapped_selected_layer_ids": stable_layer_ids(runtime_state.read("wrapped_selected_layer_ids", []) or []),
-+        "wrapped_prediction_source_layer_ids": stable_layer_ids(runtime_state.read("wrapped_prediction_source_layer_ids", []) or []),
-+        "unwrapped_none_layer_ids": stable_layer_ids(runtime_state.read("unwrapped_none_layer_ids", []) or []),
-         "effective_policy_name": str(runtime_state.read("effective_policy_name", "")),
-         "requested_preflight_mode": str(runtime_state.read("requested_preflight_mode", "")),
-         "effective_preflight_mode": str(runtime_state.read("effective_preflight_mode", "")),
--        "raw_u_build_count_by_layer": dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}),
--        "paired_b_build_count_by_layer": dict(runtime_state.read("paired_b_build_count_by_layer", {}) or {}),
--        "predict_count_by_layer": dict(runtime_state.read("predict_count_by_layer", {}) or {}),
-+        "raw_u_build_count_by_layer": _layer_map(runtime_state, "raw_u_build_count_by_layer"),
-+        "paired_b_build_count_by_layer": _layer_map(runtime_state, "paired_b_build_count_by_layer"),
-+        "predict_count_by_layer": _layer_map(runtime_state, "predict_count_by_layer"),
-         "target_plan_enqueue_count_by_source_target": dict(runtime_state.read("target_plan_enqueue_count_by_source_target", {}) or {}),
-         "window_state_count_by_layer": dict(runtime_state.read("window_state_count_by_layer", {}) or {}),
-         "shadow_plan_count_by_layer": dict(runtime_state.read("shadow_plan_count_by_layer", {}) or {}),
-@@ -106,13 +112,13 @@ def build_prepared_plan_summary(*, runtime_state: Any) -> dict[str, Any]:
-         "none_heavy_hook_count_per_rank": int(runtime_state.read("none_heavy_hook_count", 0) or 0),
-         "selected_p0_hook_count_per_rank": int(runtime_state.read("selected_p0_hook_count", 0) or 0),
-         "selected_p1_hook_count_per_rank": int(runtime_state.read("selected_p1_hook_count", 0) or 0),
--        "raw_u_build_count": int(sum(int(v) for v in dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}).values())),
--        "raw_u_build_count_per_rank": int(sum(int(v) for v in dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}).values())),
--        "raw_u_build_count_by_layer_per_rank": dict(runtime_state.read("raw_u_build_count_by_layer", {}) or {}),
-+        "raw_u_build_count": int(sum(_layer_map(runtime_state, "raw_u_build_count_by_layer").values())),
-+        "raw_u_build_count_per_rank": int(sum(_layer_map(runtime_state, "raw_u_build_count_by_layer").values())),
-+        "raw_u_build_count_by_layer_per_rank": _layer_map(runtime_state, "raw_u_build_count_by_layer"),
-         "paired_b_build_count_per_rank": int(runtime_state.read("paired_b_build_count", 0) or 0),
--        "predict_count": int(sum(int(v) for v in dict(runtime_state.read("predict_count_by_layer", {}) or {}).values())),
--        "predict_count_per_rank": int(sum(int(v) for v in dict(runtime_state.read("predict_count_by_layer", {}) or {}).values())),
--        "predict_count_by_layer_per_rank": dict(runtime_state.read("predict_count_by_layer", {}) or {}),
-+        "predict_count": int(sum(_layer_map(runtime_state, "predict_count_by_layer").values())),
-+        "predict_count_per_rank": int(sum(_layer_map(runtime_state, "predict_count_by_layer").values())),
-+        "predict_count_by_layer_per_rank": _layer_map(runtime_state, "predict_count_by_layer"),
-         "rank_release_lead_us": None,
-         "expert_compute_start_lead_us": None,
-         "communication_compute_overlap_us": None,
-diff --git a/RS/tests/contract/test_gpu_child_config_and_a2_metrics.py b/RS/tests/contract/test_gpu_child_config_and_a2_metrics.py
-index 6425e58..d502b0c 100644
---- a/RS/tests/contract/test_gpu_child_config_and_a2_metrics.py
-+++ b/RS/tests/contract/test_gpu_child_config_and_a2_metrics.py
-@@ -5,6 +5,7 @@ from pathlib import Path
- 
- from experiments.distributed._gpu_runner_common import build_policy_correctness_config, load_official_config
- from experiments.distributed.run_gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
-+from rs.core.layer_ids import stable_layer_ids
- from rs.core.layer_selection import resolve_layer_selector
- 
- 
-@@ -68,17 +69,90 @@ def test_synthetic_hotpath_aggregate_uses_all_ranks() -> None:
-         }
-         for rank in range(4)
-     ]
--    aggregate = aggregate_hotpath_rank_counts(ranks, expected_world_size=4)
-+    aggregate = aggregate_hotpath_rank_counts(
-+        ranks,
-+        expected_world_size=4,
-+        warmup_iters=1,
-+        measure_iters=1,
-+        selected_layer_ids=["0", "1"],
-+        prediction_source_layer_ids=[],
-+        strategy="routersense_u_core_zero_raw_async",
-+    )
-     assert aggregate["selected_p0_hook_count_per_rank"] == [4, 4, 4, 4]
-     assert aggregate["selected_p0_hook_count_all_rank_sum"] == 16
-     assert aggregate["selected_p1_hook_count_per_rank"] == [4, 4, 4, 4]
-     assert aggregate["selected_p1_hook_count_all_rank_sum"] == 16
-+    assert aggregate["expected_selected_p0_hook_count_per_rank"] == 4
-+    assert aggregate["selected_p0_hook_count_exact"] is True
-+    assert aggregate["expected_prediction_source_p0_hook_count_per_rank"] == 0
-+    assert aggregate["prediction_source_p0_hook_count_all_rank_exact"] is True
-     assert aggregate["none_heavy_hook_count_all_rank_sum"] == 0
-     assert aggregate["raw_u_build_count_all_rank_sum"] == 16
-+    assert aggregate["expected_raw_u_build_upper_bound_all_rank"] == 16
-+    assert aggregate["raw_u_build_count_all_rank_valid"] is True
-+    assert aggregate["raw_u_build_count_by_layer_per_rank_valid"] is True
-     assert aggregate["rank_count_observed"] == 4
-     assert aggregate["hotpath_eligible"] is True
- 
- 
-+def test_synthetic_hotpath_exact_count_mismatch_is_ineligible() -> None:
-+    ranks = [
-+        {
-+            "rank": rank,
-+            "selected_p0_hook_count": 3 if rank == 1 else 4,
-+            "selected_p1_hook_count": 4,
-+            "prediction_source_p0_hook_count": 0,
-+            "none_heavy_hook_count": 0,
-+            "raw_u_build_count": 4,
-+            "raw_u_build_count_by_layer_per_rank": {"0": 2, "1": 2},
-+            "paired_b_build_count": 0,
-+            "predict_count": 0,
+         self._resolved_policy_capabilities_cache = base.with_runtime_flags(
+             supports_current_window_joint_planning=bool(
+-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
++                is_joint_window and base.supports_online_multiphase_execution
+             ),
+             supports_cross_layer_prediction=bool(has_prediction and base.uses_p2_forecast),
+             supports_two_horizon_prediction=bool(has_prediction and base.uses_p2_forecast),
+             supports_target_layer_preplanning=bool(supports_target_preplanning),
+             supports_p1_plan_reuse=bool(
+-                is_joint_window and (base.uses_blocked_p1_dependency or base.uses_p2_forecast)
++                is_joint_window and base.supports_online_multiphase_execution
+             ),
+             supports_late_suffix_splice=bool(supports_target_preplanning),
+             supports_rank_release_batch=bool(is_joint_window),
+@@ -1845,7 +1845,13 @@ class RouterSenseInjectionRuntime:
+             p2_next_dispatch_forecast_matrix=forecast_matrix,
+         )
+         effective_policy = str(self._effective_phase_policy_name() or "")
+-        phase_local_async_policies = {"bucketed_fifo", "greedy_ready_set", "birkhoff_phase_local", "phase_barrier_fifo"}
++        phase_local_async_policies = {
++            "bucketed_fifo",
++            "greedy_ready_set",
++            "birkhoff_phase_local",
++            "phase_barrier_fifo",
++            "B_barrier_criticality_core_independent",
 +        }
-+        for rank in range(4)
-+    ]
-+    aggregate = aggregate_hotpath_rank_counts(
-+        ranks,
-+        expected_world_size=4,
-+        warmup_iters=1,
-+        measure_iters=1,
-+        selected_layer_ids=["0", "1"],
-+        prediction_source_layer_ids=[],
-+        strategy="routersense_u_core_zero_raw_async",
-+    )
-+    assert aggregate["hotpath_eligible"] is False
-+    assert any("selected_p0_hook_count:rank=1:expected=4:actual=3" in item for item in aggregate["eligibility_reasons"])
-+
-+
-+def test_synthetic_hotpath_raw_u_layer_upper_bound_is_ineligible() -> None:
-+    ranks = [
-+        {
-+            "rank": rank,
-+            "selected_p0_hook_count": 4,
-+            "selected_p1_hook_count": 4,
-+            "prediction_source_p0_hook_count": 0,
-+            "none_heavy_hook_count": 0,
-+            "raw_u_build_count": 5 if rank == 0 else 4,
-+            "raw_u_build_count_by_layer_per_rank": {"0": 3, "1": 2} if rank == 0 else {"0": 2, "1": 2},
-+            "paired_b_build_count": 0,
-+            "predict_count": 0,
-+        }
-+        for rank in range(4)
-+    ]
-+    aggregate = aggregate_hotpath_rank_counts(
-+        ranks,
-+        expected_world_size=4,
-+        warmup_iters=1,
-+        measure_iters=1,
-+        selected_layer_ids=["0", "1"],
-+        prediction_source_layer_ids=[],
-+        strategy="routersense_u_core_zero_raw_async",
-+    )
-+    assert aggregate["hotpath_eligible"] is False
-+    assert aggregate["raw_u_build_count_per_rank_valid"] is False
-+    assert aggregate["raw_u_build_count_by_layer_per_rank_valid"] is False
-+    assert any("raw_u_build_count_by_layer:rank=0:layer=0:upper=2:actual=3" in item for item in aggregate["eligibility_reasons"])
-+
-+
- def test_synthetic_hotpath_aggregate_rejects_missing_duplicate_and_none_heavy() -> None:
-     missing = aggregate_hotpath_rank_counts([{"rank": 0, "selected_p0_hook_count": 4}], expected_world_size=4)
-     assert missing["hotpath_eligible"] is False
-@@ -112,6 +186,11 @@ def test_synthetic_hotpath_aggregate_rejects_missing_duplicate_and_none_heavy()
-     assert "none_heavy_hook_count_positive" in none_heavy["eligibility_reasons"]
- 
- 
-+def test_stable_layer_id_sorting_numeric_and_mixed_names() -> None:
-+    assert stable_layer_ids({"10", "2", "1"}) == ["1", "2", "10"]
-+    assert stable_layer_ids({"layer10", "layer2", "alpha"}) == ["alpha", "layer2", "layer10"]
-+
-+
- def test_raw_and_safe_child_configs_diverge_in_safe_projection_mode() -> None:
-     base = {
-         "model": {"model_id": "fixture/model", "local_path": "/tmp/model", "trust_remote_code": False},
+         policy_options = PolicyOptions(
+             p0_weight=float(self.config.p0_weight),
+             p1_weight=float(self.config.p1_reservation_weight),
+diff --git a/RS/src/rs/scheduling/multiphase/tier1.py b/RS/src/rs/scheduling/multiphase/tier1.py
+index 8073d71..2aa3750 100644
+--- a/RS/src/rs/scheduling/multiphase/tier1.py
++++ b/RS/src/rs/scheduling/multiphase/tier1.py
+@@ -111,7 +111,7 @@ class Tier1MultiphasePolicy:
+     capabilities = PolicyCapabilities(
+         supports_offline=True,
+         supports_online_phase_local_execution=False,
+-        supports_online_multiphase_execution=False,
++        supports_online_multiphase_execution=True,
+         uses_current_ready_flows=True,
+         uses_blocked_p1_dependency=True,
+         uses_p2_forecast=True,
