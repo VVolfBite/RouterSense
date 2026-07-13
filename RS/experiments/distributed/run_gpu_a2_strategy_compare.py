@@ -399,6 +399,15 @@ def aggregate_hotpath_rank_counts(
         "selected_p1_hook_count",
         "prediction_source_p0_hook_count",
         "none_heavy_hook_count",
+        "real_p0_execution_count",
+        "real_p1_execution_count",
+        "shadow_dispatch_execution_count",
+        "shadow_combine_execution_count",
+        "observation_finalize_dispatch_count",
+        "observation_finalize_combine_count",
+        "shadow_policy_agreement_count",
+        "shadow_plan_build_count",
+        "shadow_control_collective_count",
         "raw_u_build_count",
         "paired_b_build_count",
         "predict_count",
@@ -454,6 +463,38 @@ def aggregate_hotpath_rank_counts(
     )
     payload.update(exact_contract)
     reasons.extend(str(item) for item in exact_contract.get("eligibility_reasons", []) or [])
+    if str(strategy) in {"routersense_b_core_independent_async", "routersense_u_core_zero_raw_async"}:
+        expected_selected_per_rank = int(exact_contract.get("expected_selected_p0_hook_count_per_rank", 0) or 0)
+        for field in ("real_p0_execution_count", "real_p1_execution_count"):
+            values = list(payload.get(f"{field}_per_rank", []) or [])
+            for index, actual in enumerate(values):
+                rank = int(ordered[index].get("rank", index))
+                if actual is None:
+                    reasons.append(f"{field}:rank={rank}:missing")
+                elif int(actual) != expected_selected_per_rank:
+                    reasons.append(f"{field}:rank={rank}:expected={expected_selected_per_rank}:actual={actual}")
+        for field in (
+            "shadow_dispatch_execution_count",
+            "shadow_combine_execution_count",
+            "shadow_policy_agreement_count",
+            "shadow_plan_build_count",
+            "shadow_control_collective_count",
+        ):
+            values = list(payload.get(f"{field}_per_rank", []) or [])
+            for index, actual in enumerate(values):
+                rank = int(ordered[index].get("rank", index))
+                if actual is None:
+                    reasons.append(f"{field}:rank={rank}:missing")
+                elif int(actual) != 0:
+                    reasons.append(f"{field}:rank={rank}:expected=0:actual={actual}")
+        for field in ("observation_finalize_dispatch_count", "observation_finalize_combine_count"):
+            values = list(payload.get(f"{field}_per_rank", []) or [])
+            for index, actual in enumerate(values):
+                rank = int(ordered[index].get("rank", index))
+                if actual is None:
+                    reasons.append(f"{field}:rank={rank}:missing")
+                elif int(actual) != expected_selected_per_rank:
+                    reasons.append(f"{field}:rank={rank}:expected={expected_selected_per_rank}:actual={actual}")
     payload["available"] = not reasons
     payload["hotpath_eligible"] = not reasons
     payload["eligibility_reasons"] = reasons

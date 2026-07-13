@@ -17,6 +17,15 @@ class RuntimeExecutionMetrics:
     prediction_source_p0_hook_count: int = 0
     none_heavy_hook_count: int = 0
     selected_transport_execution_count: int = 0
+    real_p0_execution_count: int = 0
+    real_p1_execution_count: int = 0
+    shadow_dispatch_execution_count: int = 0
+    shadow_combine_execution_count: int = 0
+    observation_finalize_dispatch_count: int = 0
+    observation_finalize_combine_count: int = 0
+    shadow_policy_agreement_count: int = 0
+    shadow_plan_build_count: int = 0
+    shadow_control_collective_count: int = 0
 
     p0_traffic_matrix_gather_count: int = 0
     prediction_extra_collective_count: int = 0
@@ -168,6 +177,13 @@ class PreparedWindowRuntimeState:
     selected_layer_timing_records: list[dict[str, Any]] = field(default_factory=list)
     expert_module_timing_records: list[dict[str, Any]] = field(default_factory=list)
     attribution_boundary_status: dict[str, Any] = field(default_factory=dict)
+    dispatch_finalize_shape: list[int] | None = None
+    dispatch_finalize_dispatcher: str = ""
+    combine_finalize_shape: list[int] | None = None
+    combine_finalize_dispatcher: str = ""
+    dtoh_callsite_count: dict[str, int] = field(default_factory=dict)
+    dtoh_callsite_wall_us: dict[str, float] = field(default_factory=dict)
+    dtoh_callsite_bytes: dict[str, int] = field(default_factory=dict)
 
     metrics: RuntimeExecutionMetrics = field(default_factory=RuntimeExecutionMetrics)
     extras: dict[str, Any] = field(default_factory=dict)

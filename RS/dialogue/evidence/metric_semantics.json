@@ -1,0 +1,15 @@
+{
+  "deprecated": {
+    "expert_compute_us": "legacy derived field; not authoritative for selected expert boundary",
+    "preflight_us": "must refer to real preflight total, not generic activate transport time",
+    "communication_span_us": "legacy alias; selected window is not pure communication"
+  },
+  "hook_timing_fields": [
+    "hook_before_token_dispatch_total",
+    "hook_after_token_dispatch_total",
+    "hook_on_dispatch_total",
+    "hook_before_token_combine_total",
+    "hook_after_token_combine_total",
+    "hook_on_combine_total"
+  ]
+}

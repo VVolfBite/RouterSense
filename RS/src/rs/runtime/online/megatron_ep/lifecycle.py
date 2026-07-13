@@ -24,6 +24,7 @@ from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import layer_selected, resolve_layer_selector
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.runtime.online.megatron_ep.contracts import (
+    HookExecutionMode,
     InjectionDecision,
     PlanAgreement,
     PolicyContext,
@@ -686,6 +687,69 @@ class RouterSenseInjectionRuntime:
             scheduled=False,
         )
 
+    def _hook_execution_mode(self, *, layer_name: str) -> HookExecutionMode:
+        layer_role = self.layer_role_for_name(layer_name)
+        if layer_role == "none":
+            return "DISABLED"
+        if layer_role == "prediction_source":
+            return "OBSERVATION_ONLY"
+        if layer_role != "selected":
+            return "DISABLED"
+        if self.config.scheduler_mode in {"native_passthrough_identity", "native_order", "joint_shadow_p0p1"}:
+            return "LEGACY_SHADOW"
+        if str(self.config.execution_mode) in {"joint_window_async_p2p", "phase_sync_wave"}:
+            return "REAL_EXECUTION_WITH_OBSERVATION"
+        if self.config.scheduler_mode == "disabled":
+            return "OBSERVATION_ONLY"
+        return "OBSERVATION_ONLY"
+
+    def _record_dtoh_callsite(
+        self,
+        *,
+        callsite_id: str,
+        start_ns: int,
+        end_ns: int,
+        bytes_if_known: int | None = None,
+    ) -> None:
+        count_map = dict(self._runtime_state.read("dtoh_callsite_count", {}) or {})
+        wall_map = dict(self._runtime_state.read("dtoh_callsite_wall_us", {}) or {})
+        byte_map = dict(self._runtime_state.read("dtoh_callsite_bytes", {}) or {})
+        count_map[str(callsite_id)] = int(count_map.get(str(callsite_id), 0) or 0) + 1
+        wall_map[str(callsite_id)] = float(wall_map.get(str(callsite_id), 0.0) or 0.0) + max(
+            0.0, float(end_ns - start_ns) / 1000.0
+        )
+        if bytes_if_known is not None:
+            byte_map[str(callsite_id)] = int(byte_map.get(str(callsite_id), 0) or 0) + int(bytes_if_known)
+        self._runtime_state.write("dtoh_callsite_count", count_map)
+        self._runtime_state.write("dtoh_callsite_wall_us", wall_map)
+        self._runtime_state.write("dtoh_callsite_bytes", byte_map)
+
+    def _finalize_dispatch_observation(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
+        self._runtime_state.metrics.observation_finalize_dispatch_count = int(
+            self._runtime_state.metrics.observation_finalize_dispatch_count
+        ) + 1
+        self._runtime_state.write(
+            "dispatch_finalize_shape",
+            list(hidden_states.shape) if isinstance(hidden_states, torch.Tensor) else None,
+        )
+        self._runtime_state.write(
+            "dispatch_finalize_dispatcher",
+            str(type(dispatcher).__name__) if dispatcher is not None else "",
+        )
+
+    def _finalize_combine_observation(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
+        self._runtime_state.metrics.observation_finalize_combine_count = int(
+            self._runtime_state.metrics.observation_finalize_combine_count
+        ) + 1
+        self._runtime_state.write(
+            "combine_finalize_shape",
+            list(hidden_states.shape) if isinstance(hidden_states, torch.Tensor) else None,
+        )
+        self._runtime_state.write(
+            "combine_finalize_dispatcher",
+            str(type(dispatcher).__name__) if dispatcher is not None else "",
+        )
+
     def before_prediction_source_dispatch(
         self,
         *,
@@ -704,7 +768,14 @@ class RouterSenseInjectionRuntime:
         if callable(sync_fn):
             try:
                 tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
+                dtoh_start_ns = time.monotonic_ns()
                 synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
+                dtoh_end_ns = time.monotonic_ns()
+                self._record_dtoh_callsite(
+                    callsite_id="DTOH_P0_DISPATCHER_SYNC",
+                    start_ns=dtoh_start_ns,
+                    end_ns=dtoh_end_ns,
+                )
                 if synchronized is not None:
                     dispatcher.tokens_per_expert = synchronized
             except Exception:
@@ -864,22 +935,65 @@ class RouterSenseInjectionRuntime:
         observation: PreTransportTrafficObservation,
         device: torch.device,
     ) -> tuple[tuple[int, ...], ...]:
+        local_prepare_start_ns = time.monotonic_ns()
         local_row = tuple(int(v) for v in observation.local_p0_row)
         local_total = int(sum(local_row))
         if local_total != int(sum(observation.send_splits_rows)):
             raise RuntimeError(f"pre-transport local send mismatch for {layer_name}: local_row={local_row} send_splits={observation.send_splits_rows}")
         row_tensor = torch.tensor(local_row, dtype=torch.int64, device=device)
+        local_prepare_end_ns = time.monotonic_ns()
         if len(local_row) <= 1:
             matrix = (local_row,)
             gather_count = 0
+            collective_start_ns = local_prepare_end_ns
+            collective_end_ns = local_prepare_end_ns
+            dtoh_decode_start_ns = local_prepare_end_ns
+            dtoh_decode_end_ns = local_prepare_end_ns
         elif dist.is_available() and dist.is_initialized():
+            collective_start_ns = time.monotonic_ns()
             gathered = [torch.empty_like(row_tensor) for _ in range(len(local_row))]
             dist.all_gather(gathered, row_tensor, group=self.ep_process_group)
+            collective_end_ns = time.monotonic_ns()
+            dtoh_decode_start_ns = time.monotonic_ns()
             matrix = tuple(tuple(int(v) for v in item.detach().cpu().tolist()) for item in gathered)
+            dtoh_decode_end_ns = time.monotonic_ns()
             gather_count = 1
         else:
             matrix = tuple(local_row for _ in range(len(local_row)))
             gather_count = 0
+            collective_start_ns = local_prepare_end_ns
+            collective_end_ns = local_prepare_end_ns
+            dtoh_decode_start_ns = local_prepare_end_ns
+            dtoh_decode_end_ns = local_prepare_end_ns
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="p0_matrix_local_prepare",
+            start_ns=local_prepare_start_ns,
+            end_ns=local_prepare_end_ns,
+        )
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="p0_matrix_collective",
+            start_ns=collective_start_ns,
+            end_ns=collective_end_ns,
+            collective_count=int(gather_count),
+        )
+        self._record_planning_timing(
+            layer_name=layer_name,
+            phase="P0",
+            stage="p0_matrix_dtoh_decode",
+            start_ns=dtoh_decode_start_ns,
+            end_ns=dtoh_decode_end_ns,
+        )
+        if dtoh_decode_end_ns > dtoh_decode_start_ns:
+            self._record_dtoh_callsite(
+                callsite_id="DTOH_P0_MATRIX_DECODE",
+                start_ns=dtoh_decode_start_ns,
+                end_ns=dtoh_decode_end_ns,
+                bytes_if_known=int(row_tensor.numel() * row_tensor.element_size() * max(1, len(local_row))),
+            )
         matrix_total = int(sum(sum(int(v) for v in row) for row in matrix))
         self._runtime_state.write("planning_traffic_source", "pre_transport_phase_ready_context")
         self._runtime_state.write("pre_transport_observation_valid", bool(observation.valid))
@@ -3019,8 +3133,11 @@ class RouterSenseInjectionRuntime:
     ) -> None:
         hook_start_ns = time.monotonic_ns()
         layer_role = self.layer_role_for_name(layer_name)
+        hook_mode = self._hook_execution_mode(layer_name=layer_name)
         if layer_role == "selected":
             self._runtime_state.metrics.selected_p0_hook_count = int(self._runtime_state.metrics.selected_p0_hook_count) + 1
+            if hook_mode == "REAL_EXECUTION_WITH_OBSERVATION":
+                self._runtime_state.metrics.real_p0_execution_count = int(self._runtime_state.metrics.real_p0_execution_count) + 1
         self._timeline("before_token_dispatch_enter", layer_name=layer_name, phase_name="P0")
         if layer_role == "none":
             self._record_none_heavy_hook(
@@ -3044,7 +3161,14 @@ class RouterSenseInjectionRuntime:
         if callable(sync_fn):
             try:
                 tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
+                dtoh_start_ns = time.monotonic_ns()
                 synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
+                dtoh_end_ns = time.monotonic_ns()
+                self._record_dtoh_callsite(
+                    callsite_id="DTOH_P0_DISPATCHER_SYNC",
+                    start_ns=dtoh_start_ns,
+                    end_ns=dtoh_end_ns,
+                )
                 if synchronized is not None:
                     dispatcher.tokens_per_expert = synchronized
             except Exception:
@@ -3917,25 +4041,47 @@ class RouterSenseInjectionRuntime:
                 start_ns=hook_start_ns,
             )
             return
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or layer_role != "selected":
-            return
-        observation = build_runtime_observation(
-            run_id=self.run_id,
-            step_id=self.step_id,
-            microbatch_id=self.microbatch_id,
-            model_revision_hash=self.model_revision_hash,
-            request_table_hash=self.request_table_hash,
-            hostname=self.hostname,
-            layer_name=layer_name,
-            rank=self.rank,
-            local_rank=self.local_rank,
-            ep_group_ranks=self.ep_group_ranks,
-            ep_group_hash=compute_ep_group_hash(self.ep_group_ranks),
-            dispatcher=dispatcher,
-            phase="P0",
-            hidden_states=hidden_states,
-        )
-        self._pending_p0[layer_name] = observation
+        try:
+            hook_mode = self._hook_execution_mode(layer_name=layer_name)
+            if hook_mode in {"DISABLED", "OBSERVATION_ONLY"} or layer_role != "selected":
+                return
+            if hook_mode == "REAL_EXECUTION_WITH_OBSERVATION":
+                self._finalize_dispatch_observation(
+                    layer_name=layer_name,
+                    dispatcher=dispatcher,
+                    hidden_states=hidden_states,
+                )
+                return
+            self._runtime_state.metrics.shadow_dispatch_execution_count = int(
+                self._runtime_state.metrics.shadow_dispatch_execution_count
+            ) + 1
+            observation = build_runtime_observation(
+                run_id=self.run_id,
+                step_id=self.step_id,
+                microbatch_id=self.microbatch_id,
+                model_revision_hash=self.model_revision_hash,
+                request_table_hash=self.request_table_hash,
+                hostname=self.hostname,
+                layer_name=layer_name,
+                rank=self.rank,
+                local_rank=self.local_rank,
+                ep_group_ranks=self.ep_group_ranks,
+                ep_group_hash=compute_ep_group_hash(self.ep_group_ranks),
+                dispatcher=dispatcher,
+                phase="P0",
+                hidden_states=hidden_states,
+            )
+            self._pending_p0[layer_name] = observation
+        finally:
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P0",
+                hook_name="on_dispatch_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                mode=self._hook_execution_mode(layer_name=layer_name),
+            )
 
     def on_combine(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
         hook_start_ns = time.monotonic_ns()
@@ -3948,71 +4094,102 @@ class RouterSenseInjectionRuntime:
                 start_ns=hook_start_ns,
             )
             return
-        if self.config.scheduler_mode in {"disabled", "native_passthrough_identity"} or layer_role != "selected":
-            return
-        if layer_name not in self._pending_p0:
-            return
-        p0_observation = self._pending_p0.pop(layer_name)
-        p1_observation = build_runtime_observation(
-            run_id=self.run_id,
-            step_id=self.step_id,
-            microbatch_id=self.microbatch_id,
-            model_revision_hash=self.model_revision_hash,
-            request_table_hash=self.request_table_hash,
-            hostname=self.hostname,
-            layer_name=layer_name,
-            rank=self.rank,
-            local_rank=self.local_rank,
-            ep_group_ranks=self.ep_group_ranks,
-            ep_group_hash=compute_ep_group_hash(self.ep_group_ranks),
-            dispatcher=dispatcher,
-            phase="P1",
-            hidden_states=hidden_states,
-        )
-        context = replace(self._context(layer_name), expert_placement_hash=p0_observation.expert_placement_hash)
-        local_observations = (p0_observation, p1_observation)
-        policy = self._phase_policy()
-        plan, agreement = run_policy_agreement(
-            local_observations=local_observations,
-            context=context,
-            policy=policy,
-            device=torch.device(f"cuda:{self.local_rank}"),
-            group=self.ep_process_group,
-        )
-        decision = InjectionDecision(
-            accepted=True,
-            fallback="native",
-            plan_hash=plan.plan_hash,
-            reason="native_order_passthrough" if plan.policy_name == "native_order" else "shadow_only_passthrough",
-            policy_name=plan.policy_name,
-            control_mode=self.config.control_mode,
-        )
-        self.completed.append(
-            PolicyRuntimeRecord(
+        try:
+            hook_mode = self._hook_execution_mode(layer_name=layer_name)
+            if hook_mode in {"DISABLED", "OBSERVATION_ONLY"} or layer_role != "selected":
+                return
+            if hook_mode == "REAL_EXECUTION_WITH_OBSERVATION":
+                self._finalize_combine_observation(
+                    layer_name=layer_name,
+                    dispatcher=dispatcher,
+                    hidden_states=hidden_states,
+                )
+                return
+            if layer_name not in self._pending_p0:
+                return
+            self._runtime_state.metrics.shadow_combine_execution_count = int(
+                self._runtime_state.metrics.shadow_combine_execution_count
+            ) + 1
+            p0_observation = self._pending_p0.pop(layer_name)
+            p1_observation = build_runtime_observation(
+                run_id=self.run_id,
+                step_id=self.step_id,
+                microbatch_id=self.microbatch_id,
+                model_revision_hash=self.model_revision_hash,
+                request_table_hash=self.request_table_hash,
+                hostname=self.hostname,
                 layer_name=layer_name,
-                context=context,
-                local_observations=local_observations,
-                plan=plan,
-                agreement=agreement,
-                decision=decision,
+                rank=self.rank,
+                local_rank=self.local_rank,
+                ep_group_ranks=self.ep_group_ranks,
+                ep_group_hash=compute_ep_group_hash(self.ep_group_ranks),
+                dispatcher=dispatcher,
+                phase="P1",
+                hidden_states=hidden_states,
             )
-        )
-        self._record_observer(
-            phase="policy_plan",
-            layer=layer_name,
-            rank=self.rank,
-            local_rank=self.local_rank,
-            policy_name=plan.policy_name,
-            scheduler_mode=self.config.scheduler_mode,
-            control_mode=self.config.control_mode,
-            plan_hash=plan.plan_hash,
-            execution_mode=plan.execution_mode,
-            wave_count=len(plan.waves),
-            ready_wave_count=len(plan.ready_waves),
-            blocked_future_wave_count=len(plan.blocked_future_waves),
-            agreement=agreement.to_dict(),
-            decision=decision.to_dict(),
-        )
+            context = replace(self._context(layer_name), expert_placement_hash=p0_observation.expert_placement_hash)
+            local_observations = (p0_observation, p1_observation)
+            policy = self._phase_policy()
+            self._runtime_state.metrics.shadow_plan_build_count = int(
+                self._runtime_state.metrics.shadow_plan_build_count
+            ) + 1
+            self._runtime_state.metrics.shadow_policy_agreement_count = int(
+                self._runtime_state.metrics.shadow_policy_agreement_count
+            ) + 1
+            self._runtime_state.metrics.shadow_control_collective_count = int(
+                self._runtime_state.metrics.shadow_control_collective_count
+            ) + 1
+            plan, agreement = run_policy_agreement(
+                local_observations=local_observations,
+                context=context,
+                policy=policy,
+                device=torch.device(f"cuda:{self.local_rank}"),
+                group=self.ep_process_group,
+            )
+            decision = InjectionDecision(
+                accepted=True,
+                fallback="native",
+                plan_hash=plan.plan_hash,
+                reason="native_order_passthrough" if plan.policy_name == "native_order" else "shadow_only_passthrough",
+                policy_name=plan.policy_name,
+                control_mode=self.config.control_mode,
+            )
+            self.completed.append(
+                PolicyRuntimeRecord(
+                    layer_name=layer_name,
+                    context=context,
+                    local_observations=local_observations,
+                    plan=plan,
+                    agreement=agreement,
+                    decision=decision,
+                )
+            )
+            self._record_observer(
+                phase="policy_plan",
+                layer=layer_name,
+                rank=self.rank,
+                local_rank=self.local_rank,
+                policy_name=plan.policy_name,
+                scheduler_mode=self.config.scheduler_mode,
+                control_mode=self.config.control_mode,
+                plan_hash=plan.plan_hash,
+                execution_mode=plan.execution_mode,
+                wave_count=len(plan.waves),
+                ready_wave_count=len(plan.ready_waves),
+                blocked_future_wave_count=len(plan.blocked_future_waves),
+                agreement=agreement.to_dict(),
+                decision=decision.to_dict(),
+            )
+        finally:
+            hook_end_ns = time.monotonic_ns()
+            self._record_hook_timing(
+                layer_name=layer_name,
+                phase="P1",
+                hook_name="on_combine_total",
+                start_ns=hook_start_ns,
+                end_ns=hook_end_ns,
+                mode=self._hook_execution_mode(layer_name=layer_name),
+            )
 
     # Export helpers
 

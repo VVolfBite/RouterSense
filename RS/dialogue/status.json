@@ -1,18 +1,19 @@
 {
-  "milestone": "M-RUNTIME-ATTRIBUTION-boundary-prep",
-  "starting_sha": "8081d2ebcb8ecc1bd92b2b9b297a662c9c336a5c",
+  "milestone": "M-SHADOW-PATH-RETIRE",
+  "starting_sha": "bef9f932f79b57dfdf22d68b863ce83676832038",
+  "branch": "main",
   "gpu_available": false,
   "completed": [
-    "selected layer module boundary hooks",
-    "best-effort expert module boundary hooks",
-    "strict runtime-state export fields",
-    "CPU attribution boundary tests"
+    "explicit hook execution mode added",
+    "async on_dispatch finalize-only path",
+    "async on_combine finalize-only path",
+    "legacy shadow mode retained",
+    "shadow counter contract exported",
+    "DTOH callsite fields exported",
+    "gpu shadow retire check config added"
   ],
   "remaining": [
-    "4GPU attribution_light rerun",
-    "verify selected_layer_timing_records in rank summaries",
-    "verify expert_module_timing_records or explicit unavailable status",
-    "build final non-overlapping cost tree from real GPU artifacts"
+    "short 4GPU verification run"
   ],
-  "final_status": "RUNTIME_ATTRIBUTION_INCOMPLETE"
+  "final_status": "SHADOW_PATH_RETIRE_CPU_READY"
 }

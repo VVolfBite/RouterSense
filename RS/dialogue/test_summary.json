@@ -1,19 +1,25 @@
 {
   "tests": [
     {
-      "name": "compileall attribution files",
-      "command": "python -m compileall src/rs/runtime/online/megatron_ep src/rs/core tests/contract/test_runtime_attribution_cpu.py",
+      "name": "compileall targeted runtime files",
+      "command": "python -m compileall RS/src RS/experiments RS/tests",
       "passed": true
     },
     {
-      "name": "targeted attribution/timeline/child-config tests",
-      "command": "PYTHONPATH=src:. pytest -q tests/contract/test_runtime_attribution_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py",
+      "name": "shadow retire and a2 aggregate contracts",
+      "command": "cd /root/autodl-tmp/RouterSense/RS && PYTHONPATH=src:. pytest -q tests/contract/test_shadow_path_retire_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py",
       "passed": true,
-      "passed_count": 38
+      "passed_count": 18
+    },
+    {
+      "name": "existing attribution and diag contracts",
+      "command": "cd /root/autodl-tmp/RouterSense/RS && PYTHONPATH=src:. pytest -q tests/contract/test_runtime_attribution_cpu.py tests/contract/test_runtime_diag_cpu.py",
+      "passed": true,
+      "passed_count": 19
     }
   ],
   "gpu_tests": {
     "attempted": false,
-    "reason": "nvidia-smi returned No devices were found"
+    "reason": "CPU-only milestone"
   }
 }

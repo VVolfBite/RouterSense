@@ -26,6 +26,12 @@ DemandKnowledgeState = Literal["router_ready", "predictor_output"]
 ReleaseState = Literal["ready", "blocked", "advisory_only"]
 ReleaseDependency = Literal["none", "remote_expert_compute_complete"]
 AssertionStatus = Literal["passed", "failed", "not_applicable"]
+HookExecutionMode = Literal[
+    "DISABLED",
+    "OBSERVATION_ONLY",
+    "REAL_EXECUTION_WITH_OBSERVATION",
+    "LEGACY_SHADOW",
+]
 
 
 @dataclass(frozen=True)

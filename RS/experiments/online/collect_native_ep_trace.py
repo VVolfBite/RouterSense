@@ -352,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
             **token_count_contract.to_dict(),
             "repeat_records": repeat_records,
         }
+        if policy_runtime is not None:
+            rank_summary.update(policy_runtime.export_prepared_plan_summary())
         write_jsonl(run_dir / f"rank{rank}_observer.jsonl", rows)
         write_json(run_dir / f"rank{rank}_native_dispatch.json", rank_summary)
         write_json(run_dir / f"rank{rank}_experiment_timeline.json", {"events": experiment_timeline})
