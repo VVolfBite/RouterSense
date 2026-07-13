@@ -9,7 +9,19 @@ from rs.scheduling.contracts import LogicalSchedulePlan
 MatrixRows = tuple[tuple[int, ...], ...]
 ReconciliationStatus = Literal["exact", "repaired", "rejected"]
 PlanOrigin = Literal["current_window", "prepared_priority_hint", "target_prepared", "provisional", "late_spliced"]
-TargetPlanFinalStatus = Literal["AVAILABLE", "CONSUMED", "REJECTED", "EXPIRED", "CANCELLED"]
+TargetPlanState = Literal[
+    "LOGICAL_READY",
+    "CLAIMED",
+    "BOUND",
+    "EXECUTING",
+    "COMPLETED",
+    "FAILED",
+    "EXPIRED",
+    "CANCELLED",
+    "CONSUMED",
+    "REJECTED",
+]
+TargetPlanFinalStatus = Literal["COMPLETED", "FAILED", "EXPIRED", "CANCELLED", "CONSUMED", "REJECTED"]
 
 
 @dataclass(frozen=True)
@@ -198,6 +210,20 @@ class TargetPlanTerminalRecord:
     final_status: TargetPlanFinalStatus
     execution_origin: str
     terminal_at_ns: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TargetPlanStateRecord:
+    key: TargetPlanKey
+    plan_digest: str
+    state: TargetPlanState
+    claim_owner: str = ""
+    bound_owner: str = ""
+    execution_origin: str = ""
+    updated_at_ns: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -66,3 +66,36 @@ def test_target_plan_store_cancel_and_invalidate() -> None:
     assert store.get_terminal_record(key) is not None
     with pytest.raises(RouterSenseInvariantError):
         store.put(key, _plan())
+
+
+def test_target_plan_store_formal_state_transitions() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    plan = _plan()
+    store.publish_logical(key, plan)
+    assert store.get_state_record(key).state == "LOGICAL_READY"
+    claimed = store.claim(key, claim_owner="runtime")
+    assert claimed.logical_plan_digest == "ld"
+    assert store.get_state_record(key).state == "CLAIMED"
+    store.bind(key, bound_owner="executor")
+    assert store.get_state_record(key).state == "BOUND"
+    store.start_execution(key, execution_origin="executor_start", claim_owner="runtime")
+    state = store.get_state_record(key)
+    assert state.state == "EXECUTING"
+    assert state.execution_origin == "executor_start"
+    completed = store.complete(key, execution_origin="executor_complete")
+    assert completed.logical_plan_digest == "ld"
+    terminal = store.get_terminal_record(key)
+    assert terminal is not None
+    assert terminal.final_status == "COMPLETED"
+
+
+def test_target_plan_store_fail_after_claim_records_failed_terminal() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    store.publish_logical(key, _plan())
+    store.claim(key, claim_owner="runtime")
+    store.fail(key, execution_origin="compile_failed")
+    terminal = store.get_terminal_record(key)
+    assert terminal is not None
+    assert terminal.final_status == "FAILED"

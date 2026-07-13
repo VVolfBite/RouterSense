@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, Callable
 
 from rs.core.contracts import (
@@ -59,52 +60,167 @@ class TargetLayerPlannerMetrics:
     planner_wall_us: float = 0.0
 
 
+class PreparationSubmitStatus(Enum):
+    ACCEPTED = "accepted"
+    REPLACED_STALE = "replaced_stale"
+    DROPPED_OVERLOAD = "dropped_overload"
+    REJECTED_EXPIRED = "rejected_expired"
+    REJECTED_CLOSED = "rejected_closed"
+
+
+@dataclass(frozen=True)
+class PreparationSubmitResult:
+    status: PreparationSubmitStatus
+    task_key: str
+
+
+@dataclass(frozen=True)
+class _QueuedPlanningTask:
+    queued_at_us: float
+    request: TargetLayerPlanningRequest
+    task_key: str
+
+
+@dataclass(frozen=True)
+class _BuiltPlanningResult:
+    key: TargetPlanKey
+    task_key: str
+    request: TargetLayerPlanningRequest
+    bundle: TwoHorizonPredictionBundle
+    plan: TargetLayerPreparedJointPlan
+    metrics: TargetLayerPlannerMetrics
+
+
 @dataclass
 class TargetLayerPlannerService:
     store: TargetPlanStore
     agreement_fn: Callable[[dict[str, Any]], str] | None = None
     planner_factory: Callable[[str, Any | None], Any] = PlannerRegistry.create
     max_queue_size: int = 16
-    _queue: queue.Queue[tuple[float, TargetLayerPlanningRequest] | None] = field(init=False)
+    _queue: queue.Queue[_QueuedPlanningTask | None] = field(init=False)
     _thread: threading.Thread | None = field(init=False, default=None)
     _stop: threading.Event = field(init=False, default_factory=threading.Event)
     _last_error: BaseException | None = field(init=False, default=None)
     _timeline: list[dict[str, Any]] = field(init=False, default_factory=list)
+    _lock: threading.RLock = field(init=False, default_factory=threading.RLock)
+    _pending_by_key: dict[str, _QueuedPlanningTask] = field(init=False, default_factory=dict)
+    _ready_results: list[_BuiltPlanningResult] = field(init=False, default_factory=list)
+    _cancelled_generations: set[tuple[str, int, str]] = field(init=False, default_factory=set)
+    _closed: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         self._queue = queue.Queue(maxsize=int(self.max_queue_size))
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None and self._thread.is_alive():
             return
+        self._stop.clear()
+        self._closed = False
+        self._last_error = None
+        self._queue = queue.Queue(maxsize=int(self.max_queue_size))
         self._thread = threading.Thread(target=self._worker, name="target-layer-planner", daemon=True)
         self._thread.start()
 
-    def shutdown(self) -> None:
+    def close(self) -> None:
+        self._closed = True
         self._stop.set()
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
+        with self._lock:
+            self._pending_by_key.clear()
+            self._ready_results.clear()
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        self._queue.put_nowait(None)
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                raise RuntimeError("target-layer-planner did not stop cleanly")
+            self._thread = None
 
-    def enqueue(self, request: TargetLayerPlanningRequest) -> None:
+    def shutdown(self) -> None:
+        self.close()
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @staticmethod
+    def _task_key(request: TargetLayerPlanningRequest) -> str:
+        return f"{request.run_id}:{int(request.forward_epoch)}:{request.microbatch_id}:{request.target_layer_id}"
+
+    @staticmethod
+    def _generation_key(request: TargetLayerPlanningRequest) -> tuple[str, int, str]:
+        return (str(request.run_id), int(request.forward_epoch), str(request.microbatch_id))
+
+    def submit(self, request: TargetLayerPlanningRequest) -> PreparationSubmitResult:
         if self._last_error is not None:
             raise RuntimeError(f"planner service already failed: {self._last_error}") from self._last_error
-        self._queue.put((time.perf_counter_ns() / 1000.0, request))
+        task_key = self._task_key(request)
+        generation_key = self._generation_key(request)
+        with self._lock:
+            if self._closed or self._stop.is_set():
+                return PreparationSubmitResult(status=PreparationSubmitStatus.REJECTED_CLOSED, task_key=task_key)
+            if generation_key in self._cancelled_generations:
+                return PreparationSubmitResult(status=PreparationSubmitStatus.REJECTED_EXPIRED, task_key=task_key)
+            replaced = task_key in self._pending_by_key
+            if not replaced and len(self._pending_by_key) >= int(self.max_queue_size):
+                return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
+            queued = _QueuedPlanningTask(
+                queued_at_us=(time.perf_counter_ns() / 1000.0),
+                request=request,
+                task_key=task_key,
+            )
+            self._pending_by_key[task_key] = queued
+        try:
+            self._queue.put_nowait(queued)
+        except queue.Full:
+            with self._lock:
+                self._pending_by_key.pop(task_key, None)
+            return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
+        return PreparationSubmitResult(
+            status=PreparationSubmitStatus.REPLACED_STALE if replaced else PreparationSubmitStatus.ACCEPTED,
+            task_key=task_key,
+        )
+
+    def enqueue(self, request: TargetLayerPlanningRequest) -> None:
+        result = self.submit(request)
+        if result.status in {PreparationSubmitStatus.REJECTED_CLOSED, PreparationSubmitStatus.REJECTED_EXPIRED, PreparationSubmitStatus.DROPPED_OVERLOAD}:
+            raise RuntimeError(f"target_planner_submit_failed:{result.status.value}:{result.task_key}")
 
     def timeline(self) -> list[dict[str, Any]]:
         return list(self._timeline)
 
+    def cancel_generation(self, *, run_id: str, forward_epoch: int, microbatch_id: str) -> None:
+        generation_key = (str(run_id), int(forward_epoch), str(microbatch_id))
+        with self._lock:
+            self._cancelled_generations.add(generation_key)
+            doomed = [task_key for task_key, item in self._pending_by_key.items() if self._generation_key(item.request) == generation_key]
+            for task_key in doomed:
+                self._pending_by_key.pop(task_key, None)
+            self._ready_results = [item for item in self._ready_results if self._generation_key(item.request) != generation_key]
+
+    def drain_ready_publications(self) -> list[_BuiltPlanningResult]:
+        with self._lock:
+            ready = list(self._ready_results)
+            self._ready_results.clear()
+            return ready
+
     def _worker(self) -> None:
-        while not self._stop.is_set():
+        while True:
             item = self._queue.get()
             if item is None:
                 return
-            queued_at_us, request = item
+            if self._stop.is_set():
+                continue
+            request = item.request
+            task_key = str(item.task_key)
+            with self._lock:
+                latest = self._pending_by_key.get(task_key)
+                if latest is None or latest is not item:
+                    continue
             started_ns = time.perf_counter_ns()
-            metrics = TargetLayerPlannerMetrics(queue_wait_us=max(0.0, (started_ns / 1000.0) - queued_at_us))
+            metrics = TargetLayerPlannerMetrics(queue_wait_us=max(0.0, (started_ns / 1000.0) - float(item.queued_at_us)))
             try:
                 bundle, plan = self._build_target_plan(request=request, metrics=metrics)
                 key = TargetPlanKey(
@@ -113,24 +229,68 @@ class TargetLayerPlannerService:
                     microbatch_id=request.microbatch_id,
                     target_layer_id=request.target_layer_id,
                 )
-                agreement_start = time.perf_counter_ns()
-                published = self.publish_agreed_plan(key=key, plan=plan)
-                agreement_end = time.perf_counter_ns()
-                metrics.agreement_us = (agreement_end - agreement_start) / 1000.0
+                with self._lock:
+                    latest = self._pending_by_key.get(task_key)
+                    if latest is None or latest is not item or self._generation_key(request) in self._cancelled_generations:
+                        continue
+                    self._pending_by_key.pop(task_key, None)
+                    self._ready_results.append(
+                        _BuiltPlanningResult(
+                            key=key,
+                            task_key=task_key,
+                            request=request,
+                            bundle=bundle,
+                            plan=plan,
+                            metrics=metrics,
+                        )
+                    )
                 self._timeline.append(
                     {
-                        "event": "target_plan_ready",
+                        "event": "target_plan_built",
                         "target_layer_id": request.target_layer_id,
-                        "logical_plan_digest": published.logical_plan_digest,
+                        "logical_plan_digest": plan.logical_plan_digest,
                         "h1_digest": bundle.h1.matrix_digest,
                         "h2_digest": bundle.h2.matrix_digest,
                         "planner_wall_us": metrics.planner_wall_us,
                     }
                 )
             except BaseException as exc:  # pragma: no cover - surfaced in tests
-                self._last_error = exc
-                self._timeline.append({"event": "planner_error", "error": f"{type(exc).__name__}: {exc}"})
-                return
+                key = TargetPlanKey(
+                    run_id=request.run_id,
+                    forward_epoch=int(request.forward_epoch),
+                    microbatch_id=request.microbatch_id,
+                    target_layer_id=request.target_layer_id,
+                )
+                with self._lock:
+                    current = self._pending_by_key.get(task_key)
+                    if current is item:
+                        self._pending_by_key.pop(task_key, None)
+                self.store.close_key_if_unclaimed(
+                    key,
+                    final_status="FAILED",
+                    execution_origin=f"task_failure:{type(exc).__name__}",
+                )
+                self._timeline.append(
+                    {
+                        "event": "planner_task_failed",
+                        "task_key": task_key,
+                        "target_layer_id": request.target_layer_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+
+    def publish_ready_plan(self, ready: _BuiltPlanningResult) -> TargetLayerPreparedJointPlan | None:
+        if self._generation_key(ready.request) in self._cancelled_generations:
+            self._timeline.append(
+                {
+                    "event": "target_plan_publish_cancelled",
+                    "target_layer_id": ready.key.target_layer_id,
+                    "task_key": ready.task_key,
+                }
+            )
+            return None
+        return self.publish_agreed_plan(key=ready.key, plan=ready.plan)
 
     def publish_agreed_plan(self, *, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> TargetLayerPreparedJointPlan:
         agreement_payload = self._agreement_payload(key=key, plan=plan)
@@ -203,47 +363,15 @@ class TargetLayerPlannerService:
         h2_source_layer_id = str(bundle.h2.source_layer_id)
         h2_target_layer_id = str(bundle.h2.target_layer_id)
         safe_projection_mode = str(request.safe_projection_mode)
-        planning_request = PlanningRequest(
-            identity=PlanningIdentity(
-                request_id=f"{request.run_id}:{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
-                run_id=request.run_id,
-                forward_id=str(request.forward_epoch),
-                window_id=f"{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
-                source_layer_id=h2_source_layer_id,
-                target_layer_id=h2_target_layer_id,
-            ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=h1,
-                p1_return_rows=p1,
-            ),
-            prediction_hint=PredictionHint(
-                predictor_id=str(bundle.h2.predictor),
-                hint_type="traffic_matrix",
-                target_dispatch_rows=bundle.h2.matrix_rows,
-                confidence=float(bundle.h2.confidence),
-                oracle=False,
-                source_layer_id=h2_source_layer_id,
-                target_layer_id=h2_target_layer_id,
-            ),
-            topology=PlanningTopology(world_size=int(request.group_size)),
-            constraints=PlanningConstraints(
-                bucket_rows=int(request.bucket_rows),
-                max_waves=256,
-                expert_compute_delay=0.0,
-                phase_release_model="p1_return",
-            ),
-            weights=PlanningWeights(
-                p0_weight=float(request.policy_options.p0_weight),
-                p1_weight=float(request.policy_options.p1_weight),
-                p2_weight=float(request.policy_options.p2_hint_weight),
-                residual_weight=float(request.policy_options.residual_weight),
-                barrier_weight=float(request.policy_options.barrier_weight),
-                age_weight=float(request.policy_options.age_weight),
-                prediction_weight=float(request.policy_options.prediction_weight),
-                criticality_weight=float(request.policy_options.criticality_weight),
-                iteration_budget=request.policy_options.iteration_budget,
-            ),
-            information_mode="p0_p1_p2",
+        planning_request = self._build_planning_request(
+            request=request,
+            p0_dispatch_rows=h1,
+            p1_return_rows=p1,
+            p2_hint_rows=bundle.h2.matrix_rows,
+            predictor_id=str(bundle.h2.predictor),
+            prediction_confidence=float(bundle.h2.confidence),
+            source_layer_id=h2_source_layer_id,
+            target_layer_id=h2_target_layer_id,
         )
         target_problem_end = time.perf_counter_ns()
         metrics.target_problem_us = (target_problem_end - target_problem_start) / 1000.0
@@ -361,6 +489,61 @@ class TargetLayerPlannerService:
             paired_b_plan_was_selected=paired_b_plan_was_selected,
         )
         return bundle, plan
+
+    @staticmethod
+    def _build_planning_request(
+        *,
+        request: TargetLayerPlanningRequest,
+        p0_dispatch_rows: MatrixRows,
+        p1_return_rows: MatrixRows,
+        p2_hint_rows: MatrixRows,
+        predictor_id: str,
+        prediction_confidence: float,
+        source_layer_id: str,
+        target_layer_id: str,
+    ) -> PlanningRequest:
+        return PlanningRequest(
+            identity=PlanningIdentity(
+                request_id=f"{request.run_id}:{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
+                run_id=request.run_id,
+                forward_id=str(request.forward_epoch),
+                window_id=f"{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
+                source_layer_id=str(source_layer_id),
+                target_layer_id=str(target_layer_id),
+            ),
+            traffic=PlanningTraffic(
+                p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
+                p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
+            ),
+            prediction_hint=PredictionHint(
+                predictor_id=str(predictor_id),
+                hint_type="traffic_matrix",
+                target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
+                confidence=float(prediction_confidence),
+                oracle=False,
+                source_layer_id=str(source_layer_id),
+                target_layer_id=str(target_layer_id),
+            ),
+            topology=PlanningTopology(world_size=int(request.group_size)),
+            constraints=PlanningConstraints(
+                bucket_rows=int(request.bucket_rows),
+                max_waves=256,
+                expert_compute_delay=0.0,
+                phase_release_model="p1_return",
+            ),
+            weights=PlanningWeights(
+                p0_weight=float(request.policy_options.p0_weight),
+                p1_weight=float(request.policy_options.p1_weight),
+                p2_weight=float(request.policy_options.p2_hint_weight),
+                residual_weight=float(request.policy_options.residual_weight),
+                barrier_weight=float(request.policy_options.barrier_weight),
+                age_weight=float(request.policy_options.age_weight),
+                prediction_weight=float(request.policy_options.prediction_weight),
+                criticality_weight=float(request.policy_options.criticality_weight),
+                iteration_budget=request.policy_options.iteration_budget,
+            ),
+            information_mode="p0_p1_p2",
+        )
 
     @staticmethod
     def _agreement_payload(*, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> dict[str, Any]:

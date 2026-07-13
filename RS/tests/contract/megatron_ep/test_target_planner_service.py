@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 from rs.core.contracts import PlanWave, PlannedFlow, PlanningRequest, WindowPlan
 from rs.planning import PlannerPolicyConfig, PlannerSelectionMode
+from rs.runtime.online.megatron_ep.target_planning import TargetPlanKey
 from rs.runtime.online.megatron_ep.target_planning.planner_service import (
+    PreparationSubmitStatus,
     TargetLayerPlannerMetrics,
     TargetLayerPlannerService,
     TargetLayerPlanningRequest,
 )
 from rs.runtime.online.megatron_ep.target_planning.store import TargetPlanStore
+from rs.planning import PlannerRegistry
+from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
+from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
+from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 
 
 def _request(*, safe_projection_mode: str) -> TargetLayerPlanningRequest:
@@ -31,6 +38,30 @@ def _request(*, safe_projection_mode: str) -> TargetLayerPlanningRequest:
         policy_options=PlannerPolicyConfig(),
         topology_digest="topo",
         bucket_contract_digest="dynamic_current",
+    )
+
+
+def _runtime() -> RouterSenseInjectionRuntime:
+    return RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(
+            policy="U_barrier_criticality_global_matching",
+            execution_mode="joint_window_async_p2p",
+            control_mode="sync_before_phase",
+            p2_hint_mode="calibrated_artifact",
+            p2_hint_weight=1.0,
+            safe_projection_mode="disabled",
+            observation_profile="execution",
+        ),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="request",
+        hostname="host",
+        ep_group_ranks=(0, 1, 2),
+        ep_group_root_global_rank=0,
     )
 
 
@@ -173,3 +204,159 @@ def test_target_planner_build_path_counts_planner_calls_once_per_mode() -> None:
     )
     assert counter["U_barrier_criticality_global_matching"] == 1
     assert counter["B_barrier_criticality_core_independent"] == 1
+
+
+def test_sync_and_preplanned_formal_plan_digests_match_for_same_planning_request() -> None:
+    matrix = ((0, 2, 5), (3, 0, 3), (1, 5, 0))
+    runtime = _runtime()
+    service = TargetLayerPlannerService(store=TargetPlanStore())
+    bundle, _built = service._build_target_plan(  # noqa: SLF001
+        request=_request(safe_projection_mode="disabled"),
+        metrics=TargetLayerPlannerMetrics(),
+    )
+    runtime_request = runtime._build_formal_planning_request(  # noqa: SLF001
+        request_id="same-request",
+        source_layer_id="1",
+        target_layer_id="2",
+        p0_dispatch_rows=bundle.h1.matrix_rows,
+        p1_return_rows=tuple(tuple(int(bundle.h1.matrix_rows[col][row]) for col in range(len(bundle.h1.matrix_rows))) for row in range(len(bundle.h1.matrix_rows))),
+        p2_hint_rows=bundle.h2.matrix_rows,
+        predictor_name="copy_current_dispatch",
+        prediction_confidence=float(bundle.h2.confidence),
+    )
+    service_request = service._build_planning_request(  # noqa: SLF001
+        request=_request(safe_projection_mode="disabled"),
+        p0_dispatch_rows=bundle.h1.matrix_rows,
+        p1_return_rows=tuple(tuple(int(bundle.h1.matrix_rows[col][row]) for col in range(len(bundle.h1.matrix_rows))) for row in range(len(bundle.h1.matrix_rows))),
+        p2_hint_rows=bundle.h2.matrix_rows,
+        predictor_id="copy_current_dispatch",
+        prediction_confidence=float(bundle.h2.confidence),
+        source_layer_id="1",
+        target_layer_id="2",
+    )
+    assert runtime_request.semantic_digest() == service_request.semantic_digest()
+    runtime_plan = PlannerRegistry.create("U_barrier_criticality_global_matching", None).plan(runtime_request)
+    service_plan = PlannerRegistry.create("U_barrier_criticality_global_matching", None).plan(service_request)
+    assert runtime_plan.semantic_digest() == service_plan.semantic_digest()
+
+
+def test_target_planner_submit_replaces_stale_request_for_same_target() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    first = service.submit(_request(safe_projection_mode="disabled"))
+    second = service.submit(_request(safe_projection_mode="disabled"))
+    assert first.status is PreparationSubmitStatus.ACCEPTED
+    assert second.status is PreparationSubmitStatus.REPLACED_STALE
+    assert first.task_key == second.task_key
+
+
+def test_target_planner_cancel_generation_rejects_future_submit() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    request = _request(safe_projection_mode="disabled")
+    service.cancel_generation(run_id=request.run_id, forward_epoch=request.forward_epoch, microbatch_id=request.microbatch_id)
+    result = service.submit(request)
+    assert result.status is PreparationSubmitStatus.REJECTED_EXPIRED
+
+
+def test_target_planner_worker_does_not_publish_until_main_thread_drains() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    request = _request(safe_projection_mode="disabled")
+    key = service._task_key(request)  # noqa: SLF001
+    agreement_calls: list[dict[str, object]] = []
+    service.agreement_fn = lambda payload: agreement_calls.append(payload) or str(payload["logical_plan_digest"])
+    service.start()
+    result = service.submit(request)
+    assert result.status is PreparationSubmitStatus.ACCEPTED
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready = service.drain_ready_publications()
+        if ready:
+            break
+        time.sleep(0.01)
+    assert ready, f"worker never produced ready publication for {key}"
+    target_key = ready[0].key
+    assert service.store.peek(target_key) is None
+    assert agreement_calls == []
+    published = service.publish_ready_plan(ready[0])
+    assert published is not None
+    assert service.store.peek(target_key) is not None
+    assert len(agreement_calls) == 1
+    service.shutdown()
+
+
+def test_target_planner_cancelled_generation_drops_ready_publication_before_publish() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    request = _request(safe_projection_mode="disabled")
+    service.start()
+    result = service.submit(request)
+    assert result.status is PreparationSubmitStatus.ACCEPTED
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready = service.drain_ready_publications()
+        if ready:
+            break
+        time.sleep(0.01)
+    assert ready
+    service.cancel_generation(run_id=request.run_id, forward_epoch=request.forward_epoch, microbatch_id=request.microbatch_id)
+    published = service.publish_ready_plan(ready[0])
+    assert published is None
+    assert service.store.peek(ready[0].key) is None
+    service.shutdown()
+
+
+def test_target_planner_worker_task_failure_does_not_stop_next_task() -> None:
+    counter = {"calls": 0}
+
+    def planner_factory(planner_id: str, _config):
+        counter["calls"] += 1
+        if counter["calls"] == 1:
+            raise RuntimeError("boom")
+        family = "joint" if "joint" in planner_id or planner_id.startswith("U_") else "local"
+        return _CountingPlanner(planner_id=planner_id, planner_family=family, counter={})
+
+    service = TargetLayerPlannerService(store=TargetPlanStore(), planner_factory=planner_factory, max_queue_size=4)
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 2})
+    service.start()
+    assert service.submit(first).status is PreparationSubmitStatus.ACCEPTED
+    assert service.submit(second).status is PreparationSubmitStatus.ACCEPTED
+    deadline = time.time() + 5.0
+    ready = []
+    while time.time() < deadline:
+        ready = service.drain_ready_publications()
+        if ready:
+            break
+        time.sleep(0.01)
+    terminal = service.store.get_terminal_record(
+        TargetPlanKey(
+            run_id=first.run_id,
+            forward_epoch=first.forward_epoch,
+            microbatch_id=first.microbatch_id,
+            target_layer_id=first.target_layer_id,
+        )
+    )
+    assert terminal is not None
+    assert terminal.final_status == "FAILED"
+    assert ready
+    assert ready[0].request.forward_epoch == 2
+    service.shutdown()
+
+
+def test_target_planner_close_rejects_submit_and_clears_thread() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=2)
+    service.start()
+    assert service.is_alive() is True
+    service.close()
+    assert service.is_alive() is False
+    result = service.submit(_request(safe_projection_mode="disabled"))
+    assert result.status is PreparationSubmitStatus.REJECTED_CLOSED
+
+
+def test_target_planner_can_restart_after_close() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=2)
+    service.start()
+    service.close()
+    service.start()
+    assert service.is_alive() is True
+    service.shutdown()

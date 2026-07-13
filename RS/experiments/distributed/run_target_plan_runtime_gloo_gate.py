@@ -29,23 +29,23 @@ def _free_port() -> int:
 
 
 def _digest_agreement(local_digest: str) -> str:
-    payload = torch.tensor(
-        [int(local_digest[:16], 16) if all(ch in "0123456789abcdef" for ch in local_digest[:16].lower()) else 0],
-        dtype=torch.long,
-    )
+    encoded = local_digest.encode("utf-8")[:64]
+    payload = torch.zeros(64, dtype=torch.uint8)
+    if encoded:
+        payload[: len(encoded)] = torch.tensor(list(encoded), dtype=torch.uint8)
     gathered = [torch.zeros_like(payload) for _ in range(dist.get_world_size())]
     dist.all_gather(gathered, payload)
-    values = [int(item.item()) for item in gathered]
+    values = [bytes(int(value) for value in item.tolist()).rstrip(b"\x00").decode("utf-8") for item in gathered]
     if len(set(values)) != 1:
         raise RuntimeError(f"target plan digest disagreement: {values}")
-    return f"{values[0]:016x}"
+    return values[0]
 
 
 def _frontier_tasks(version: int) -> list[ReleaseBatchTask]:
     return [
         ReleaseBatchTask(task_id="t0", phase="P0", src_rank=0, dst_rank=1, row_count=2, plan_version=version),
         ReleaseBatchTask(task_id="t1", phase="P0", src_rank=1, dst_rank=0, row_count=1, plan_version=version),
-        ReleaseBatchTask(task_id="t2", phase="P0", src_rank=0, dst_rank=1, row_count=3, plan_version=version),
+        ReleaseBatchTask(task_id="t2", phase="P0", src_rank=2, dst_rank=3, row_count=3, plan_version=version),
     ]
 
 
@@ -66,23 +66,25 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
         microbatch_id="mb0",
         source_layer_id="0",
         target_layer_id="1",
-        current_p0_rows=((0, 3), (1, 0)),
-        previous_p0_rows=((0, 1), (2, 0)),
+        current_p0_rows=((0, 3, 0, 1), (1, 0, 2, 0), (0, 1, 0, 2), (2, 0, 1, 0)),
+        previous_p0_rows=((0, 1, 0, 2), (2, 0, 1, 0), (0, 2, 0, 1), (1, 0, 2, 0)),
         predictor_name="copy_current_dispatch",
         policy_id="barrier_criticality_joint",
-        group_size=2,
+        group_size=4,
         bucket_rows=0,
         policy_options=PolicyOptions(prediction_weight=0.35),
         topology_digest="topo",
         bucket_contract_digest="dynamic_current",
     )
-    if rank == 1:
+    if rank % 2 == 1:
         time.sleep(0.2)
     planner.enqueue(request)
     key = TargetPlanKey("gloo-target-plan", 1, "mb0", "1")
     target_plan_ready_at_entry = store.peek(key) is not None
     deadline = time.time() + 10.0
     while store.peek(key) is None and time.time() < deadline:
+        for ready in planner.drain_ready_publications():
+            planner.publish_ready_plan(ready)
         time.sleep(0.01)
     plan = store.peek(key)
     if plan is None:
@@ -93,9 +95,9 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
             f"target plan digest mismatch after main-thread agreement: local={plan.logical_plan_digest} agreed={agreed_digest}"
         )
     case_rows = {
-        "ready_before_execution": ((0, 3), (1, 0)),
-        "late_suffix_applied": ((0, 5), (1, 0)),
-        "too_late_no_effect": ((0, 0), (7, 0)),
+        "ready_before_execution": ((0, 3, 0, 1), (1, 0, 2, 0), (0, 1, 0, 2), (2, 0, 1, 0)),
+        "late_suffix_applied": ((0, 5, 0, 1), (1, 0, 2, 0), (0, 1, 0, 2), (2, 0, 1, 0)),
+        "too_late_no_effect": ((0, 0, 0, 0), (7, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)),
     }
     case_results: list[dict[str, object]] = []
     for name, actual_rows in case_rows.items():
@@ -134,6 +136,7 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
                 suffix_tasks=_frontier_tasks(version=1)[1:],
                 plan_origin="late_spliced",
                 parent_plan_version=0,
+                agreement_token={"agreed": True},
             )
             state = "late_suffix_applied"
         case_results.append(
@@ -178,7 +181,7 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
 def main() -> None:
     out_dir = "outputs/closure/target_plan_runtime"
     port = _free_port()
-    mp.spawn(_worker, args=(2, port, out_dir), nprocs=2, join=True)
+    mp.spawn(_worker, args=(4, port, out_dir), nprocs=4, join=True)
 
 
 if __name__ == "__main__":

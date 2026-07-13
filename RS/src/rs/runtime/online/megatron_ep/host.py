@@ -24,11 +24,21 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 
+from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
-from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade, resolve_online_policy_config
+from rs.runtime.online.megatron_ep.public_types import (
+    CombineCompleteEvent,
+    CombineReadyEvent,
+    DispatchCompleteEvent,
+    DispatchReadyEvent,
+    ForwardBeginEvent,
+    ForwardEndEvent,
+    RuntimeHandle,
+)
+from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
 
 
 @dataclass
@@ -640,7 +650,7 @@ def attach_dispatch_facade(
     request_table_hash: str,
     hostname: str,
     observer: RouterSenseObserver | None = None,
-) -> RouterSenseInjectionRuntime:
+) -> RuntimeHandle:
     sample_dispatcher = None
     for module in model.named_modules():
         dispatcher = getattr(module[1], "token_dispatcher", None)
@@ -666,45 +676,51 @@ def attach_dispatch_facade(
         ep_group_root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         ep_process_group=ep_process_group,
     )
+    handle = RuntimeHandle(runtime=runtime)
     transport_adapter = None
     original_all_to_all = None
     resolved_online_policy = resolve_online_policy_config(config)
     phase_policy_name = str(resolved_online_policy.builder_key) if resolved_online_policy is not None else ""
     if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"} and sample_dispatcher is not None:
-        import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
+        try:
+            import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
+        except ModuleNotFoundError:
+            token_dispatcher_mod = None
 
-        original_all_to_all = token_dispatcher_mod.all_to_all
-        p2p_group = None
-        if config.execution_mode == "joint_window_async_p2p":
-            p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
-                ep_group_ranks=ep_group_ranks,
-                local_rank=local_rank,
+        if token_dispatcher_mod is not None:
+            original_all_to_all = token_dispatcher_mod.all_to_all
+            p2p_group = None
+            if config.execution_mode == "joint_window_async_p2p":
+                p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
+                    ep_group_ranks=ep_group_ranks,
+                    local_rank=local_rank,
+                )
+                runtime._runtime_state.merge(p2p_status)
+            transport_adapter = MegatronPhaseTransportAdapter(
+                dispatcher_class=type(sample_dispatcher).__name__,
+                dispatcher_module_sha256=None,
+                p2p_group=p2p_group,
             )
-            runtime._runtime_state.merge(p2p_status)
-        transport_adapter = MegatronPhaseTransportAdapter(
-            dispatcher_class=type(sample_dispatcher).__name__,
-            dispatcher_module_sha256=None,
-            p2p_group=p2p_group,
-        )
-        transport_adapter.timeline_hook = lambda event, **detail: runtime._timeline(
-            event,
-            layer_name=str(runtime.current_transport().get("layer_name") if runtime.current_transport() else "unknown"),
-            **detail,
-        )
-
-        def wrapped_all_to_all(group, input_, output_split_sizes_=None, input_split_sizes=None, use_nccl_stream=False):
-            return transport_adapter.maybe_execute(
-                group=group,
-                input_tensor=input_,
-                output_split_sizes=output_split_sizes_,
-                input_split_sizes=input_split_sizes,
-                original_all_to_all=original_all_to_all,
-                use_nccl_stream=use_nccl_stream,
+            transport_adapter.timeline_hook = lambda event, **detail: runtime._timeline(
+                event,
+                layer_name=str(runtime.current_transport().get("layer_name") if runtime.current_transport() else "unknown"),
+                **detail,
             )
 
-        token_dispatcher_mod.all_to_all = wrapped_all_to_all
-        runtime.transport_adapter = transport_adapter
-        runtime.original_all_to_all = original_all_to_all
+            def wrapped_all_to_all(group, input_, output_split_sizes_=None, input_split_sizes=None, use_nccl_stream=False):
+                return transport_adapter.maybe_execute(
+                    group=group,
+                    input_tensor=input_,
+                    output_split_sizes=output_split_sizes_,
+                    input_split_sizes=input_split_sizes,
+                    original_all_to_all=original_all_to_all,
+                    use_nccl_stream=use_nccl_stream,
+                )
+
+            token_dispatcher_mod.all_to_all = wrapped_all_to_all
+            runtime.transport_adapter = transport_adapter
+            runtime.original_all_to_all = original_all_to_all
+            handle.add_restore_callback(lambda _mod=token_dispatcher_mod, _orig=original_all_to_all: setattr(_mod, "all_to_all", _orig))
     def _find_expert_timing_module(layer_module: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[str, None]:
         candidates: list[tuple[str, torch.nn.Module]] = []
         for child_name, child_module in layer_module.named_modules():
@@ -728,9 +744,15 @@ def attach_dispatch_facade(
         def _selected_post(_module, _args, _output, _name=layer_name):
             runtime.record_selected_layer_exit(layer_name=str(_name))
 
-        layer_module.register_forward_pre_hook(_selected_pre)
-        layer_module.register_forward_hook(_selected_post)
+        selected_pre_handle = layer_module.register_forward_pre_hook(_selected_pre)
+        selected_post_handle = layer_module.register_forward_hook(_selected_post)
         layer_module._routersense_selected_layer_attribution_wrapped = True
+        def _restore_selected_layer_hooks(_module=layer_module, _pre=selected_pre_handle, _post=selected_post_handle):
+            _pre.remove()
+            _post.remove()
+            if hasattr(_module, "_routersense_selected_layer_attribution_wrapped"):
+                delattr(_module, "_routersense_selected_layer_attribution_wrapped")
+        handle.add_restore_callback(_restore_selected_layer_hooks)
         expert_name, expert_module = _find_expert_timing_module(layer_module)
         if expert_module is None:
             runtime.record_expert_boundary_unavailable(layer_name=str(layer_name), reason="expert_module_not_found")
@@ -744,15 +766,39 @@ def attach_dispatch_facade(
         def _expert_post(_module, _args, _output, _layer_name=layer_name, _expert_name=expert_name):
             runtime.record_expert_module_exit(layer_name=str(_layer_name), expert_module_name=str(_expert_name))
 
-        expert_module.register_forward_pre_hook(_expert_pre)
-        expert_module.register_forward_hook(_expert_post)
+        expert_pre_handle = expert_module.register_forward_pre_hook(_expert_pre)
+        expert_post_handle = expert_module.register_forward_hook(_expert_post)
         expert_module._routersense_expert_attribution_wrapped = True
+        def _restore_expert_hooks(_module=expert_module, _pre=expert_pre_handle, _post=expert_post_handle):
+            _pre.remove()
+            _post.remove()
+            if hasattr(_module, "_routersense_expert_attribution_wrapped"):
+                delattr(_module, "_routersense_expert_attribution_wrapped")
+        handle.add_restore_callback(_restore_expert_hooks)
 
     dispatcher_layer_names: list[str] = []
     for name, module in model.named_modules():
         if getattr(module, "token_dispatcher", None) is not None:
             dispatcher_layer_names.append(str(name))
     runtime.configure_hook_scope(available_layer_names=tuple(dispatcher_layer_names))
+    if not getattr(model, "_routersense_forward_wrapped", False):
+        def _forward_pre(_module, _args):
+            runtime.handle(ForwardBeginEvent())
+
+        def _forward_post(_module, _args, _output):
+            runtime.handle(ForwardEndEvent())
+
+        forward_pre_handle = model.register_forward_pre_hook(_forward_pre)
+        forward_post_handle = model.register_forward_hook(_forward_post)
+        model._routersense_forward_wrapped = True
+
+        def _restore_forward_hooks(_model=model, _pre=forward_pre_handle, _post=forward_post_handle):
+            _pre.remove()
+            _post.remove()
+            if hasattr(_model, "_routersense_forward_wrapped"):
+                delattr(_model, "_routersense_forward_wrapped")
+
+        handle.add_restore_callback(_restore_forward_hooks)
     for name, module in model.named_modules():
         dispatcher = getattr(module, "token_dispatcher", None)
         if dispatcher is None or getattr(dispatcher, "_routersense_facade_wrapped", False):
@@ -775,36 +821,60 @@ def attach_dispatch_facade(
         def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, _role=layer_role, **kwargs: Any):
             hidden_states = args[0] if args else None
             probs = args[1] if len(args) > 1 else None
-            if _role == "prediction_source":
-                runtime.before_prediction_source_dispatch(
-                    layer_name=_name,
+            runtime.handle(
+                DispatchReadyEvent(
+                    layer_name=str(_name),
                     dispatcher=_dispatcher,
                     packed_hidden_states=hidden_states,
                     packed_probs=probs,
+                    layer_role=str(_role),
                 )
-                return _facade.dispatch(*args, **kwargs)
-            runtime.before_token_dispatch(layer_name=_name, dispatcher=_dispatcher, packed_hidden_states=hidden_states, packed_probs=probs)
-            runtime.mark_token_dispatch_committed(layer_name=_name)
+            )
             result = _facade.dispatch(*args, **kwargs)
-            runtime.capture_phase_transport_output(layer_name=_name, phase="P0", result=result, dispatcher=_dispatcher)
-            runtime.after_token_dispatch(layer_name=_name)
-            runtime.on_dispatch(layer_name=_name, dispatcher=_dispatcher, hidden_states=hidden_states)
+            runtime.handle(
+                DispatchCompleteEvent(
+                    layer_name=str(_name),
+                    dispatcher=_dispatcher,
+                    packed_hidden_states=hidden_states,
+                    result=result,
+                    layer_role=str(_role),
+                )
+            )
             return result
 
         def wrapped_combine(*args: Any, _facade=combine_facade, _dispatcher=dispatcher, _name=name, **kwargs: Any):
             hidden_states = args[0] if args else None
-            runtime.before_token_combine(layer_name=_name, dispatcher=_dispatcher, packed_hidden_states=hidden_states)
+            runtime.handle(
+                CombineReadyEvent(
+                    layer_name=str(_name),
+                    dispatcher=_dispatcher,
+                    packed_hidden_states=hidden_states,
+                )
+            )
             result = _facade.dispatch(*args, **kwargs)
-            runtime.capture_phase_transport_output(layer_name=_name, phase="P1", result=result, dispatcher=_dispatcher)
-            runtime.after_token_combine(layer_name=_name)
-            runtime.on_combine(layer_name=_name, dispatcher=_dispatcher, hidden_states=hidden_states)
+            runtime.handle(
+                CombineCompleteEvent(
+                    layer_name=str(_name),
+                    dispatcher=_dispatcher,
+                    packed_hidden_states=hidden_states,
+                    result=result,
+                )
+            )
             return result
 
         dispatcher.token_dispatch = wrapped_dispatch
         if layer_role == "selected":
             dispatcher.token_combine = wrapped_combine
         dispatcher._routersense_facade_wrapped = True
-    return runtime
+        def _restore_dispatcher(_dispatcher=dispatcher, _orig_dispatch=dispatch_facade.native_dispatcher, _orig_combine=combine_facade.native_dispatcher, _role=layer_role):
+            _dispatcher.token_dispatch = _orig_dispatch
+            if _role == "selected":
+                _dispatcher.token_combine = _orig_combine
+            if hasattr(_dispatcher, "_routersense_facade_wrapped"):
+                delattr(_dispatcher, "_routersense_facade_wrapped")
+        handle.add_restore_callback(_restore_dispatcher)
+    handle.add_close_callback(runtime._cleanup_target_plan_runtime)
+    return handle
 
 
 def attach_formal_online_runtime(
@@ -820,7 +890,7 @@ def attach_formal_online_runtime(
     step_id: str = "unknown",
     microbatch_id: str = "unknown",
     observer: RouterSenseObserver | None = None,
-) -> RouterSenseInjectionRuntime:
+) -> RuntimeHandle:
     p2_hint_mode = (
         "calibrated_artifact"
         if bool(runtime_config.policy_parameters.calibrated_p2_enabled)

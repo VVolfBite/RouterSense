@@ -1,0 +1,11 @@
+{
+  "source": "RS/tests/contract/megatron_ep/test_target_plan_store.py",
+  "transitions": [
+    "LOGICAL_READY",
+    "CLAIMED",
+    "BOUND",
+    "EXECUTING",
+    "COMPLETED"
+  ],
+  "failure_path": "FAILED"
+}

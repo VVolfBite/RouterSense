@@ -22,11 +22,28 @@ import torch.distributed as dist
 
 from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import layer_selected, resolve_layer_selector
-from rs.core.contracts import PredictionIdentity, TrafficHistoryContext
+from rs.core.contracts import (
+    PlanningConstraints,
+    PlanningIdentity,
+    PlanningRequest,
+    PlanningTopology,
+    PlanningTraffic,
+    PlanningWeights,
+    PredictionHint,
+    PredictionIdentity,
+    TrafficHistoryContext,
+)
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.prediction import PredictionRegistry, resolve_predictor_id
-from rs.planning import PlannerPolicyConfig
-from rs.planning._legacy_runtime import build_runtime_policy, build_runtime_request_from_problem
+from rs.planning import (
+    CommonCorePlanEstimator,
+    PlannerPolicyConfig,
+    PlannerRegistry,
+    PlannerSelectionMode,
+    PlannerSelector,
+    PlanningCostModel,
+)
+from rs.planning.api import to_logical_plan
 from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
@@ -42,6 +59,7 @@ from rs.runtime.online.megatron_ep.control.p2_matrix import TrafficMatrixBundle,
 from rs.runtime.online.megatron_ep.control.plan_agreement import run_phase_plan_agreement
 from rs.runtime.online.megatron_ep.control.p2_contracts import P2HintRequest
 from rs.runtime.online.megatron_ep.control.p2_provider import build_p2_hint_provider
+from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
 from rs.runtime.online.megatron_ep.observation import (
     PolicyRuntimeRecord,
     RouterSenseObserver,
@@ -86,10 +104,17 @@ from rs.runtime.online.megatron_ep.phase import (
     build_phase_ready_context,
     reconstruct_global_phase_contexts_from_byte_matrix,
 )
-from rs.runtime.online.megatron_ep.runtime import (
+from rs.runtime.online.megatron_ep.public_types import (
+    CombineCompleteEvent,
+    CombineReadyEvent,
+    DispatchCompleteEvent,
+    DispatchReadyEvent,
+    ForwardBeginEvent,
+    ForwardEndEvent,
+    RuntimeDecision,
+    RuntimeEvent,
     SelectedLayerStop,
     UnsupportedSchedulerMode,
-    resolve_online_policy_config,
 )
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
@@ -115,6 +140,7 @@ from rs.scheduling.bucketizer import (
     bucket_mode_for_rows,
     summarize_bucket_tasks,
 )
+from rs.scheduling.capabilities import PolicyCapabilities
 from rs.scheduling.traffic_matrix import (
     canonicalize_remote_matrix,
     matrix_col_sums_remote,
@@ -270,25 +296,19 @@ class RouterSenseInjectionRuntime:
             self._target_preplanning_enabled_cache = False
             return
         self._effective_phase_policy_name_cache = str(resolved.builder_key)
-        policy = build_runtime_policy(
-            str(resolved.canonical_name),
-            PlannerPolicyConfig(
-                p0_weight=float(getattr(self.config, "p0_weight", 1.0)),
-                p1_weight=float(getattr(self.config, "p1_reservation_weight", 1.0)),
-                p2_hint_weight=float(getattr(self.config, "p2_hint_weight", 1.0)),
-                residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
-                barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
-                age_weight=float(getattr(self.config, "age_weight", 0.15)),
-                prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
-            ),
+        spec = resolved.spec
+        scope = str(spec.scheduling_scope)
+        execution_model = str(spec.execution_model)
+        base = PolicyCapabilities(
+            supports_offline=bool(spec.offline_eligible),
+            supports_online_phase_local_execution=bool(spec.online_eligible and spec.phase_local_eligible),
+            supports_online_multiphase_execution=bool(spec.online_eligible and ("joint" in scope or "multiphase" in scope or "global" in execution_model)),
+            uses_current_ready_flows=True,
+            uses_blocked_p1_dependency=bool("joint" in scope or "multiphase" in scope),
+            uses_p2_forecast=bool(spec.supports_p2_hint),
+            requires_fixed_placement=False,
+            evaluation_eligible=bool(spec.offline_eligible),
         )
-        base = getattr(policy, "capabilities", None)
-        if base is None:
-            self._resolved_policy_capabilities_cache = None
-            self._joint_window_enabled_cache = False
-            self._cross_layer_prediction_enabled_cache = False
-            self._target_preplanning_enabled_cache = False
-            return
         predictor_name = self._online_p2_predictor_name()
         has_prediction = predictor_name not in {"none", "zero_hint"}
         is_joint_window = str(self.config.execution_mode) == "joint_window_async_p2p"
@@ -309,7 +329,7 @@ class RouterSenseInjectionRuntime:
             supports_p1_plan_reuse=bool(
                 is_joint_window and base.supports_online_multiphase_execution
             ),
-            supports_late_suffix_splice=bool(supports_target_preplanning),
+            supports_late_suffix_splice=False,
             supports_rank_release_batch=bool(is_joint_window),
         )
         self._joint_window_enabled_cache = bool(
@@ -1207,6 +1227,23 @@ class RouterSenseInjectionRuntime:
         if self.target_plan_store is not None:
             self.target_plan_store.shutdown()
 
+    def _pump_target_planner_publications(self) -> None:
+        if self.target_planner_service is None:
+            return
+        for ready in self.target_planner_service.drain_ready_publications():
+            published = self.target_planner_service.publish_ready_plan(ready)
+            if published is None:
+                continue
+            self._timeline(
+                "target_plan_ready",
+                layer_name=str(ready.request.target_layer_id),
+                target_layer_id=str(ready.request.target_layer_id),
+                logical_plan_digest=str(published.logical_plan_digest),
+                h1_digest=str(ready.bundle.h1.matrix_digest),
+                h2_digest=str(ready.bundle.h2.matrix_digest),
+                planner_wall_us=float(ready.metrics.planner_wall_us),
+            )
+
     def _agree_target_plan_payload(self, payload: dict[str, Any]) -> str:
         digest = str(payload.get("logical_plan_digest", ""))
         if not dist.is_available() or not dist.is_initialized() or len(self.ep_group_ranks) <= 1:
@@ -1301,6 +1338,58 @@ class RouterSenseInjectionRuntime:
             if int(task.row_count) > 0:
                 residual.append(task)
         return residual
+
+    def handle(self, event: RuntimeEvent) -> RuntimeDecision:
+        if isinstance(event, ForwardBeginEvent):
+            self.begin_forward(forward_epoch=event.forward_epoch)
+            return RuntimeDecision(action="forward_begin")
+        if isinstance(event, DispatchReadyEvent):
+            if event.layer_role == "prediction_source":
+                self.before_prediction_source_dispatch(
+                    layer_name=event.layer_name,
+                    dispatcher=event.dispatcher,
+                    packed_hidden_states=event.packed_hidden_states,
+                    packed_probs=event.packed_probs,
+                )
+            else:
+                self.before_token_dispatch(
+                    layer_name=event.layer_name,
+                    dispatcher=event.dispatcher,
+                    packed_hidden_states=event.packed_hidden_states,
+                    packed_probs=event.packed_probs,
+                )
+                self.mark_token_dispatch_committed(layer_name=event.layer_name)
+            return RuntimeDecision(action="dispatch_ready", details={"layer_role": event.layer_role})
+        if isinstance(event, DispatchCompleteEvent):
+            if event.layer_role != "prediction_source":
+                self.capture_phase_transport_output(
+                    layer_name=event.layer_name,
+                    phase="P0",
+                    result=event.result,
+                    dispatcher=event.dispatcher,
+                )
+                self.after_token_dispatch(layer_name=event.layer_name)
+            return RuntimeDecision(action="dispatch_complete", details={"layer_role": event.layer_role})
+        if isinstance(event, CombineReadyEvent):
+            self.before_token_combine(
+                layer_name=event.layer_name,
+                dispatcher=event.dispatcher,
+                packed_hidden_states=event.packed_hidden_states,
+            )
+            return RuntimeDecision(action="combine_ready")
+        if isinstance(event, CombineCompleteEvent):
+            self.capture_phase_transport_output(
+                layer_name=event.layer_name,
+                phase="P1",
+                result=event.result,
+                dispatcher=event.dispatcher,
+            )
+            self.after_token_combine(layer_name=event.layer_name)
+            return RuntimeDecision(action="combine_complete")
+        if isinstance(event, ForwardEndEvent):
+            self.end_forward()
+            return RuntimeDecision(action="forward_end")
+        raise TypeError(f"unsupported runtime event: {type(event).__name__}")
 
     def _agree_late_suffix(
         self,
@@ -1465,13 +1554,16 @@ class RouterSenseInjectionRuntime:
                 created_at_phase=str(existing_prediction.get("created_at_phase", "")),
             )
             audit = compare_predicted_to_actual(predicted, remote_matrix)
+            audit_row = audit.to_dict()
+            if str(audit_row.get("predictor_name", "")) == "copy_current" and self._online_p2_predictor_name() == "copy_current_dispatch":
+                audit_row["predictor_name"] = "copy_current_dispatch"
             self.prediction_audits.append(
                 {
                     "ts_us": int(time.time() * 1e6),
                     "layer_name": layer_name,
                     "layer_id": layer_id,
                     "actual_matrix_source": "pre_transport_phase_ready_context",
-                    **audit.to_dict(),
+                    **audit_row,
                 }
             )
             predicted_dispatch_by_layer.pop(str(layer_id), None)
@@ -1944,6 +2036,61 @@ class RouterSenseInjectionRuntime:
         )
         return agreement
 
+    def _build_formal_planning_request(
+        self,
+        *,
+        request_id: str,
+        source_layer_id: str,
+        target_layer_id: str,
+        p0_dispatch_rows: tuple[tuple[int, ...], ...],
+        p1_return_rows: tuple[tuple[int, ...], ...],
+        p2_hint_rows: tuple[tuple[int, ...], ...],
+        predictor_name: str,
+        prediction_confidence: float,
+        information_mode: str = "p0_p1_p2",
+        max_waves: int = 256,
+    ) -> PlanningRequest:
+        return PlanningRequest(
+            identity=PlanningIdentity(
+                request_id=str(request_id),
+                run_id=str(self.run_id),
+                forward_id=str(self._forward_epoch),
+                window_id=f"{self._forward_epoch}:{self.microbatch_id}:{source_layer_id}",
+                source_layer_id=str(source_layer_id),
+                target_layer_id=str(target_layer_id),
+            ),
+            traffic=PlanningTraffic(
+                p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
+                p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
+            ),
+            prediction_hint=PredictionHint(
+                predictor_id=str(predictor_name or "zero"),
+                hint_type="traffic_matrix",
+                target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
+                confidence=float(prediction_confidence),
+                oracle=False,
+                source_layer_id=str(source_layer_id),
+                target_layer_id=str(target_layer_id),
+            ),
+            topology=PlanningTopology(world_size=int(len(p0_dispatch_rows)), full_duplex=True),
+            constraints=PlanningConstraints(
+                bucket_rows=int(self.config.bucket_rows),
+                max_waves=int(max_waves),
+                expert_compute_delay=0.0,
+                phase_release_model="p1_return",
+            ),
+            weights=PlanningWeights(
+                p0_weight=float(self.config.p0_weight),
+                p1_weight=float(self.config.p1_reservation_weight),
+                p2_weight=float(self.config.p2_hint_weight),
+                residual_weight=float(getattr(self.config, "residual_weight", 0.75)),
+                barrier_weight=float(getattr(self.config, "barrier_weight", 1.75)),
+                age_weight=float(getattr(self.config, "age_weight", 0.15)),
+                prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
+            ),
+            information_mode=str(information_mode),
+        )
+
     def _store_runtime_joint_plan_from_p0(
         self,
         *,
@@ -1953,14 +2100,6 @@ class RouterSenseInjectionRuntime:
         actual_p0_full_row_matrix: tuple[tuple[int, ...], ...],
         plan_origin: str = "current_raw_u",
     ) -> None:
-        from rs.scheduling.contracts import (
-            FlowWindow,
-            ForecastPressure,
-            GlobalReadySetOptions,
-            LogicalTopology,
-            MultiPhaseSchedulingProblem,
-            ReleaseConstraint,
-        )
         from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
 
         self._assert_bucket_mode_consistency()
@@ -1999,41 +2138,6 @@ class RouterSenseInjectionRuntime:
                 "prediction_digest": prediction_digest,
             }
         )
-        problem = MultiPhaseSchedulingProblem(
-            flow_window=FlowWindow(ready_flows=(), blocked_flows=(), forecast_pressure=()),
-            topology=LogicalTopology(num_gpus=num_peers),
-            release_model=ReleaseConstraint(
-                phase="p1_return",
-                rank=0,
-                release_after_phase="p0_dispatch",
-                expert_compute_delay=0.0,
-            ),
-            forecast=ForecastPressure(
-                source="active_next_dispatch_prediction" if active_prediction else "zero_hint",
-                digest=forecast_digest,
-                oracle=bool(active_prediction.get("is_oracle", False)) if active_prediction else False,
-                evaluation_eligible=bool(active_prediction.get("evaluation_eligible", True)) if active_prediction else True,
-                matrix_shape=(num_peers, num_peers),
-                matrix_total_bytes=int(sum(sum(int(v) for v in row) for row in forecast_matrix)),
-                matrix=forecast_matrix,
-                metadata={
-                    "predictor_name": predictor_name,
-                    "prediction_digest": prediction_digest,
-                },
-            ),
-            options=GlobalReadySetOptions(
-                scheduling_mode="runtime_lookahead",
-                information_mode="p0_p1_p2",
-                prediction_confidence=float(prediction_confidence),
-                p0_weight=float(self.config.p0_weight),
-                p1_reservation_weight=float(self.config.p1_reservation_weight),
-                p2_hint_weight=float(self.config.p2_hint_weight),
-                max_waves=256,
-            ),
-            p0_dispatch_matrix=remote_dispatch_matrix,
-            p1_return_matrix=inferred_p1_remote,
-            p2_next_dispatch_forecast_matrix=forecast_matrix,
-        )
         effective_policy = str(self._effective_phase_policy_name() or "")
         phase_local_async_policies = {
             "bucketed_fifo",
@@ -2051,20 +2155,29 @@ class RouterSenseInjectionRuntime:
             age_weight=float(getattr(self.config, "age_weight", 0.15)),
             prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
         )
+        formal_request = self._build_formal_planning_request(
+            request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:current_window",
+            source_layer_id=str(layer_id),
+            target_layer_id=str(next_layer_id),
+            p0_dispatch_rows=remote_dispatch_matrix,
+            p1_return_rows=inferred_p1_remote,
+            p2_hint_rows=forecast_matrix,
+            predictor_name=str(predictor_name or "zero"),
+            prediction_confidence=float(prediction_confidence),
+            information_mode="p0_p1_p2",
+            max_waves=256,
+        )
+        formal_cost_model = PlanningCostModel(
+            expert_compute_delay=float(formal_request.constraints.expert_compute_delay),
+            full_duplex=bool(formal_request.topology.full_duplex),
+            max_outgoing_per_rank_per_wave=int(formal_request.topology.max_outgoing_per_rank_per_wave),
+            max_incoming_per_rank_per_wave=int(formal_request.topology.max_incoming_per_rank_per_wave),
+        )
         if effective_policy in phase_local_async_policies:
-            phase_local_request = build_runtime_request_from_problem(
-                request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:raw_u",
-                problem=problem,
-                bucket_rows=int(self.config.bucket_rows),
-                policy_options=policy_options,
-                hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
-                confidence=float(prediction_confidence),
-                layer_id=int(layer_id),
-            )
             raw_u_name = effective_policy
             paired_b_name = effective_policy
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = build_runtime_policy(raw_u_name, policy_options).plan(phase_local_request)
+            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None).plan(formal_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2075,6 +2188,7 @@ class RouterSenseInjectionRuntime:
                 policy_name=raw_u_name,
             )
             self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
+            raw_u_plan = to_logical_plan(raw_u_window_plan)
             consumed_weights = dict((raw_u_plan.diagnostics or {}).get("consumed_weights", {}))
             requested_weights = {
                 "residual_weight": float(policy_options.residual_weight),
@@ -2087,6 +2201,7 @@ class RouterSenseInjectionRuntime:
                     f"async joint U weights were not consumed: requested={requested_weights} consumed={consumed_weights}"
                 )
             paired_b_start_ns = time.monotonic_ns()
+            paired_b_window_plan = raw_u_window_plan
             paired_b_plan = raw_u_plan
             paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
@@ -2098,20 +2213,13 @@ class RouterSenseInjectionRuntime:
                 policy_name=paired_b_name,
             )
             self._increment_state_counter_map("paired_b_build_count_by_layer", str(layer_id))
+            selected_window_plan = raw_u_window_plan
+            selected_plan = raw_u_plan
         else:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
             safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
-            request = build_runtime_request_from_problem(
-                request_id=f"{self.run_id}:{self.microbatch_id}:{layer_id}:safe_joint",
-                problem=problem,
-                bucket_rows=int(self.config.bucket_rows),
-                policy_options=policy_options,
-                hint_type=str(getattr(problem.forecast, "source", "none") if problem.forecast is not None else "none"),
-                confidence=float(prediction_confidence),
-                layer_id=int(layer_id),
-            )
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_plan = build_runtime_policy(raw_u_name, policy_options).plan(request)
+            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None).plan(formal_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2122,12 +2230,15 @@ class RouterSenseInjectionRuntime:
                 policy_name=raw_u_name,
             )
             self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
+            raw_u_plan = to_logical_plan(raw_u_window_plan)
             paired_b_start_ns = time.monotonic_ns()
             if safe_projection_mode == "disabled":
+                paired_b_window_plan = raw_u_window_plan
                 paired_b_plan = raw_u_plan
                 paired_b_end_ns = paired_b_start_ns
             else:
-                paired_b_plan = build_runtime_policy(paired_b_name, policy_options).plan(request)
+                paired_b_window_plan = PlannerRegistry.create(paired_b_name, None).plan(formal_request)
+                paired_b_plan = to_logical_plan(paired_b_window_plan)
                 paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2140,15 +2251,34 @@ class RouterSenseInjectionRuntime:
             )
             if safe_projection_mode != "disabled":
                 self._increment_state_counter_map("paired_b_build_count_by_layer", str(layer_id))
+            selector = PlannerSelector(
+                local_planner=PlannerRegistry.create(paired_b_name, None),
+                joint_planner=PlannerRegistry.create(raw_u_name, None),
+                estimator=CommonCorePlanEstimator(),
+                cost_model=formal_cost_model,
+            )
+            if safe_projection_mode == "disabled":
+                selected_window_plan = raw_u_window_plan
+                selected_plan = raw_u_plan
+            else:
+                selected = selector.select_prebuilt(
+                    request=formal_request,
+                    local_plan=paired_b_window_plan,
+                    joint_plan=raw_u_window_plan,
+                    mode=PlannerSelectionMode.COMPARE,
+                )
+                selected_window_plan = selected.selected_plan
+                selected_plan = to_logical_plan(selected_window_plan)
         safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
         if safe_projection_mode == "disabled":
+            raw_score = CommonCorePlanEstimator().estimate(raw_u_window_plan, formal_request, formal_cost_model)
             host_projection_start_ns = time.monotonic_ns()
             host_projection_end_ns = host_projection_start_ns
             safe_projection = {
-                "ideal_raw_u_estimated_makespan": float(raw_u_plan.diagnostics.get("makespan", 0.0) or 0.0),
-                "host_projected_raw_u_estimated_makespan": float(raw_u_plan.diagnostics.get("makespan", 0.0) or 0.0),
-                "ideal_paired_b_estimated_makespan": float(raw_u_plan.diagnostics.get("makespan", 0.0) or 0.0),
-                "host_projected_paired_b_estimated_makespan": float(raw_u_plan.diagnostics.get("makespan", 0.0) or 0.0),
+                "ideal_raw_u_estimated_makespan": float(raw_score.estimated_makespan),
+                "host_projected_raw_u_estimated_makespan": float(raw_score.estimated_makespan),
+                "ideal_paired_b_estimated_makespan": float(raw_score.estimated_makespan),
+                "host_projected_paired_b_estimated_makespan": float(raw_score.estimated_makespan),
                 "host_projected_safe_selection": str(raw_u_plan.policy_name),
                 "projection_mode": "disabled",
             }
@@ -2172,13 +2302,6 @@ class RouterSenseInjectionRuntime:
         inferred_p1_row_matrix = [[int(value) for value in row] for row in inferred_p1]
         inferred_p1_remote_row_matrix = [[int(value) for value in row] for row in inferred_p1_remote]
         safe_selection_start_ns = time.monotonic_ns()
-        selected_plan = (
-            raw_u_plan
-            if safe_projection_mode == "disabled"
-            else paired_b_plan
-            if str(safe_projection["host_projected_safe_selection"]) == str(paired_b_plan.policy_name)
-            else raw_u_plan
-        )
         safe_selection_end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -2417,7 +2540,7 @@ class RouterSenseInjectionRuntime:
             str(getattr(prepared_plan, "safe_projection_mode", "disabled") or "disabled"),
         )
         if outcome.status == "rejected" or outcome.logical_plan is None:
-            self.target_plan_store.reject(key, execution_origin="prepared_rejected")
+            self.target_plan_store.fail(key, execution_origin="prepared_rejected")
             self._runtime_state.write("execution_origin", "prepared_rejected")
             return None
         target_matrix = (
@@ -2458,7 +2581,8 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("stored_p1_compile_input_digest", stored_compile_input_digest)
         self._runtime_state.write("p1_inferred_from_p0", [list(row) for row in inferred_p1_rows])
         execution_origin = "prepared_exact" if outcome.status == "exact" else "prepared_repaired"
-        self.target_plan_store.consume_once(key, execution_origin=execution_origin)
+        self.target_plan_store.bind(key, bound_owner="prepared_reconcile")
+        self.target_plan_store.start_execution(key, execution_origin=execution_origin, claim_owner="prepared_reconcile")
         self._runtime_state.write("execution_origin", execution_origin)
         self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
         return compiled
@@ -2792,6 +2916,8 @@ class RouterSenseInjectionRuntime:
             prediction_confidence = float(fallback.confidence)
             prediction_evaluation_eligible = bool(fallback.evaluation_eligible)
             prediction_is_oracle = bool(fallback.is_oracle)
+        if predictor_name == "copy_current" and self._online_p2_predictor_name() == "copy_current_dispatch":
+            predictor_name = "copy_current_dispatch"
         row_sums = [int(sum(row)) for row in forecast_matrix]
         col_sums = [
             int(sum(forecast_matrix[row_idx][col_idx] for row_idx in range(len(forecast_matrix))))
@@ -3065,6 +3191,7 @@ class RouterSenseInjectionRuntime:
         }
 
     def begin_forward(self, *, forward_epoch: int | None = None) -> None:
+        previous_epoch = int(self._forward_epoch)
         if forward_epoch is None:
             self._forward_epoch += 1
         else:
@@ -3087,6 +3214,12 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("forward_start_ns", int(time.monotonic_ns()))
         self._runtime_state.write("forward_end_ns", 0)
         self._target_plan_reconciled_keys.clear()
+        if self.target_planner_service is not None and previous_epoch > 0:
+            self.target_planner_service.cancel_generation(
+                run_id=str(self.run_id),
+                forward_epoch=int(previous_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
         if self.target_plan_store is not None:
             self.target_plan_store.cleanup_epoch(
                 run_id=str(self.run_id),
@@ -3108,6 +3241,12 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.remove("global_joint_plan_wire", None)
         self._runtime_state.remove("global_joint_plan_agreement", None)
         self._runtime_state.remove("global_joint_window_plan", None)
+        if self.target_planner_service is not None:
+            self.target_planner_service.cancel_generation(
+                run_id=str(self.run_id),
+                forward_epoch=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
         if self.target_plan_store is not None:
             self.target_plan_store.cleanup_epoch(
                 run_id=str(self.run_id),
@@ -3209,6 +3348,7 @@ class RouterSenseInjectionRuntime:
             )
             self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
             return
+        self._pump_target_planner_publications()
         sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
         if callable(sync_fn):
             try:
@@ -3380,7 +3520,7 @@ class RouterSenseInjectionRuntime:
                 self._activate_transport(layer_name=layer_name, phase="P0", context=phase_ctx, plan=plan)
                 adapter = getattr(self, "transport_adapter", None)
                 if adapter is not None:
-                    setattr(adapter, "late_suffix_provider", self._late_suffix_provider)
+                    setattr(adapter, "late_suffix_provider", None)
                 self._runtime_state.write("before_async_p2p_phase_count", int(self._runtime_state.read("before_async_p2p_phase_count", 0) or 0) + 1)
                 self._timeline(
                     "phase_execution_plan_agreed",
@@ -3722,6 +3862,7 @@ class RouterSenseInjectionRuntime:
             )
             self._timeline("before_token_combine_exit", layer_name=layer_name, phase_name="P1", scheduled=False)
             return
+        self._pump_target_planner_publications()
         self._runtime_state.write("expert_compute_end_ns", int(hook_start_ns))
         observation_start_ns = time.monotonic_ns()
         observation = build_runtime_observation(
@@ -4055,6 +4196,16 @@ class RouterSenseInjectionRuntime:
                 self._runtime_state.remove("prepared_priority_cache", None)
             if observation_p1 is not None:
                 self._record_window_state(layer_name=layer_name, p1_observation=observation_p1)
+            if self._is_joint_window_async_mode() and self.target_plan_store is not None:
+                execution_origin = str(self._runtime_state.read("execution_origin", "") or "")
+                if execution_origin in {"prepared_exact", "prepared_repaired"}:
+                    try:
+                        self.target_plan_store.complete(
+                            self._target_plan_key(layer_name=layer_name),
+                            execution_origin=execution_origin,
+                        )
+                    except Exception:
+                        pass
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
                 raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")

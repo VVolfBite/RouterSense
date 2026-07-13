@@ -7,13 +7,18 @@ from typing import Any
 
 from rs.runtime.guards import InvariantFailure, RouterSenseInvariantError
 
-from .contracts import TargetLayerPreparedJointPlan, TargetPlanKey, TargetPlanTerminalRecord
+from .contracts import TargetLayerPreparedJointPlan, TargetPlanKey, TargetPlanStateRecord, TargetPlanTerminalRecord
 
 
 @dataclass
 class _StoredTargetPlan:
     plan: TargetLayerPreparedJointPlan
+    state: str = "LOGICAL_READY"
+    claim_owner: str = ""
+    bound_owner: str = ""
+    execution_origin: str = ""
     created_at_ns: int = field(default_factory=time.perf_counter_ns)
+    updated_at_ns: int = field(default_factory=time.perf_counter_ns)
 
 
 class TargetPlanStore:
@@ -28,6 +33,9 @@ class TargetPlanStore:
         return (str(key.run_id), int(key.forward_epoch), str(key.microbatch_id), str(key.target_layer_id))
 
     def put(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
+        self.publish_logical(key, plan)
+
+    def publish_logical(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         skey = self._key(key)
         with self._lock:
             terminal = self._terminal.get(skey)
@@ -72,16 +80,21 @@ class TargetPlanStore:
                         },
                     )
                 )
-            self._plans[skey] = _StoredTargetPlan(plan=plan)
+            self._plans[skey] = _StoredTargetPlan(plan=plan, state="LOGICAL_READY")
 
     def peek(self, key: TargetPlanKey) -> TargetLayerPreparedJointPlan | None:
         with self._lock:
             item = self._plans.get(self._key(key))
             if item is None:
                 return None
+            if str(item.state) != "LOGICAL_READY":
+                return None
             return item.plan
 
     def claim_for_reconciliation(self, key: TargetPlanKey) -> TargetLayerPreparedJointPlan:
+        return self.claim(key, claim_owner="reconciliation")
+
+    def claim(self, key: TargetPlanKey, *, claim_owner: str) -> TargetLayerPreparedJointPlan:
         skey = self._key(key)
         with self._lock:
             item = self._plans.pop(skey, None)
@@ -104,7 +117,15 @@ class TargetPlanStore:
                         actual={"key": key.to_dict(), "terminal": terminal.to_dict() if terminal is not None else None},
                     )
                 )
-            self._claimed[skey] = item
+            self._claimed[skey] = _StoredTargetPlan(
+                plan=item.plan,
+                state="CLAIMED",
+                claim_owner=str(claim_owner),
+                bound_owner=str(item.bound_owner),
+                execution_origin=str(item.execution_origin),
+                created_at_ns=int(item.created_at_ns),
+                updated_at_ns=int(time.perf_counter_ns()),
+            )
             return item.plan
 
     def consume_once(self, key: TargetPlanKey, *, execution_origin: str = "consumed") -> TargetLayerPreparedJointPlan:
@@ -132,6 +153,83 @@ class TargetPlanStore:
                 terminal_at_ns=int(time.perf_counter_ns()),
             )
             return plan
+
+    def bind(self, key: TargetPlanKey, *, bound_owner: str) -> TargetLayerPreparedJointPlan:
+        skey = self._key(key)
+        with self._lock:
+            item = self._claimed.get(skey)
+            if item is None:
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-015",
+                        stage="target_plan_store",
+                        message="target plan missing at bind",
+                        actual={"key": key.to_dict()},
+                    )
+                )
+            self._claimed[skey] = _StoredTargetPlan(
+                plan=item.plan,
+                state="BOUND",
+                claim_owner=str(item.claim_owner),
+                bound_owner=str(bound_owner),
+                execution_origin=str(item.execution_origin),
+                created_at_ns=int(item.created_at_ns),
+                updated_at_ns=int(time.perf_counter_ns()),
+            )
+            return item.plan
+
+    def start_execution(self, key: TargetPlanKey, *, execution_origin: str, claim_owner: str = "") -> TargetLayerPreparedJointPlan:
+        skey = self._key(key)
+        with self._lock:
+            item = self._claimed.get(skey)
+            if item is None:
+                item = self._plans.pop(skey, None)
+            if item is None:
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-016",
+                        stage="target_plan_store",
+                        message="target plan missing at start_execution",
+                        actual={"key": key.to_dict()},
+                    )
+                )
+            self._claimed[skey] = _StoredTargetPlan(
+                plan=item.plan,
+                state="EXECUTING",
+                claim_owner=str(claim_owner or item.claim_owner),
+                bound_owner=str(item.bound_owner),
+                execution_origin=str(execution_origin),
+                created_at_ns=int(item.created_at_ns),
+                updated_at_ns=int(time.perf_counter_ns()),
+            )
+            return item.plan
+
+    def complete(self, key: TargetPlanKey, *, execution_origin: str = "completed") -> TargetLayerPreparedJointPlan:
+        skey = self._key(key)
+        with self._lock:
+            item = self._claimed.pop(skey, None)
+            if item is None:
+                item = self._plans.pop(skey, None)
+            if item is None:
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-017",
+                        stage="target_plan_store",
+                        message="target plan missing at complete",
+                        actual={"key": key.to_dict()},
+                    )
+                )
+            self._terminal[skey] = TargetPlanTerminalRecord(
+                key=key,
+                plan_digest=str(item.plan.logical_plan_digest),
+                final_status="COMPLETED",
+                execution_origin=str(execution_origin),
+                terminal_at_ns=int(time.perf_counter_ns()),
+            )
+            return item.plan
+
+    def fail(self, key: TargetPlanKey, *, execution_origin: str = "failed") -> None:
+        self._finalize(key, final_status="FAILED", execution_origin=execution_origin)
 
     def reject(self, key: TargetPlanKey, *, execution_origin: str = "rejected") -> None:
         self._finalize(key, final_status="REJECTED", execution_origin=execution_origin)
@@ -207,6 +305,33 @@ class TargetPlanStore:
         with self._lock:
             return self._terminal.get(self._key(key))
 
+    def get_state_record(self, key: TargetPlanKey) -> TargetPlanStateRecord | None:
+        skey = self._key(key)
+        with self._lock:
+            item = self._plans.get(skey)
+            if item is None:
+                item = self._claimed.get(skey)
+            if item is None:
+                terminal = self._terminal.get(skey)
+                if terminal is None:
+                    return None
+                return TargetPlanStateRecord(
+                    key=key,
+                    plan_digest=str(terminal.plan_digest),
+                    state=str(terminal.final_status),
+                    execution_origin=str(terminal.execution_origin),
+                    updated_at_ns=int(terminal.terminal_at_ns),
+                )
+            return TargetPlanStateRecord(
+                key=key,
+                plan_digest=str(item.plan.logical_plan_digest),
+                state=str(item.state),
+                claim_owner=str(item.claim_owner),
+                bound_owner=str(item.bound_owner),
+                execution_origin=str(item.execution_origin),
+                updated_at_ns=int(item.updated_at_ns),
+            )
+
     def snapshot(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         with self._lock:
@@ -220,7 +345,7 @@ class TargetPlanStore:
                             "target_layer_id": key[3],
                         },
                         "logical_plan_digest": str(item.plan.logical_plan_digest),
-                        "status": "AVAILABLE",
+                        "status": str(item.state),
                     }
                 )
             for key, item in self._claimed.items():
@@ -233,7 +358,10 @@ class TargetPlanStore:
                             "target_layer_id": key[3],
                         },
                         "logical_plan_digest": str(item.plan.logical_plan_digest),
-                        "status": "CLAIMED",
+                        "status": str(item.state),
+                        "claim_owner": str(item.claim_owner),
+                        "bound_owner": str(item.bound_owner),
+                        "execution_origin": str(item.execution_origin),
                     }
                 )
             for record in self._terminal.values():

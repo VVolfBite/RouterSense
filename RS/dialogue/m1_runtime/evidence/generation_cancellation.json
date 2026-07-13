@@ -1,0 +1,8 @@
+{
+  "source": "RS/tests/contract/megatron_ep/test_target_planner_service.py",
+  "status": "passed",
+  "assertions": {
+    "cancelled_generation_rejects_future_submit": true,
+    "ready_result_from_cancelled_generation_is_not_published": true
+  }
+}

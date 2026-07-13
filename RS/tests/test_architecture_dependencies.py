@@ -112,6 +112,16 @@ def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
     assert not bad, bad
 
 
+def test_lifecycle_does_not_import_runtime_module() -> None:
+    bad = []
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime/online/megatron_ep")):
+        if path.name != "lifecycle.py":
+            continue
+        if module == "rs.runtime.online.megatron_ep.runtime":
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
 def test_formal_planning_package_does_not_export_legacy_runtime_builders() -> None:
     import rs.planning as planning
 

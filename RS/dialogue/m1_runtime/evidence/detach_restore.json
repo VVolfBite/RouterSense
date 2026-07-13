@@ -1,0 +1,10 @@
+{
+  "source": "RS/tests/contract/megatron_ep/test_runtime_handle.py",
+  "status": "passed",
+  "assertions": {
+    "detach_restores_wrapped_dispatchers": true,
+    "close_restores_forward_hooks": true,
+    "close_is_idempotent": true,
+    "runtime_handle_proxies_runtime": true
+  }
+}
