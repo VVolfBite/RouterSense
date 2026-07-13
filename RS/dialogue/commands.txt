@@ -1,4 +1,8 @@
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONPATH=src:. python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_runtime_timeline.yaml --output-dir outputs/tuning/runtime_timeline_gpu --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile timeline_light --preflight-mode compact --strategies routersense_b_core_independent_async routersense_u_core_zero_raw_async
+git status --short && git rev-parse HEAD
+hostname
+nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 python -m compileall src experiments tests
-PYTHONPATH=src:. pytest -q tests/contract/test_runtime_timeline_cpu.py
+PYTHONPATH=src:. pytest -q tests/contract/test_runtime_diag_cpu.py tests/contract/test_runtime_timeline_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python experiments/distributed/run_gpu_a2_strategy_compare.py --config configs/official/gpu_runtime_diag.yaml --output-dir outputs/tuning/runtime_diag_gpu --world-size 4 --selected-layers 0,1 --warmup-iters 1 --measure-iters 1 --profile timeline_light --preflight-mode compact --strategies routersense_b_core_independent_async routersense_u_core_zero_raw_async
 git diff --check
+find dialogue -type f -printf "%s %p\n" | sort -nr

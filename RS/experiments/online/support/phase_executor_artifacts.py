@@ -195,6 +195,47 @@ def write_rank_artifacts(
         timeout_count = sum(int(bool(row.get("timeout", False))) for row in result_rows)
         all_work_completed = all(bool(row.get("all_work_completed", True)) for row in result_rows) if result_rows else True
         preflight_collective_count = sum(int(row.get("preflight_collective_count", 0) or 0) for row in result_rows)
+        expected_preflight_collective_count = sum(
+            int(row.get("expected_preflight_collective_count", 0) or 0) for row in result_rows
+        )
+        executor_preflight_modes = sorted(
+            {
+                str(row.get("executor_preflight_mode", ""))
+                for row in result_rows
+                if str(row.get("executor_preflight_mode", ""))
+            }
+        )
+        collective_executor_preflight_modes = sorted(
+            {
+                str(row.get("executor_preflight_mode", ""))
+                for row in result_rows
+                if int(row.get("preflight_collective_count", 0) or 0) > 0
+                and str(row.get("executor_preflight_mode", "")) not in {"", "local_only"}
+            }
+        )
+        preflight_mode_match = all(bool(row.get("preflight_mode_match", True)) for row in result_rows)
+        preflight_collective_count_exact = all(
+            bool(row.get("preflight_collective_count_exact", True)) for row in result_rows
+        )
+        preflight_by_layer_phase = [
+            {
+                "layer_name": str(row.get("layer_name", "")),
+                "layer_id": str(row.get("layer_id", "")),
+                "forward_epoch": int(row.get("forward_epoch", 0) or 0),
+                "phase": str(row.get("phase", "")),
+                "tensor_role": str(row.get("tensor_role", "")),
+                "executor_preflight_mode": str(row.get("executor_preflight_mode", "")),
+                "preflight_mode_match": bool(row.get("preflight_mode_match", True)),
+                "preflight_collective_count": int(row.get("preflight_collective_count", 0) or 0),
+                "expected_preflight_collective_count": int(row.get("expected_preflight_collective_count", 0) or 0),
+                "preflight_collective_count_exact": bool(row.get("preflight_collective_count_exact", True)),
+                "preflight_timing_us": dict(row.get("preflight_timing_us", {}) or {}),
+                "preflight_collective_types": dict(row.get("preflight_collective_types", {}) or {}),
+                "preflight_payload_bytes": int(row.get("preflight_payload_bytes", 0) or 0),
+            }
+            for row in result_rows
+            if int(row.get("preflight_collective_count", 0) or 0) or str(row.get("executor_preflight_mode", ""))
+        ]
         if adapter is not None:
             rank_summary.update(
                 {
@@ -212,6 +253,15 @@ def write_rank_artifacts(
                 "timeout_count": int(timeout_count),
                 "all_work_completed": bool(all_work_completed),
                 "preflight_collective_count": int(preflight_collective_count),
+                "expected_preflight_collective_count": int(expected_preflight_collective_count),
+                "preflight_collective_count_exact": bool(preflight_collective_count_exact),
+                "executor_preflight_modes": executor_preflight_modes,
+                "executor_collective_preflight_modes": collective_executor_preflight_modes,
+                "executor_preflight_mode": collective_executor_preflight_modes[0]
+                if len(collective_executor_preflight_modes) == 1
+                else "",
+                "preflight_mode_match": bool(preflight_mode_match),
+                "preflight_by_layer_phase": preflight_by_layer_phase,
             }
         )
         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)

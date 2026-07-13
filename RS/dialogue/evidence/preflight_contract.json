@@ -1,0 +1,54 @@
+{
+  "requested_preflight_mode": "CLI/YAML requested value",
+  "effective_preflight_mode": "RouterSenseInjectionConfig parsed runtime value",
+  "executor_preflight_mode": "mode passed into validate_async_phase_preflight",
+  "source_of_truth": "effective_preflight_mode",
+  "stale_source_removed": "state.plan.metrics no longer defaults executor to full",
+  "mismatch_behavior": "hard fail before or during transport activation",
+  "modes": {
+    "compact": {
+      "expected_collectives_per_selected_p0_hidden_preflight": 2,
+      "collective_types": {
+        "all_gather": 2,
+        "all_reduce": 0,
+        "broadcast": 0,
+        "barrier": 0
+      },
+      "steps": [
+        "all_gather local ok flag",
+        "all_gather packed send/recv counts, rows, sequence digests, role digests"
+      ]
+    },
+    "full": {
+      "expected_collectives_per_selected_p0_hidden_preflight": 9,
+      "collective_types": {
+        "all_gather": 9,
+        "all_reduce": 0,
+        "broadcast": 0,
+        "barrier": 0
+      },
+      "steps": [
+        "all_gather local ok flag",
+        "eight separate all_gather calls for send/recv counts, rows, sequence digests, role digests"
+      ]
+    },
+    "local_only": {
+      "expected_collectives_per_preflight": 0,
+      "scope": "secondary payload and non-collective local coverage validation"
+    }
+  },
+  "current_gpu_diag_expected_boundary": {
+    "selected_layers": [
+      0,
+      1
+    ],
+    "warmup": 1,
+    "measure": 1,
+    "forwards": 2,
+    "per_rank_compact_collectives": 8,
+    "all_rank_compact_collectives": 32,
+    "per_rank_full_collectives": 36,
+    "all_rank_full_collectives": 144,
+    "count_scope": "selected P0 hidden-state preflight invocations across warmup and measured forwards"
+  }
+}

@@ -1,29 +1,7 @@
 {
+  "starting_sha": "235fa5a78652afbb0fc84da677e837118b3b414c",
+  "final_sha": "recorded_after_commit",
   "branch": "main",
-  "head_before_commit": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
-  "status_short": [
-    " M dialogue/README.md",
-    " D dialogue/changed_files.txt",
-    " M dialogue/commands.txt",
-    " D dialogue/evidence/gpu_runtime_timeline_manifest.json",
-    " D dialogue/evidence/runtime_static_audit.json",
-    " D dialogue/evidence/timeline_schema.json",
-    " D dialogue/evidence/token_count_contract.json",
-    " D dialogue/git_state.json",
-    " M dialogue/patches/focused_diff.patch",
-    " M dialogue/report.md",
-    " D dialogue/runtime_static_audit.md",
-    " M dialogue/status.json",
-    " M dialogue/test_summary.json",
-    " M src/rs/core/experiment_config.py",
-    " M tests/contract/test_runtime_timeline_cpu.py",
-    "?? dialogue/evidence/environment_summary.json",
-    "?? dialogue/evidence/hotpath_contract_summary.json",
-    "?? dialogue/evidence/phase_gap_summary.csv",
-    "?? dialogue/evidence/rank_imbalance_summary.csv",
-    "?? dialogue/evidence/task_granularity_summary.json",
-    "?? dialogue/evidence/timeline_per_rank.csv",
-    "?? dialogue/evidence/timeline_summary.json"
-  ],
-  "dialogue_size_bytes": 28978
+  "git_clean_at_dialogue_generation": false,
+  "push_succeeded": "pending"
 }

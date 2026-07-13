@@ -1,0 +1,51 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: gpu_runtime_diag
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/comparison_8x16_prompts.json
+  tokenization:
+    padding: max_length
+    truncation: true
+    max_length: 16
+    expected_prompt_count: 8
+    expected_batch_rows: 8
+    expected_seq_len: 16
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 1
+  warmup: 1
+  selected_layer_ids:
+    - 0
+    - 1
+suite: runtime_diag
+world_size: 4
+profile: timeline_light
+preflight_mode: compact
+selected_layers: 0,1
+strategies:
+  - routersense_b_core_independent_async
+  - routersense_u_core_zero_raw_async
+diagnostics:
+  preflight_breakdown: true
+  hook_attribution: true
+  control_collective_summary: true
+  rank_critical_components: true
+  task_size_buckets: true
+  expert_boundary: best_effort_non_intrusive
+  profiler: false
+  raw_task_jsonl: false
+  tensor_dump: false

@@ -1,0 +1,80 @@
+{
+  "preflight_timing_us": [
+    "preflight_total_us",
+    "preflight_local_validation_us",
+    "preflight_signature_build_us",
+    "preflight_collective_submit_us",
+    "preflight_collective_wait_us",
+    "preflight_result_check_us",
+    "preflight_other_us"
+  ],
+  "selected_hook_attribution_fields": [
+    "hook_total_us",
+    "observation_us",
+    "traffic_matrix_build_us",
+    "global_matrix_collective_us",
+    "plan_build_us",
+    "plan_selection_us",
+    "plan_agreement_us",
+    "materialization_us",
+    "preflight_us",
+    "pack_us",
+    "submit_us",
+    "request_wait_us",
+    "unpack_us",
+    "state_update_us",
+    "artifact_summary_us",
+    "other_known_us",
+    "hook_unattributed_us",
+    "hook_explained_ratio"
+  ],
+  "rank_critical_fields": [
+    "valid_tokens_per_rank",
+    "local_rows_per_rank",
+    "remote_rows_per_rank",
+    "wire_bytes_per_rank",
+    "task_count_per_rank",
+    "wave_count_per_rank",
+    "small_task_count_per_rank",
+    "plan_us_per_rank",
+    "preflight_us_per_rank",
+    "submit_us_per_rank",
+    "wait_us_per_rank",
+    "hook_unattributed_us_per_rank",
+    "expert_compute_us_per_rank",
+    "rank3_excess_us"
+  ],
+  "selected_window_fields": [
+    "selected_window_span_us",
+    "communication_span_us",
+    "communication_span_us_deprecated",
+    "per_layer_selected_span_us",
+    "per_phase_transport_span_us",
+    "inter_selected_layer_gap_us"
+  ],
+  "measurement_statuses": [
+    "measured",
+    "derived",
+    "not_applicable",
+    "unavailable"
+  ],
+  "expert_boundary": {
+    "fields": [
+      "p0_all_requests_completed_ns",
+      "expert_compute_begin_ns",
+      "expert_compute_end_ns",
+      "p1_hook_enter_ns",
+      "p0_complete_to_expert_begin_us",
+      "expert_compute_wall_us",
+      "expert_end_to_p1_enter_us",
+      "inter_phase_gap_us",
+      "inter_phase_gap_residual_us"
+    ],
+    "policy": "mark unavailable when no safe existing boundary exists"
+  },
+  "measurement_perturbation_policy": {
+    "timeline_light_file_writes_in_timed_path": 0,
+    "timeline_light_host_copies_in_timed_path": 0,
+    "measurement_induced_global_synchronize": 0
+  }
+}

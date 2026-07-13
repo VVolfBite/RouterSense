@@ -483,6 +483,16 @@ class RouterSenseInjectionRuntime:
 
     def _activate_transport(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
         start_ns = time.monotonic_ns()
+        effective_preflight_mode = str(getattr(self.config, "preflight_mode", "full") or "full")
+        plan_metrics = dict(plan.metrics or {})
+        plan_preflight_mode = str(plan_metrics.get("preflight_mode", "") or "")
+        if plan_preflight_mode and plan_preflight_mode != effective_preflight_mode:
+            raise RuntimeError(
+                f"preflight mode mismatch before transport activation: "
+                f"plan={plan_preflight_mode!r} effective={effective_preflight_mode!r}"
+            )
+        if plan_preflight_mode != effective_preflight_mode:
+            plan = replace(plan, metrics={**plan_metrics, "preflight_mode": effective_preflight_mode})
         if self._layer_selected(layer_name):
             self._runtime_state.metrics.selected_transport_execution_count = int(
                 self._runtime_state.metrics.selected_transport_execution_count
@@ -495,6 +505,8 @@ class RouterSenseInjectionRuntime:
         }
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
+            if hasattr(adapter, "set_effective_preflight_mode"):
+                adapter.set_effective_preflight_mode(effective_preflight_mode)
             adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
         end_ns = time.monotonic_ns()
         self._record_planning_timing(

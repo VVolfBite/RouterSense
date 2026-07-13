@@ -58,7 +58,14 @@ class MegatronPhaseTransportAdapter:
         self.local_copy_task_count = 0
         self.local_copy_row_count = 0
         self.phase_sync_fallback_count = 0
+        self.effective_preflight_mode = "full"
         self._async_phase_sessions: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def set_effective_preflight_mode(self, mode: str) -> None:
+        normalized = str(mode or "full")
+        if normalized not in {"full", "compact"}:
+            raise HostAPIDriftError(f"unsupported effective preflight mode {normalized!r}")
+        self.effective_preflight_mode = normalized
 
     def activate(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
         expected_roles = ("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",)
@@ -132,6 +139,14 @@ class MegatronPhaseTransportAdapter:
             )
         if str(state.plan.execution_mode) == "joint_window_async_p2p":
             should_collective_preflight = bool(state.phase == "P0" and tensor_role == "hidden_states")
+            effective_preflight_mode = str(getattr(self, "effective_preflight_mode", "full") or "full")
+            plan_preflight_mode = str((state.plan.metrics or {}).get("preflight_mode", "") or "")
+            executor_preflight_mode = effective_preflight_mode
+            if plan_preflight_mode and plan_preflight_mode != effective_preflight_mode:
+                raise HostAPIDriftError(
+                    f"preflight mode mismatch for {state.layer_name} {state.phase}: "
+                    f"plan={plan_preflight_mode!r} effective={effective_preflight_mode!r}"
+                )
             if should_collective_preflight:
                 preflight = validate_async_phase_preflight(
                     context=state.context,
@@ -142,7 +157,7 @@ class MegatronPhaseTransportAdapter:
                         "global_rank": int(state.context.global_rank),
                         "local_rank": int(state.context.local_rank),
                     },
-                    mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
+                    mode=executor_preflight_mode,
                 )
             else:
                 preflight = replace(
@@ -203,6 +218,17 @@ class MegatronPhaseTransportAdapter:
                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
                         "preflight_collective_count": int(preflight.collective_count),
                         "preflight_mode": str(preflight.preflight_mode),
+                        "requested_preflight_mode": effective_preflight_mode,
+                        "effective_preflight_mode": effective_preflight_mode,
+                        "executor_preflight_mode": str(preflight.preflight_mode),
+                        "preflight_mode_match": bool(str(preflight.preflight_mode) == effective_preflight_mode),
+                        "expected_preflight_collective_count": int(preflight.expected_collective_count),
+                        "preflight_collective_count_exact": bool(
+                            int(preflight.collective_count) == int(preflight.expected_collective_count)
+                        ),
+                        "preflight_collective_types": dict(preflight.collective_types or {}),
+                        "preflight_payload_bytes": int(preflight.payload_bytes),
+                        "preflight_timing_us": dict(preflight.timing_us or {}),
                     }
                 ]
                 self.batch_isend_irecv_call_count += int(facade_result.batch_isend_irecv_call_count)
@@ -249,8 +275,21 @@ class MegatronPhaseTransportAdapter:
                 execution_entries.append(
                     {
                         "record_type": "async_preflight_summary",
+                        "requested_preflight_mode": effective_preflight_mode,
+                        "effective_preflight_mode": effective_preflight_mode,
+                        "executor_preflight_mode": str(preflight.preflight_mode),
+                        "preflight_mode_match": bool(str(preflight.preflight_mode) == effective_preflight_mode)
+                        if should_collective_preflight
+                        else True,
                         "preflight_mode": str(preflight.preflight_mode),
                         "preflight_collective_count": int(preflight.collective_count),
+                        "expected_preflight_collective_count": int(preflight.expected_collective_count),
+                        "preflight_collective_count_exact": bool(
+                            int(preflight.collective_count) == int(preflight.expected_collective_count)
+                        ),
+                        "preflight_collective_types": dict(preflight.collective_types or {}),
+                        "preflight_payload_bytes": int(preflight.payload_bytes),
+                        "preflight_timing_us": dict(preflight.timing_us or {}),
                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
                         "shared_session_suffix_splice_count": int((state.shared_session or {}).get("suffix_splice_count", 0) or 0),
                     }
@@ -323,6 +362,32 @@ class MegatronPhaseTransportAdapter:
                 "timeout": bool(facade_result.timeout),
                 "preflight_collective_count": int(facade_result.preflight_collective_count),
                 "preflight_passed": bool(facade_result.preflight_passed),
+                "requested_preflight_mode": str(getattr(self, "effective_preflight_mode", "full") or "full"),
+                "effective_preflight_mode": str(getattr(self, "effective_preflight_mode", "full") or "full"),
+                "executor_preflight_mode": str(preflight.preflight_mode) if str(state.plan.execution_mode) == "joint_window_async_p2p" else "",
+                "preflight_mode_match": bool(
+                    str(preflight.preflight_mode) == str(getattr(self, "effective_preflight_mode", "full") or "full")
+                )
+                if str(state.plan.execution_mode) == "joint_window_async_p2p" and should_collective_preflight
+                else True,
+                "expected_preflight_collective_count": int(getattr(preflight, "expected_collective_count", 0))
+                if str(state.plan.execution_mode) == "joint_window_async_p2p"
+                else 0,
+                "preflight_collective_count_exact": bool(
+                    int(facade_result.preflight_collective_count)
+                    == int(getattr(preflight, "expected_collective_count", 0))
+                )
+                if str(state.plan.execution_mode) == "joint_window_async_p2p" and should_collective_preflight
+                else True,
+                "preflight_collective_types": dict(getattr(preflight, "collective_types", {}) or {})
+                if str(state.plan.execution_mode) == "joint_window_async_p2p"
+                else {},
+                "preflight_payload_bytes": int(getattr(preflight, "payload_bytes", 0) or 0)
+                if str(state.plan.execution_mode) == "joint_window_async_p2p"
+                else 0,
+                "preflight_timing_us": dict(getattr(preflight, "timing_us", {}) or {})
+                if str(state.plan.execution_mode) == "joint_window_async_p2p"
+                else {},
                 "all_work_completed": bool(facade_result.all_work_completed),
                 "first_transport_submit_ns": int(facade_result.first_transport_submit_ns),
                 "last_transport_complete_ns": int(facade_result.last_transport_complete_ns),

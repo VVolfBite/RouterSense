@@ -1,0 +1,42 @@
+{
+  "categories": [
+    "traffic_matrix_all_reduce",
+    "traffic_matrix_all_gather",
+    "plan_broadcast",
+    "plan_agreement",
+    "preflight_collective",
+    "barrier",
+    "other_control_collective"
+  ],
+  "fields_per_category": [
+    "call_count",
+    "payload_bytes",
+    "submit_us",
+    "wait_us",
+    "total_us",
+    "required_for_correctness",
+    "enabled_in_compact",
+    "enabled_in_full"
+  ],
+  "known_static_sources": [
+    {
+      "category": "traffic_matrix_all_gather",
+      "file": "src/rs/runtime/online/megatron_ep/lifecycle.py",
+      "function": "_gather_actual_p0_full_row_matrix",
+      "correctness_required": true
+    },
+    {
+      "category": "plan_agreement",
+      "file": "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
+      "function": "verify_and_broadcast_root_plan",
+      "correctness_required": true
+    },
+    {
+      "category": "preflight_collective",
+      "file": "src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py",
+      "function": "validate_async_phase_preflight",
+      "correctness_required": true,
+      "compact_should_reduce_full_validation_collectives": true
+    }
+  ]
+}

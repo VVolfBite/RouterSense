@@ -39,6 +39,10 @@ class AsyncPhasePreflightResult:
     recv_digest: int
     collective_count: int
     preflight_mode: str
+    expected_collective_count: int = 0
+    collective_types: dict[str, int] | None = None
+    payload_bytes: int = 0
+    timing_us: dict[str, float] | None = None
 
 
 def _dtype_code(dtype: str) -> int:
@@ -192,6 +196,8 @@ def validate_async_phase_preflight(
     rank_context: dict[str, int],
     mode: str = "full",
 ) -> AsyncPhasePreflightResult:
+    preflight_enter_ns = time.perf_counter_ns()
+    local_validation_start_ns = preflight_enter_ns
     if str(mode) == "local_only":
         rank = int(rank_context["global_rank"])
         expected_rows = int(sum(context.recv_splits))
@@ -236,6 +242,10 @@ def validate_async_phase_preflight(
                 break
         if not local_reason and coverage and any(value != 1 for value in coverage):
             local_reason = "recv_coverage_invalid"
+        local_validation_end_ns = time.perf_counter_ns()
+        result_check_start_ns = local_validation_end_ns
+        result_check_end_ns = time.perf_counter_ns()
+        preflight_exit_ns = result_check_end_ns
         return AsyncPhasePreflightResult(
             ok=bool(not local_reason),
             all_ranks_ok=bool(not local_reason),
@@ -246,6 +256,18 @@ def validate_async_phase_preflight(
             recv_digest=_digest_sequence_items(local_recv_items),
             collective_count=0,
             preflight_mode="local_only",
+            expected_collective_count=0,
+            collective_types={"all_gather": 0, "all_reduce": 0, "broadcast": 0, "barrier": 0},
+            payload_bytes=0,
+            timing_us={
+                "preflight_total_us": float((preflight_exit_ns - preflight_enter_ns) / 1000.0),
+                "preflight_local_validation_us": float((local_validation_end_ns - local_validation_start_ns) / 1000.0),
+                "preflight_signature_build_us": 0.0,
+                "preflight_collective_submit_us": 0.0,
+                "preflight_collective_wait_us": 0.0,
+                "preflight_result_check_us": float((result_check_end_ns - result_check_start_ns) / 1000.0),
+                "preflight_other_us": 0.0,
+            },
         )
     world_group = process_group if process_group is not None else dist.group.WORLD
     rank = int(rank_context["global_rank"])
@@ -295,7 +317,9 @@ def validate_async_phase_preflight(
             break
     if not local_reason and coverage and any(value != 1 for value in coverage):
         local_reason = "recv_coverage_invalid"
+    local_validation_end_ns = time.perf_counter_ns()
 
+    signature_build_start_ns = time.perf_counter_ns()
     device = (
         torch.device("cuda", rank_context["local_rank"])
         if torch.cuda.is_available() and int(rank_context["local_rank"]) < int(torch.cuda.device_count())
@@ -357,12 +381,21 @@ def validate_async_phase_preflight(
         role_digest_send[index] = int(_digest_sequence_items(items))
     for index, items in per_pair_recv_roles.items():
         role_digest_recv[index] = int(_digest_sequence_items(items))
+    signature_build_end_ns = time.perf_counter_ns()
 
     local_ok = 1 if not local_reason else 0
     local_flags = torch.tensor([local_ok], dtype=torch.long, device=device)
     gathered_flags = [torch.empty_like(local_flags) for _ in range(world_size)]
+    collective_submit_us = 0.0
+    collective_wait_us = 0.0
+    collective_types = {"all_gather": 0, "all_reduce": 0, "broadcast": 0, "barrier": 0}
+    submit_start_ns = time.perf_counter_ns()
     dist.all_gather(gathered_flags, local_flags, group=world_group)
+    submit_end_ns = time.perf_counter_ns()
+    collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
+    collective_types["all_gather"] += 1
     all_ranks_ok = all(int(item.item()) == 1 for item in gathered_flags)
+    payload_bytes = int(local_flags.numel() * local_flags.element_size())
 
     if all_ranks_ok:
         if str(mode) == "compact":
@@ -380,7 +413,12 @@ def validate_async_phase_preflight(
                 dim=0,
             )
             gathered = [torch.empty_like(packed) for _ in range(world_size)]
+            payload_bytes += int(packed.numel() * packed.element_size())
+            submit_start_ns = time.perf_counter_ns()
             dist.all_gather(gathered, packed, group=world_group)
+            submit_end_ns = time.perf_counter_ns()
+            collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
+            collective_types["all_gather"] += 1
             collective_count += 1
             stacked = torch.stack(gathered, dim=0)
             send_count_sum = stacked[:, 0, :].sum(dim=0)
@@ -400,14 +438,22 @@ def validate_async_phase_preflight(
             recv_digest_g = [torch.empty_like(recv_digest) for _ in range(world_size)]
             role_digest_send_g = [torch.empty_like(role_digest_send) for _ in range(world_size)]
             role_digest_recv_g = [torch.empty_like(role_digest_recv) for _ in range(world_size)]
-            dist.all_gather(send_count_g, send_count, group=world_group)
-            dist.all_gather(recv_count_g, recv_count, group=world_group)
-            dist.all_gather(send_rows_g, send_rows, group=world_group)
-            dist.all_gather(recv_rows_g, recv_rows, group=world_group)
-            dist.all_gather(send_digest_g, send_digest, group=world_group)
-            dist.all_gather(recv_digest_g, recv_digest, group=world_group)
-            dist.all_gather(role_digest_send_g, role_digest_send, group=world_group)
-            dist.all_gather(role_digest_recv_g, role_digest_recv, group=world_group)
+            for gathered, tensor in (
+                (send_count_g, send_count),
+                (recv_count_g, recv_count),
+                (send_rows_g, send_rows),
+                (recv_rows_g, recv_rows),
+                (send_digest_g, send_digest),
+                (recv_digest_g, recv_digest),
+                (role_digest_send_g, role_digest_send),
+                (role_digest_recv_g, role_digest_recv),
+            ):
+                payload_bytes += int(tensor.numel() * tensor.element_size())
+                submit_start_ns = time.perf_counter_ns()
+                dist.all_gather(gathered, tensor, group=world_group)
+                submit_end_ns = time.perf_counter_ns()
+                collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
+                collective_types["all_gather"] += 1
             collective_count += 8
             send_count_sum = torch.stack(send_count_g).sum(dim=0)
             recv_count_sum = torch.stack(recv_count_g).sum(dim=0)
@@ -429,6 +475,14 @@ def validate_async_phase_preflight(
         elif not torch.equal(role_send_sum, role_recv_sum):
             local_reason = "send_recv_role_shape_mismatch"
             all_ranks_ok = False
+    result_check_end_ns = time.perf_counter_ns()
+    preflight_exit_ns = result_check_end_ns
+    total_us = float((preflight_exit_ns - preflight_enter_ns) / 1000.0)
+    local_us = float((local_validation_end_ns - local_validation_start_ns) / 1000.0)
+    signature_us = float((signature_build_end_ns - signature_build_start_ns) / 1000.0)
+    result_us = max(0.0, float((result_check_end_ns - signature_build_end_ns) / 1000.0) - collective_submit_us)
+    known_us = local_us + signature_us + collective_submit_us + collective_wait_us + result_us
+    expected_collective_count = 2 if str(mode) == "compact" else 9
 
     return AsyncPhasePreflightResult(
         ok=bool(local_ok),
@@ -440,6 +494,18 @@ def validate_async_phase_preflight(
         recv_digest=_digest_sequence_items(local_recv_items),
         collective_count=int(collective_count),
         preflight_mode=str(mode),
+        expected_collective_count=int(expected_collective_count),
+        collective_types=collective_types,
+        payload_bytes=int(payload_bytes),
+        timing_us={
+            "preflight_total_us": total_us,
+            "preflight_local_validation_us": local_us,
+            "preflight_signature_build_us": signature_us,
+            "preflight_collective_submit_us": float(collective_submit_us),
+            "preflight_collective_wait_us": float(collective_wait_us),
+            "preflight_result_check_us": float(result_us),
+            "preflight_other_us": max(0.0, total_us - known_us),
+        },
     )
 
 

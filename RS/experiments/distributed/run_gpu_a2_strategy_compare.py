@@ -519,11 +519,27 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
     metrics["c2_passed"] = bool(c2_passed)
     metrics["requested_preflight_mode"] = str(rank0_summary.get("requested_preflight_mode", ""))
     metrics["effective_preflight_mode"] = str(rank0_summary.get("effective_preflight_mode", ""))
+    metrics["executor_preflight_mode"] = str(rank0_summary.get("executor_preflight_mode", ""))
+    metrics["preflight_mode_match"] = all(bool(item.get("preflight_mode_match", False)) for item in rank_summaries)
+    metrics["preflight_collective_count_exact"] = all(
+        bool(item.get("preflight_collective_count_exact", False)) for item in rank_summaries
+    )
+    metrics["expected_preflight_collective_count_per_rank"] = [
+        int(item.get("expected_preflight_collective_count", 0) or 0) for item in rank_summaries
+    ]
+    metrics["actual_preflight_collective_count_per_rank"] = [
+        int(item.get("preflight_collective_count", 0) or 0) for item in rank_summaries
+    ]
     metrics["preflight_mode_per_rank"] = [
         {
             "rank": int(item.get("rank", -1)),
             "requested": str(item.get("requested_preflight_mode", "")),
             "effective": str(item.get("effective_preflight_mode", "")),
+            "executor": str(item.get("executor_preflight_mode", "")),
+            "match": bool(item.get("preflight_mode_match", False)),
+            "expected_collectives": int(item.get("expected_preflight_collective_count", 0) or 0),
+            "actual_collectives": int(item.get("preflight_collective_count", 0) or 0),
+            "collective_count_exact": bool(item.get("preflight_collective_count_exact", False)),
         }
         for item in rank_summaries
     ]
@@ -584,8 +600,15 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
             all(
                 str(item.get("requested_preflight_mode", "")) != ""
                 and str(item.get("requested_preflight_mode", "")) == str(item.get("effective_preflight_mode", ""))
+                and str(item.get("effective_preflight_mode", "")) == str(item.get("executor_preflight_mode", ""))
+                and bool(item.get("preflight_mode_match", False))
                 for item in rank_summaries
             )
+        ),
+        "preflight_collective_count_exact": (
+            all(bool(item.get("preflight_collective_count_exact", False)) for item in rank_summaries)
+            if not is_native
+            else True
         ),
         "tokenization_shape_valid": bool(metrics["tokenization_shape_valid_all_ranks"]),
         "hotpath_rank_aggregate_available": bool(hotpath_counts.get("available", False)) if not is_native else True,

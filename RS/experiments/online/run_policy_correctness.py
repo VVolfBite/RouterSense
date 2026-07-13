@@ -319,6 +319,13 @@ def main(argv: list[str] | None = None) -> int:
         collective_count = 0
         batch_isend_irecv_count = 0
         preflight_collective_count = 0
+        expected_preflight_collective_count = 0
+        preflight_collective_payload_bytes = 0
+        preflight_mode_match = True
+        executor_preflight_modes: set[str] = set()
+        preflight_collective_types: dict[str, int] = {}
+        preflight_timing_us: dict[str, float] = {}
+        preflight_by_layer_phase: list[dict[str, Any]] = []
         all_work_completed = True
         timeout_observed = False
         first_transport_submit_ns = 0
@@ -350,6 +357,36 @@ def main(argv: list[str] | None = None) -> int:
             collective_count += int(phase_metrics.get("collective_count", 0) or 0)
             batch_isend_irecv_count += int(row.get("batch_isend_irecv_call_count", 0) or 0)
             preflight_collective_count += int(row.get("preflight_collective_count", 0) or 0)
+            expected_preflight_collective_count += int(row.get("expected_preflight_collective_count", 0) or 0)
+            preflight_collective_payload_bytes += int(row.get("preflight_payload_bytes", 0) or 0)
+            preflight_mode_match = preflight_mode_match and bool(row.get("preflight_mode_match", True))
+            executor_mode = str(row.get("executor_preflight_mode", "") or "")
+            if executor_mode:
+                executor_preflight_modes.add(executor_mode)
+            for key, value in dict(row.get("preflight_collective_types", {}) or {}).items():
+                preflight_collective_types[str(key)] = int(preflight_collective_types.get(str(key), 0)) + int(value or 0)
+            for key, value in dict(row.get("preflight_timing_us", {}) or {}).items():
+                preflight_timing_us[str(key)] = float(preflight_timing_us.get(str(key), 0.0)) + float(value or 0.0)
+            if int(row.get("preflight_collective_count", 0) or 0) or str(row.get("executor_preflight_mode", "") or ""):
+                preflight_by_layer_phase.append(
+                    {
+                        "layer_name": str(row.get("layer_name", "")),
+                        "layer_id": str(row.get("layer_id", "")),
+                        "forward_epoch": int(row.get("forward_epoch", 0) or 0),
+                        "phase": str(row.get("phase", "")),
+                        "tensor_role": str(row.get("tensor_role", "")),
+                        "requested_preflight_mode": str(row.get("requested_preflight_mode", "")),
+                        "effective_preflight_mode": str(row.get("effective_preflight_mode", "")),
+                        "executor_preflight_mode": str(row.get("executor_preflight_mode", "")),
+                        "preflight_mode_match": bool(row.get("preflight_mode_match", True)),
+                        "preflight_collective_count": int(row.get("preflight_collective_count", 0) or 0),
+                        "expected_preflight_collective_count": int(row.get("expected_preflight_collective_count", 0) or 0),
+                        "preflight_collective_count_exact": bool(row.get("preflight_collective_count_exact", True)),
+                        "preflight_payload_bytes": int(row.get("preflight_payload_bytes", 0) or 0),
+                        "preflight_timing_us": dict(row.get("preflight_timing_us", {}) or {}),
+                        "preflight_collective_types": dict(row.get("preflight_collective_types", {}) or {}),
+                    }
+                )
             all_work_completed = all_work_completed and bool(row.get("all_work_completed", True))
             timeout_observed = timeout_observed or bool(row.get("timeout", False))
             submit_ns = int(row.get("first_transport_submit_ns", 0) or 0)
@@ -387,6 +424,14 @@ def main(argv: list[str] | None = None) -> int:
             "collective_count": collective_count,
             "batch_isend_irecv_count": batch_isend_irecv_count,
             "preflight_collective_count": preflight_collective_count,
+            "expected_preflight_collective_count": expected_preflight_collective_count,
+            "preflight_collective_count_exact": bool(preflight_collective_count == expected_preflight_collective_count),
+            "preflight_collective_payload_bytes": int(preflight_collective_payload_bytes),
+            "preflight_collective_types": dict(sorted(preflight_collective_types.items())),
+            "preflight_timing_us": dict(sorted(preflight_timing_us.items())),
+            "executor_preflight_modes": sorted(executor_preflight_modes),
+            "preflight_mode_match": bool(preflight_mode_match),
+            "preflight_by_layer_phase": preflight_by_layer_phase,
             "all_work_completed": all_work_completed,
             "timeout_observed": timeout_observed,
             "first_transport_submit_ns": int(first_transport_submit_ns),
@@ -608,6 +653,20 @@ def main(argv: list[str] | None = None) -> int:
                     "collective_count": int(transport_timing.get("collective_count", 0) or 0),
                     "batch_isend_irecv_count": int(transport_timing.get("batch_isend_irecv_count", 0) or 0),
                     "preflight_collective_count": int(transport_timing.get("preflight_collective_count", 0) or 0),
+                    "expected_preflight_collective_count": int(
+                        transport_timing.get("expected_preflight_collective_count", 0) or 0
+                    ),
+                    "preflight_collective_count_exact": bool(
+                        transport_timing.get("preflight_collective_count_exact", True)
+                    ),
+                    "preflight_collective_payload_bytes": int(
+                        transport_timing.get("preflight_collective_payload_bytes", 0) or 0
+                    ),
+                    "preflight_collective_types": dict(transport_timing.get("preflight_collective_types", {}) or {}),
+                    "preflight_timing_us": dict(transport_timing.get("preflight_timing_us", {}) or {}),
+                    "executor_preflight_modes": list(transport_timing.get("executor_preflight_modes", []) or []),
+                    "preflight_mode_match": bool(transport_timing.get("preflight_mode_match", True)),
+                    "preflight_by_layer_phase": list(transport_timing.get("preflight_by_layer_phase", []) or []),
                     "all_work_completed": bool(transport_timing.get("all_work_completed", True)),
                     "timeout_observed": bool(transport_timing.get("timeout_observed", False)),
                     "first_transport_submit_ns": int(transport_timing.get("first_transport_submit_ns", 0) or 0),

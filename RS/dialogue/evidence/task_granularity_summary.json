@@ -1,22 +1,32 @@
 {
   "routersense_b_core_independent_async": {
-    "phase_rows": 24,
-    "task_count": 288,
-    "wave_count": 48,
-    "wire_bytes": 151142400,
-    "rows": 73728,
-    "small_task_count": 144,
-    "max_task_bytes": 1994752,
-    "median_of_phase_median_task_bytes": 349525.0
+    "task_count": 72,
+    "wave_count": 18,
+    "p2p_op_count": 36,
+    "batch_isend_irecv_count": 126,
+    "small_task_threshold_bytes": 65536,
+    "task_buckets": {
+      "0 bytes": 0,
+      "1-4 KiB": 18,
+      "4-16 KiB": 0,
+      "16-64 KiB": 0,
+      "64-256 KiB": 24,
+      ">256 KiB": 30
+    }
   },
   "routersense_u_core_zero_raw_async": {
-    "phase_rows": 24,
-    "task_count": 288,
-    "wave_count": 48,
-    "wire_bytes": 151142400,
-    "rows": 73728,
-    "small_task_count": 144,
-    "max_task_bytes": 1994752,
-    "median_of_phase_median_task_bytes": 349525.0
+    "task_count": 72,
+    "wave_count": 24,
+    "p2p_op_count": 36,
+    "batch_isend_irecv_count": 126,
+    "small_task_threshold_bytes": 65536,
+    "task_buckets": {
+      "0 bytes": 0,
+      "1-4 KiB": 18,
+      "4-16 KiB": 0,
+      "16-64 KiB": 0,
+      "64-256 KiB": 24,
+      ">256 KiB": 30
+    }
   }
 }

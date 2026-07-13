@@ -1,12 +1,20 @@
 {
-  "milestone": "M-RUNTIME-TIMELINE-GPU",
-  "starting_sha": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
-  "current_sha": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
-  "runner_status": "executed",
-  "final_status": "RUNTIME_TIMELINE_GPU_CAPTURED",
+  "milestone": "M-RUNTIME-DIAG-GPU1-TEMP",
+  "starting_sha": "235fa5a78652afbb0fc84da677e837118b3b414c",
+  "final_sha": "pending",
+  "branch": "main",
   "gpu_available": true,
-  "strategies": [
-    "routersense_b_core_independent_async",
-    "routersense_u_core_zero_raw_async"
-  ]
+  "completed": [
+    "4GPU diagnostic run executed",
+    "compact preflight matched executor mode",
+    "selected layer scope stayed at [0,1]",
+    "exact selected hook counts held",
+    "raw-U upper bound held",
+    "timeline evidence collected"
+  ],
+  "remaining": [
+    "review selected-window attribution and rank-skew details",
+    "decide whether another timeline run is needed"
+  ],
+  "final_status": "GPU_DIAG_TEMPOARY_REPORT_STAGED"
 }

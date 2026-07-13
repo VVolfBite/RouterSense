@@ -1,13 +1,10 @@
 {
-  "timestamp_utc": "2026-07-13T06:34:50Z",
-  "hostname": "autodl-container-43df4dbbb8-b31320c7",
-  "commit": "29f88e7d8018102cb73a7cc84078a07e1b9757e5",
-  "runner_status": "executed",
-  "config": "outputs/tuning/runtime_timeline_gpu/input_config.yaml",
-  "output_dir": "outputs/tuning/runtime_timeline_gpu",
   "gpu_count": 4,
   "gpu_name": "NVIDIA GeForce RTX 4090 D",
-  "profile": "timeline_light",
-  "preflight_mode": "compact",
-  "world_size": 4
+  "driver_version": "570.124.04",
+  "torch_version": "2.8.0+cu128",
+  "cuda_available": true,
+  "python_version": "3.12.3",
+  "hostname": "autodl-container-43df4dbbb8-b31320c7",
+  "commit": "235fa5a78652afbb0fc84da677e837118b3b414c"
 }

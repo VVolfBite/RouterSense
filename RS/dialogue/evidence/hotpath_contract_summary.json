@@ -1,72 +1,44 @@
 {
-  "routersense_b_core_independent_async": {
-    "selected_p0_hook_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "selected_p0_hook_count_all_rank_sum": 16,
-    "selected_p1_hook_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "selected_p1_hook_count_all_rank_sum": 16,
-    "prediction_source_p0_hook_count_all_rank_sum": 0,
-    "none_heavy_hook_count_all_rank_sum": 0,
-    "raw_u_build_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "raw_u_build_count_all_rank_sum": 16,
-    "raw_u_build_count_all_rank_valid": null,
-    "raw_u_build_count_by_layer_per_rank_valid": null,
-    "hotpath_exact_count_eligible": true,
-    "hotpath_eligible": true,
-    "fallback_count": 0,
-    "timeout_count": 0,
-    "all_work_completed": true,
-    "requested_preflight_mode": "compact",
-    "effective_preflight_mode": "compact",
-    "tokenization_shape_valid_all_ranks": true
+  "selected_layer_ids": [0, 1],
+  "none_layer_count": 14,
+  "tokenization": {
+    "actual_batch_rows": 8,
+    "actual_seq_len": 16,
+    "total_token_slots": 128,
+    "valid_token_count": 72,
+    "padding_token_count": 56,
+    "tokenization_shape_valid": true
   },
-  "routersense_u_core_zero_raw_async": {
-    "selected_p0_hook_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "selected_p0_hook_count_all_rank_sum": 16,
-    "selected_p1_hook_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "selected_p1_hook_count_all_rank_sum": 16,
-    "prediction_source_p0_hook_count_all_rank_sum": 0,
-    "none_heavy_hook_count_all_rank_sum": 0,
-    "raw_u_build_count_per_rank": [
-      4,
-      4,
-      4,
-      4
-    ],
-    "raw_u_build_count_all_rank_sum": 16,
-    "raw_u_build_count_all_rank_valid": true,
-    "raw_u_build_count_by_layer_per_rank_valid": true,
-    "hotpath_exact_count_eligible": true,
-    "hotpath_eligible": true,
-    "fallback_count": 0,
-    "timeout_count": 0,
-    "all_work_completed": true,
+  "preflight": {
     "requested_preflight_mode": "compact",
     "effective_preflight_mode": "compact",
-    "tokenization_shape_valid_all_ranks": true
+    "executor_preflight_mode": "compact",
+    "preflight_mode_match": true,
+    "preflight_collective_count_per_rank": 4,
+    "preflight_collective_count_all_rank_sum": 16,
+    "expected_preflight_collective_count_per_rank": 4,
+    "expected_preflight_collective_count_all_rank_sum": 16,
+    "preflight_collective_count_exact": true
+  },
+  "selected_hooks": {
+    "selected_p0_hook_count_per_rank": 4,
+    "selected_p1_hook_count_per_rank": 4,
+    "selected_p0_hook_count_all_rank_sum": 16,
+    "selected_p1_hook_count_all_rank_sum": 16
+  },
+  "raw_u_contract": {
+    "raw_u_build_count_per_rank": 4,
+    "raw_u_build_count_all_rank_sum": 16,
+    "raw_u_build_count_upper_bound_per_rank": 4,
+    "raw_u_build_count_upper_bound_all_rank": 16
+  },
+  "prediction": {
+    "prediction_source_p0_hook_count_all_rank_sum": 0,
+    "paired_b_build_count_all_rank_sum": 0,
+    "predict_count_all_rank_sum": 0
+  },
+  "rank3_observation": {
+    "forward_us": 220341.438,
+    "inter_phase_gap_us": 9799.2
   }
 }

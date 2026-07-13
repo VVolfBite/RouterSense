@@ -1,55 +1,933 @@
-diff --git a/RS/src/rs/core/experiment_config.py b/RS/src/rs/core/experiment_config.py
-index 4780983..2f0facf 100644
---- a/RS/src/rs/core/experiment_config.py
-+++ b/RS/src/rs/core/experiment_config.py
-@@ -18,7 +18,7 @@ SUPPORTED_RUN_KINDS = {
-     "online_policy_correctness",
- }
-
--SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "execution", "debug"}
-+SUPPORTED_OBSERVATION_PROFILES = {"minimal", "perf", "timeline_light", "execution", "debug"}
- SUPPORTED_CONTROL_MODES = {"none", "default_continue", "sync_before_phase"}
- SUPPORTED_EXECUTION_MODES = {"native_passthrough", "phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"}
- SUPPORTED_ONLINE_PHASE_POLICIES = {
-diff --git a/RS/tests/contract/test_runtime_timeline_cpu.py b/RS/tests/contract/test_runtime_timeline_cpu.py
-index 2321c80..f0f42a3 100644
---- a/RS/tests/contract/test_runtime_timeline_cpu.py
-+++ b/RS/tests/contract/test_runtime_timeline_cpu.py
-@@ -5,6 +5,8 @@ from pathlib import Path
- import pytest
- import yaml
-
-+from experiments.distributed._gpu_runner_common import build_policy_correctness_config
-+from rs.core.experiment_config import load_run_config
- from rs.runtime.online.megatron_ep.observation.runtime_timeline import (
-     MEASUREMENT_STATUSES,
-     RuntimePhaseTimeline,
-@@ -183,3 +185,28 @@ def test_gpu_runtime_timeline_config_is_timeline_light_and_perf_safe() -> None:
-         "routersense_b_core_independent_async",
-         "routersense_u_core_zero_raw_async",
-     ]
-+
-+
-+def test_gpu_runtime_timeline_child_config_loads_timeline_light_profile(tmp_path: Path) -> None:
-+    base = yaml.safe_load((REPO_ROOT / "configs/official/gpu_runtime_timeline.yaml").read_text())
-+    base["model"] = {
-+        "model_id": "test-model",
-+        "local_path": "/tmp/test-model",
-+        "trust_remote_code": False,
-+    }
-+    child = build_policy_correctness_config(
-+        base_comparison=base,
-+        strategy_name="routersense_b_core_independent_async",
-+        run_name="timeline_child",
-+        output_root=tmp_path / "out",
-+        profile="timeline_light",
-+        selected_layers="0,1",
-+        save_logits=False,
-+        preflight_mode="compact",
+diff --git a/RS/configs/official/gpu_runtime_diag.yaml b/RS/configs/official/gpu_runtime_diag.yaml
+new file mode 100644
+index 0000000..ebb7b83
+--- /dev/null
++++ b/RS/configs/official/gpu_runtime_diag.yaml
+@@ -0,0 +1,51 @@
++schema_version: 1
++run:
++  kind: gpu_validation
++  name: gpu_runtime_diag
++model:
++  path: configs/components/models/olmoe_1b_7b_instruct.yaml
++topology:
++  world_size: 4
++  component: configs/components/topologies/local_4gpu.yaml
++workload:
++  prompts: configs/components/workloads/comparison_8x16_prompts.json
++  tokenization:
++    padding: max_length
++    truncation: true
++    max_length: 16
++    expected_prompt_count: 8
++    expected_batch_rows: 8
++    expected_seq_len: 16
++runtime:
++  line: async_release
++  invariant_mode: evaluation_strict
++traffic:
++  matrix_unit: rows
++  bucket_mode: dynamic_current
++  bucket_rows: 0
++policy: {}
++prediction: {}
++evaluation:
++  repeats: 1
++  warmup: 1
++  selected_layer_ids:
++    - 0
++    - 1
++suite: runtime_diag
++world_size: 4
++profile: timeline_light
++preflight_mode: compact
++selected_layers: 0,1
++strategies:
++  - routersense_b_core_independent_async
++  - routersense_u_core_zero_raw_async
++diagnostics:
++  preflight_breakdown: true
++  hook_attribution: true
++  control_collective_summary: true
++  rank_critical_components: true
++  task_size_buckets: true
++  expert_boundary: best_effort_non_intrusive
++  profiler: false
++  raw_task_jsonl: false
++  tensor_dump: false
+diff --git a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
+index 9943402..4f2a2af 100644
+--- a/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
++++ b/RS/experiments/distributed/run_gpu_a2_strategy_compare.py
+@@ -519,11 +519,27 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
+     metrics["c2_passed"] = bool(c2_passed)
+     metrics["requested_preflight_mode"] = str(rank0_summary.get("requested_preflight_mode", ""))
+     metrics["effective_preflight_mode"] = str(rank0_summary.get("effective_preflight_mode", ""))
++    metrics["executor_preflight_mode"] = str(rank0_summary.get("executor_preflight_mode", ""))
++    metrics["preflight_mode_match"] = all(bool(item.get("preflight_mode_match", False)) for item in rank_summaries)
++    metrics["preflight_collective_count_exact"] = all(
++        bool(item.get("preflight_collective_count_exact", False)) for item in rank_summaries
 +    )
-+    child_path = tmp_path / "child.yaml"
-+    child_path.write_text(yaml.safe_dump(child, sort_keys=False))
-+    config = load_run_config(config_path=child_path)
-+    assert config.observation.profile == "timeline_light"
-+    assert config.execution.preflight_mode == "compact"
-+    assert config.execution.schedule.selected_layer_ids == ("0", "1")
++    metrics["expected_preflight_collective_count_per_rank"] = [
++        int(item.get("expected_preflight_collective_count", 0) or 0) for item in rank_summaries
++    ]
++    metrics["actual_preflight_collective_count_per_rank"] = [
++        int(item.get("preflight_collective_count", 0) or 0) for item in rank_summaries
++    ]
+     metrics["preflight_mode_per_rank"] = [
+         {
+             "rank": int(item.get("rank", -1)),
+             "requested": str(item.get("requested_preflight_mode", "")),
+             "effective": str(item.get("effective_preflight_mode", "")),
++            "executor": str(item.get("executor_preflight_mode", "")),
++            "match": bool(item.get("preflight_mode_match", False)),
++            "expected_collectives": int(item.get("expected_preflight_collective_count", 0) or 0),
++            "actual_collectives": int(item.get("preflight_collective_count", 0) or 0),
++            "collective_count_exact": bool(item.get("preflight_collective_count_exact", False)),
+         }
+         for item in rank_summaries
+     ]
+@@ -584,9 +600,16 @@ def _build_strategy_result(*, strategy: str, run_dir: Path, summary_payload: dic
+             all(
+                 str(item.get("requested_preflight_mode", "")) != ""
+                 and str(item.get("requested_preflight_mode", "")) == str(item.get("effective_preflight_mode", ""))
++                and str(item.get("effective_preflight_mode", "")) == str(item.get("executor_preflight_mode", ""))
++                and bool(item.get("preflight_mode_match", False))
+                 for item in rank_summaries
+             )
+         ),
++        "preflight_collective_count_exact": (
++            all(bool(item.get("preflight_collective_count_exact", False)) for item in rank_summaries)
++            if not is_native
++            else True
++        ),
+         "tokenization_shape_valid": bool(metrics["tokenization_shape_valid_all_ranks"]),
+         "hotpath_rank_aggregate_available": bool(hotpath_counts.get("available", False)) if not is_native else True,
+         "c2_passed": bool(c2_passed),
+diff --git a/RS/experiments/online/run_policy_correctness.py b/RS/experiments/online/run_policy_correctness.py
+index c4aedf6..1fd225a 100644
+--- a/RS/experiments/online/run_policy_correctness.py
++++ b/RS/experiments/online/run_policy_correctness.py
+@@ -319,6 +319,13 @@ def main(argv: list[str] | None = None) -> int:
+         collective_count = 0
+         batch_isend_irecv_count = 0
+         preflight_collective_count = 0
++        expected_preflight_collective_count = 0
++        preflight_collective_payload_bytes = 0
++        preflight_mode_match = True
++        executor_preflight_modes: set[str] = set()
++        preflight_collective_types: dict[str, int] = {}
++        preflight_timing_us: dict[str, float] = {}
++        preflight_by_layer_phase: list[dict[str, Any]] = []
+         all_work_completed = True
+         timeout_observed = False
+         first_transport_submit_ns = 0
+@@ -350,6 +357,36 @@ def main(argv: list[str] | None = None) -> int:
+             collective_count += int(phase_metrics.get("collective_count", 0) or 0)
+             batch_isend_irecv_count += int(row.get("batch_isend_irecv_call_count", 0) or 0)
+             preflight_collective_count += int(row.get("preflight_collective_count", 0) or 0)
++            expected_preflight_collective_count += int(row.get("expected_preflight_collective_count", 0) or 0)
++            preflight_collective_payload_bytes += int(row.get("preflight_payload_bytes", 0) or 0)
++            preflight_mode_match = preflight_mode_match and bool(row.get("preflight_mode_match", True))
++            executor_mode = str(row.get("executor_preflight_mode", "") or "")
++            if executor_mode:
++                executor_preflight_modes.add(executor_mode)
++            for key, value in dict(row.get("preflight_collective_types", {}) or {}).items():
++                preflight_collective_types[str(key)] = int(preflight_collective_types.get(str(key), 0)) + int(value or 0)
++            for key, value in dict(row.get("preflight_timing_us", {}) or {}).items():
++                preflight_timing_us[str(key)] = float(preflight_timing_us.get(str(key), 0.0)) + float(value or 0.0)
++            if int(row.get("preflight_collective_count", 0) or 0) or str(row.get("executor_preflight_mode", "") or ""):
++                preflight_by_layer_phase.append(
++                    {
++                        "layer_name": str(row.get("layer_name", "")),
++                        "layer_id": str(row.get("layer_id", "")),
++                        "forward_epoch": int(row.get("forward_epoch", 0) or 0),
++                        "phase": str(row.get("phase", "")),
++                        "tensor_role": str(row.get("tensor_role", "")),
++                        "requested_preflight_mode": str(row.get("requested_preflight_mode", "")),
++                        "effective_preflight_mode": str(row.get("effective_preflight_mode", "")),
++                        "executor_preflight_mode": str(row.get("executor_preflight_mode", "")),
++                        "preflight_mode_match": bool(row.get("preflight_mode_match", True)),
++                        "preflight_collective_count": int(row.get("preflight_collective_count", 0) or 0),
++                        "expected_preflight_collective_count": int(row.get("expected_preflight_collective_count", 0) or 0),
++                        "preflight_collective_count_exact": bool(row.get("preflight_collective_count_exact", True)),
++                        "preflight_payload_bytes": int(row.get("preflight_payload_bytes", 0) or 0),
++                        "preflight_timing_us": dict(row.get("preflight_timing_us", {}) or {}),
++                        "preflight_collective_types": dict(row.get("preflight_collective_types", {}) or {}),
++                    }
++                )
+             all_work_completed = all_work_completed and bool(row.get("all_work_completed", True))
+             timeout_observed = timeout_observed or bool(row.get("timeout", False))
+             submit_ns = int(row.get("first_transport_submit_ns", 0) or 0)
+@@ -387,6 +424,14 @@ def main(argv: list[str] | None = None) -> int:
+             "collective_count": collective_count,
+             "batch_isend_irecv_count": batch_isend_irecv_count,
+             "preflight_collective_count": preflight_collective_count,
++            "expected_preflight_collective_count": expected_preflight_collective_count,
++            "preflight_collective_count_exact": bool(preflight_collective_count == expected_preflight_collective_count),
++            "preflight_collective_payload_bytes": int(preflight_collective_payload_bytes),
++            "preflight_collective_types": dict(sorted(preflight_collective_types.items())),
++            "preflight_timing_us": dict(sorted(preflight_timing_us.items())),
++            "executor_preflight_modes": sorted(executor_preflight_modes),
++            "preflight_mode_match": bool(preflight_mode_match),
++            "preflight_by_layer_phase": preflight_by_layer_phase,
+             "all_work_completed": all_work_completed,
+             "timeout_observed": timeout_observed,
+             "first_transport_submit_ns": int(first_transport_submit_ns),
+@@ -608,6 +653,20 @@ def main(argv: list[str] | None = None) -> int:
+                     "collective_count": int(transport_timing.get("collective_count", 0) or 0),
+                     "batch_isend_irecv_count": int(transport_timing.get("batch_isend_irecv_count", 0) or 0),
+                     "preflight_collective_count": int(transport_timing.get("preflight_collective_count", 0) or 0),
++                    "expected_preflight_collective_count": int(
++                        transport_timing.get("expected_preflight_collective_count", 0) or 0
++                    ),
++                    "preflight_collective_count_exact": bool(
++                        transport_timing.get("preflight_collective_count_exact", True)
++                    ),
++                    "preflight_collective_payload_bytes": int(
++                        transport_timing.get("preflight_collective_payload_bytes", 0) or 0
++                    ),
++                    "preflight_collective_types": dict(transport_timing.get("preflight_collective_types", {}) or {}),
++                    "preflight_timing_us": dict(transport_timing.get("preflight_timing_us", {}) or {}),
++                    "executor_preflight_modes": list(transport_timing.get("executor_preflight_modes", []) or []),
++                    "preflight_mode_match": bool(transport_timing.get("preflight_mode_match", True)),
++                    "preflight_by_layer_phase": list(transport_timing.get("preflight_by_layer_phase", []) or []),
+                     "all_work_completed": bool(transport_timing.get("all_work_completed", True)),
+                     "timeout_observed": bool(transport_timing.get("timeout_observed", False)),
+                     "first_transport_submit_ns": int(transport_timing.get("first_transport_submit_ns", 0) or 0),
+diff --git a/RS/experiments/online/support/phase_executor_artifacts.py b/RS/experiments/online/support/phase_executor_artifacts.py
+index 9d5bda2..e681f7c 100644
+--- a/RS/experiments/online/support/phase_executor_artifacts.py
++++ b/RS/experiments/online/support/phase_executor_artifacts.py
+@@ -195,6 +195,47 @@ def write_rank_artifacts(
+         timeout_count = sum(int(bool(row.get("timeout", False))) for row in result_rows)
+         all_work_completed = all(bool(row.get("all_work_completed", True)) for row in result_rows) if result_rows else True
+         preflight_collective_count = sum(int(row.get("preflight_collective_count", 0) or 0) for row in result_rows)
++        expected_preflight_collective_count = sum(
++            int(row.get("expected_preflight_collective_count", 0) or 0) for row in result_rows
++        )
++        executor_preflight_modes = sorted(
++            {
++                str(row.get("executor_preflight_mode", ""))
++                for row in result_rows
++                if str(row.get("executor_preflight_mode", ""))
++            }
++        )
++        collective_executor_preflight_modes = sorted(
++            {
++                str(row.get("executor_preflight_mode", ""))
++                for row in result_rows
++                if int(row.get("preflight_collective_count", 0) or 0) > 0
++                and str(row.get("executor_preflight_mode", "")) not in {"", "local_only"}
++            }
++        )
++        preflight_mode_match = all(bool(row.get("preflight_mode_match", True)) for row in result_rows)
++        preflight_collective_count_exact = all(
++            bool(row.get("preflight_collective_count_exact", True)) for row in result_rows
++        )
++        preflight_by_layer_phase = [
++            {
++                "layer_name": str(row.get("layer_name", "")),
++                "layer_id": str(row.get("layer_id", "")),
++                "forward_epoch": int(row.get("forward_epoch", 0) or 0),
++                "phase": str(row.get("phase", "")),
++                "tensor_role": str(row.get("tensor_role", "")),
++                "executor_preflight_mode": str(row.get("executor_preflight_mode", "")),
++                "preflight_mode_match": bool(row.get("preflight_mode_match", True)),
++                "preflight_collective_count": int(row.get("preflight_collective_count", 0) or 0),
++                "expected_preflight_collective_count": int(row.get("expected_preflight_collective_count", 0) or 0),
++                "preflight_collective_count_exact": bool(row.get("preflight_collective_count_exact", True)),
++                "preflight_timing_us": dict(row.get("preflight_timing_us", {}) or {}),
++                "preflight_collective_types": dict(row.get("preflight_collective_types", {}) or {}),
++                "preflight_payload_bytes": int(row.get("preflight_payload_bytes", 0) or 0),
++            }
++            for row in result_rows
++            if int(row.get("preflight_collective_count", 0) or 0) or str(row.get("executor_preflight_mode", ""))
++        ]
+         if adapter is not None:
+             rank_summary.update(
+                 {
+@@ -212,6 +253,15 @@ def write_rank_artifacts(
+                 "timeout_count": int(timeout_count),
+                 "all_work_completed": bool(all_work_completed),
+                 "preflight_collective_count": int(preflight_collective_count),
++                "expected_preflight_collective_count": int(expected_preflight_collective_count),
++                "preflight_collective_count_exact": bool(preflight_collective_count_exact),
++                "executor_preflight_modes": executor_preflight_modes,
++                "executor_collective_preflight_modes": collective_executor_preflight_modes,
++                "executor_preflight_mode": collective_executor_preflight_modes[0]
++                if len(collective_executor_preflight_modes) == 1
++                else "",
++                "preflight_mode_match": bool(preflight_mode_match),
++                "preflight_by_layer_phase": preflight_by_layer_phase,
+             }
+         )
+         write_jsonl(run_dir / f"rank{rank}_transport_execution.jsonl", transport_results)
+diff --git a/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py b/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
+index 654a50f..748e626 100644
+--- a/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
++++ b/RS/src/rs/runtime/online/megatron_ep/execution/async_p2p_executor.py
+@@ -39,6 +39,10 @@ class AsyncPhasePreflightResult:
+     recv_digest: int
+     collective_count: int
+     preflight_mode: str
++    expected_collective_count: int = 0
++    collective_types: dict[str, int] | None = None
++    payload_bytes: int = 0
++    timing_us: dict[str, float] | None = None
+
+
+ def _dtype_code(dtype: str) -> int:
+@@ -192,6 +196,8 @@ def validate_async_phase_preflight(
+     rank_context: dict[str, int],
+     mode: str = "full",
+ ) -> AsyncPhasePreflightResult:
++    preflight_enter_ns = time.perf_counter_ns()
++    local_validation_start_ns = preflight_enter_ns
+     if str(mode) == "local_only":
+         rank = int(rank_context["global_rank"])
+         expected_rows = int(sum(context.recv_splits))
+@@ -236,6 +242,10 @@ def validate_async_phase_preflight(
+                 break
+         if not local_reason and coverage and any(value != 1 for value in coverage):
+             local_reason = "recv_coverage_invalid"
++        local_validation_end_ns = time.perf_counter_ns()
++        result_check_start_ns = local_validation_end_ns
++        result_check_end_ns = time.perf_counter_ns()
++        preflight_exit_ns = result_check_end_ns
+         return AsyncPhasePreflightResult(
+             ok=bool(not local_reason),
+             all_ranks_ok=bool(not local_reason),
+@@ -246,6 +256,18 @@ def validate_async_phase_preflight(
+             recv_digest=_digest_sequence_items(local_recv_items),
+             collective_count=0,
+             preflight_mode="local_only",
++            expected_collective_count=0,
++            collective_types={"all_gather": 0, "all_reduce": 0, "broadcast": 0, "barrier": 0},
++            payload_bytes=0,
++            timing_us={
++                "preflight_total_us": float((preflight_exit_ns - preflight_enter_ns) / 1000.0),
++                "preflight_local_validation_us": float((local_validation_end_ns - local_validation_start_ns) / 1000.0),
++                "preflight_signature_build_us": 0.0,
++                "preflight_collective_submit_us": 0.0,
++                "preflight_collective_wait_us": 0.0,
++                "preflight_result_check_us": float((result_check_end_ns - result_check_start_ns) / 1000.0),
++                "preflight_other_us": 0.0,
++            },
+         )
+     world_group = process_group if process_group is not None else dist.group.WORLD
+     rank = int(rank_context["global_rank"])
+@@ -295,7 +317,9 @@ def validate_async_phase_preflight(
+             break
+     if not local_reason and coverage and any(value != 1 for value in coverage):
+         local_reason = "recv_coverage_invalid"
++    local_validation_end_ns = time.perf_counter_ns()
+
++    signature_build_start_ns = time.perf_counter_ns()
+     device = (
+         torch.device("cuda", rank_context["local_rank"])
+         if torch.cuda.is_available() and int(rank_context["local_rank"]) < int(torch.cuda.device_count())
+@@ -357,12 +381,21 @@ def validate_async_phase_preflight(
+         role_digest_send[index] = int(_digest_sequence_items(items))
+     for index, items in per_pair_recv_roles.items():
+         role_digest_recv[index] = int(_digest_sequence_items(items))
++    signature_build_end_ns = time.perf_counter_ns()
+
+     local_ok = 1 if not local_reason else 0
+     local_flags = torch.tensor([local_ok], dtype=torch.long, device=device)
+     gathered_flags = [torch.empty_like(local_flags) for _ in range(world_size)]
++    collective_submit_us = 0.0
++    collective_wait_us = 0.0
++    collective_types = {"all_gather": 0, "all_reduce": 0, "broadcast": 0, "barrier": 0}
++    submit_start_ns = time.perf_counter_ns()
+     dist.all_gather(gathered_flags, local_flags, group=world_group)
++    submit_end_ns = time.perf_counter_ns()
++    collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
++    collective_types["all_gather"] += 1
+     all_ranks_ok = all(int(item.item()) == 1 for item in gathered_flags)
++    payload_bytes = int(local_flags.numel() * local_flags.element_size())
+
+     if all_ranks_ok:
+         if str(mode) == "compact":
+@@ -380,7 +413,12 @@ def validate_async_phase_preflight(
+                 dim=0,
+             )
+             gathered = [torch.empty_like(packed) for _ in range(world_size)]
++            payload_bytes += int(packed.numel() * packed.element_size())
++            submit_start_ns = time.perf_counter_ns()
+             dist.all_gather(gathered, packed, group=world_group)
++            submit_end_ns = time.perf_counter_ns()
++            collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
++            collective_types["all_gather"] += 1
+             collective_count += 1
+             stacked = torch.stack(gathered, dim=0)
+             send_count_sum = stacked[:, 0, :].sum(dim=0)
+@@ -400,14 +438,22 @@ def validate_async_phase_preflight(
+             recv_digest_g = [torch.empty_like(recv_digest) for _ in range(world_size)]
+             role_digest_send_g = [torch.empty_like(role_digest_send) for _ in range(world_size)]
+             role_digest_recv_g = [torch.empty_like(role_digest_recv) for _ in range(world_size)]
+-            dist.all_gather(send_count_g, send_count, group=world_group)
+-            dist.all_gather(recv_count_g, recv_count, group=world_group)
+-            dist.all_gather(send_rows_g, send_rows, group=world_group)
+-            dist.all_gather(recv_rows_g, recv_rows, group=world_group)
+-            dist.all_gather(send_digest_g, send_digest, group=world_group)
+-            dist.all_gather(recv_digest_g, recv_digest, group=world_group)
+-            dist.all_gather(role_digest_send_g, role_digest_send, group=world_group)
+-            dist.all_gather(role_digest_recv_g, role_digest_recv, group=world_group)
++            for gathered, tensor in (
++                (send_count_g, send_count),
++                (recv_count_g, recv_count),
++                (send_rows_g, send_rows),
++                (recv_rows_g, recv_rows),
++                (send_digest_g, send_digest),
++                (recv_digest_g, recv_digest),
++                (role_digest_send_g, role_digest_send),
++                (role_digest_recv_g, role_digest_recv),
++            ):
++                payload_bytes += int(tensor.numel() * tensor.element_size())
++                submit_start_ns = time.perf_counter_ns()
++                dist.all_gather(gathered, tensor, group=world_group)
++                submit_end_ns = time.perf_counter_ns()
++                collective_submit_us += float((submit_end_ns - submit_start_ns) / 1000.0)
++                collective_types["all_gather"] += 1
+             collective_count += 8
+             send_count_sum = torch.stack(send_count_g).sum(dim=0)
+             recv_count_sum = torch.stack(recv_count_g).sum(dim=0)
+@@ -429,6 +475,14 @@ def validate_async_phase_preflight(
+         elif not torch.equal(role_send_sum, role_recv_sum):
+             local_reason = "send_recv_role_shape_mismatch"
+             all_ranks_ok = False
++    result_check_end_ns = time.perf_counter_ns()
++    preflight_exit_ns = result_check_end_ns
++    total_us = float((preflight_exit_ns - preflight_enter_ns) / 1000.0)
++    local_us = float((local_validation_end_ns - local_validation_start_ns) / 1000.0)
++    signature_us = float((signature_build_end_ns - signature_build_start_ns) / 1000.0)
++    result_us = max(0.0, float((result_check_end_ns - signature_build_end_ns) / 1000.0) - collective_submit_us)
++    known_us = local_us + signature_us + collective_submit_us + collective_wait_us + result_us
++    expected_collective_count = 2 if str(mode) == "compact" else 9
+
+     return AsyncPhasePreflightResult(
+         ok=bool(local_ok),
+@@ -440,6 +494,18 @@ def validate_async_phase_preflight(
+         recv_digest=_digest_sequence_items(local_recv_items),
+         collective_count=int(collective_count),
+         preflight_mode=str(mode),
++        expected_collective_count=int(expected_collective_count),
++        collective_types=collective_types,
++        payload_bytes=int(payload_bytes),
++        timing_us={
++            "preflight_total_us": total_us,
++            "preflight_local_validation_us": local_us,
++            "preflight_signature_build_us": signature_us,
++            "preflight_collective_submit_us": float(collective_submit_us),
++            "preflight_collective_wait_us": float(collective_wait_us),
++            "preflight_result_check_us": float(result_us),
++            "preflight_other_us": max(0.0, total_us - known_us),
++        },
+     )
+
+
+diff --git a/RS/src/rs/runtime/online/megatron_ep/execution/transport_adapter.py b/RS/src/rs/runtime/online/megatron_ep/execution/transport_adapter.py
+index 824965a..dd2b47a 100644
+--- a/RS/src/rs/runtime/online/megatron_ep/execution/transport_adapter.py
++++ b/RS/src/rs/runtime/online/megatron_ep/execution/transport_adapter.py
+@@ -58,8 +58,15 @@ class MegatronPhaseTransportAdapter:
+         self.local_copy_task_count = 0
+         self.local_copy_row_count = 0
+         self.phase_sync_fallback_count = 0
++        self.effective_preflight_mode = "full"
+         self._async_phase_sessions: dict[tuple[str, str], dict[str, Any]] = {}
+
++    def set_effective_preflight_mode(self, mode: str) -> None:
++        normalized = str(mode or "full")
++        if normalized not in {"full", "compact"}:
++            raise HostAPIDriftError(f"unsupported effective preflight mode {normalized!r}")
++        self.effective_preflight_mode = normalized
++
+     def activate(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
+         expected_roles = ("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",)
+         shared_session = None
+@@ -132,6 +139,14 @@ class MegatronPhaseTransportAdapter:
+             )
+         if str(state.plan.execution_mode) == "joint_window_async_p2p":
+             should_collective_preflight = bool(state.phase == "P0" and tensor_role == "hidden_states")
++            effective_preflight_mode = str(getattr(self, "effective_preflight_mode", "full") or "full")
++            plan_preflight_mode = str((state.plan.metrics or {}).get("preflight_mode", "") or "")
++            executor_preflight_mode = effective_preflight_mode
++            if plan_preflight_mode and plan_preflight_mode != effective_preflight_mode:
++                raise HostAPIDriftError(
++                    f"preflight mode mismatch for {state.layer_name} {state.phase}: "
++                    f"plan={plan_preflight_mode!r} effective={effective_preflight_mode!r}"
++                )
+             if should_collective_preflight:
+                 preflight = validate_async_phase_preflight(
+                     context=state.context,
+@@ -142,7 +157,7 @@ class MegatronPhaseTransportAdapter:
+                         "global_rank": int(state.context.global_rank),
+                         "local_rank": int(state.context.local_rank),
+                     },
+-                    mode=str((state.plan.metrics or {}).get("preflight_mode", "full")),
++                    mode=executor_preflight_mode,
+                 )
+             else:
+                 preflight = replace(
+@@ -203,6 +218,17 @@ class MegatronPhaseTransportAdapter:
+                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
+                         "preflight_collective_count": int(preflight.collective_count),
+                         "preflight_mode": str(preflight.preflight_mode),
++                        "requested_preflight_mode": effective_preflight_mode,
++                        "effective_preflight_mode": effective_preflight_mode,
++                        "executor_preflight_mode": str(preflight.preflight_mode),
++                        "preflight_mode_match": bool(str(preflight.preflight_mode) == effective_preflight_mode),
++                        "expected_preflight_collective_count": int(preflight.expected_collective_count),
++                        "preflight_collective_count_exact": bool(
++                            int(preflight.collective_count) == int(preflight.expected_collective_count)
++                        ),
++                        "preflight_collective_types": dict(preflight.collective_types or {}),
++                        "preflight_payload_bytes": int(preflight.payload_bytes),
++                        "preflight_timing_us": dict(preflight.timing_us or {}),
+                     }
+                 ]
+                 self.batch_isend_irecv_call_count += int(facade_result.batch_isend_irecv_call_count)
+@@ -249,8 +275,21 @@ class MegatronPhaseTransportAdapter:
+                 execution_entries.append(
+                     {
+                         "record_type": "async_preflight_summary",
++                        "requested_preflight_mode": effective_preflight_mode,
++                        "effective_preflight_mode": effective_preflight_mode,
++                        "executor_preflight_mode": str(preflight.preflight_mode),
++                        "preflight_mode_match": bool(str(preflight.preflight_mode) == effective_preflight_mode)
++                        if should_collective_preflight
++                        else True,
+                         "preflight_mode": str(preflight.preflight_mode),
+                         "preflight_collective_count": int(preflight.collective_count),
++                        "expected_preflight_collective_count": int(preflight.expected_collective_count),
++                        "preflight_collective_count_exact": bool(
++                            int(preflight.collective_count) == int(preflight.expected_collective_count)
++                        ),
++                        "preflight_collective_types": dict(preflight.collective_types or {}),
++                        "preflight_payload_bytes": int(preflight.payload_bytes),
++                        "preflight_timing_us": dict(preflight.timing_us or {}),
+                         "all_ranks_preflight_ok": bool(preflight.all_ranks_ok),
+                         "shared_session_suffix_splice_count": int((state.shared_session or {}).get("suffix_splice_count", 0) or 0),
+                     }
+@@ -323,6 +362,32 @@ class MegatronPhaseTransportAdapter:
+                 "timeout": bool(facade_result.timeout),
+                 "preflight_collective_count": int(facade_result.preflight_collective_count),
+                 "preflight_passed": bool(facade_result.preflight_passed),
++                "requested_preflight_mode": str(getattr(self, "effective_preflight_mode", "full") or "full"),
++                "effective_preflight_mode": str(getattr(self, "effective_preflight_mode", "full") or "full"),
++                "executor_preflight_mode": str(preflight.preflight_mode) if str(state.plan.execution_mode) == "joint_window_async_p2p" else "",
++                "preflight_mode_match": bool(
++                    str(preflight.preflight_mode) == str(getattr(self, "effective_preflight_mode", "full") or "full")
++                )
++                if str(state.plan.execution_mode) == "joint_window_async_p2p" and should_collective_preflight
++                else True,
++                "expected_preflight_collective_count": int(getattr(preflight, "expected_collective_count", 0))
++                if str(state.plan.execution_mode) == "joint_window_async_p2p"
++                else 0,
++                "preflight_collective_count_exact": bool(
++                    int(facade_result.preflight_collective_count)
++                    == int(getattr(preflight, "expected_collective_count", 0))
++                )
++                if str(state.plan.execution_mode) == "joint_window_async_p2p" and should_collective_preflight
++                else True,
++                "preflight_collective_types": dict(getattr(preflight, "collective_types", {}) or {})
++                if str(state.plan.execution_mode) == "joint_window_async_p2p"
++                else {},
++                "preflight_payload_bytes": int(getattr(preflight, "payload_bytes", 0) or 0)
++                if str(state.plan.execution_mode) == "joint_window_async_p2p"
++                else 0,
++                "preflight_timing_us": dict(getattr(preflight, "timing_us", {}) or {})
++                if str(state.plan.execution_mode) == "joint_window_async_p2p"
++                else {},
+                 "all_work_completed": bool(facade_result.all_work_completed),
+                 "first_transport_submit_ns": int(facade_result.first_transport_submit_ns),
+                 "last_transport_complete_ns": int(facade_result.last_transport_complete_ns),
+diff --git a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
+index 63da221..47f1d5e 100644
+--- a/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
++++ b/RS/src/rs/runtime/online/megatron_ep/lifecycle.py
+@@ -483,6 +483,16 @@ class RouterSenseInjectionRuntime:
+
+     def _activate_transport(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
+         start_ns = time.monotonic_ns()
++        effective_preflight_mode = str(getattr(self.config, "preflight_mode", "full") or "full")
++        plan_metrics = dict(plan.metrics or {})
++        plan_preflight_mode = str(plan_metrics.get("preflight_mode", "") or "")
++        if plan_preflight_mode and plan_preflight_mode != effective_preflight_mode:
++            raise RuntimeError(
++                f"preflight mode mismatch before transport activation: "
++                f"plan={plan_preflight_mode!r} effective={effective_preflight_mode!r}"
++            )
++        if plan_preflight_mode != effective_preflight_mode:
++            plan = replace(plan, metrics={**plan_metrics, "preflight_mode": effective_preflight_mode})
+         if self._layer_selected(layer_name):
+             self._runtime_state.metrics.selected_transport_execution_count = int(
+                 self._runtime_state.metrics.selected_transport_execution_count
+@@ -495,6 +505,8 @@ class RouterSenseInjectionRuntime:
+         }
+         adapter = getattr(self, "transport_adapter", None)
+         if adapter is not None:
++            if hasattr(adapter, "set_effective_preflight_mode"):
++                adapter.set_effective_preflight_mode(effective_preflight_mode)
+             adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
+         end_ns = time.monotonic_ns()
+         self._record_planning_timing(
+diff --git a/RS/src/rs/runtime/online/megatron_ep/observation/runtime_diag.py b/RS/src/rs/runtime/online/megatron_ep/observation/runtime_diag.py
+new file mode 100644
+index 0000000..95ecc35
+--- /dev/null
++++ b/RS/src/rs/runtime/online/megatron_ep/observation/runtime_diag.py
+@@ -0,0 +1,187 @@
++from __future__ import annotations
++
++import statistics
++from typing import Any, Iterable, Mapping
++
++
++TASK_SIZE_BUCKETS = (
++    ("0 bytes", 0, 0),
++    ("1-4 KiB", 1, 4 * 1024),
++    ("4-16 KiB", 4 * 1024 + 1, 16 * 1024),
++    ("16-64 KiB", 16 * 1024 + 1, 64 * 1024),
++    ("64-256 KiB", 64 * 1024 + 1, 256 * 1024),
++    (">256 KiB", 256 * 1024 + 1, None),
++)
++
++
++def expected_preflight_collective_count(mode: str) -> int:
++    normalized = str(mode or "full")
++    if normalized == "compact":
++        return 2
++    if normalized == "full":
++        return 9
++    if normalized == "local_only":
++        return 0
++    raise ValueError(f"unsupported preflight mode {mode!r}")
++
++
++def preflight_contract(
++    *,
++    requested_mode: str,
++    effective_mode: str,
++    executor_mode: str,
++    actual_collective_count: int,
++) -> dict[str, Any]:
++    expected = expected_preflight_collective_count(executor_mode)
++    return {
++        "requested_preflight_mode": str(requested_mode),
++        "effective_preflight_mode": str(effective_mode),
++        "executor_preflight_mode": str(executor_mode),
++        "preflight_mode_match": str(requested_mode) == str(effective_mode) == str(executor_mode),
++        "expected_preflight_collective_count": int(expected),
++        "actual_preflight_collective_count": int(actual_collective_count),
++        "preflight_collective_count_exact": int(actual_collective_count) == int(expected),
++    }
++
++
++def hook_attribution(
++    *,
++    hook_total_us: float,
++    components: Mapping[str, float | int | None],
++) -> dict[str, Any]:
++    measured = {str(k): float(v or 0.0) for k, v in components.items()}
++    known = float(sum(measured.values()))
++    unattributed = float(hook_total_us) - known
++    if unattributed < -1e-6:
++        raise ValueError(
++            f"hook attribution is negative; overlapping intervals likely: hook_total={hook_total_us} known={known}"
++        )
++    return {
++        "hook_total_us": float(hook_total_us),
++        "known_component_us": measured,
++        "known_total_us": known,
++        "hook_unattributed_us": max(0.0, unattributed),
++        "hook_unattributed_status": "derived",
++        "hook_explained_ratio": (known / float(hook_total_us)) if float(hook_total_us) > 0 else None,
++        "components_non_overlapping_required": True,
++    }
++
++
++def aggregate_control_collectives(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
++    result: dict[str, dict[str, float | int | bool]] = {}
++    for row in rows:
++        category = str(row.get("category", "other_control_collective"))
++        bucket = result.setdefault(
++            category,
++            {
++                "call_count": 0,
++                "payload_bytes": 0,
++                "submit_us": 0.0,
++                "wait_us": 0.0,
++                "total_us": 0.0,
++                "required_for_correctness": bool(row.get("required_for_correctness", True)),
++            },
++        )
++        bucket["call_count"] = int(bucket["call_count"]) + int(row.get("call_count", 0) or 0)
++        bucket["payload_bytes"] = int(bucket["payload_bytes"]) + int(row.get("payload_bytes", 0) or 0)
++        bucket["submit_us"] = float(bucket["submit_us"]) + float(row.get("submit_us", 0.0) or 0.0)
++        bucket["wait_us"] = float(bucket["wait_us"]) + float(row.get("wait_us", 0.0) or 0.0)
++        bucket["total_us"] = float(bucket["total_us"]) + float(row.get("total_us", 0.0) or 0.0)
++        bucket["required_for_correctness"] = bool(bucket["required_for_correctness"]) and bool(
++            row.get("required_for_correctness", True)
++        )
++    return dict(sorted(result.items()))
++
++
++def critical_rank(records: Iterable[Mapping[str, Any]], metric: str) -> dict[str, Any]:
++    rows = list(records)
++    if not rows:
++        return {"metric": str(metric), "critical_rank": None, "rank3_excess_us": None}
++    values = [(int(row.get("rank", -1)), float(row.get(metric, 0.0) or 0.0)) for row in rows]
++    rank, value = max(values, key=lambda item: item[1])
++    other = [v for r, v in values if r != 3]
++    rank3 = next((v for r, v in values if r == 3), None)
++    return {
++        "metric": str(metric),
++        "critical_rank": int(rank),
++        "critical_value_us": float(value),
++        "rank3_excess_us": (float(rank3) - float(statistics.median(other))) if rank3 is not None and other else None,
++    }
++
++
++def task_size_buckets(tasks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
++    rows = list(tasks)
++    total_tasks = len(rows)
++    total_bytes = sum(int(row.get("byte_count", row.get("wire_bytes", 0)) or 0) for row in rows)
++    buckets: dict[str, dict[str, float | int]] = {
++        label: {"task_count": 0, "total_bytes": 0, "percentage_of_tasks": 0.0, "percentage_of_bytes": 0.0}
++        for label, _, _ in TASK_SIZE_BUCKETS
++    }
++    for row in rows:
++        byte_count = int(row.get("byte_count", row.get("wire_bytes", 0)) or 0)
++        for label, lower, upper in TASK_SIZE_BUCKETS:
++            if byte_count >= lower and (upper is None or byte_count <= upper):
++                buckets[label]["task_count"] = int(buckets[label]["task_count"]) + 1
++                buckets[label]["total_bytes"] = int(buckets[label]["total_bytes"]) + byte_count
++                break
++    for bucket in buckets.values():
++        bucket["percentage_of_tasks"] = (
++            float(bucket["task_count"]) / float(total_tasks) if total_tasks else 0.0
++        )
++        bucket["percentage_of_bytes"] = (
++            float(bucket["total_bytes"]) / float(total_bytes) if total_bytes else 0.0
++        )
++    return {"total_task_count": int(total_tasks), "total_bytes": int(total_bytes), "buckets": buckets}
++
++
++def selected_window_alias(*, first_ns: int, last_ns: int) -> dict[str, Any]:
++    value = float((int(last_ns) - int(first_ns)) / 1000.0) if int(first_ns) > 0 and int(last_ns) >= int(first_ns) else None
++    return {
++        "selected_window_span_us": value,
++        "communication_span_us": value,
++        "communication_span_us_deprecated": True,
++        "definition": "first selected P0 transport/control start to final selected P1 transport/control completion",
++        "may_include": [
++            "expert_compute",
++            "between_layer_model_execution",
++            "control_processing",
++            "rank_waiting",
++            "transport",
++        ],
++    }
++
++
++def measurement_perturbation_audit(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
++    sync = 0
++    host_copy = 0
++    file_write = 0
++    induced_sync = 0
++    for row in events:
++        kind = str(row.get("kind", ""))
++        source = str(row.get("source", "execution_required"))
++        if kind in {"torch.cuda.synchronize", "event.synchronize", "work.wait", "barrier"}:
++            sync += 1
++            if source == "measurement_induced":
++                induced_sync += 1
++        if kind in {"tensor.cpu", "item", "tolist", "numpy"}:
++            host_copy += 1
++        if kind == "file_write":
++            file_write += 1
++    return {
++        "measurement_sync_count": int(sync),
++        "measurement_induced_sync_count": int(induced_sync),
++        "measurement_host_copy_count": int(host_copy),
++        "measurement_file_write_count_in_timed_path": int(file_write),
++    }
++
++
++__all__ = [
++    "aggregate_control_collectives",
++    "critical_rank",
++    "expected_preflight_collective_count",
++    "hook_attribution",
++    "measurement_perturbation_audit",
++    "preflight_contract",
++    "selected_window_alias",
++    "task_size_buckets",
++]
+diff --git a/RS/tests/contract/test_runtime_diag_cpu.py b/RS/tests/contract/test_runtime_diag_cpu.py
+new file mode 100644
+index 0000000..9e71bd0
+--- /dev/null
++++ b/RS/tests/contract/test_runtime_diag_cpu.py
+@@ -0,0 +1,158 @@
++from __future__ import annotations
++
++import pytest
++
++from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
++from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
++from rs.runtime.online.megatron_ep.observation.runtime_diag import (
++    aggregate_control_collectives,
++    critical_rank,
++    expected_preflight_collective_count,
++    hook_attribution,
++    measurement_perturbation_audit,
++    preflight_contract,
++    selected_window_alias,
++    task_size_buckets,
++)
++from rs.scheduling.phase_execution import PhaseExecutionPlan, PlanWave
++from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
++
++
++def test_preflight_mode_contract_compact_and_full() -> None:
++    assert expected_preflight_collective_count("compact") == 2
++    assert expected_preflight_collective_count("full") == 9
++    assert expected_preflight_collective_count("local_only") == 0
++    compact = preflight_contract(
++        requested_mode="compact",
++        effective_mode="compact",
++        executor_mode="compact",
++        actual_collective_count=2,
++    )
++    assert compact["preflight_mode_match"] is True
++    assert compact["preflight_collective_count_exact"] is True
++    full_mismatch = preflight_contract(
++        requested_mode="compact",
++        effective_mode="compact",
++        executor_mode="full",
++        actual_collective_count=9,
++    )
++    assert full_mismatch["preflight_mode_match"] is False
++
++
++def test_lifecycle_rejects_plan_effective_preflight_mismatch() -> None:
++    runtime = RouterSenseInjectionRuntime(
++        config=RouterSenseInjectionConfig(
++            policy="routersense_p0p1p2_hint",
++            execution_mode="joint_window_async_p2p",
++            control_mode="sync_before_phase",
++            p2_hint_mode="none",
++            bucket_mode="dynamic_current",
++            bucket_rows=0,
++            safe_projection_mode="disabled",
++            p2_hint_weight=0.0,
++            observation_profile="timeline_light",
++            invariant_mode="evaluation_strict",
++            preflight_mode="compact",
++        ),
++        rank=0,
++        local_rank=0,
++        run_id="run",
++        step_id="step",
++        microbatch_id="mb",
++        model_revision_hash="model",
++        request_table_hash="request",
++        hostname="host",
++        ep_group_ranks=(0, 1),
++        ep_group_root_global_rank=0,
++    )
++    context = make_contexts_from_matrix(phase="P0", matrix=((0, 1), (1, 0)))[0]
++    plan = PhaseExecutionPlan(
++        plan_key=dict(context.plan_key),
++        phase="P0",
++        policy_name="test",
++        policy_version="v1",
++        control_mode="sync_before_phase",
++        execution_mode="joint_window_async_p2p",
++        transport_mutation=True,
++        is_shadow_only=False,
++        future_hint_mode="none",
++        root_rank=0,
++        observation_digest="obs",
++        plan_hash="plan",
++        waves=(PlanWave(wave_id=0, phase="P0", bucket_tasks=()),),
++        metrics={"preflight_mode": "full"},
++    )
++    with pytest.raises(RuntimeError, match="preflight mode mismatch"):
++        runtime._activate_transport(layer_name="model.layers.0.mlp", phase="P0", context=context, plan=plan)  # noqa: SLF001
++
++
++def test_hook_attribution_rejects_negative_unattributed() -> None:
++    payload = hook_attribution(
++        hook_total_us=100.0,
++        components={"observation_us": 10.0, "plan_us": 20.0, "submit_us": 30.0},
++    )
++    assert payload["hook_unattributed_us"] == 40.0
++    assert payload["hook_unattributed_status"] == "derived"
++    with pytest.raises(ValueError, match="negative"):
++        hook_attribution(hook_total_us=10.0, components={"plan_us": 20.0})
++
++
++def test_control_collective_aggregation_schema() -> None:
++    summary = aggregate_control_collectives(
++        [
++            {"category": "preflight_collective", "call_count": 2, "payload_bytes": 128, "submit_us": 3, "wait_us": 1, "total_us": 4},
++            {"category": "plan_agreement", "call_count": 1, "payload_bytes": 64, "submit_us": 5, "wait_us": 2, "total_us": 7},
++            {"category": "preflight_collective", "call_count": 2, "payload_bytes": 128, "submit_us": 3, "wait_us": 1, "total_us": 4},
++        ]
++    )
++    assert summary["preflight_collective"]["call_count"] == 4
++    assert summary["preflight_collective"]["payload_bytes"] == 256
++    assert summary["plan_agreement"]["total_us"] == 7.0
++
++
++def test_rank_critical_component_and_rank3_excess() -> None:
++    result = critical_rank(
++        [
++            {"rank": 0, "hook_unattributed_us": 10},
++            {"rank": 1, "hook_unattributed_us": 20},
++            {"rank": 2, "hook_unattributed_us": 30},
++            {"rank": 3, "hook_unattributed_us": 50},
++        ],
++        "hook_unattributed_us",
++    )
++    assert result["critical_rank"] == 3
++    assert result["rank3_excess_us"] == 30.0
++
++
++def test_task_size_buckets_and_selected_window_alias() -> None:
++    buckets = task_size_buckets(
++        [
++            {"byte_count": 0},
++            {"byte_count": 1024},
++            {"byte_count": 8192},
++            {"byte_count": 32768},
++            {"byte_count": 131072},
++            {"byte_count": 1048576},
++        ]
++    )
++    assert buckets["total_task_count"] == 6
++    assert buckets["buckets"]["0 bytes"]["task_count"] == 1
++    assert buckets["buckets"][">256 KiB"]["total_bytes"] == 1048576
++    alias = selected_window_alias(first_ns=1000, last_ns=31000)
++    assert alias["selected_window_span_us"] == 30.0
++    assert alias["communication_span_us_deprecated"] is True
++
++
++def test_measurement_perturbation_audit_distinguishes_induced_sync() -> None:
++    audit = measurement_perturbation_audit(
++        [
++            {"kind": "work.wait", "source": "execution_required"},
++            {"kind": "torch.cuda.synchronize", "source": "measurement_induced"},
++            {"kind": "tensor.cpu", "source": "measurement_induced"},
++            {"kind": "file_write", "source": "measurement_induced"},
++        ]
++    )
++    assert audit["measurement_sync_count"] == 2
++    assert audit["measurement_induced_sync_count"] == 1
++    assert audit["measurement_host_copy_count"] == 1
++    assert audit["measurement_file_write_count_in_timed_path"] == 1
