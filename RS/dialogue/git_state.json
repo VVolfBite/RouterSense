@@ -9,5 +9,7 @@
     " M tests/contract/test_gpu_child_config_and_a2_metrics.py",
     "?? dialogue/",
     "?? src/rs/core/layer_ids.py"
-  ]
+  ],
+  "pushed_commit": "f7fdeb46c086710324809bee4e2cd0e43462eb71",
+  "note": "This dialogue status file is updated in a follow-up evidence commit; use git log -1 for the final repository SHA."
 }
