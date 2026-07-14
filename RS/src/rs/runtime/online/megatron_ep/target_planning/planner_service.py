@@ -3,7 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
@@ -19,6 +19,7 @@ from rs.core.contracts import (
 from rs.planning import CommonCorePlanEstimator, PlannerPolicyConfig, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel, SelectedPlan
 from rs.planning.api import to_logical_plan
 from rs.scheduling.validation import stable_hash
+from rs.runtime.online.megatron_ep.public_types import LocalPreparationToken, LocalPublicationCandidate, PublicationSlot
 
 from .contracts import MatrixRows, PreparationToken, TargetLayerPreparedJointPlan, TargetPlanKey
 from .predictor import SharedTwoHorizonPredictor, TwoHorizonPredictionBundle
@@ -98,7 +99,6 @@ class _BuiltPlanningResult:
 @dataclass
 class TargetLayerPlannerService:
     store: TargetPlanStore
-    agreement_fn: Callable[[dict[str, Any]], str] | None = None
     planner_factory: Callable[[str, Any | None], Any] = PlannerRegistry.create
     two_horizon_predictor_factory: Callable[[str], SharedTwoHorizonPredictor] | None = None
     max_queue_size: int = 16
@@ -338,58 +338,40 @@ class TargetLayerPlannerService:
                 )
                 continue
 
-    def publish_ready_plan(self, ready: _BuiltPlanningResult) -> TargetLayerPreparedJointPlan | None:
+    def local_publication_candidate(self, ready: _BuiltPlanningResult) -> LocalPublicationCandidate | None:
         if self._generation_key(ready.request) in self._cancelled_generations:
-            self._timeline.append(
-                {
-                    "event": "target_plan_publish_cancelled",
-                    "target_layer_id": ready.key.target_layer_id,
-                    "task_key": ready.task_key,
-                }
-            )
             return None
         with self._lock:
             if int(ready.token.service_session_id) != int(self._service_session_id):
-                self._timeline.append(
-                    {
-                        "event": "target_plan_publish_stale_session",
-                        "target_layer_id": ready.key.target_layer_id,
-                        "task_key": ready.task_key,
-                    }
-                )
                 return None
-        return self.publish_agreed_plan(key=ready.key, plan=ready.plan, token=ready.token)
-
-    def publish_agreed_plan(self, *, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan, token: PreparationToken | None = None) -> TargetLayerPreparedJointPlan | None:
-        agreement_payload = self._agreement_payload(key=key, plan=plan)
-        agreement_start = time.perf_counter_ns()
-        agreed_digest = str(plan.logical_plan_digest)
-        if self.agreement_fn is not None:
-            agreed_digest = str(self.agreement_fn(agreement_payload))
-        agreement_end = time.perf_counter_ns()
-        published = replace(plan, logical_plan_digest=str(agreed_digest), ready_at_ns=int(time.perf_counter_ns()))
-        if token is not None and not self.store.publish_if_current(token=token, plan=published):
-            self._timeline.append(
-                {
-                    "event": "target_plan_publish_rejected_stale",
-                    "target_layer_id": key.target_layer_id,
-                    "logical_plan_digest": str(published.logical_plan_digest),
-                }
-            )
-            return None
-        if token is None:
-            self.store.put(key, published)
-        self._timeline.append(
-            {
-                "event": "target_plan_agreed_publish",
-                "target_layer_id": key.target_layer_id,
-                "agreement_us": float((agreement_end - agreement_start) / 1000.0),
-                "logical_plan_digest": str(published.logical_plan_digest),
-                "h1_digest": str(published.h1_prediction_digest),
-                "h2_digest": str(published.h2_prediction_digest),
-            }
+        slot = PublicationSlot(
+            run_id=str(ready.request.run_id),
+            forward_generation=int(ready.request.forward_epoch),
+            microbatch_id=str(ready.request.microbatch_id),
+            source_layer_id=str(ready.request.source_layer_id),
+            target_layer_id=str(ready.request.target_layer_id),
+            planning_slot=f"{ready.request.source_layer_id}->{ready.request.target_layer_id}",
         )
-        return published
+        return LocalPublicationCandidate(
+            slot=slot,
+            planner_id=str(ready.plan.policy),
+            logical_plan_digest=str(ready.plan.logical_plan_digest),
+            token=LocalPreparationToken(
+                service_session_id=int(ready.token.service_session_id),
+                forward_generation=int(ready.token.forward_generation),
+                target_layer_id=str(ready.key.target_layer_id),
+                task_version=int(ready.token.task_version),
+                publication_slot_digest=str(slot.semantic_digest()),
+            ),
+            status="READY",
+            metadata={
+                "target_key": ready.key.to_dict(),
+                "plan": ready.plan.to_dict(),
+                "h1_digest": str(ready.bundle.h1.matrix_digest),
+                "h2_digest": str(ready.bundle.h2.matrix_digest),
+                "planner_wall_us": float(ready.metrics.planner_wall_us),
+            },
+        )
 
     def _select_candidate_plans(
         self,
@@ -623,19 +605,3 @@ class TargetLayerPlannerService:
             ),
             information_mode="p0_p1_p2",
         )
-
-    @staticmethod
-    def _agreement_payload(*, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> dict[str, Any]:
-        return {
-            "key": key.to_dict(),
-            "logical_plan_digest": str(plan.logical_plan_digest),
-            "selected_variant": str(plan.selected_variant),
-            "raw_u_logical_plan_digest": str(plan.raw_logical_plan_digest),
-            "paired_b_logical_plan_digest": str(plan.paired_b_logical_plan_digest),
-            "policy": str(plan.policy),
-            "weights_digest": stable_hash(dict(plan.weights or {})),
-            "topology_digest": str(plan.topology_digest),
-            "bucket_contract_digest": str(plan.bucket_contract_digest),
-            "h1_prediction_digest": str(plan.h1_prediction_digest),
-            "h2_prediction_digest": str(plan.h2_prediction_digest),
-        }

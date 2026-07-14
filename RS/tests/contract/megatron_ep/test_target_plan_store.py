@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rs.runtime.online.megatron_ep.target_planning import TargetLayerPreparedJointPlan, TargetPlanKey, TargetPlanStore
+from rs.runtime.online.megatron_ep.target_planning.contracts import PreparationToken
 from rs.scheduling.contracts import LogicalSchedulePlan
 from rs.runtime.guards import RouterSenseInvariantError
 
@@ -112,3 +113,30 @@ def test_target_plan_store_rejects_illegal_transitions() -> None:
     store.claim(key, claim_owner="runtime")
     with pytest.raises(RouterSenseInvariantError):
         store.complete(key, execution_origin="bad_claim_complete")
+
+
+def test_target_plan_store_publish_if_current_is_atomic_and_structured() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    token = PreparationToken(
+        service_session_id=1,
+        forward_generation=1,
+        target_key=key,
+        task_version=2,
+        publish_sequence=3,
+    )
+    store.register_expected_publication(token)
+    published = store.publish_if_current(token=token, plan=_plan())
+    assert published.status == "PUBLISHED"
+    assert store.peek(key) is not None
+    stale = store.publish_if_current(
+        token=PreparationToken(
+            service_session_id=1,
+            forward_generation=1,
+            target_key=key,
+            task_version=1,
+            publish_sequence=3,
+        ),
+        plan=_plan(),
+    )
+    assert stale.status in {"TERMINAL", "STALE_TOKEN", "CONFLICTING_PLAN", "ALREADY_PUBLISHED_SAME"}

@@ -25,6 +25,7 @@ def test_lifecycle_prediction_adapter_records_worker_prediction_without_attribut
         hostname="host",
     )
     runtime._policy_supports_target_layer_preplanning = lambda: True  # type: ignore[method-assign]
+    runtime._layer_id_selected = lambda _layer_id: True  # type: ignore[method-assign]
     runtime._increment_state_counter_map = lambda *args, **kwargs: None  # type: ignore[method-assign]
     runtime._record_planning_timing = lambda *args, **kwargs: None  # type: ignore[method-assign]
     runtime._record_observer = lambda *args, **kwargs: None  # type: ignore[method-assign]
@@ -32,7 +33,7 @@ def test_lifecycle_prediction_adapter_records_worker_prediction_without_attribut
     runtime._runtime_state.write("actual_dispatch_by_layer", {})
 
     runtime._record_prediction_for_dispatch(  # noqa: SLF001
-        layer_name="1",
+            layer_name="layers.1",
         phase_ctx=SimpleNamespace(),
         observation=SimpleNamespace(local_p0_row=(2, 3)),
         actual_p0_full_row_matrix=((0, 3), (2, 0)),
