@@ -447,8 +447,6 @@ class P2PReleaseExecutor(_BaseExecutor):
                     _copy_rows(output, output_offset, recv_tensor, 0, int(item.row_count))
                 for item in role_slices:
                     completed_task_ids.append(str(item.task_id))
-                    if str(item.task_id).startswith("release:p0_inbound_complete") or str(item.task_id).startswith("release:p1_inbound_complete"):
-                        satisfied_release_ids.add(str(item.task_id))
                 stalled_rounds = 0
             elif remaining:
                 stalled_rounds += 1
