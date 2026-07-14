@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import time
 from typing import Any
 
 import torch
@@ -17,7 +18,9 @@ import torch.distributed as dist
 from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext
 
 from .async_p2p_executor import validate_async_phase_preflight
+from .api import PayloadInvocation
 from .executor_facade import ExecutionRequest, execute_transport
+from rs.core.contracts.execution import ExecutionContext
 from .sync_wave_executor import PhaseExecutionResult
 
 
@@ -31,6 +34,9 @@ class ActivePhaseTransport:
     phase: str
     context: PhaseReadyContext
     plan: PhaseExecutionPlan
+    prepared_execution: Any | None = None
+    execution_pipeline: Any | None = None
+    runtime: Any | None = None
     call_index: int = 0
     expected_roles: tuple[str, ...] = ()
     shared_session: dict[str, Any] | None = None
@@ -67,7 +73,17 @@ class MegatronPhaseTransportAdapter:
             raise HostAPIDriftError(f"unsupported effective preflight mode {normalized!r}")
         self.effective_preflight_mode = normalized
 
-    def activate(self, *, layer_name: str, phase: str, context: PhaseReadyContext, plan: PhaseExecutionPlan) -> None:
+    def activate(
+        self,
+        *,
+        layer_name: str,
+        phase: str,
+        context: PhaseReadyContext,
+        plan: PhaseExecutionPlan,
+        prepared_execution: Any | None = None,
+        execution_pipeline: Any | None = None,
+        runtime: Any | None = None,
+    ) -> None:
         expected_roles = ("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",)
         shared_session = None
         if str(plan.execution_mode) == "joint_window_async_p2p":
@@ -86,6 +102,9 @@ class MegatronPhaseTransportAdapter:
             phase=phase,
             context=context,
             plan=plan,
+            prepared_execution=prepared_execution,
+            execution_pipeline=execution_pipeline,
+            runtime=runtime,
             call_index=0,
             expected_roles=expected_roles,
             shared_session=shared_session,
@@ -137,6 +156,68 @@ class MegatronPhaseTransportAdapter:
                 f"split mismatch for {state.layer_name} {state.phase} {tensor_role}: "
                 f"expected send={expected_send} recv={expected_recv}, got send={actual_send} recv={actual_recv}"
             )
+        if state.prepared_execution is not None and state.execution_pipeline is not None:
+            execute_start_ns = time.monotonic_ns()
+            invocation = PayloadInvocation(
+                run_id=str(getattr(state.runtime, "run_id", "")),
+                forward_generation=int(getattr(state.runtime, "_forward_epoch", 0)),
+                layer_id=str(state.context.layer_id),
+                phase=str(state.context.phase),
+                payload_role=str(tensor_role),
+                shape=tuple(int(dim) for dim in input_tensor.shape),
+                dtype=str(input_tensor.dtype),
+                layout_digest=str(state.prepared_execution.materialized_plan.layout_digest),
+                invocation_id=f"{state.layer_name}:{state.phase}:{tensor_role}:{state.call_index}",
+                input_tensor=input_tensor,
+                process_group=group,
+            )
+            execution_context = ExecutionContext(
+                run_id=str(getattr(state.runtime, "run_id", "")),
+                forward_generation=int(getattr(state.runtime, "_forward_epoch", 0)),
+                layer_id=str(state.context.layer_id),
+                phase=str(state.context.phase),
+                rank_space="global",
+            )
+            outcome = state.execution_pipeline.execute(state.prepared_execution, invocation, execution_context)
+            execute_end_ns = time.monotonic_ns()
+            if state.runtime is not None and hasattr(state.runtime, "_record_instrumentation_measurement"):
+                state.runtime._record_instrumentation_measurement(
+                    event_type="executor_submit",
+                    layer_id=str(state.context.layer_id),
+                    phase=str(state.context.phase),
+                    started_at_ns=int(execute_start_ns),
+                    ended_at_ns=int(execute_end_ns),
+                    details={
+                        "payload_role": str(tensor_role),
+                        "success": bool(outcome.success),
+                        "all_work_completed": bool(outcome.all_work_completed),
+                        "failure_code": str(outcome.failure_code or ""),
+                    },
+                )
+            if not outcome.success or not outcome.all_work_completed or not isinstance(outcome.output_payload, torch.Tensor):
+                if state.runtime is not None and getattr(state.runtime, "target_plan_store", None) is not None and str(state.phase) == "P0":
+                    try:
+                        state.runtime.target_plan_store.fail(
+                            state.runtime._target_plan_key(layer_name=state.layer_name),
+                            execution_origin=str(outcome.failure_code or "execution_failed"),
+                        )
+                    except Exception:
+                        pass
+                raise HostAPIDriftError(f"formal execution pipeline failed: {outcome.failure_code or 'invalid_output'}")
+            state.call_index += 1
+            self._latest_results.append(
+                {
+                    "layer_name": state.layer_name,
+                    "layer_id": str(state.context.layer_id),
+                    "forward_epoch": int(getattr(state.context, "forward_epoch", 0)),
+                    "phase": state.phase,
+                    "tensor_role": tensor_role,
+                    "record_type": "result_summary",
+                    "result": outcome.to_dict(),
+                    "backend_id": str(outcome.details.get("backend_id", "")),
+                }
+            )
+            return outcome.output_payload
         if str(state.plan.execution_mode) == "joint_window_async_p2p":
             should_collective_preflight = bool(state.phase == "P0" and tensor_role == "hidden_states")
             effective_preflight_mode = str(getattr(self, "effective_preflight_mode", "full") or "full")

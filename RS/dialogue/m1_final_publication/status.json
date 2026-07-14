@@ -1,0 +1,32 @@
+{
+  "branch": "convergence/m1-final-publication",
+  "starting_sha": "1ff916f2ad317eb21d92a0e25290af89f0fddce1",
+  "status": "M1_RUNTIME_LIFECYCLE_READY",
+  "completed": [
+    "ControlGroupRegistry bootstraps all EP control groups in deterministic world-rank order outside lifecycle hooks",
+    "Lifecycle publication uses expected PublicationSlot registry, per-safe-point retry semantics, and event-driven safe points",
+    "Terminal lane outcomes clean TargetLayerPlannerService and TargetPlanStore on every rank, including remote failure and mismatch paths",
+    "Older generations are rejected by persistent generation floors in TargetLayerPlannerService, TargetPlanStore, GlooControlCommunicationLane, and lifecycle slot registration paths",
+    "Formal 4-rank CPU/Gloo lifecycle gate now enforces passed/failed summary validation and covers delayed, failed, cancelled, mismatch, subgroup, stale-replacement, and target-commit-miss cases",
+    "Late-suffix evidence is collected from dynamic spies with zero-count assertions for provider calls, consume paths, and post-commit publication",
+    "attach_formal_online_runtime performs collective preflight validation before control-group bootstrap and rolls back owner/wrappers on mid-install failure",
+    "Formal 4-rank attach/control-group gate verifies deterministic two-group bootstrap, collective preflight failure, and clean owner teardown"
+  ],
+  "remaining_blockers": [],
+  "test_commands": [
+    "python -m compileall RS/src RS/tests RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_target_plan_store.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/contract/megatron_ep/test_communication_lane.py RS/tests/contract/megatron_ep/test_runtime_handle.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_communication_lane.py RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py RS/tests/contract/megatron_ep/test_target_plan_contracts.py RS/tests/contract/megatron_ep/test_target_plan_reconciliation.py RS/tests/contract/megatron_ep/test_target_plan_store.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/contract/megatron_ep/test_runtime_handle.py RS/tests/test_architecture_dependencies.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/test_truth_hint_isolation.py RS/tests/contract/test_prediction_api.py RS/tests/contract/test_prediction_registry_validation.py RS/tests/contract/test_prediction_replay_suite.py RS/tests/contract/test_planning_api.py RS/tests/contract/test_planning_quantum_estimator.py RS/tests/contract/test_planning_hiding_estimate.py RS/tests/unit/test_plan_estimator.py RS/tests/unit/test_planner_selector.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/contract/megatron_ep/test_two_horizon_prediction.py RS/tests/contract/megatron_ep/test_prediction_contract.py RS/tests/test_architecture_dependencies.py",
+    "PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
+    "PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py"
+  ],
+  "test_results": {
+    "compileall": "passed",
+    "narrow_pytest": "40 passed",
+    "target_suite_pytest": "68 passed",
+    "m0_regression_subset": "72 passed",
+    "formal_lifecycle_gloo_gate": "passed",
+    "formal_attach_control_group_gate": "passed"
+  }
+}

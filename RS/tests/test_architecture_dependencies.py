@@ -130,10 +130,38 @@ def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
     assert not bad, bad
 
 
+def test_formal_materialization_modules_do_not_import_legacy_phase_execution() -> None:
+    bad = []
+    forbidden = (
+        "rs.scheduling.phase_execution",
+        "rs.scheduling.unified_interface",
+    )
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime/online/megatron_ep/materialization")):
+        if module.startswith(forbidden):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
 def test_lifecycle_does_not_use_legacy_enqueue_or_main_thread_prediction() -> None:
     source = (Path(__file__).resolve().parents[1] / "src/rs/runtime/online/megatron_ep/lifecycle.py").read_text(encoding="utf-8")
     assert ".enqueue(" not in source
     assert source.count("_predict_dispatch_matrix(") == 1
+
+
+def test_lifecycle_and_target_planning_do_not_create_process_groups() -> None:
+    root = Path(__file__).resolve().parents[1] / "src/rs/runtime/online/megatron_ep"
+    bad = []
+    for relative in (
+        Path("lifecycle.py"),
+        Path("target_planning/planner_service.py"),
+        Path("target_planning/store.py"),
+        Path("target_planning/contracts.py"),
+        Path("target_planning/reconcile.py"),
+    ):
+        source = (root / relative).read_text(encoding="utf-8")
+        if "dist.new_group(" in source:
+            bad.append(str(relative))
+    assert not bad, bad
 
 
 def test_lifecycle_does_not_import_runtime_module() -> None:

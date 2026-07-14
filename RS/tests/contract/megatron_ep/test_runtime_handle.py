@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 import torch
 
+import rs.runtime.online.megatron_ep.host as host_mod
 from rs.runtime.online.megatron_ep.contracts import ExecutionSelection, OnlinePolicyParameters, OnlineRuntimeConfig
 from rs.runtime.online.megatron_ep.host import attach_dispatch_observer, attach_formal_online_runtime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 from rs.runtime.online.megatron_ep.public_types import (
     AggregateRuntimeCloseError,
+    FormalRuntimeAttachPreflightError,
     LegacyObserverConflictError,
     RuntimeAlreadyAttachedError,
     RuntimeDecision,
@@ -21,22 +23,31 @@ class _TokenDispatcherStub:
         self.token_combine = lambda *args, **kwargs: ("combine", args, kwargs)
 
 
-class _MoELayerStub(torch.nn.Module):
+class _MissingCombineDispatcherStub:
     def __init__(self) -> None:
+        self.token_dispatch = lambda *args, **kwargs: ("dispatch", args, kwargs)
+
+
+class _MoELayerStub(torch.nn.Module):
+    def __init__(self, *, dispatcher_cls=_TokenDispatcherStub) -> None:
         super().__init__()
-        self.token_dispatcher = _TokenDispatcherStub()
+        self.token_dispatcher = dispatcher_cls()
 
 
 class _LayerContainerStub(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, dispatcher_cls=_TokenDispatcherStub) -> None:
         super().__init__()
-        self.mlp = _MoELayerStub()
+        self.mlp = _MoELayerStub(dispatcher_cls=dispatcher_cls)
 
 
 class _ScopeModelStub(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, dispatcher_cls=_TokenDispatcherStub) -> None:
         super().__init__()
-        self.layers = torch.nn.ModuleList([_LayerContainerStub(), _LayerContainerStub(), _LayerContainerStub()])
+        self.layers = torch.nn.ModuleList([
+            _LayerContainerStub(dispatcher_cls=dispatcher_cls),
+            _LayerContainerStub(dispatcher_cls=dispatcher_cls),
+            _LayerContainerStub(dispatcher_cls=dispatcher_cls),
+        ])
 
     def forward(self):
         self.layers[0].mlp.token_dispatcher.token_dispatch("hidden", "probs")
@@ -280,3 +291,50 @@ def test_runtime_handle_emits_failure_events_and_reraises() -> None:
     assert "ForwardBeginEvent" in recorded
     assert "DispatchFailedEvent" in recorded
     assert "ForwardFailedEvent" in recorded
+
+
+def test_attach_preflight_missing_token_combine_rolls_back_owner() -> None:
+    model = _ScopeModelStub(dispatcher_cls=_MissingCombineDispatcherStub)
+    with pytest.raises(FormalRuntimeAttachPreflightError):
+        attach_formal_online_runtime(
+            model=model,
+            runtime_config=_config(),
+            rank=0,
+            local_rank=0,
+            run_id="run",
+            model_revision="model",
+            request_table_hash="request",
+            hostname="host",
+        )
+    assert getattr(model, "_routersense_runtime_owner", None) is None
+
+
+def test_attach_mid_install_failure_rolls_back_owner_and_wrappers(monkeypatch) -> None:
+    model = _ScopeModelStub()
+    original_dispatch = model.layers[1].mlp.token_dispatcher.token_dispatch
+    original_combine = model.layers[1].mlp.token_dispatcher.token_combine
+    calls = {"count": 0}
+    original_from_config = host_mod.RouterSenseDispatcherFacade.from_config
+
+    def _boom_from_config(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] >= 2:
+            raise RuntimeError("combine facade install boom")
+        return original_from_config(*args, **kwargs)
+
+    monkeypatch.setattr(host_mod.RouterSenseDispatcherFacade, "from_config", _boom_from_config)
+    with pytest.raises(RuntimeError, match="combine facade install boom"):
+        attach_formal_online_runtime(
+            model=model,
+            runtime_config=_config(),
+            rank=0,
+            local_rank=0,
+            run_id="run",
+            model_revision="model",
+            request_table_hash="request",
+            hostname="host",
+        )
+    assert getattr(model, "_routersense_runtime_owner", None) is None
+    assert getattr(model, "_routersense_forward_wrapped", False) is False
+    assert model.layers[1].mlp.token_dispatcher.token_dispatch is original_dispatch
+    assert model.layers[1].mlp.token_dispatcher.token_combine is original_combine

@@ -15,6 +15,7 @@ from rs.runtime.online.megatron_ep.target_planning.planner_service import (
 from rs.runtime.online.megatron_ep.target_planning.predictor import TwoHorizonPredictionBundle
 from rs.runtime.online.megatron_ep.target_planning.contracts import TwoHorizonPrediction
 from rs.runtime.online.megatron_ep.target_planning.store import TargetPlanStore
+from rs.runtime.online.megatron_ep.target_planning.contracts import TargetLayerPreparedJointPlan
 from rs.planning import PlannerRegistry
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
@@ -263,8 +264,6 @@ def test_target_planner_worker_does_not_publish_until_main_thread_drains() -> No
     service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
     request = _request(safe_projection_mode="disabled")
     key = service._task_key(request)  # noqa: SLF001
-    agreement_calls: list[dict[str, object]] = []
-    service.agreement_fn = lambda payload: agreement_calls.append(payload) or str(payload["logical_plan_digest"])
     service.start()
     result = service.submit(request)
     assert result.status is PreparationSubmitStatus.ACCEPTED
@@ -278,11 +277,10 @@ def test_target_planner_worker_does_not_publish_until_main_thread_drains() -> No
     assert ready, f"worker never produced ready publication for {key}"
     target_key = ready[0].key
     assert service.store.peek(target_key) is None
-    assert agreement_calls == []
-    published = service.publish_ready_plan(ready[0])
-    assert published is not None
-    assert service.store.peek(target_key) is not None
-    assert len(agreement_calls) == 1
+    candidate = service.local_publication_candidate(ready[0])
+    assert candidate is not None
+    assert dict(candidate.metadata).get("plan")
+    assert service.store.peek(target_key) is None
     service.shutdown()
 
 
@@ -301,8 +299,8 @@ def test_target_planner_cancelled_generation_drops_ready_publication_before_publ
         time.sleep(0.01)
     assert ready
     service.cancel_generation(run_id=request.run_id, forward_epoch=request.forward_epoch, microbatch_id=request.microbatch_id)
-    published = service.publish_ready_plan(ready[0])
-    assert published is None
+    candidate = service.local_publication_candidate(ready[0])
+    assert candidate is None
     assert service.store.peek(ready[0].key) is None
     service.shutdown()
 
@@ -489,12 +487,48 @@ def test_target_planner_stale_inflight_version_cannot_publish() -> None:
     ready = []
     while time.time() < deadline:
         ready.extend(service.drain_ready_publications())
-        if len(ready) >= 2:
+        if len(ready) >= 1:
             break
         time.sleep(0.01)
-    assert len(ready) >= 2
-    first = service.publish_ready_plan(ready[0])
-    second = service.publish_ready_plan(ready[1])
-    assert first is None
-    assert second is not None
+    assert len(ready) == 1
+    candidate = service.local_publication_candidate(ready[0])
+    assert candidate is not None
+    plan = TargetLayerPreparedJointPlan.from_dict(dict(candidate.metadata)["plan"])
+    result = service.store.publish_if_current(token=ready[0].token, plan=plan)
+    assert result.status == "PUBLISHED"
+    service.shutdown()
+
+
+def test_target_planner_cancel_before_generation_cleans_all_older_generations() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 2})
+    third = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 3})
+    service.submit(first)
+    service.submit(second)
+    service.submit(third)
+    service.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    expired_first = service.submit(first)
+    expired_second = service.submit(second)
+    accepted_third = service.submit(third)
+    assert expired_first.status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert expired_second.status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert accepted_third.status in {PreparationSubmitStatus.ACCEPTED, PreparationSubmitStatus.REPLACED_STALE}
+
+
+def test_target_planner_generation_floor_rejects_old_generation_without_prior_submission() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 2})
+    third = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 3})
+    fourth = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 4})
+    service.start()
+    service.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    assert service.submit(first).status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert service.submit(second).status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert service.submit(third).status is PreparationSubmitStatus.ACCEPTED
+    assert service.submit(fourth).status in {
+        PreparationSubmitStatus.ACCEPTED,
+        PreparationSubmitStatus.REPLACED_STALE,
+    }
     service.shutdown()

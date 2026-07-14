@@ -25,17 +25,25 @@ import torch
 import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
+from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
+from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
+from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
+from rs.runtime.observation.instrumentation import RuntimeInstrumentation
+from rs.runtime.measurement.null_sink import NullMeasurementSink
+from rs.runtime.debug.null_probe import NullDebugProbe
 from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
     CombineReadyEvent,
+    ControlGroupHandle,
     DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
+    FormalRuntimeAttachPreflightError,
     ForwardBeginEvent,
     ForwardEndEvent,
     ForwardFailedEvent,
@@ -65,6 +73,7 @@ class DedicatedP2PGroupRegistry:
 
 
 _DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}
+_CONTROL_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], "ControlGroupRegistry"] = {}
 
 
 # Basic runtime/bootstrap helpers
@@ -91,6 +100,64 @@ def _discover_all_ep_group_tuples(local_group_ranks: tuple[int, ...]) -> tuple[t
     dist.all_gather_object(gathered, normalized_local)
     unique = sorted({tuple(int(rank) for rank in (item or ())) for item in gathered if item is not None})
     return tuple(group for group in unique if group)
+
+
+@dataclass
+class ControlGroupRegistry:
+    ordered_group_ranks: tuple[tuple[int, ...], ...]
+    groups: dict[tuple[int, ...], dist.ProcessGroup]
+    ref_counts: dict[tuple[int, ...], int]
+    new_group_call_order: tuple[tuple[int, ...], ...]
+
+    @classmethod
+    def initialize(
+        cls,
+        *,
+        local_ep_group_ranks: tuple[int, ...],
+        world_group: dist.ProcessGroup | None = None,
+    ) -> tuple["ControlGroupRegistry", ControlGroupHandle]:
+        normalized_local = tuple(int(rank) for rank in local_ep_group_ranks)
+        ordered = _discover_all_ep_group_tuples(normalized_local)
+        cached = _CONTROL_GROUP_REGISTRY.get(ordered)
+        if cached is None:
+            groups: dict[tuple[int, ...], dist.ProcessGroup] = {}
+            call_order: list[tuple[int, ...]] = []
+            for group_ranks in ordered:
+                group = dist.new_group(ranks=list(group_ranks), backend="gloo")
+                groups[group_ranks] = group
+                call_order.append(tuple(int(rank) for rank in group_ranks))
+            cached = cls(
+                ordered_group_ranks=ordered,
+                groups=groups,
+                ref_counts={tuple(int(rank) for rank in item): 0 for item in ordered},
+                new_group_call_order=tuple(call_order),
+            )
+            _CONTROL_GROUP_REGISTRY[ordered] = cached
+        cached.ref_counts[normalized_local] = int(cached.ref_counts.get(normalized_local, 0)) + 1
+        root_global_rank = int(normalized_local[0]) if normalized_local else 0
+        root_group_rank = 0
+        return cached, ControlGroupHandle(
+            process_group=cached.groups.get(normalized_local),
+            group_ranks=normalized_local,
+            root_global_rank=root_global_rank,
+            root_group_rank=root_group_rank,
+            owned=True,
+        )
+
+    def close(self, *, local_ep_group_ranks: tuple[int, ...]) -> None:
+        normalized_local = tuple(int(rank) for rank in local_ep_group_ranks)
+        if normalized_local not in self.ref_counts:
+            return
+        self.ref_counts[normalized_local] = max(0, int(self.ref_counts[normalized_local]) - 1)
+        if any(int(value) > 0 for value in self.ref_counts.values()):
+            return
+        for group in self.groups.values():
+            try:
+                if dist.is_available() and dist.is_initialized():
+                    dist.destroy_process_group(group)
+            except Exception:
+                pass
+        _CONTROL_GROUP_REGISTRY.pop(self.ordered_group_ranks, None)
 
 
 def _get_or_create_dedicated_p2p_group_registry(
@@ -166,6 +233,82 @@ def _maybe_create_dedicated_p2p_group(
         "local_dedicated_group_ranks": list(registry.local_group_ranks),
         "new_group_call_order": [list(item) for item in registry.new_group_call_order],
     }
+
+
+def _create_control_group_handle(
+    *,
+    ep_process_group: dist.ProcessGroup | None,
+    ep_group_ranks: tuple[int, ...],
+    root_global_rank: int,
+) -> ControlGroupHandle:
+    if not dist.is_available() or not dist.is_initialized():
+        return ControlGroupHandle(
+            process_group=None,
+            group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+            root_global_rank=int(root_global_rank),
+            root_group_rank=0,
+            owned=False,
+        )
+    registry, handle = ControlGroupRegistry.initialize(
+        local_ep_group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+        world_group=None,
+    )
+    handle.root_global_rank = int(root_global_rank)
+    handle.root_group_rank = int(handle.group_ranks.index(int(root_global_rank))) if int(root_global_rank) in handle.group_ranks else 0
+    setattr(handle, "_registry_key", registry.ordered_group_ranks)
+    return handle
+
+
+def _collect_attach_preflight_errors(
+    *,
+    model: torch.nn.Module,
+) -> list[str]:
+    errors: list[str] = []
+    if getattr(model, "_routersense_runtime_owner", None) is not None:
+        errors.append("formal runtime already attached to model")
+    for name, module in model.named_modules():
+        dispatcher = getattr(module, "token_dispatcher", None)
+        if dispatcher is None:
+            continue
+        if getattr(dispatcher, "_routersense_wrapped", False):
+            errors.append(f"legacy observer wrapper already attached at {name}")
+        if not hasattr(dispatcher, "token_dispatch"):
+            errors.append(f"dispatcher missing token_dispatch at {name}")
+        if not hasattr(dispatcher, "token_combine"):
+            errors.append(f"dispatcher missing token_combine at {name}")
+    return errors
+
+
+def _run_attach_preflight(
+    *,
+    model: torch.nn.Module,
+) -> None:
+    local_errors = _collect_attach_preflight_errors(model=model)
+    if not dist.is_available() or not dist.is_initialized():
+        if getattr(model, "_routersense_runtime_owner", None) is not None:
+            raise RuntimeAlreadyAttachedError("formal runtime already attached to model")
+        for name, module in model.named_modules():
+            dispatcher = getattr(module, "token_dispatcher", None)
+            if dispatcher is not None and getattr(dispatcher, "_routersense_wrapped", False):
+                raise LegacyObserverConflictError(f"legacy observer wrapper already attached at {name}")
+        if local_errors:
+            raise FormalRuntimeAttachPreflightError("; ".join(local_errors))
+        return
+    payload = {
+        "rank": int(dist.get_rank()),
+        "errors": tuple(str(item) for item in local_errors),
+    }
+    gathered: list[dict[str, object] | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, payload)
+    merged: list[str] = []
+    for item in gathered:
+        if item is None:
+            continue
+        rank = int(item.get("rank", -1))
+        for error in tuple(item.get("errors", ())):
+            merged.append(f"rank={rank}:{error}")
+    if merged:
+        raise FormalRuntimeAttachPreflightError("; ".join(merged))
 
 
 def model_is_local_path(model: str) -> bool:
@@ -656,12 +799,7 @@ def attach_dispatch_facade(
     hostname: str,
     observer: RouterSenseObserver | None = None,
 ) -> RuntimeHandle:
-    if getattr(model, "_routersense_runtime_owner", None) is not None:
-        raise RuntimeAlreadyAttachedError("formal runtime already attached to model")
-    for name, module in model.named_modules():
-        dispatcher = getattr(module, "token_dispatcher", None)
-        if dispatcher is not None and getattr(dispatcher, "_routersense_wrapped", False):
-            raise LegacyObserverConflictError(f"legacy observer wrapper already attached at {name}")
+    _run_attach_preflight(model=model)
     sample_dispatcher = None
     for module in model.named_modules():
         dispatcher = getattr(module[1], "token_dispatcher", None)
@@ -687,7 +825,33 @@ def attach_dispatch_facade(
         ep_group_root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         ep_process_group=ep_process_group,
     )
+    runtime.plan_publisher = CanonicalPlanPublisher(
+        rank_map=RankMap(
+            group_ranks=tuple(int(item) for item in ep_group_ranks),
+            root_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
+        )
+    )
+    runtime.execution_pipeline = RuntimeExecutionPipeline()
+    runtime.runtime_instrumentation = RuntimeInstrumentation(
+        measurement_sink=NullMeasurementSink(),
+        debug_probe=NullDebugProbe(),
+    )
+    runtime.target_plan_control_group_handle = _create_control_group_handle(
+        ep_process_group=ep_process_group,
+        ep_group_ranks=ep_group_ranks,
+        root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
+    )
+    runtime.target_plan_control_group = runtime.target_plan_control_group_handle.process_group
     handle = RuntimeHandle(runtime=runtime)
+    handle.add_close_callback(runtime._cleanup_target_plan_runtime)
+    handle.add_close_callback(
+        lambda _runtime=runtime: (
+            _CONTROL_GROUP_REGISTRY.get(getattr(_runtime.target_plan_control_group_handle, "_registry_key", ()))
+            and _CONTROL_GROUP_REGISTRY[getattr(_runtime.target_plan_control_group_handle, "_registry_key", ())].close(
+                local_ep_group_ranks=tuple(int(rank) for rank in _runtime.ep_group_ranks)
+            )
+        )
+    )
     model._routersense_runtime_owner = str(run_id)
     handle.add_restore_callback(
         lambda _model=model: hasattr(_model, "_routersense_runtime_owner") and delattr(_model, "_routersense_runtime_owner")
@@ -703,39 +867,46 @@ def attach_dispatch_facade(
             token_dispatcher_mod = None
 
         if token_dispatcher_mod is not None:
-            original_all_to_all = token_dispatcher_mod.all_to_all
-            p2p_group = None
-            if config.execution_mode == "joint_window_async_p2p":
-                p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
-                    ep_group_ranks=ep_group_ranks,
-                    local_rank=local_rank,
+            try:
+                original_all_to_all = token_dispatcher_mod.all_to_all
+                p2p_group = None
+                if config.execution_mode == "joint_window_async_p2p":
+                    p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
+                        ep_group_ranks=ep_group_ranks,
+                        local_rank=local_rank,
+                    )
+                    runtime._runtime_state.merge(p2p_status)
+                transport_adapter = MegatronPhaseTransportAdapter(
+                    dispatcher_class=type(sample_dispatcher).__name__,
+                    dispatcher_module_sha256=None,
+                    p2p_group=p2p_group,
                 )
-                runtime._runtime_state.merge(p2p_status)
-            transport_adapter = MegatronPhaseTransportAdapter(
-                dispatcher_class=type(sample_dispatcher).__name__,
-                dispatcher_module_sha256=None,
-                p2p_group=p2p_group,
-            )
-            transport_adapter.timeline_hook = lambda event, **detail: runtime._timeline(
-                event,
-                layer_name=str(runtime.current_transport().get("layer_name") if runtime.current_transport() else "unknown"),
-                **detail,
-            )
-
-            def wrapped_all_to_all(group, input_, output_split_sizes_=None, input_split_sizes=None, use_nccl_stream=False):
-                return transport_adapter.maybe_execute(
-                    group=group,
-                    input_tensor=input_,
-                    output_split_sizes=output_split_sizes_,
-                    input_split_sizes=input_split_sizes,
-                    original_all_to_all=original_all_to_all,
-                    use_nccl_stream=use_nccl_stream,
+                transport_adapter.timeline_hook = lambda event, **detail: runtime._timeline(
+                    event,
+                    layer_name=str(runtime.current_transport().get("layer_name") if runtime.current_transport() else "unknown"),
+                    **detail,
                 )
 
-            token_dispatcher_mod.all_to_all = wrapped_all_to_all
-            runtime.transport_adapter = transport_adapter
-            runtime.original_all_to_all = original_all_to_all
-            handle.add_restore_callback(lambda _mod=token_dispatcher_mod, _orig=original_all_to_all: setattr(_mod, "all_to_all", _orig))
+                def wrapped_all_to_all(group, input_, output_split_sizes_=None, input_split_sizes=None, use_nccl_stream=False):
+                    return transport_adapter.maybe_execute(
+                        group=group,
+                        input_tensor=input_,
+                        output_split_sizes=output_split_sizes_,
+                        input_split_sizes=input_split_sizes,
+                        original_all_to_all=original_all_to_all,
+                        use_nccl_stream=use_nccl_stream,
+                    )
+
+                token_dispatcher_mod.all_to_all = wrapped_all_to_all
+                runtime.transport_adapter = transport_adapter
+                runtime.original_all_to_all = original_all_to_all
+                handle.add_restore_callback(lambda _mod=token_dispatcher_mod, _orig=original_all_to_all: setattr(_mod, "all_to_all", _orig))
+            except BaseException:
+                try:
+                    handle.close()
+                except BaseException:
+                    pass
+                raise
     def _find_expert_timing_module(layer_module: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[str, None]:
         candidates: list[tuple[str, torch.nn.Module]] = []
         for child_name, child_module in layer_module.named_modules():
@@ -795,128 +966,134 @@ def attach_dispatch_facade(
     for name, module in model.named_modules():
         if getattr(module, "token_dispatcher", None) is not None:
             dispatcher_layer_names.append(str(name))
-    runtime.configure_hook_scope(available_layer_names=tuple(dispatcher_layer_names))
-    if not getattr(model, "_routersense_forward_wrapped", False):
-        original_forward = model.forward
+    try:
+        runtime.configure_hook_scope(available_layer_names=tuple(dispatcher_layer_names))
+        if not getattr(model, "_routersense_forward_wrapped", False):
+            original_forward = model.forward
 
-        def wrapped_forward(*args: Any, _orig=original_forward, **kwargs: Any):
-            runtime.handle(ForwardBeginEvent())
-            try:
-                result = _orig(*args, **kwargs)
-            except BaseException as exc:
-                runtime.handle(ForwardFailedEvent(error=exc))
-                raise
-            runtime.handle(ForwardEndEvent())
-            return result
+            def wrapped_forward(*args: Any, _orig=original_forward, **kwargs: Any):
+                runtime.handle(ForwardBeginEvent())
+                try:
+                    result = _orig(*args, **kwargs)
+                except BaseException as exc:
+                    runtime.handle(ForwardFailedEvent(error=exc))
+                    raise
+                runtime.handle(ForwardEndEvent())
+                return result
 
-        model.forward = wrapped_forward
-        model._routersense_forward_wrapped = True
+            model.forward = wrapped_forward
+            model._routersense_forward_wrapped = True
 
-        def _restore_forward_hooks(_model=model, _orig=original_forward):
-            _model.forward = _orig
-            if hasattr(_model, "_routersense_forward_wrapped"):
-                delattr(_model, "_routersense_forward_wrapped")
+            def _restore_forward_hooks(_model=model, _orig=original_forward):
+                _model.forward = _orig
+                if hasattr(_model, "_routersense_forward_wrapped"):
+                    delattr(_model, "_routersense_forward_wrapped")
 
-        handle.add_restore_callback(_restore_forward_hooks)
-    for name, module in model.named_modules():
-        dispatcher = getattr(module, "token_dispatcher", None)
-        if dispatcher is None or getattr(dispatcher, "_routersense_facade_wrapped", False):
-            continue
-        layer_role = runtime.layer_role_for_name(str(name))
-        if layer_role == "none":
-            continue
-        if layer_role == "selected":
-            _install_selected_layer_attribution_hooks(str(name), module)
+            handle.add_restore_callback(_restore_forward_hooks)
+        for name, module in model.named_modules():
+            dispatcher = getattr(module, "token_dispatcher", None)
+            if dispatcher is None or getattr(dispatcher, "_routersense_facade_wrapped", False):
+                continue
+            layer_role = runtime.layer_role_for_name(str(name))
+            if layer_role == "none":
+                continue
+            if layer_role == "selected":
+                _install_selected_layer_attribution_hooks(str(name), module)
 
-        dispatch_facade = RouterSenseDispatcherFacade.from_config(
-            native_dispatcher=dispatcher.token_dispatch,
-            config=config,
-        )
-        combine_facade = RouterSenseDispatcherFacade.from_config(
-            native_dispatcher=dispatcher.token_combine,
-            config=config,
-        )
-
-        def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, _role=layer_role, **kwargs: Any):
-            hidden_states = args[0] if args else None
-            probs = args[1] if len(args) > 1 else None
-            runtime.handle(
-                DispatchReadyEvent(
-                    layer_name=str(_name),
-                    dispatcher=_dispatcher,
-                    packed_hidden_states=hidden_states,
-                    packed_probs=probs,
-                    layer_role=str(_role),
-                )
+            dispatch_facade = RouterSenseDispatcherFacade.from_config(
+                native_dispatcher=dispatcher.token_dispatch,
+                config=config,
             )
-            try:
-                result = _facade.dispatch(*args, **kwargs)
-            except BaseException as exc:
+            combine_facade = RouterSenseDispatcherFacade.from_config(
+                native_dispatcher=dispatcher.token_combine,
+                config=config,
+            )
+
+            def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, _role=layer_role, **kwargs: Any):
+                hidden_states = args[0] if args else None
+                probs = args[1] if len(args) > 1 else None
                 runtime.handle(
-                    DispatchFailedEvent(
+                    DispatchReadyEvent(
                         layer_name=str(_name),
                         dispatcher=_dispatcher,
                         packed_hidden_states=hidden_states,
-                        error=exc,
+                        packed_probs=probs,
                         layer_role=str(_role),
                     )
                 )
-                raise
-            runtime.handle(
-                DispatchCompleteEvent(
-                    layer_name=str(_name),
-                    dispatcher=_dispatcher,
-                    packed_hidden_states=hidden_states,
-                    result=result,
-                    layer_role=str(_role),
-                )
-            )
-            return result
-
-        def wrapped_combine(*args: Any, _facade=combine_facade, _dispatcher=dispatcher, _name=name, **kwargs: Any):
-            hidden_states = args[0] if args else None
-            runtime.handle(
-                CombineReadyEvent(
-                    layer_name=str(_name),
-                    dispatcher=_dispatcher,
-                    packed_hidden_states=hidden_states,
-                )
-            )
-            try:
-                result = _facade.dispatch(*args, **kwargs)
-            except BaseException as exc:
+                try:
+                    result = _facade.dispatch(*args, **kwargs)
+                except BaseException as exc:
+                    runtime.handle(
+                        DispatchFailedEvent(
+                            layer_name=str(_name),
+                            dispatcher=_dispatcher,
+                            packed_hidden_states=hidden_states,
+                            error=exc,
+                            layer_role=str(_role),
+                        )
+                    )
+                    raise
                 runtime.handle(
-                    CombineFailedEvent(
+                    DispatchCompleteEvent(
                         layer_name=str(_name),
                         dispatcher=_dispatcher,
                         packed_hidden_states=hidden_states,
-                        error=exc,
+                        result=result,
+                        layer_role=str(_role),
                     )
                 )
-                raise
-            runtime.handle(
-                CombineCompleteEvent(
-                    layer_name=str(_name),
-                    dispatcher=_dispatcher,
-                    packed_hidden_states=hidden_states,
-                    result=result,
-                )
-            )
-            return result
+                return result
 
-        dispatcher.token_dispatch = wrapped_dispatch
-        if layer_role == "selected":
-            dispatcher.token_combine = wrapped_combine
-        dispatcher._routersense_facade_wrapped = True
-        def _restore_dispatcher(_dispatcher=dispatcher, _orig_dispatch=dispatch_facade.native_dispatcher, _orig_combine=combine_facade.native_dispatcher, _role=layer_role):
-            _dispatcher.token_dispatch = _orig_dispatch
-            if _role == "selected":
-                _dispatcher.token_combine = _orig_combine
-            if hasattr(_dispatcher, "_routersense_facade_wrapped"):
-                delattr(_dispatcher, "_routersense_facade_wrapped")
-        handle.add_restore_callback(_restore_dispatcher)
-    handle.add_close_callback(runtime._cleanup_target_plan_runtime)
-    return handle
+            def wrapped_combine(*args: Any, _facade=combine_facade, _dispatcher=dispatcher, _name=name, **kwargs: Any):
+                hidden_states = args[0] if args else None
+                runtime.handle(
+                    CombineReadyEvent(
+                        layer_name=str(_name),
+                        dispatcher=_dispatcher,
+                        packed_hidden_states=hidden_states,
+                    )
+                )
+                try:
+                    result = _facade.dispatch(*args, **kwargs)
+                except BaseException as exc:
+                    runtime.handle(
+                        CombineFailedEvent(
+                            layer_name=str(_name),
+                            dispatcher=_dispatcher,
+                            packed_hidden_states=hidden_states,
+                            error=exc,
+                        )
+                    )
+                    raise
+                runtime.handle(
+                    CombineCompleteEvent(
+                        layer_name=str(_name),
+                        dispatcher=_dispatcher,
+                        packed_hidden_states=hidden_states,
+                        result=result,
+                    )
+                )
+                return result
+
+            dispatcher.token_dispatch = wrapped_dispatch
+            if layer_role == "selected":
+                dispatcher.token_combine = wrapped_combine
+            dispatcher._routersense_facade_wrapped = True
+            def _restore_dispatcher(_dispatcher=dispatcher, _orig_dispatch=dispatch_facade.native_dispatcher, _orig_combine=combine_facade.native_dispatcher, _role=layer_role):
+                _dispatcher.token_dispatch = _orig_dispatch
+                if _role == "selected":
+                    _dispatcher.token_combine = _orig_combine
+                if hasattr(_dispatcher, "_routersense_facade_wrapped"):
+                    delattr(_dispatcher, "_routersense_facade_wrapped")
+            handle.add_restore_callback(_restore_dispatcher)
+        return handle
+    except BaseException:
+        try:
+            handle.close()
+        except BaseException:
+            pass
+        raise
 
 
 def attach_formal_online_runtime(

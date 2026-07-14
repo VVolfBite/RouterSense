@@ -33,6 +33,8 @@ from rs.core.contracts import (
     PredictionIdentity,
     TrafficHistoryContext,
 )
+from rs.core.contracts.execution import ActualPhaseContext
+from rs.core.contracts.measurement import MeasurementEvent
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.prediction import PredictionRegistry, resolve_predictor_id
 from rs.planning import (
@@ -108,17 +110,20 @@ from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
     CombineReadyEvent,
+    ControlGroupHandle,
     DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
     ForwardBeginEvent,
     ForwardEndEvent,
     ForwardFailedEvent,
+    PublicationPollStatus,
     RuntimeDecision,
     RuntimeEvent,
     SelectedLayerStop,
     UnsupportedSchedulerMode,
 )
+from rs.runtime.online.megatron_ep.control.communication_lane import GlooControlCommunicationLane, slot_from_request
 from rs.runtime.online.megatron_ep.control.shadow_policy.joint_shadow import JointShadowP0P1Policy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_order import NativeOrderPolicy
 from rs.runtime.online.megatron_ep.control.shadow_policy.native_passthrough_identity import NativePassthroughIdentityPolicy
@@ -250,6 +255,13 @@ class RouterSenseInjectionRuntime:
     target_plan_store: TargetPlanStore | None = None
     target_planner_service: TargetLayerPlannerService | None = None
     target_plan_control_group: Any | None = None
+    target_plan_control_group_handle: ControlGroupHandle | None = None
+    control_communication_lane: Any | None = None
+    _ready_target_plan_candidates: dict[str, Any] = field(default_factory=dict)
+    _expected_publication_slots: dict[tuple[str, int, str, str], Any] = field(default_factory=dict)
+    _terminal_publication_slots: set[str] = field(default_factory=set)
+    _published_publication_slots: set[str] = field(default_factory=set)
+    _poll_attempts: set[tuple[str, str]] = field(default_factory=set)
     _available_moe_layer_ids: tuple[str, ...] = ()
     _resolved_schedule_selector: Any | None = None
     _selected_layer_id_set: frozenset[str] = field(default_factory=frozenset)
@@ -571,17 +583,29 @@ class RouterSenseInjectionRuntime:
             self._runtime_state.metrics.selected_transport_execution_count = int(
                 self._runtime_state.metrics.selected_transport_execution_count
             ) + 1
+        prepared_execution = None
+        if self._is_joint_window_async_mode():
+            prepared_execution = self._prepared_execution_cache().get(self.target_plan_store._key(self._target_plan_key(layer_name=layer_name))) if self.target_plan_store is not None else None
         self._active_transport = {
             "layer_name": layer_name,
             "phase": phase,
             "context": context,
             "plan": plan,
+            "prepared_execution": prepared_execution,
         }
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
             if hasattr(adapter, "set_effective_preflight_mode"):
                 adapter.set_effective_preflight_mode(effective_preflight_mode)
-            adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
+            adapter.activate(
+                layer_name=layer_name,
+                phase=phase,
+                context=context,
+                plan=plan,
+                prepared_execution=prepared_execution,
+                execution_pipeline=getattr(self, "execution_pipeline", None),
+                runtime=self,
+            )
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -595,6 +619,54 @@ class RouterSenseInjectionRuntime:
 
     def current_transport(self) -> dict[str, Any] | None:
         return self._active_transport
+
+    def _execution_plan_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_published_execution_plans", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_published_execution_plans", cache)
+        return cache
+
+    def _prepared_execution_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_prepared_executions", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_prepared_executions", cache)
+        return cache
+
+    def _record_instrumentation_measurement(
+        self,
+        *,
+        event_type: str,
+        layer_id: str | None,
+        phase: str | None,
+        started_at_ns: int,
+        ended_at_ns: int,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        instrumentation = getattr(self, "runtime_instrumentation", None)
+        if instrumentation is None:
+            return
+        instrumentation.record_measurement(
+            MeasurementEvent(
+                event_type=str(event_type),
+                started_at_ns=int(started_at_ns),
+                ended_at_ns=int(ended_at_ns),
+                layer_id=None if layer_id is None else str(layer_id),
+                phase=None if phase is None else str(phase),
+                details=dict(details or {}),
+            )
+        )
+
+    def _actual_phase_context_from_ready_context(self, *, phase_ctx: PhaseReadyContext) -> ActualPhaseContext:
+        return ActualPhaseContext(
+            layer_id=str(phase_ctx.layer_id),
+            phase=str(phase_ctx.phase),
+            world_size=int(len(phase_ctx.ep_group_ranks)),
+            rank_space="global",
+            layout_digest=str(phase_ctx.canonical_receive_layout_id),
+            metadata={"phase_ready_context": phase_ctx.to_dict()},
+        )
 
     def clear_transport(self, *, layer_name: str, phase: str) -> None:
         adapter = getattr(self, "transport_adapter", None)
@@ -670,6 +742,24 @@ class RouterSenseInjectionRuntime:
         **detail: Any,
     ) -> float:
         duration_us = max(0.0, float(end_ns - start_ns) / 1000.0)
+        if str(stage).startswith("materialize"):
+            measurement_event_type = "materialization"
+        elif str(stage).startswith("validate"):
+            measurement_event_type = "validation"
+        elif "publish" in str(stage):
+            measurement_event_type = "publish"
+        elif "executor" in str(stage) or "transport" in str(stage):
+            measurement_event_type = "active_transport"
+        else:
+            measurement_event_type = "planning"
+        self._record_instrumentation_measurement(
+            event_type=measurement_event_type,
+            layer_id=parse_layer_id(layer_name),
+            phase=str(phase),
+            started_at_ns=int(start_ns),
+            ended_at_ns=int(end_ns),
+            details={"stage": str(stage), **detail},
+        )
         if self._is_perf_profile():
             counter = self.perf_counters.setdefault(
                 str(stage),
@@ -1209,19 +1299,17 @@ class RouterSenseInjectionRuntime:
             return
         if self.target_plan_store is None:
             self.target_plan_store = TargetPlanStore()
-        if self.target_plan_control_group is None and dist.is_available() and dist.is_initialized():
-            try:
-                backend = str(dist.get_backend(self.ep_process_group)) if self.ep_process_group is not None else str(dist.get_backend())
-            except Exception:
-                backend = "gloo"
-            if backend == "gloo":
-                self.target_plan_control_group = self.ep_process_group
-            else:
-                self.target_plan_control_group = dist.new_group(ranks=list(int(v) for v in self.ep_group_ranks), backend="gloo")
+        if self.control_communication_lane is None:
+            self.control_communication_lane = GlooControlCommunicationLane(
+                rank=int(self.rank),
+                world_size=int(len(self.ep_group_ranks) or 1),
+                root_rank=int(self.ep_group_root_global_rank),
+                process_group=self.target_plan_control_group,
+                group_ranks=tuple(int(v) for v in self.ep_group_ranks),
+            )
         if self.target_planner_service is None:
             self.target_planner_service = TargetLayerPlannerService(
                 store=self.target_plan_store,
-                agreement_fn=self._agree_target_plan_payload,
             )
             self.target_planner_service.start()
 
@@ -1230,24 +1318,119 @@ class RouterSenseInjectionRuntime:
             self.target_planner_service.shutdown()
         if self.target_plan_store is not None:
             self.target_plan_store.shutdown()
+        self.control_communication_lane = None
+        self.target_plan_control_group = None
+        self.target_plan_control_group_handle = None
+        self._ready_target_plan_candidates.clear()
+        self._expected_publication_slots.clear()
+        self._terminal_publication_slots.clear()
+        self._published_publication_slots.clear()
+        self._poll_attempts.clear()
+        self._execution_plan_cache().clear()
+        self._prepared_execution_cache().clear()
+
+    @staticmethod
+    def _target_plan_key_from_slot(slot: Any) -> TargetPlanKey:
+        return TargetPlanKey(
+            run_id=str(slot.run_id),
+            forward_epoch=int(slot.forward_generation),
+            microbatch_id=str(slot.microbatch_id),
+            target_layer_id=str(slot.target_layer_id),
+        )
 
     def _pump_target_planner_publications(self) -> None:
         if self.target_planner_service is None:
             return
         for ready in self.target_planner_service.drain_ready_publications():
-            published = self.target_planner_service.publish_ready_plan(ready)
-            if published is None:
+            candidate = self.target_planner_service.local_publication_candidate(ready)
+            if candidate is None:
                 continue
-            self._store_target_planner_predictions(ready=ready)
-            self._timeline(
-                "target_plan_ready",
-                layer_name=str(ready.request.target_layer_id),
-                target_layer_id=str(ready.request.target_layer_id),
-                logical_plan_digest=str(published.logical_plan_digest),
-                h1_digest=str(ready.bundle.h1.matrix_digest),
-                h2_digest=str(ready.bundle.h2.matrix_digest),
-                planner_wall_us=float(ready.metrics.planner_wall_us),
+            self._ready_target_plan_candidates[str(candidate.slot.semantic_digest())] = (ready, candidate)
+            if len(self.ep_group_ranks) <= 1 or not dist.is_available() or not dist.is_initialized():
+                self._poll_target_plan_slot(target_layer_id=str(ready.request.target_layer_id), safe_point="single_rank_autopublish")
+
+    def _poll_target_plan_slot(self, *, target_layer_id: str, safe_point: str | None = None) -> None:
+        if self.control_communication_lane is None or self.target_plan_store is None:
+            return
+        slot_key = (str(self.run_id), int(self._forward_epoch), str(self.microbatch_id), str(target_layer_id))
+        slot = self._expected_publication_slots.get(slot_key)
+        if slot is None:
+            return
+        slot_digest = str(slot.semantic_digest())
+        if slot_digest in self._terminal_publication_slots or slot_digest in self._published_publication_slots:
+            return
+        if safe_point is not None and (slot_digest, str(safe_point)) in self._poll_attempts:
+            return
+        if safe_point is not None:
+            self._poll_attempts.add((slot_digest, str(safe_point)))
+        ready_pair = self._ready_target_plan_candidates.get(slot_digest)
+        local_candidate = None if ready_pair is None else ready_pair[1]
+        if local_candidate is None and self.target_planner_service is not None:
+            local_candidate = self.target_planner_service.publication_state_for_slot(slot)
+        poll_result = self.control_communication_lane.poll(slot, local_candidate)
+        if poll_result.status is PublicationPollStatus.NOT_READY:
+            return
+        if poll_result.status in {PublicationPollStatus.CANCELLED, PublicationPollStatus.EXPIRED, PublicationPollStatus.FAILED, PublicationPollStatus.SLOT_MISMATCH}:
+            self._terminal_publication_slots.add(slot_digest)
+            target_key = self._target_plan_key_from_slot(slot)
+            if self.target_planner_service is not None:
+                self.target_planner_service.cancel_slot(
+                    slot,
+                    final_status=str(poll_result.status.value).upper(),
+                )
+            self.target_plan_store.clear_expected_publication(target_key)
+            self.target_plan_store.close_key_if_unclaimed(
+                target_key,
+                final_status="FAILED" if poll_result.status in {PublicationPollStatus.FAILED, PublicationPollStatus.SLOT_MISMATCH} else "CANCELLED",
+                execution_origin=f"lane:{poll_result.status.value}",
             )
+            self._ready_target_plan_candidates.pop(slot_digest, None)
+            self._published_publication_slots.discard(slot_digest)
+            return
+        if ready_pair is None:
+            return
+        ready = ready_pair[0]
+        canonical_payload = dict(poll_result.canonical_payload)
+        metadata_payload = dict(canonical_payload.get("metadata") or {})
+        plan_payload = dict(canonical_payload.get("plan") or metadata_payload.get("plan") or {})
+        if not plan_payload:
+            self.target_plan_store.close_key_if_unclaimed(
+                ready.key,
+                final_status="FAILED",
+                execution_origin="lane:missing_plan_payload",
+            )
+            return
+        published = TargetLayerPreparedJointPlan.from_dict(plan_payload)
+        published_plan = None
+        if getattr(self, "plan_publisher", None) is not None and published.window_plan is not None:
+            published_plan = self.plan_publisher.build(
+                publication_slot=slot.semantic_payload(),
+                window_plan=published.window_plan,
+            )
+        publish_result = self.target_plan_store.publish_if_current(token=ready.token, plan=published)
+        if publish_result.status not in {"PUBLISHED", "ALREADY_PUBLISHED_SAME"}:
+            self._timeline(
+                "target_plan_publish_rejected",
+                target_layer_id=str(ready.key.target_layer_id),
+                status=str(publish_result.status),
+                logical_plan_digest=str(published.logical_plan_digest),
+            )
+            return
+        if published_plan is not None:
+            self._execution_plan_cache()[self._target_plan_store._key(ready.key)] = published_plan
+        self._ready_target_plan_candidates.pop(slot_digest, None)
+        self._published_publication_slots.add(slot_digest)
+        self._store_target_planner_predictions(ready=ready)
+        self._timeline(
+            "target_plan_ready",
+            layer_name=str(ready.request.target_layer_id),
+            target_layer_id=str(ready.request.target_layer_id),
+            logical_plan_digest=str(published.logical_plan_digest),
+            h1_digest=str(ready.bundle.h1.matrix_digest),
+            h2_digest=str(ready.bundle.h2.matrix_digest),
+            planner_wall_us=float(ready.metrics.planner_wall_us),
+            publish_status=str(publish_result.status),
+        )
 
     def _store_target_planner_predictions(self, *, ready) -> None:
         from rs.runtime.online.megatron_ep.prediction.contracts import ActiveNextDispatchPrediction, PredictedTrafficMatrix
@@ -1705,6 +1888,16 @@ class RouterSenseInjectionRuntime:
                         safe_projection_mode=str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select"),
                     )
                 )
+                slot = slot_from_request(
+                    run_id=str(self.run_id),
+                    forward_generation=int(self._forward_epoch),
+                    microbatch_id=str(self.microbatch_id),
+                    source_layer_id=str(layer_id),
+                    target_layer_id=str(next_layer_id),
+                )
+                self._expected_publication_slots[
+                    (str(self.run_id), int(self._forward_epoch), str(self.microbatch_id), str(next_layer_id))
+                ] = slot
                 self._runtime_state.write("latest_target_plan_submit_status", str(result.status.value))
                 self._runtime_state.write("latest_target_plan_submit_task_key", str(result.task_key))
                 self._increment_state_counter_map("target_plan_submit_count_by_source_target", f"{layer_id}->{next_layer_id}")
@@ -1713,6 +1906,12 @@ class RouterSenseInjectionRuntime:
                         "target_plan_enqueue_count_by_source_target",
                         f"{layer_id}->{next_layer_id}",
                     )
+                elif result.status is PreparationSubmitStatus.DROPPED_OVERLOAD:
+                    self._runtime_state.write("latest_target_plan_preparation_state", "MISSED_OVERLOAD")
+                    self._terminal_publication_slots.add(str(slot.semantic_digest()))
+                elif result.status is PreparationSubmitStatus.REJECTED_EXPIRED:
+                    self._runtime_state.write("latest_target_plan_preparation_state", "EXPIRED")
+                    self._terminal_publication_slots.add(str(slot.semantic_digest()))
                 elif result.status is PreparationSubmitStatus.REJECTED_CLOSED:
                     raise RuntimeError(f"target_planner_submit_failed:{result.status.value}:{result.task_key}")
 
@@ -2622,6 +2821,28 @@ class RouterSenseInjectionRuntime:
         self.target_plan_store.start_execution(key, execution_origin=execution_origin, claim_owner="prepared_reconcile")
         self._runtime_state.write("execution_origin", execution_origin)
         self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
+        published_execution_plan = self._execution_plan_cache().get(self.target_plan_store._key(key))
+        execution_pipeline = getattr(self, "execution_pipeline", None)
+        if published_execution_plan is not None and execution_pipeline is not None:
+            prepare_start_ns = time.monotonic_ns()
+            prepared_execution = execution_pipeline.prepare(
+                published_execution_plan,
+                self._actual_phase_context_from_ready_context(phase_ctx=phase_ctx),
+            )
+            prepare_end_ns = time.monotonic_ns()
+            self._record_instrumentation_measurement(
+                event_type="materialization",
+                layer_id=str(phase_ctx.layer_id),
+                phase=str(phase_ctx.phase),
+                started_at_ns=prepare_start_ns,
+                ended_at_ns=prepare_end_ns,
+                details={"valid": bool(prepared_execution.validation.valid)},
+            )
+            if not prepared_execution.validation.valid:
+                self.target_plan_store.fail(key, execution_origin="materialization_invalid")
+                self._runtime_state.write("execution_origin", "materialization_invalid")
+                return None
+            self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution
         return compiled
 
     def _build_provisional_async_plan(
@@ -3240,17 +3461,28 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("forward_start_ns", int(time.monotonic_ns()))
         self._runtime_state.write("forward_end_ns", 0)
         self._target_plan_reconciled_keys.clear()
-        if self.target_planner_service is not None and previous_epoch > 0:
-            self.target_planner_service.cancel_generation(
+        self._ready_target_plan_candidates.clear()
+        self._expected_publication_slots.clear()
+        self._terminal_publication_slots.clear()
+        self._published_publication_slots.clear()
+        self._poll_attempts.clear()
+        if self.target_planner_service is not None:
+            self.target_planner_service.cancel_before_generation(
                 run_id=str(self.run_id),
-                forward_epoch=int(previous_epoch),
                 microbatch_id=str(self.microbatch_id),
+                current_generation=int(self._forward_epoch),
             )
         if self.target_plan_store is not None:
-            self.target_plan_store.cleanup_epoch(
+            self.target_plan_store.cleanup_before_generation(
                 run_id=str(self.run_id),
-                forward_epoch=int(self._forward_epoch),
                 microbatch_id=str(self.microbatch_id),
+                current_generation=int(self._forward_epoch),
+            )
+        if self.control_communication_lane is not None and hasattr(self.control_communication_lane, "cancel_before_generation"):
+            self.control_communication_lane.cancel_before_generation(
+                run_id=str(self.run_id),
+                microbatch_id=str(self.microbatch_id),
+                current_generation=int(self._forward_epoch),
             )
 
     def end_forward(self) -> dict[str, Any]:
@@ -3267,6 +3499,11 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.remove("global_joint_plan_wire", None)
         self._runtime_state.remove("global_joint_plan_agreement", None)
         self._runtime_state.remove("global_joint_window_plan", None)
+        self._ready_target_plan_candidates.clear()
+        self._expected_publication_slots.clear()
+        self._terminal_publication_slots.clear()
+        self._published_publication_slots.clear()
+        self._poll_attempts.clear()
         if self.target_planner_service is not None:
             self.target_planner_service.cancel_generation(
                 run_id=str(self.run_id),
@@ -3375,6 +3612,7 @@ class RouterSenseInjectionRuntime:
             self._timeline("before_token_dispatch_exit", layer_name=layer_name, phase_name="P0", scheduled=False)
             return
         self._pump_target_planner_publications()
+        self._poll_target_plan_slot(target_layer_id=str(parse_layer_id(layer_name)), safe_point="target_dispatch_ready")
         sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
         if callable(sync_fn):
             try:
@@ -4187,6 +4425,11 @@ class RouterSenseInjectionRuntime:
     def after_token_combine(self, *, layer_name: str) -> None:
         hook_start_ns = time.monotonic_ns()
         self._timeline("after_token_combine_enter", layer_name=layer_name, phase_name="P1")
+        layer_id = parse_layer_id(layer_name)
+        if str(layer_id).isdigit():
+            next_layer_id = str(int(layer_id) + 1)
+            self._pump_target_planner_publications()
+            self._poll_target_plan_slot(target_layer_id=next_layer_id, safe_point="source_combine_complete")
         if self.layer_role_for_name(layer_name) == "none":
             self._record_none_heavy_hook(
                 layer_name=layer_name,
@@ -4230,8 +4473,15 @@ class RouterSenseInjectionRuntime:
                             self._target_plan_key(layer_name=layer_name),
                             execution_origin=execution_origin,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        try:
+                            self.target_plan_store.fail(
+                                self._target_plan_key(layer_name=layer_name),
+                                execution_origin="complete_failed",
+                            )
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"prepared target completion failed for {layer_name}") from exc
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
                 raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")

@@ -27,6 +27,36 @@ class LegacyObserverConflictError(RuntimeError):
     pass
 
 
+class FormalRuntimeAttachPreflightError(RuntimeError):
+    pass
+
+
+@dataclass
+class ControlGroupHandle:
+    process_group: Any | None
+    group_ranks: tuple[int, ...]
+    root_global_rank: int
+    root_group_rank: int
+    owned: bool = False
+    _closed: bool = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if hasattr(self, "_registry_key"):
+            return
+        if not self.owned or self.process_group is None:
+            return
+        try:
+            import torch.distributed as dist
+
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group(self.process_group)
+        except Exception:
+            pass
+
+
 @dataclass
 class RuntimeHandle:
     runtime: Any
@@ -178,6 +208,7 @@ class PublicationPollStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    SLOT_MISMATCH = "slot_mismatch"
 
 
 @dataclass(frozen=True)
@@ -202,6 +233,15 @@ class PublicationPollResult:
 
 class ControlCommunicationLane(Protocol):
     def poll(self, slot: PublicationSlot, local_candidate: LocalPublicationCandidate | None) -> PublicationPollResult:
+        ...
+
+    def cancel_before_generation(
+        self,
+        *,
+        run_id: str,
+        microbatch_id: str,
+        current_generation: int,
+    ) -> None:
         ...
 
 
