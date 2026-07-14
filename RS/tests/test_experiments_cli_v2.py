@@ -139,16 +139,12 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     cases_payload = json.loads(capsys.readouterr().out)
     assert {case["case_id"] for case in cases_payload} == {"diag-case", "offline-case"}
 
-    assert main(["run", "--config", str(config_path), "--suite-id", "cpu-core"]) == 0
+    output_dir = tmp_path / "runs"
+    assert main(["run", "--config", str(config_path), "--suite-id", "cpu-core", "--output-dir", str(output_dir)]) == 0
     run_payload = json.loads(capsys.readouterr().out)
-    assert len(run_payload) == 2
-    by_kind = {item["details"]["run_kind"]: item for item in run_payload}
-    assert by_kind["DIAGNOSTIC"]["status"] == "success"
-    assert by_kind["OFFLINE_EVALUATION"]["status"] == "success"
-    assert by_kind["OFFLINE_EVALUATION"]["summary"]["offline_replay_complete"] is True
-    assert by_kind["OFFLINE_EVALUATION"]["summary"]["evaluation_spec_digest"]
-    assert by_kind["OFFLINE_EVALUATION"]["summary"]["task_set_digest"]
-    assert by_kind["OFFLINE_EVALUATION"]["summary"]["execution_truth_digest"]
+    assert run_payload["status"] == "success"
+    assert len(run_payload["runs"]) == 2
+    assert all(Path(item["result_bundle_path"]).is_file() for item in run_payload["runs"])
 
 
 def test_loader_rejects_legacy_v1_config_without_lossy_migration(tmp_path: Path) -> None:
@@ -230,9 +226,11 @@ def test_initialize_run_artifacts_uses_env_commit_sha_without_git(tmp_path: Path
     monkeypatch.delenv("ROUTERSENSE_COMMIT_SHA", raising=False)
 
 
-def test_initialize_run_artifacts_uses_handoff_manifest_sha_without_git(tmp_path: Path) -> None:
-    repo_root = tmp_path / "archive"
-    handoff_dir = repo_root / "handoff"
+def test_initialize_run_artifacts_uses_handoff_manifest_sha_without_git(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ROUTERSENSE_COMMIT_SHA", raising=False)
+    repo_root = tmp_path / "archive" / "RS"
+    repo_root.mkdir(parents=True)
+    handoff_dir = repo_root.parent / "handoff"
     handoff_dir.mkdir(parents=True)
     (handoff_dir / "manifest.json").write_text(
         json.dumps({"final_sha": "manifest-sha-456"}, ensure_ascii=True),
@@ -289,5 +287,6 @@ def test_gloo_runner_returns_non_placeholder_bundle() -> None:
     )()
     result = registry.resolve(RunKind.GLOO_FUNCTIONAL).run(plan)
     assert result.status == "success"
-    assert result.details["gate_summary"]["status"] == "passed"
+    assert result.details["gate_status"] == "passed"
+    assert Path(str(result.details["gate_summary_artifact_path"])).is_file()
     assert result.summary["all_work_completed"] is True

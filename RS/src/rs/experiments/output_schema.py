@@ -57,16 +57,21 @@ def detect_git_state(repo_root: Path) -> tuple[str, bool]:
 
 
 def _manifest_sha(repo_root: Path) -> tuple[str, str]:
-    manifest_path = repo_root / "handoff" / "manifest.json"
-    if not manifest_path.is_file():
-        return "", ""
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return "", ""
-    final_sha = str(payload.get("final_sha", "") or "").strip()
-    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    return final_sha, digest
+    for manifest_path in (
+        repo_root / "handoff" / "manifest.json",
+        repo_root.parent / "handoff" / "manifest.json",
+    ):
+        if not manifest_path.is_file():
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        manifest_sha = str(payload.get("final_sha", "") or payload.get("commit_sha", "")).strip()
+        digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_sha:
+            return manifest_sha, digest
+    return "", ""
 
 
 def resolve_commit_identity(*, repo_root: Path, run_plan_commit_sha: str = "") -> tuple[str, bool, str, str]:

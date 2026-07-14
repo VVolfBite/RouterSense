@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -223,10 +227,32 @@ def _offline_planner_id(case: PlanningCase) -> str:
 class OfflineEvaluationRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
         commit_sha, git_dirty = _commit_identity(plan)
-        window = _offline_fixture_window()
+        workload = dict(dict(getattr(plan, "defaults", {})).get("workload", {}) or {})
+        fixture_dir = Path(str(workload.get("fixture_dir", _offline_fixture_dir()))).resolve()
+        fixture_path = fixture_dir / "replay_layer_1.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        metadata = dict(payload["metadata"])
+        window = OfflineWindow(
+            window_identity="fixture:1->2",
+            source_layer=str(metadata["layer_id"]),
+            target_layer=str(metadata["next_layer_id"]),
+            p0_actual=tuple(tuple(int(v) for v in row) for row in payload["p0_dispatch_matrix"]),
+            p1_actual=tuple(tuple(int(v) for v in row) for row in payload["p1_return_matrix"]),
+            p2_actual=tuple(tuple(int(v) for v in row) for row in payload["p2_next_dispatch_matrix"]),
+            placement_snapshot={"group_size": 4, "fixture_type": str(metadata["fixture_type"])},
+            traffic_provenance=TrafficProvenance.ROUTE_RECONSTRUCTED,
+            matrix_unit="rows",
+            return_model="transpose_dispatch",
+            raw_token_count=13,
+            used_token_count=13,
+            dropped_token_count=0,
+            drop_reason=None,
+            trace_digest="fixture-trace-layer1",
+        )
         prediction = _offline_prediction(window, plan.planning_case)
         spec = _offline_spec(plan)
-        request = OfflinePlanningRequestBuilder(bucket_rows=4, information_mode="p0_p1_p2").build(window, prediction, spec)
+        bucket_rows = int(workload.get("bucket_rows", 4) or 4)
+        request = OfflinePlanningRequestBuilder(bucket_rows=bucket_rows, information_mode="p0_p1_p2").build(window, prediction, spec)
         planner = PlannerRegistry.create(_offline_planner_id(plan.planning_case), None)
         window_plan = planner.plan(request)
         truth = build_execution_truth(window, spec)
@@ -285,6 +311,9 @@ class OfflineEvaluationRunner:
                 "offline_audit_status": audit_status,
                 "coverage_status": coverage_status,
                 "realized_makespan": evaluation.realized_makespan,
+                "performance_measurement_complete": False,
+                "measured_repeat_count": 0,
+                "warmup_excluded": False,
                 "prediction_evaluation_complete": False,
                 "prediction_record_count": 0,
                 "prediction_metric_count": 0,
@@ -312,14 +341,48 @@ class OfflineEvaluationRunner:
 @dataclass
 class GlooFunctionalRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
-        from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate
-
         commit_sha, git_dirty = _commit_identity(plan)
-        summary = run_gate(instrumentation_mode=_instrumentation_mode(plan))
+        backend = "async_release" if str(getattr(plan.planning_case, "execution_backend", "")) == "async_release" else "phase_sync"
+        run_root = Path(str(getattr(plan, "output_dir", "") or (_repo_root() / "outputs" / "gloo_runner"))).resolve()
+        run_id = _plan_run_id(plan).replace(":", "_")
+        artifact_dir = run_root / "runs" / run_id / "evidence"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = artifact_dir / f"gloo_gate_{backend}_summary.json"
+        stdout_log = artifact_dir / f"gloo_gate_{backend}.stdout.log"
+        stderr_log = artifact_dir / f"gloo_gate_{backend}.stderr.log"
+        env = dict(os.environ)
+        existing = str(env.get("PYTHONPATH", "") or "")
+        env["PYTHONPATH"] = ("src;." + (f";{existing}" if existing else ""))
+        command = [
+            sys.executable,
+            ".\\experiments\\distributed\\run_m123_integrated_publication_execution_gloo.py",
+            "--execution-backend",
+            backend,
+            "--instrumentation-mode",
+            _instrumentation_mode(plan),
+            "--summary-path",
+            str(summary_path),
+        ]
+        proc = subprocess.run(
+            command,
+            cwd=str(_repo_root()),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        stdout_log.write_text(proc.stdout, encoding="utf-8")
+        stderr_log.write_text(proc.stderr, encoding="utf-8")
+        if not summary_path.is_file():
+            raise RuntimeError("missing_gate_summary")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if int(proc.returncode) != 0 or str(summary.get("status")) != "passed" or any(str(item.get("status")) != "passed" for item in summary.get("ranks", ())):
+            raise RuntimeError(f"gloo_gate_failed:{proc.returncode}")
         status = "success" if str(summary.get("status")) == "passed" else "failure"
         correctness_status = "valid" if status == "success" else "invalid"
         ranks = list(summary.get("ranks", ()))
         measurement_event_count = sum(int(item.get("measurement_event_count", 0) or 0) for item in ranks)
+        summary_digest = hashlib.sha256(json.dumps(summary, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
         result = ResultBundle(
             run_identity=RunIdentity(
                 run_id=_plan_run_id(plan),
@@ -344,6 +407,9 @@ class GlooFunctionalRunner:
                 "timeout_count": 0,
                 "check_failure_count": 0 if status == "success" else 1,
                 "measurement_event_count": measurement_event_count,
+                "performance_measurement_complete": False,
+                "measured_repeat_count": 0,
+                "warmup_excluded": False,
                 "prediction_evaluation_complete": False,
                 "prediction_record_count": 0,
                 "prediction_metric_count": 0,
@@ -359,7 +425,11 @@ class GlooFunctionalRunner:
                 "run_kind": plan.run_kind.value,
                 "planner_id": plan.planning_case.planner_id,
                 "execution_backend": plan.planning_case.execution_backend,
-                "gate_summary": summary,
+                "gate_summary_digest": summary_digest,
+                "gate_summary_artifact_path": str(summary_path),
+                "gate_stdout_log_path": str(stdout_log),
+                "gate_stderr_log_path": str(stderr_log),
+                "gate_status": str(summary.get("status")),
             },
         )
         return _finalize_bundle(plan=plan, bundle=result)

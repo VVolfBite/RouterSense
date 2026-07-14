@@ -19,7 +19,11 @@ planning_cases:
 defaults:
   model: {id: offline-trace}
   topology: {world_size: 4, topology_id: local-4gpu}
-  workload: {id: offline-replay-smoke}
+  workload:
+    id: offline-replay-smoke
+    fixture_dir: tests/fixtures/offline_replay_smoke
+    max_windows: 1
+    bucket_rows: 4
   runtime: {selected_layers: [0, 1], line: offline_replay}
   evaluation: {repeats: 1, warmup: 0}
   strategies: [fifo]

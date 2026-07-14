@@ -109,9 +109,9 @@ class CommonPlanMaterializer:
                     continue
                 for spec in payload_specs:
                     dependency_ids: tuple[str, ...] = ()
-                    if str(flow.phase) == "p1_return":
+                    if str(flow.phase) == "p1_return" and int(src_global_rank) == local_global_rank:
                         dependency_ids = (f"release:p0_inbound_complete:{src_group_rank}",)
-                    elif str(flow.phase) == "p2_dispatch":
+                    elif str(flow.phase) == "p2_dispatch" and int(src_global_rank) == local_global_rank:
                         dependency_ids = (f"release:p1_inbound_complete:{src_group_rank}",)
                     send_offset = int(send_offsets[str(spec.payload_role)][dst_group_rank]) if int(src_global_rank) == local_global_rank else 0
                     recv_offset = int(recv_offsets[str(spec.payload_role)][src_group_rank]) if int(dst_global_rank) == local_global_rank else 0

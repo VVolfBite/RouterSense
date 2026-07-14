@@ -136,6 +136,7 @@ class RunPlan:
     commit_sha: str = ""
     defaults: Mapping[str, Any] = field(default_factory=dict)
     config_path: str = ""
+    output_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -147,5 +148,6 @@ class RunPlan:
             "commit_sha": str(self.commit_sha),
             "defaults": dict(self.defaults),
             "config_path": str(self.config_path),
+            "output_dir": str(self.output_dir),
             "planning_case": self.planning_case.to_dict(),
         }

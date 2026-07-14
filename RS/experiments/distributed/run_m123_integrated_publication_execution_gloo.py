@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import socket
@@ -14,7 +15,7 @@ from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_r
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.execution.api import _source_input_offset, _target_output_offset
-from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.runtime.online.megatron_ep.execution.pipeline import build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.public_types import CombineCompleteEvent, CombineReadyEvent, DispatchCompleteEvent, DispatchReadyEvent
 
@@ -187,7 +188,7 @@ def _outcome_task_ids(item: dict[str, object]) -> tuple[str, ...]:
     return ()
 
 
-def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) -> None:
+def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
     os.environ["RANK"] = str(rank)
@@ -207,7 +208,13 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
         runtime.plan_publisher = CanonicalPlanPublisher(
             rank_map=RankMap(group_ranks=group_ranks, root_rank=group_ranks[0])
         )
-        runtime.execution_pipeline = RuntimeExecutionPipeline()
+        if str(execution_backend) == "async_release":
+            object.__setattr__(runtime.config, "execution_mode", "joint_window_async_p2p")
+        else:
+            object.__setattr__(runtime.config, "execution_mode", "phase_sync_wave")
+        runtime.execution_pipeline = build_runtime_execution_pipeline(
+            execution_mode="joint_window_async_p2p" if str(execution_backend) == "async_release" else "phase_sync_wave"
+        )
         runtime.runtime_instrumentation = build_runtime_instrumentation(
             instrumentation_mode=instrumentation_mode,
             evidence_sink=BufferedEvidenceSink(),
@@ -218,7 +225,7 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
         adapter = MegatronPhaseTransportAdapter(
             dispatcher_class="SyntheticDispatcher",
             dispatcher_module_sha256=None,
-            p2p_group=None,
+            p2p_group=dist.group.WORLD if str(execution_backend) == "async_release" else None,
         )
         runtime.transport_adapter = adapter
         adapter.timeline_hook = lambda event, **detail: runtime._timeline(  # noqa: SLF001
@@ -314,19 +321,20 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
             if str(item.get("payload_role")) in {"hidden_states", "routing_probs"}
             for task_id in _outcome_task_ids(item)
         )
-        if not p0_completed_task_ids:
-            p0_completed_task_ids = _all_task_ids(prepared_p0.materialized_plan, payload_roles={"hidden_states", "routing_probs"})
         p1_completed_task_ids = tuple(
             str(task_id)
             for item in p1_outcomes
             if str(item.get("payload_role")) == "hidden_states"
             for task_id in _outcome_task_ids(item)
         )
+        if not p0_completed_task_ids:
+            raise AssertionError("missing actual P0 completed_task_ids")
         if not p1_completed_task_ids:
-            p1_completed_task_ids = _all_task_ids(prepared_p1.materialized_plan, payload_roles={"hidden_states"})
+            raise AssertionError("missing actual P1 completed_task_ids")
         summary = {
             "rank": int(rank),
             "status": "passed",
+            "execution_backend": str(execution_backend),
             "publication_trace_count": int(len(trace)),
             "late_suffix_call_count": int(spy["late_suffix_call_count"]),
             "late_suffix_provider_call_count": int(spy["late_suffix_provider_call_count"]),
@@ -384,16 +392,21 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
 
 
 def run_gate(*, instrumentation_mode: str = "perf_light") -> dict[str, object]:
+    return run_gate_with_backend(instrumentation_mode=instrumentation_mode, execution_backend="phase_sync")
+
+
+def run_gate_with_backend(*, instrumentation_mode: str = "perf_light", execution_backend: str = "phase_sync") -> dict[str, object]:
     world_size = 4
     port = _free_port()
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    mp.spawn(_worker, args=(world_size, port, str(instrumentation_mode)), nprocs=world_size, join=True)
+    mp.spawn(_worker, args=(world_size, port, str(instrumentation_mode), str(execution_backend)), nprocs=world_size, join=True)
     payloads = [json.loads((RUN_DIR / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
     assert all(item["status"] == "passed" for item in payloads), payloads
     summary = {
         "status": "passed",
         "world_size": world_size,
         "instrumentation_mode": str(instrumentation_mode),
+        "execution_backend": str(execution_backend),
         "p0_matrix": [list(row) for row in _matrix_for_world_size(world_size)],
         "p1_matrix": [list(row) for row in tuple(tuple(_matrix_for_world_size(world_size)[src][dst] for src in range(world_size)) for dst in range(world_size))],
         "ranks": payloads,
@@ -402,8 +415,18 @@ def run_gate(*, instrumentation_mode: str = "perf_light") -> dict[str, object]:
     return summary
 
 
-def main() -> None:
-    summary = run_gate(instrumentation_mode=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--execution-backend", default=str(os.environ.get("RS_M123_GATE_EXECUTION_BACKEND", "phase_sync") or "phase_sync"))
+    parser.add_argument("--instrumentation-mode", default=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
+    parser.add_argument("--summary-path", default="")
+    args = parser.parse_args(argv)
+    summary = run_gate_with_backend(
+        instrumentation_mode=str(args.instrumentation_mode),
+        execution_backend=str(args.execution_backend),
+    )
+    if str(args.summary_path).strip():
+        Path(str(args.summary_path)).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, sort_keys=True))
 
 
