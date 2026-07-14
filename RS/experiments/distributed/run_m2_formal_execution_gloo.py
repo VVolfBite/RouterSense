@@ -32,29 +32,8 @@ def _matrix_for_group(group_ranks: tuple[int, ...]) -> tuple[tuple[int, ...], ..
     raise ValueError(f"unsupported group size {group_ranks!r}")
 
 
-def _window_plan(group_ranks: tuple[int, ...], phase: str) -> WindowPlan:
-    matrix = _matrix_for_group(group_ranks)
+def _window_plan_from_matrices(group_ranks: tuple[int, ...], phase: str, matrices: tuple[tuple[tuple[int, ...], ...], ...]) -> WindowPlan:
     flow_phase = {"P0": "p0_dispatch", "P1": "p1_return"}[phase]
-    remote_flows: list[PlannedFlow] = []
-    self_flows: list[PlannedFlow] = []
-    for src_index, row in enumerate(matrix):
-        for dst_index, rows in enumerate(row):
-            if int(rows) <= 0:
-                continue
-            flow = PlannedFlow(
-                flow_id=f"{flow_phase}_{src_index}_{dst_index}",
-                phase=flow_phase,
-                src_rank=int(src_index),
-                dst_rank=int(dst_index),
-                row_count=int(rows),
-                release_state="ready",
-                executable=True,
-            )
-            if src_index == dst_index:
-                self_flows.append(flow)
-            else:
-                remote_flows.append(flow)
-    wave_flows = [remote_flows, self_flows]
     return WindowPlan(
         planner_id="m2-formal",
         planner_family="joint",
@@ -62,17 +41,37 @@ def _window_plan(group_ranks: tuple[int, ...], phase: str) -> WindowPlan:
         waves=tuple(
             PlanWave(
                 wave_id=wave_index,
-                flows=tuple(flows),
-                estimated_duration=float(sum(int(flow.row_count) for flow in flows)),
+                flows=tuple(
+                    PlannedFlow(
+                        flow_id=f"{flow_phase}_{wave_index}_{src_index}_{dst_index}",
+                        phase=flow_phase,
+                        src_rank=int(src_index),
+                        dst_rank=int(dst_index),
+                        row_count=int(rows),
+                        release_state="ready",
+                        executable=True,
+                    )
+                    for src_index, row in enumerate(matrix)
+                    for dst_index, rows in enumerate(row)
+                    if int(rows) > 0
+                ),
+                estimated_duration=float(sum(int(rows) for row in matrix for rows in row)),
             )
-            for wave_index, flows in enumerate(wave_flows)
+            for wave_index, matrix in enumerate(matrices)
         ),
         metadata={"source_layer_id": "0", "target_layer_id": "1"},
     )
 
 
-def _context_for_rank(rank: int, *, group_ranks: tuple[int, ...], phase: str):
+def _window_plan(group_ranks: tuple[int, ...], phase: str) -> WindowPlan:
     matrix = _matrix_for_group(group_ranks)
+    remote = tuple(tuple(0 if src == dst else int(value) for dst, value in enumerate(row)) for src, row in enumerate(matrix))
+    local = tuple(tuple(int(value) if src == dst else 0 for dst, value in enumerate(row)) for src, row in enumerate(matrix))
+    return _window_plan_from_matrices(group_ranks, phase, (remote, local))
+
+
+def _context_for_rank(rank: int, *, group_ranks: tuple[int, ...], phase: str, matrix: tuple[tuple[int, ...], ...] | None = None):
+    matrix = matrix or _matrix_for_group(group_ranks)
     group_index = group_ranks.index(int(rank))
     row = tuple(int(value) for value in matrix[group_index])
     col = tuple(int(matrix[src][group_index]) for src in range(len(matrix)))
@@ -120,8 +119,9 @@ def _expected_output_tensor(
     phase: str,
     payload_role: str,
     shape_suffix: tuple[int, ...],
+    matrix: tuple[tuple[int, ...], ...] | None = None,
 ) -> torch.Tensor:
-    matrix = _matrix_for_group(group_ranks)
+    matrix = matrix or _matrix_for_group(group_ranks)
     local_group_rank = group_ranks.index(int(local_global_rank))
     if phase == "P0":
         incoming_rows_by_peer = [int(matrix[src][local_group_rank]) for src in range(len(group_ranks))]
@@ -172,7 +172,8 @@ def _jsonify(value):
 
 
 def _execute_for_rank(rank: int, *, group_ranks: tuple[int, ...], phase: str, process_group):
-    phase_context = _context_for_rank(rank, group_ranks=group_ranks, phase=phase)
+    matrix = _matrix_for_group(group_ranks)
+    phase_context = _context_for_rank(rank, group_ranks=group_ranks, phase=phase, matrix=matrix)
     published = CanonicalPlanPublisher(
         rank_map=RankMap(group_ranks=group_ranks, root_rank=group_ranks[0])
     ).build(
@@ -287,6 +288,106 @@ def _execute_for_rank(rank: int, *, group_ranks: tuple[int, ...], phase: str, pr
     }
 
 
+def _execute_sparse_for_rank(
+    rank: int,
+    *,
+    group_ranks: tuple[int, ...],
+    phase: str,
+    matrices: tuple[tuple[tuple[int, ...], ...], ...],
+    process_group,
+):
+    aggregate = tuple(
+        tuple(sum(int(matrices[wave_index][src][dst]) for wave_index in range(len(matrices))) for dst in range(len(group_ranks)))
+        for src in range(len(group_ranks))
+    )
+    phase_context = _context_for_rank(rank, group_ranks=group_ranks, phase=phase, matrix=aggregate)
+    published = CanonicalPlanPublisher(
+        rank_map=RankMap(group_ranks=group_ranks, root_rank=group_ranks[0])
+    ).build(
+        publication_slot={
+            "run_id": "m2-gloo-sparse",
+            "forward_generation": 0,
+            "microbatch_id": "mb",
+            "source_layer_id": "0",
+            "target_layer_id": "1",
+            "planning_slot": f"sparse:{group_ranks[0]}->{group_ranks[-1]}",
+        },
+        window_plan=_window_plan_from_matrices(group_ranks, phase, matrices),
+    )
+    prepared = RuntimeExecutionPipeline().prepare(published, _actual_phase_context(rank, phase_context=phase_context))
+    spec = prepared.materialized_plan.payload_specs[0]
+    tensor = _input_tensor(spec, source_global_rank=int(rank))
+    expected_output = _expected_output_tensor(
+        local_global_rank=int(rank),
+        group_ranks=group_ranks,
+        phase=phase,
+        payload_role=str(spec.payload_role),
+        shape_suffix=tuple(int(dim) for dim in spec.shape_suffix),
+        matrix=aggregate,
+    )
+    sync_outcome = PhaseSyncExecutor().execute(
+        plan=prepared.materialized_plan,
+        invocation=PayloadInvocation(
+            run_id="m2-gloo-sparse",
+            forward_generation=0,
+            layer_id=str(phase_context.layer_id),
+            phase=str(phase_context.phase),
+            payload_role=str(spec.payload_role),
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=str(spec.dtype),
+            layout_digest=str(prepared.materialized_plan.layout_digest),
+            invocation_id=f"sparse-sync:{rank}:{spec.payload_role}",
+            input_tensor=tensor,
+            process_group=process_group,
+        ),
+        context=ExecutionContext(
+            run_id="m2-gloo-sparse",
+            forward_generation=0,
+            layer_id=str(phase_context.layer_id),
+            phase=str(phase_context.phase),
+            rank_space="global",
+        ),
+    )
+    expected_collectives = int(len(matrices))
+    if int(sync_outcome.details.get("collective_round_count", -1)) != expected_collectives:
+        raise AssertionError(
+            f"sparse collective round mismatch rank={rank}: expected={expected_collectives} "
+            f"actual={sync_outcome.details.get('collective_round_count')}"
+        )
+    if sync_outcome.success is not True:
+        raise AssertionError(f"sparse sync outcome failed rank={rank}: {sync_outcome.to_dict()}")
+    if not isinstance(sync_outcome.output_payload, torch.Tensor) or not torch.equal(sync_outcome.output_payload.cpu(), expected_output.cpu()):
+        raise AssertionError(
+            f"sparse sync output mismatch rank={rank}: "
+            f"expected={expected_output.tolist()} actual="
+            f"{sync_outcome.output_payload.tolist() if isinstance(sync_outcome.output_payload, torch.Tensor) else sync_outcome.output_payload}"
+        )
+    return {
+        "rank": int(rank),
+        "group_ranks": list(group_ranks),
+        "phase": str(phase),
+        "expected_collective_round_count": int(expected_collectives),
+        "materialized_plan_digest": str(prepared.materialized_plan.materialized_plan_digest),
+        "sync": _serializable_outcome(sync_outcome.to_dict()),
+    }
+
+
+def _validate_global_results(summary: dict[str, object]) -> None:
+    all_ranks = summary["all_ranks"]
+    full_group_rounds = [
+        int(rank_payload["full_group"]["results"]["hidden_states"]["sync"]["details"]["collective_round_count"])
+        for rank_payload in all_ranks
+    ]
+    if any(value <= 0 for value in full_group_rounds):
+        raise AssertionError(f"full_group collective rounds invalid: {full_group_rounds}")
+    sparse_one = [int(rank_payload["sparse_one_wave"]["sync"]["details"]["collective_round_count"]) for rank_payload in all_ranks]
+    sparse_two = [int(rank_payload["sparse_two_wave"]["sync"]["details"]["collective_round_count"]) for rank_payload in all_ranks]
+    if sparse_one != [1, 1, 1, 1]:
+        raise AssertionError(f"sparse_one_wave collective rounds mismatch: {sparse_one}")
+    if sparse_two != [2, 2, 2, 2]:
+        raise AssertionError(f"sparse_two_wave collective rounds mismatch: {sparse_two}")
+
+
 def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
     dist.init_process_group(
         "gloo",
@@ -301,6 +402,23 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
         local = {
             "rank": int(rank),
             "full_group": _execute_for_rank(rank, group_ranks=(0, 1, 2, 3), phase="P0", process_group=dist.group.WORLD),
+            "sparse_one_wave": _execute_sparse_for_rank(
+                rank,
+                group_ranks=(0, 1, 2, 3),
+                phase="P0",
+                matrices=(((0, 4, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)),),
+                process_group=dist.group.WORLD,
+            ),
+            "sparse_two_wave": _execute_sparse_for_rank(
+                rank,
+                group_ranks=(0, 1, 2, 3),
+                phase="P0",
+                matrices=(
+                    ((0, 4, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)),
+                    ((0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 5), (0, 0, 0, 0)),
+                ),
+                process_group=dist.group.WORLD,
+            ),
         }
         dist.barrier()
         if rank in {2, 3}:
@@ -313,10 +431,11 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
         (out_path / f"rank{rank}_m2_formal_gloo.json").write_text(json.dumps(_jsonify(local), indent=2), encoding="utf-8")
         if rank == 0:
             summary = {
-                "status": "completed",
+                "status": "passed",
                 "world_size": int(world_size),
                 "all_ranks": gathered,
             }
+            _validate_global_results(summary)
             (out_path / "m2_formal_execution_gloo_summary.json").write_text(json.dumps(_jsonify(summary), indent=2), encoding="utf-8")
             print(json.dumps(_jsonify(summary), indent=2))
     except Exception as exc:

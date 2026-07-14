@@ -315,3 +315,179 @@ def test_runtime_execution_pipeline_reservation_rejects_duplicate_invocation() -
     assert first.success is True
     assert second.success is False
     assert second.failure_code == "duplicate_invocation"
+
+
+def test_phase_sync_executor_rejects_missing_release_dependency() -> None:
+    materialized = _build_local_only_materialized_plan()
+    batch = materialized.batches[0]
+    slice_ = batch.slices[0]
+    dependent_plan = type(materialized)(
+        publication_slot=materialized.publication_slot,
+        local_global_rank=materialized.local_global_rank,
+        local_group_rank=materialized.local_group_rank,
+        phase=materialized.phase,
+        payload_specs=materialized.payload_specs,
+        batches=(
+            type(batch)(
+                batch_id=batch.batch_id,
+                wave_id=batch.wave_id,
+                phase=batch.phase,
+                slices=(
+                    type(slice_)(
+                        task_id=slice_.task_id,
+                        flow_id=slice_.flow_id,
+                        payload_role=slice_.payload_role,
+                        src_group_rank=slice_.src_group_rank,
+                        dst_group_rank=slice_.dst_group_rank,
+                        src_global_rank=slice_.src_global_rank,
+                        dst_global_rank=slice_.dst_global_rank,
+                        row_count=slice_.row_count,
+                        send_offset_rows=slice_.send_offset_rows,
+                        recv_offset_rows=slice_.recv_offset_rows,
+                        dependency_ids=("release:p0_inbound_complete:0",),
+                    ),
+                ),
+                collective_required=batch.collective_required,
+                metadata=batch.metadata,
+            ),
+        ),
+        rank_map=materialized.rank_map,
+        expected_outgoing_rows=materialized.expected_outgoing_rows,
+        expected_incoming_rows=materialized.expected_incoming_rows,
+        logical_plan_digest=materialized.logical_plan_digest,
+        published_plan_digest=materialized.published_plan_digest,
+        layout_digest=materialized.layout_digest,
+        materialized_plan_digest="pending",
+        metadata=materialized.metadata,
+    )
+    dependent_plan = type(materialized)(
+        publication_slot=dependent_plan.publication_slot,
+        local_global_rank=dependent_plan.local_global_rank,
+        local_group_rank=dependent_plan.local_group_rank,
+        phase=dependent_plan.phase,
+        payload_specs=dependent_plan.payload_specs,
+        batches=dependent_plan.batches,
+        rank_map=dependent_plan.rank_map,
+        expected_outgoing_rows=dependent_plan.expected_outgoing_rows,
+        expected_incoming_rows=dependent_plan.expected_incoming_rows,
+        logical_plan_digest=dependent_plan.logical_plan_digest,
+        published_plan_digest=dependent_plan.published_plan_digest,
+        layout_digest=dependent_plan.layout_digest,
+        materialized_plan_digest=dependent_plan.recompute_materialized_plan_digest(),
+        metadata=dependent_plan.metadata,
+    )
+    spec = dependent_plan.payload_specs[0]
+    tensor = torch.zeros((spec.row_count, spec.shape_suffix[0]), dtype=torch.float16)
+    outcome = PhaseSyncExecutor().execute(
+        plan=dependent_plan,
+        invocation=PayloadInvocation(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            payload_role=spec.payload_role,
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=spec.dtype,
+            layout_digest=dependent_plan.layout_digest,
+            invocation_id="missing-release",
+            input_tensor=tensor,
+        ),
+        context=ExecutionContext(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            rank_space="global",
+        ),
+    )
+    assert outcome.success is False
+    assert outcome.failure_code == "unresolved_dependency:release:p0_inbound_complete:0"
+
+
+def test_p2p_executor_rejects_missing_release_dependency() -> None:
+    from rs.runtime.online.megatron_ep.execution.api import P2PReleaseExecutor
+
+    materialized = _build_local_only_materialized_plan()
+    batch = materialized.batches[0]
+    slice_ = batch.slices[0]
+    dependent_plan = type(materialized)(
+        publication_slot=materialized.publication_slot,
+        local_global_rank=materialized.local_global_rank,
+        local_group_rank=materialized.local_group_rank,
+        phase=materialized.phase,
+        payload_specs=materialized.payload_specs,
+        batches=(
+            type(batch)(
+                batch_id=batch.batch_id,
+                wave_id=batch.wave_id,
+                phase=batch.phase,
+                slices=(
+                    type(slice_)(
+                        task_id=slice_.task_id,
+                        flow_id=slice_.flow_id,
+                        payload_role=slice_.payload_role,
+                        src_group_rank=slice_.src_group_rank,
+                        dst_group_rank=slice_.dst_group_rank,
+                        src_global_rank=slice_.src_global_rank,
+                        dst_global_rank=slice_.dst_global_rank,
+                        row_count=slice_.row_count,
+                        send_offset_rows=slice_.send_offset_rows,
+                        recv_offset_rows=slice_.recv_offset_rows,
+                        dependency_ids=("release:p0_inbound_complete:0",),
+                    ),
+                ),
+                collective_required=batch.collective_required,
+                metadata=batch.metadata,
+            ),
+        ),
+        rank_map=materialized.rank_map,
+        expected_outgoing_rows=materialized.expected_outgoing_rows,
+        expected_incoming_rows=materialized.expected_incoming_rows,
+        logical_plan_digest=materialized.logical_plan_digest,
+        published_plan_digest=materialized.published_plan_digest,
+        layout_digest=materialized.layout_digest,
+        materialized_plan_digest="pending",
+        metadata=materialized.metadata,
+    )
+    dependent_plan = type(materialized)(
+        publication_slot=dependent_plan.publication_slot,
+        local_global_rank=dependent_plan.local_global_rank,
+        local_group_rank=dependent_plan.local_group_rank,
+        phase=dependent_plan.phase,
+        payload_specs=dependent_plan.payload_specs,
+        batches=dependent_plan.batches,
+        rank_map=dependent_plan.rank_map,
+        expected_outgoing_rows=dependent_plan.expected_outgoing_rows,
+        expected_incoming_rows=dependent_plan.expected_incoming_rows,
+        logical_plan_digest=dependent_plan.logical_plan_digest,
+        published_plan_digest=dependent_plan.published_plan_digest,
+        layout_digest=dependent_plan.layout_digest,
+        materialized_plan_digest=dependent_plan.recompute_materialized_plan_digest(),
+        metadata=dependent_plan.metadata,
+    )
+    spec = dependent_plan.payload_specs[0]
+    tensor = torch.zeros((spec.row_count, spec.shape_suffix[0]), dtype=torch.float16)
+    outcome = P2PReleaseExecutor().execute(
+        plan=dependent_plan,
+        invocation=PayloadInvocation(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            payload_role=spec.payload_role,
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=spec.dtype,
+            layout_digest=dependent_plan.layout_digest,
+            invocation_id="missing-release-p2p",
+            input_tensor=tensor,
+        ),
+        context=ExecutionContext(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            rank_space="global",
+        ),
+    )
+    assert outcome.success is False
+    assert outcome.failure_code == "unresolved_dependency_or_cycle:release:p0_inbound_complete:0"

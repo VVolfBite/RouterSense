@@ -64,11 +64,6 @@ def _window_plan(plan: PublishedPlan) -> WindowPlan:
     plan.validate()
     return plan.window_plan
 
-
-def _dependency_key(phase: str, src_rank: int, dst_rank: int, payload_role: str) -> tuple[str, int, int, str]:
-    return (str(phase), int(src_rank), int(dst_rank), str(payload_role))
-
-
 class CommonPlanMaterializer:
     def materialize(self, plan: PublishedPlan, context: ActualPhaseContext) -> MaterializedPlan:
         plan.validate()
@@ -95,13 +90,17 @@ class CommonPlanMaterializer:
             str(role): [0 for _ in phase_ready_context.ep_group_ranks]
             for role in expected_incoming
         }
-        produced_task_ids: dict[tuple[str, int, int, str], str] = {}
         batches: list[ExecutionBatch] = []
         for wave in window_plan.waves:
+            phase_flows = [
+                flow
+                for flow in wave.flows
+                if str(flow.phase) == str(flow_phase) and int(flow.row_count) > 0
+            ]
+            if not phase_flows:
+                continue
             slices: list[TransferSlice] = []
-            for flow in wave.flows:
-                if str(flow.phase) != str(flow_phase) or int(flow.row_count) <= 0:
-                    continue
+            for flow in phase_flows:
                 src_group_rank = int(flow.src_rank)
                 dst_group_rank = int(flow.dst_rank)
                 src_global_rank = int(plan.rank_map.group_rank_to_global_rank(src_group_rank))
@@ -131,20 +130,24 @@ class CommonPlanMaterializer:
                         dependency_ids=dependency_ids,
                     )
                     slices.append(slice_)
-                    produced_task_ids[_dependency_key(str(flow.phase), int(src_global_rank), int(dst_global_rank), str(spec.payload_role))] = str(task_id)
                     if int(src_global_rank) == local_global_rank:
                         send_offsets[str(spec.payload_role)][dst_group_rank] += int(flow.row_count)
                     if int(dst_global_rank) == local_global_rank:
                         recv_offsets[str(spec.payload_role)][src_group_rank] += int(flow.row_count)
-            if slices:
-                batches.append(
-                    ExecutionBatch(
-                        batch_id=f"{context.phase}:wave:{wave.wave_id}",
-                        wave_id=int(wave.wave_id),
-                        slices=tuple(slices),
-                        metadata={"phase": str(context.phase)},
-                    )
+            batches.append(
+                ExecutionBatch(
+                    batch_id=f"{context.phase}:wave:{wave.wave_id}",
+                    wave_id=int(wave.wave_id),
+                    phase=str(context.phase),
+                    slices=tuple(slices),
+                    collective_required=True,
+                    metadata={
+                        "phase": str(context.phase),
+                        "phase_flow_count": int(len(phase_flows)),
+                        "local_slice_count": int(len(slices)),
+                    },
                 )
+            )
         draft = MaterializedPlan(
             publication_slot=dict(plan.publication_slot),
             local_global_rank=local_global_rank,
