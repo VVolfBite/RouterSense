@@ -1,63 +1,53 @@
 from __future__ import annotations
 
 import json
-import os
-import socket
-import traceback
+from collections import Counter
 from pathlib import Path
 
-import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-
-from rs.core.contracts import ActualPhaseContext, EvaluationSpec, ExecutionContext, OfflineWindow, PredictionHint, PredictionIdentity, PredictionResult, TrafficProvenance
-from rs.offline.parity import build_materialization_parity_case, build_planning_parity_case, expected_completed_task_ids
+from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate
+from rs.core.contracts import (
+    ActualPhaseContext,
+    EvaluationSpec,
+    OfflineWindow,
+    PlanningConstraints,
+    PlanningIdentity,
+    PlanningRequest,
+    PlanningTopology,
+    PlanningTraffic,
+    PlanningWeights,
+    PredictionHint,
+    PredictionIdentity,
+    PredictionResult,
+    TrafficProvenance,
+)
+from rs.planning import PlannerRegistry
+from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher, _window_plan_from_payload
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
-from rs.runtime.online.megatron_ep.execution.api import GlooFunctionalExecutor, PayloadInvocation
-from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
+from rs.runtime.online.megatron_ep.materialization import CommonPlanMaterializer
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+OUT_DIR = Path("outputs/closure/m4_offline_online_parity")
 
 
-def _window() -> OfflineWindow:
-    matrix = (
-        (0, 3, 0, 1),
-        (2, 0, 1, 0),
-        (0, 1, 0, 2),
-        (1, 0, 2, 0),
-    )
-    return_matrix = (
-        (0, 2, 0, 1),
-        (3, 0, 1, 0),
-        (0, 1, 0, 2),
-        (1, 0, 2, 0),
-    )
-    p2_matrix = (
-        (0, 2, 1, 0),
-        (1, 0, 2, 1),
-        (2, 0, 0, 1),
-        (0, 1, 1, 0),
-    )
+def _offline_window(summary: dict[str, object]) -> OfflineWindow:
+    p0 = tuple(tuple(int(v) for v in row) for row in summary["p0_matrix"])
+    p1 = tuple(tuple(int(v) for v in row) for row in summary["p1_matrix"])
     return OfflineWindow(
-        window_identity="fixture:1->2",
-        source_layer="1",
-        target_layer="2",
-        p0_actual=matrix,
-        p1_actual=return_matrix,
-        p2_actual=p2_matrix,
-        placement_snapshot={"group_size": 4, "fixture_type": "offline_replay_smoke"},
+        window_identity="m123-gate:0->1",
+        source_layer="0",
+        target_layer="1",
+        p0_actual=p0,
+        p1_actual=p1,
+        p2_actual=p0,
+        placement_snapshot={"group_size": len(p0), "fixture_type": "m123_integrated_gate"},
         traffic_provenance=TrafficProvenance.ROUTE_RECONSTRUCTED,
         matrix_unit="rows",
         return_model="transpose_dispatch",
-        raw_token_count=13,
-        used_token_count=13,
+        raw_token_count=sum(sum(row) for row in p0),
+        used_token_count=sum(sum(row) for row in p0),
         dropped_token_count=0,
         drop_reason=None,
-        trace_digest="fixture-trace-layer1",
+        trace_digest="m123-integrated-gate",
     )
 
 
@@ -69,9 +59,9 @@ def _prediction(window: OfflineWindow) -> PredictionResult:
             target_layer_id=str(window.target_layer),
         ),
         hint=PredictionHint(
-            predictor_id="copy_current",
+            predictor_id="copy_current_dispatch",
             hint_type="traffic_matrix",
-            target_dispatch_rows=window.p2_actual,
+            target_dispatch_rows=window.p0_actual,
             confidence=1.0,
             oracle=False,
             source_layer_id=str(window.source_layer),
@@ -80,10 +70,10 @@ def _prediction(window: OfflineWindow) -> PredictionResult:
     )
 
 
-def _spec() -> EvaluationSpec:
+def _spec(world_size: int) -> EvaluationSpec:
     return EvaluationSpec(
         track="runtime_lookahead",
-        world_size=4,
+        world_size=int(world_size),
         task_granularity="matrix_cell",
         matrix_unit="rows",
         time_unit="row_cost",
@@ -100,226 +90,174 @@ def _spec() -> EvaluationSpec:
     )
 
 
-def _input_tensor(rows: int, *, hidden: int, source_global_rank: int) -> torch.Tensor:
-    base = int(source_global_rank) * 10000
-    values = torch.arange(base, base + max(int(rows), 1), dtype=torch.float32)
-    return values[:rows].unsqueeze(1).repeat(1, max(hidden, 1)).to(dtype=torch.float16)
-
-
-def _peer_base_offset(rows_by_peer: list[int], peer_group_rank: int) -> int:
-    return int(sum(int(rows_by_peer[index]) for index in range(int(peer_group_rank))))
-
-
-def _expected_output_tensor(*, local_global_rank: int, matrix: tuple[tuple[int, ...], ...], shape_suffix: tuple[int, ...]) -> torch.Tensor:
-    local_group_rank = int(local_global_rank)
-    incoming_rows_by_peer = [int(matrix[src][local_group_rank]) for src in range(len(matrix))]
-    width = int(shape_suffix[0]) if shape_suffix else 1
-    rows: list[torch.Tensor] = []
-    for src_group_rank, row_count in enumerate(incoming_rows_by_peer):
-        if row_count <= 0:
-            continue
-        source_peer_base = _peer_base_offset([int(matrix[src_group_rank][peer]) for peer in range(len(matrix))], local_group_rank)
-        values = torch.arange(
-            src_group_rank * 10000 + source_peer_base,
-            src_group_rank * 10000 + source_peer_base + row_count,
-            dtype=torch.float32,
-        )
-        rows.append(values.unsqueeze(1).repeat(1, max(width, 1)).to(dtype=torch.float16))
-    if not rows:
-        return torch.zeros((0, max(width, 1)), dtype=torch.float16)
-    return torch.cat(rows, dim=0)
-
-
-def _jsonify(value):
-    if isinstance(value, torch.Tensor):
-        return value.float().tolist()
-    if isinstance(value, dict):
-        return {str(key): _jsonify(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonify(item) for item in value]
-    return value
-
-
-def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
-    dist.init_process_group(
-        "gloo",
-        init_method=f"tcp://127.0.0.1:{int(master_port)}",
-        rank=rank,
-        world_size=world_size,
+def _actual_phase_context(payload: dict[str, object]) -> ActualPhaseContext:
+    return ActualPhaseContext(
+        layer_id=str(payload["layer_id"]),
+        phase=str(payload["phase"]),
+        world_size=int(payload["world_size"]),
+        rank_space=str(payload["rank_space"]),
+        layout_digest=str(payload["layout_digest"]),
+        metadata=dict(payload.get("metadata", {})),
     )
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    try:
-        window = _window()
-        prediction = _prediction(window)
-        spec = _spec()
-        planning = build_planning_parity_case(
-            window=window,
-            prediction=prediction,
-            spec=spec,
-            planner_id="fifo_bucket",
-            bucket_rows=4,
-            max_waves=64,
-        )
-        if planning.offline_request.semantic_digest() != planning.online_request.semantic_digest():
-            raise AssertionError("input parity failed")
-        if planning.offline_plan.semantic_digest() != planning.online_plan.semantic_digest():
-            raise AssertionError("plan parity failed")
-        contexts = make_contexts_from_matrix(phase="P0", matrix=window.p0_actual, p2_hint_mode="deterministic_stub")
-        actual_context = ActualPhaseContext(
-            layer_id=str(contexts[rank].layer_id),
-            phase="P0",
-            world_size=4,
-            rank_space="global",
-            layout_digest=str(contexts[rank].canonical_receive_layout_id),
-            metadata={"phase_ready_context": contexts[rank].to_dict()},
-        )
-        materialization = build_materialization_parity_case(
-            window=window,
-            prediction=prediction,
-            spec=spec,
-            planner_id="fifo_bucket",
-            publication_slot={
-                "run_id": str(window.trace_digest),
-                "forward_generation": 0,
-                "microbatch_id": "mb0",
-                "source_layer_id": str(window.source_layer),
-                "target_layer_id": str(window.target_layer),
-                "planning_slot": f"{window.source_layer}->{window.target_layer}",
+
+
+def _planning_request_from_payload(payload: dict[str, object]) -> PlanningRequest:
+    request = PlanningRequest(
+        identity=PlanningIdentity(**dict(payload["identity"])),
+        traffic=PlanningTraffic(
+            p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in payload["traffic"]["p0_dispatch_rows"]),
+            p1_return_rows=tuple(tuple(int(v) for v in row) for row in payload["traffic"]["p1_return_rows"]),
+        ),
+        prediction_hint=PredictionHint(
+            predictor_id=str(payload["prediction_hint"]["predictor_id"]),
+            hint_type=str(payload["prediction_hint"]["hint_type"]),
+            target_dispatch_rows=tuple(
+                tuple(int(v) for v in row) for row in payload["prediction_hint"]["target_dispatch_rows"]
+            ),
+            confidence=payload["prediction_hint"]["confidence"],
+            oracle=bool(payload["prediction_hint"]["oracle"]),
+            source_layer_id=payload["prediction_hint"]["source_layer_id"],
+            target_layer_id=payload["prediction_hint"]["target_layer_id"],
+        ),
+        topology=PlanningTopology(**dict(payload["topology"])),
+        constraints=PlanningConstraints(**dict(payload["constraints"])),
+        weights=PlanningWeights(**dict(payload["weights"])),
+        information_mode=str(payload["information_mode"]),
+    )
+    request.validate()
+    return request
+
+
+def _transfer_counter(items: list[dict[str, object]]) -> Counter[str]:
+    return Counter(
+        json.dumps(
+            {
+                "phase": str(item["phase"]),
+                "payload_role": str(item["payload_role"]),
+                "src_group_rank": int(item["src_group_rank"]),
+                "dst_group_rank": int(item["dst_group_rank"]),
+                "row_count": int(item["row_count"]),
             },
-            rank_map=RankMap(group_ranks=(0, 1, 2, 3), root_rank=0),
-            actual_phase_context=actual_context,
-            bucket_rows=4,
-            max_waves=64,
+            sort_keys=True,
         )
-        if (
-            materialization.offline_materialized_plan.materialized_plan_digest
-            != materialization.online_prepared_execution.materialized_plan.materialized_plan_digest
-        ):
-            raise AssertionError("materialization parity failed")
-        if materialization.online_prepared_execution.validation.valid is not True:
-            raise AssertionError(f"materialization validation failed: {materialization.online_prepared_execution.validation.to_dict()}")
-        role_results: dict[str, object] = {}
-        for payload_spec in materialization.online_prepared_execution.materialized_plan.payload_specs:
-            rows = int(payload_spec.row_count)
-            hidden = int(payload_spec.shape_suffix[0]) if payload_spec.shape_suffix else 1
-            input_tensor = _input_tensor(rows, hidden=hidden, source_global_rank=rank)
-            expected_output = _expected_output_tensor(
-                local_global_rank=rank,
-                matrix=window.p0_actual,
-                shape_suffix=tuple(int(dim) for dim in payload_spec.shape_suffix),
-            )
-            outcome = GlooFunctionalExecutor().execute(
-                plan=materialization.online_prepared_execution.materialized_plan,
-                invocation=PayloadInvocation(
-                    run_id=str(window.trace_digest),
-                    forward_generation=0,
-                    layer_id=str(contexts[rank].layer_id),
-                    phase="P0",
-                    payload_role=str(payload_spec.payload_role),
-                    shape=tuple(int(dim) for dim in input_tensor.shape),
-                    dtype=str(payload_spec.dtype),
-                    layout_digest=str(materialization.online_prepared_execution.materialized_plan.layout_digest),
-                    invocation_id=f"m4-parity:{rank}:{payload_spec.payload_role}",
-                    input_tensor=input_tensor,
-                    process_group=dist.group.WORLD,
-                ),
-                context=ExecutionContext(
-                    run_id=str(window.trace_digest),
-                    forward_generation=0,
-                    layer_id=str(contexts[rank].layer_id),
-                    phase="P0",
-                    rank_space="global",
-                ),
-            )
-            expected_completed = expected_completed_task_ids(
-                materialization.online_prepared_execution.materialized_plan,
-                payload_role=str(payload_spec.payload_role),
-            )
-            if tuple(sorted(outcome.completed_task_ids)) != tuple(sorted(expected_completed)):
-                raise AssertionError(
-                    f"execution semantics parity failed for rank={rank} role={payload_spec.payload_role}: "
-                    f"expected={expected_completed} actual={outcome.completed_task_ids}"
+        for item in items
+    )
+
+
+def _expected_transfer_counter_from_plan(window_plan) -> Counter[str]:
+    rows: list[dict[str, object]] = []
+    for wave in window_plan.waves:
+        for flow in wave.flows:
+            if int(flow.row_count) <= 0 or int(flow.src_rank) == int(flow.dst_rank):
+                continue
+            if str(flow.phase) == "p0_dispatch":
+                rows.append(
+                    {
+                        "phase": "P0",
+                        "payload_role": "hidden_states",
+                        "src_group_rank": int(flow.src_rank),
+                        "dst_group_rank": int(flow.dst_rank),
+                        "row_count": int(flow.row_count),
+                    }
                 )
-            if not isinstance(outcome.output_payload, torch.Tensor) or not torch.equal(outcome.output_payload.cpu(), expected_output.cpu()):
-                raise AssertionError(
-                    f"output parity failed for rank={rank} role={payload_spec.payload_role}: "
-                    f"expected={expected_output.tolist()} actual="
-                    f"{outcome.output_payload.tolist() if isinstance(outcome.output_payload, torch.Tensor) else outcome.output_payload}"
+                rows.append(
+                    {
+                        "phase": "P0",
+                        "payload_role": "routing_probs",
+                        "src_group_rank": int(flow.src_rank),
+                        "dst_group_rank": int(flow.dst_rank),
+                        "row_count": int(flow.row_count),
+                    }
                 )
-            role_results[str(payload_spec.payload_role)] = {
-                "expected_completed_task_ids": list(expected_completed),
-                "completed_task_ids": list(outcome.completed_task_ids),
-                "distributed_operation_count": int(outcome.details.get("distributed_operation_count", 0)),
-                "expected_output": expected_output.float().tolist(),
-                "actual_output": outcome.output_payload.float().tolist(),
-            }
-        local = {
-            "rank": int(rank),
-            "request_digest": str(planning.offline_request.semantic_digest()),
-            "plan_digest": str(planning.offline_plan.semantic_digest()),
-            "materialized_plan_digest": str(materialization.offline_materialized_plan.materialized_plan_digest),
-            "roles": role_results,
-        }
-        gathered = [None for _ in range(world_size)]
-        dist.all_gather_object(gathered, local)
-        (out_path / f"rank{rank}_m4_parity.json").write_text(json.dumps(_jsonify(local), indent=2), encoding="utf-8")
-        if rank == 0:
-            request_digests = {str(item["request_digest"]) for item in gathered}
-            plan_digests = {str(item["plan_digest"]) for item in gathered}
-            materialized_digests = {str(item["materialized_plan_digest"]) for item in gathered}
-            if len(request_digests) != 1:
-                raise AssertionError(f"request digests diverged: {sorted(request_digests)}")
-            if len(plan_digests) != 1:
-                raise AssertionError(f"plan digests diverged: {sorted(plan_digests)}")
-            if len(materialized_digests) != world_size:
-                raise AssertionError("each rank should contribute its own materialized digest")
-            summary = {
-                "status": "passed",
-                "world_size": int(world_size),
-                "input_parity": {
-                    "status": "PASS",
-                    "offline_planning_request_digest": next(iter(request_digests)),
-                    "online_planning_request_digest": next(iter(request_digests)),
-                },
-                "plan_parity": {
-                    "status": "PASS",
-                    "offline_window_plan_digest": next(iter(plan_digests)),
-                    "online_window_plan_digest": next(iter(plan_digests)),
-                },
-                "materialization_parity": {
-                    "status": "PASS",
-                    "per_rank_materialized_plan_digests": [str(item["materialized_plan_digest"]) for item in gathered],
-                },
-                "execution_semantics_parity": {
-                    "status": "PASS",
-                    "per_rank_roles": {
-                        str(item["rank"]): item["roles"]
-                        for item in gathered
-                    },
-                },
-            }
-            (out_path / "m4_offline_online_parity_summary.json").write_text(json.dumps(_jsonify(summary), indent=2), encoding="utf-8")
-            print(json.dumps(_jsonify(summary), indent=2))
-    except Exception as exc:
-        failure = {
-            "rank": int(rank),
-            "status": "failed",
-            "exception_type": type(exc).__name__,
-            "exception_message": str(exc),
-            "traceback": traceback.format_exc(),
-        }
-        (out_path / f"rank{rank}_m4_parity_failure.json").write_text(json.dumps(failure, indent=2), encoding="utf-8")
-        raise
-    finally:
-        dist.destroy_process_group()
+            elif str(flow.phase) == "p1_return":
+                rows.append(
+                    {
+                        "phase": "P1",
+                        "payload_role": "hidden_states",
+                        "src_group_rank": int(flow.src_rank),
+                        "dst_group_rank": int(flow.dst_rank),
+                        "row_count": int(flow.row_count),
+                    }
+                )
+    return _transfer_counter(rows)
 
 
 def main() -> None:
-    os.environ["MASTER_ADDR"] = "127.0.0.1"
-    port = _free_port()
-    out_dir = "outputs/closure/m4_offline_online_parity"
-    mp.spawn(_worker, args=(4, port, out_dir), nprocs=4, join=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_summary = run_gate(instrumentation_mode="perf_light")
+    window = _offline_window(runtime_summary)
+    rank0 = dict(runtime_summary["ranks"][0])
+    runtime_request = _planning_request_from_payload(dict(rank0["publication_candidate_planning_request"]))
+    prediction = _prediction(window)
+    spec = _spec(len(window.p0_actual))
+    runtime_window_plan = _window_plan_from_payload(dict(rank0["window_plan"]))
+    planner = PlannerRegistry.create(str(runtime_window_plan.planner_id), None)
+    offline_plan = planner.plan(runtime_request)
+
+    input_parity_ok = str(runtime_request.semantic_digest()) == str(rank0["planning_request_digest"])
+    plan_parity_ok = str(offline_plan.semantic_digest()) == str(rank0["window_plan_digest"])
+
+    publisher = CanonicalPlanPublisher(
+        rank_map=RankMap(
+            group_ranks=tuple(int(v) for v in dict(rank0["rank_map"])["group_ranks"]),
+            root_rank=int(dict(rank0["rank_map"])["root_global_rank"]),
+        )
+    )
+    published_plan = publisher.build(
+        publication_slot=dict(rank0["publication_slot"]),
+        window_plan=runtime_window_plan,
+    )
+
+    materialized_runtime: dict[str, str] = {}
+    materialized_offline: dict[str, str] = {}
+    materializer = CommonPlanMaterializer()
+    for item in runtime_summary["ranks"]:
+        rank = int(item["rank"])
+        p0_context = _actual_phase_context(dict(item["p0_actual_phase_context"]))
+        p1_context = _actual_phase_context(dict(item["p1_actual_phase_context"]))
+        p0_plan = materializer.materialize(published_plan, p0_context)
+        p1_plan = materializer.materialize(published_plan, p1_context)
+        materialized_offline[f"rank{rank}:P0"] = str(p0_plan.materialized_plan_digest)
+        materialized_offline[f"rank{rank}:P1"] = str(p1_plan.materialized_plan_digest)
+        materialized_runtime[f"rank{rank}:P0"] = str(item["p0_materialized_plan_digest"])
+        materialized_runtime[f"rank{rank}:P1"] = str(item["p1_materialized_plan_digest"])
+    materialization_ok = materialized_offline == materialized_runtime
+
+    expected_transfers = _expected_transfer_counter_from_plan(offline_plan)
+    actual_rows: list[dict[str, object]] = []
+    for item in runtime_summary["ranks"]:
+        actual_rows.extend(list(item["p0_completed_transfer_keys"]))
+        actual_rows.extend(list(item["p1_completed_transfer_keys"]))
+    actual_transfers = _transfer_counter(actual_rows)
+    execution_ok = actual_transfers == expected_transfers
+
+    summary = {
+        "status": "passed" if all((input_parity_ok, plan_parity_ok, materialization_ok, execution_ok)) else "failed",
+        "input_parity": {
+            "status": "PASS" if input_parity_ok else "FAIL",
+            "offline_planning_request_digest": str(runtime_request.semantic_digest()),
+            "runtime_planning_request_digest": str(rank0["planning_request_digest"]),
+        },
+        "plan_parity": {
+            "status": "PASS" if plan_parity_ok else "FAIL",
+            "offline_window_plan_digest": str(offline_plan.semantic_digest()),
+            "runtime_window_plan_digest": str(rank0["window_plan_digest"]),
+        },
+        "materialization_parity": {
+            "status": "PASS" if materialization_ok else "FAIL",
+            "offline": materialized_offline,
+            "runtime": materialized_runtime,
+        },
+        "execution_semantics_parity": {
+            "status": "PASS" if execution_ok else "FAIL",
+            "expected_transfers": dict(expected_transfers),
+            "runtime_completed_transfers": dict(actual_transfers),
+        },
+    }
+    (OUT_DIR / "m4_offline_online_parity_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    if summary["status"] != "passed":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -466,6 +466,7 @@ class TargetLayerPlannerService:
                         status="READY",
                         metadata={
                             "target_key": key.to_dict(),
+                            "planning_request": planning_request.to_dict(),
                             "plan": plan.to_dict(),
                             "h1_digest": str(bundle.h1.matrix_digest),
                             "h2_digest": str(bundle.h2.matrix_digest),
