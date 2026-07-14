@@ -1,16 +1,17 @@
 {
   "branch": "convergence/m2-control-execution",
-  "starting_sha": "93d7725",
+  "starting_sha": "6ff748ab575659094f587a877ad3506acb845343",
   "status": "M2_CONTROL_MATERIALIZATION_EXECUTION_READY",
   "completed": [
-    "execution contracts now carry typed PublishedPlan, MaterializedPlan, and ExecutionOutcome",
-    "CanonicalPlanPublisher binds a WindowPlan and recomputes published digests",
-    "CommonPlanMaterializer materializes directly from PublishedPlan(WindowPlan)",
-    "CommonPlanValidator checks materialized digest and row coverage",
-    "CommonExecutionGuard validates invocation identity and rejects duplicate invocation IDs",
-    "RuntimeExecutionPipeline added as the formal prepare/execute entry",
-    "formal 4-rank Gloo execution gate passed for full group and subgroup",
-    "focused M2 unit suite and architecture gates passed"
+    "PublishedPlan now binds a typed PublicationSlot, RankMapSnapshot, and recomputed published digest",
+    "WindowPlan ranks are treated as EP group-local and materialized through explicit group->global rank mapping",
+    "TransferSlice now carries both group-local and global src/dst ranks",
+    "MaterializedPlan coverage is validated per payload role and per peer-local offset space",
+    "Cross-phase release dependencies are emitted as explicit release tokens for P1/P2 materialization",
+    "RuntimeExecutionPipeline uses guard reservation/commit/rollback instead of validator duplication inside executors",
+    "PhaseSyncExecutor performs real all_to_all_single transport and returns output tensors from distributed data",
+    "P2PReleaseExecutor performs real asynchronous isend/irecv transport, tracks completed work, and records peak inflight batches",
+    "Formal 4-rank Gloo gate validates full-group and subgroup outputs against expected remote rows"
   ],
   "remaining_blockers": [],
   "test_commands": [
@@ -20,8 +21,8 @@
   ],
   "test_results": {
     "compileall": "passed",
-    "focused_pytest": "31 passed",
+    "focused_pytest": "33 passed",
     "formal_gloo_gate": "passed"
   },
-  "integration_note": "Runtime call-site wiring remains owned by convergence/m123-integration."
+  "integration_note": "Lifecycle wiring remains owned by convergence/m123-integration; this branch now provides the formal M2 execution pipeline entry."
 }

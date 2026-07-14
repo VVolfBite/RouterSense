@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 from rs.core.contracts.planning import WindowPlan
 from rs.scheduling.validation import stable_hash
@@ -19,6 +19,53 @@ def _validate_non_negative(name: str, value: int) -> None:
 
 
 @dataclass(frozen=True)
+class RankMapSnapshot:
+    group_ranks: tuple[int, ...]
+    root_global_rank: int
+    root_group_rank: int
+
+    def validate(self) -> None:
+        if not self.group_ranks:
+            raise ValueError("group_ranks must be non-empty")
+        if len(set(int(rank) for rank in self.group_ranks)) != len(self.group_ranks):
+            raise ValueError("group_ranks must be unique")
+        if any(int(rank) < 0 for rank in self.group_ranks):
+            raise ValueError("group_ranks must be >= 0")
+        if int(self.root_global_rank) not in {int(rank) for rank in self.group_ranks}:
+            raise ValueError("root_global_rank must belong to group_ranks")
+        if int(self.root_group_rank) < 0 or int(self.root_group_rank) >= len(self.group_ranks):
+            raise ValueError("root_group_rank out of range")
+        if int(self.group_ranks[int(self.root_group_rank)]) != int(self.root_global_rank):
+            raise ValueError("root_group_rank/root_global_rank mismatch")
+
+    @property
+    def world_size(self) -> int:
+        return int(len(self.group_ranks))
+
+    def group_rank_to_global_rank(self, group_rank: int) -> int:
+        self.validate()
+        if int(group_rank) < 0 or int(group_rank) >= len(self.group_ranks):
+            raise ValueError(f"group_rank out of range: {group_rank}")
+        return int(self.group_ranks[int(group_rank)])
+
+    def global_rank_to_group_rank(self, global_rank: int) -> int:
+        self.validate()
+        try:
+            return self.group_ranks.index(int(global_rank))
+        except ValueError as exc:
+            raise ValueError(f"global_rank not part of group: {global_rank}") from exc
+
+    def to_dict(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "group_ranks": [int(rank) for rank in self.group_ranks],
+            "root_global_rank": int(self.root_global_rank),
+            "root_group_rank": int(self.root_group_rank),
+            "world_size": int(self.world_size),
+        }
+
+
+@dataclass(frozen=True)
 class PublishedPlan:
     publication_slot: Mapping[str, object]
     window_plan: WindowPlan
@@ -26,6 +73,8 @@ class PublishedPlan:
     published_plan_digest: str
     root_global_rank: int
     root_group_rank: int
+    rank_map: RankMapSnapshot
+    rank_space: Literal["group_local"] = "group_local"
     version: int = 1
     metadata: Mapping[str, object] = field(default_factory=dict)
 
@@ -40,17 +89,32 @@ class PublishedPlan:
         recomputed_logical = str(self.window_plan.semantic_digest())
         if recomputed_logical != str(self.logical_plan_digest):
             raise ValueError("logical_plan_digest must match window_plan.semantic_digest()")
+        self.rank_map.validate()
         _validate_non_negative("root_global_rank", self.root_global_rank)
         _validate_non_negative("root_group_rank", self.root_group_rank)
         _validate_non_negative("version", self.version)
+        if str(self.rank_space) != "group_local":
+            raise ValueError("rank_space must be 'group_local'")
+        if int(self.root_global_rank) != int(self.rank_map.root_global_rank):
+            raise ValueError("root_global_rank must match rank_map")
+        if int(self.root_group_rank) != int(self.rank_map.root_group_rank):
+            raise ValueError("root_group_rank must match rank_map")
         if not str(self.published_plan_digest):
             raise ValueError("published_plan_digest must be non-empty")
-        if str(self.window_plan.request_digest) != str(slot["planning_slot"]) and not str(slot.get("planning_slot", "")):
+        if not str(slot.get("planning_slot", "")):
             raise ValueError("publication_slot planning_slot must be non-empty")
         if str(self.window_plan.metadata.get("source_layer_id", slot["source_layer_id"])) != str(slot["source_layer_id"]):
             raise ValueError("window_plan source_layer_id does not match publication_slot")
         if str(self.window_plan.metadata.get("target_layer_id", slot["target_layer_id"])) != str(slot["target_layer_id"]):
             raise ValueError("window_plan target_layer_id does not match publication_slot")
+        if str(self.recompute_published_plan_digest()) != str(self.published_plan_digest):
+            raise ValueError("published_plan_digest must match recomputed published plan digest")
+        for wave in self.window_plan.waves:
+            for flow in wave.flows:
+                if int(flow.src_rank) < 0 or int(flow.src_rank) >= int(self.rank_map.world_size):
+                    raise ValueError("window_plan src_rank out of group-local range")
+                if int(flow.dst_rank) < 0 or int(flow.dst_rank) >= int(self.rank_map.world_size):
+                    raise ValueError("window_plan dst_rank out of group-local range")
 
     def semantic_payload(self) -> dict[str, object]:
         self.window_plan.validate()
@@ -61,6 +125,8 @@ class PublishedPlan:
             "logical_plan_digest": str(self.logical_plan_digest),
             "root_global_rank": int(self.root_global_rank),
             "root_group_rank": int(self.root_group_rank),
+            "rank_map": self.rank_map.to_dict(),
+            "rank_space": str(self.rank_space),
             "version": int(self.version),
         }
 
@@ -76,6 +142,8 @@ class PublishedPlan:
             "published_plan_digest": str(self.published_plan_digest),
             "root_global_rank": int(self.root_global_rank),
             "root_group_rank": int(self.root_group_rank),
+            "rank_map": self.rank_map.to_dict(),
+            "rank_space": str(self.rank_space),
             "version": int(self.version),
             "metadata": dict(self.metadata),
         }
@@ -148,8 +216,10 @@ class TransferSlice:
     task_id: str
     flow_id: str
     payload_role: str
-    src_rank: int
-    dst_rank: int
+    src_group_rank: int
+    dst_group_rank: int
+    src_global_rank: int
+    dst_global_rank: int
     row_count: int
     send_offset_rows: int
     recv_offset_rows: int
@@ -159,8 +229,10 @@ class TransferSlice:
         _validate_string("task_id", self.task_id)
         _validate_string("flow_id", self.flow_id)
         _validate_string("payload_role", self.payload_role)
-        _validate_non_negative("src_rank", self.src_rank)
-        _validate_non_negative("dst_rank", self.dst_rank)
+        _validate_non_negative("src_group_rank", self.src_group_rank)
+        _validate_non_negative("dst_group_rank", self.dst_group_rank)
+        _validate_non_negative("src_global_rank", self.src_global_rank)
+        _validate_non_negative("dst_global_rank", self.dst_global_rank)
         if int(self.row_count) <= 0:
             raise ValueError("row_count must be > 0")
         _validate_non_negative("send_offset_rows", self.send_offset_rows)
@@ -174,8 +246,10 @@ class TransferSlice:
             "task_id": str(self.task_id),
             "flow_id": str(self.flow_id),
             "payload_role": str(self.payload_role),
-            "src_rank": int(self.src_rank),
-            "dst_rank": int(self.dst_rank),
+            "src_group_rank": int(self.src_group_rank),
+            "dst_group_rank": int(self.dst_group_rank),
+            "src_global_rank": int(self.src_global_rank),
+            "dst_global_rank": int(self.dst_global_rank),
             "row_count": int(self.row_count),
             "send_offset_rows": int(self.send_offset_rows),
             "recv_offset_rows": int(self.recv_offset_rows),
@@ -218,8 +292,9 @@ class MaterializedPlan:
     phase: str
     payload_specs: tuple[PayloadSpec, ...]
     batches: tuple[ExecutionBatch, ...]
-    expected_outgoing_rows: Mapping[str, tuple[int, ...]]
-    expected_incoming_rows: Mapping[str, tuple[int, ...]]
+    rank_map: RankMapSnapshot
+    expected_outgoing_rows: Mapping[str, Mapping[int, int]]
+    expected_incoming_rows: Mapping[str, Mapping[int, int]]
     logical_plan_digest: str
     published_plan_digest: str
     layout_digest: str
@@ -235,6 +310,11 @@ class MaterializedPlan:
         _validate_non_negative("local_global_rank", self.local_global_rank)
         _validate_non_negative("local_group_rank", self.local_group_rank)
         _validate_string("phase", self.phase)
+        self.rank_map.validate()
+        if int(self.local_group_rank) >= int(self.rank_map.world_size):
+            raise ValueError("local_group_rank out of range")
+        if int(self.rank_map.group_rank_to_global_rank(int(self.local_group_rank))) != int(self.local_global_rank):
+            raise ValueError("local_global_rank/local_group_rank mismatch")
         _validate_string("logical_plan_digest", self.logical_plan_digest)
         _validate_string("published_plan_digest", self.published_plan_digest)
         _validate_string("layout_digest", self.layout_digest)
@@ -251,15 +331,26 @@ class MaterializedPlan:
             for item in batch.slices:
                 if str(item.payload_role) not in payload_roles:
                     raise ValueError(f"slice payload_role {item.payload_role!r} missing from payload_specs")
+                if int(item.src_group_rank) >= int(self.rank_map.world_size) or int(item.dst_group_rank) >= int(self.rank_map.world_size):
+                    raise ValueError("slice group rank out of range")
+                if int(item.src_global_rank) != int(self.rank_map.group_rank_to_global_rank(int(item.src_group_rank))):
+                    raise ValueError("slice src global/group rank mismatch")
+                if int(item.dst_global_rank) != int(self.rank_map.group_rank_to_global_rank(int(item.dst_group_rank))):
+                    raise ValueError("slice dst global/group rank mismatch")
         for mapping_name, mapping in {
             "expected_outgoing_rows": self.expected_outgoing_rows,
             "expected_incoming_rows": self.expected_incoming_rows,
         }.items():
             if not isinstance(mapping, Mapping):
                 raise ValueError(f"{mapping_name} must be a mapping")
-            for role, rows in mapping.items():
+            for role, peer_rows in mapping.items():
                 _validate_string(mapping_name, str(role))
-                for row_count in rows:
+                if not isinstance(peer_rows, Mapping):
+                    raise ValueError(f"{mapping_name}[{role!r}] must be a peer mapping")
+                for peer_group_rank, row_count in peer_rows.items():
+                    _validate_non_negative(f"{mapping_name} peer_group_rank", int(peer_group_rank))
+                    if int(peer_group_rank) >= int(self.rank_map.world_size):
+                        raise ValueError(f"{mapping_name} peer_group_rank out of range")
                     _validate_non_negative(f"{mapping_name} row_count", int(row_count))
 
     def semantic_payload(self) -> dict[str, object]:
@@ -271,12 +362,13 @@ class MaterializedPlan:
             "phase": str(self.phase),
             "payload_specs": [item.to_dict() for item in self.payload_specs],
             "batches": [item.to_dict() for item in self.batches],
+            "rank_map": self.rank_map.to_dict(),
             "expected_outgoing_rows": {
-                str(role): [int(value) for value in rows]
+                str(role): {str(peer): int(value) for peer, value in rows.items()}
                 for role, rows in self.expected_outgoing_rows.items()
             },
             "expected_incoming_rows": {
-                str(role): [int(value) for value in rows]
+                str(role): {str(peer): int(value) for peer, value in rows.items()}
                 for role, rows in self.expected_incoming_rows.items()
             },
             "logical_plan_digest": str(self.logical_plan_digest),
@@ -319,6 +411,7 @@ class ExecutionContext:
     layer_id: str
     phase: str
     rank_space: str
+    satisfied_release_dependency_ids: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -327,6 +420,8 @@ class ExecutionContext:
         _validate_string("layer_id", self.layer_id)
         _validate_string("phase", self.phase)
         _validate_string("rank_space", self.rank_space)
+        for value in self.satisfied_release_dependency_ids:
+            _validate_string("satisfied_release_dependency_id", str(value))
 
     def to_dict(self) -> dict[str, object]:
         self.validate()
@@ -336,6 +431,7 @@ class ExecutionContext:
             "layer_id": str(self.layer_id),
             "phase": str(self.phase),
             "rank_space": str(self.rank_space),
+            "satisfied_release_dependency_ids": [str(value) for value in self.satisfied_release_dependency_ids],
             "metadata": dict(self.metadata),
         }
 

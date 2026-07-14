@@ -40,7 +40,7 @@ class RuntimeExecutionPipeline:
         )
 
     def execute(self, prepared_execution: PreparedExecution, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
-        guard = self._guard.validate(plan=prepared_execution.materialized_plan, invocation=invocation, context=context)
+        guard = self._guard.reserve(plan=prepared_execution.materialized_plan, invocation=invocation, context=context)
         if not guard.valid:
             return ExecutionOutcome(
                 success=False,
@@ -54,4 +54,10 @@ class RuntimeExecutionPipeline:
                 failure_code=str(guard.reason or "guard_failed"),
                 details={"stage": str(guard.stage)},
             )
-        return self._executor.execute(plan=prepared_execution.materialized_plan, invocation=invocation, context=context)
+        try:
+            outcome = self._executor.execute(plan=prepared_execution.materialized_plan, invocation=invocation, context=context)
+        except Exception:
+            self._guard.rollback(str(invocation.invocation_id))
+            raise
+        self._guard.commit(str(invocation.invocation_id))
+        return outcome

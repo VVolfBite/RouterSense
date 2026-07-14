@@ -100,15 +100,17 @@ def test_validator_rejects_payload_role_mismatch() -> None:
         batch_id=batch.batch_id,
         wave_id=batch.wave_id,
         slices=(
-            TransferSlice(
-                flow_id=broken_slice.flow_id,
-                task_id=broken_slice.task_id,
-                payload_role="unexpected_role",
-                src_rank=broken_slice.src_rank,
-                dst_rank=broken_slice.dst_rank,
-                row_count=broken_slice.row_count,
-                send_offset_rows=broken_slice.send_offset_rows,
-                recv_offset_rows=broken_slice.recv_offset_rows,
+                TransferSlice(
+                    flow_id=broken_slice.flow_id,
+                    task_id=broken_slice.task_id,
+                    payload_role="unexpected_role",
+                    src_group_rank=broken_slice.src_group_rank,
+                    dst_group_rank=broken_slice.dst_group_rank,
+                    src_global_rank=broken_slice.src_global_rank,
+                    dst_global_rank=broken_slice.dst_global_rank,
+                    row_count=broken_slice.row_count,
+                    send_offset_rows=broken_slice.send_offset_rows,
+                    recv_offset_rows=broken_slice.recv_offset_rows,
                 dependency_ids=broken_slice.dependency_ids,
             ),
         )
@@ -122,6 +124,7 @@ def test_validator_rejects_payload_role_mismatch() -> None:
         phase=materialized.phase,
         payload_specs=materialized.payload_specs,
         batches=(broken_batch,) + materialized.batches[1:],
+        rank_map=materialized.rank_map,
         expected_outgoing_rows=materialized.expected_outgoing_rows,
         expected_incoming_rows=materialized.expected_incoming_rows,
         logical_plan_digest=materialized.logical_plan_digest,
@@ -137,6 +140,7 @@ def test_validator_rejects_payload_role_mismatch() -> None:
         phase=broken_plan.phase,
         payload_specs=broken_plan.payload_specs,
         batches=broken_plan.batches,
+        rank_map=broken_plan.rank_map,
         expected_outgoing_rows=broken_plan.expected_outgoing_rows,
         expected_incoming_rows=broken_plan.expected_incoming_rows,
         logical_plan_digest=broken_plan.logical_plan_digest,
@@ -165,6 +169,7 @@ def test_validator_rejects_missing_first_slice_with_gap() -> None:
         phase=materialized.phase,
         payload_specs=materialized.payload_specs,
         batches=(broken_batch,),
+        rank_map=materialized.rank_map,
         expected_outgoing_rows=materialized.expected_outgoing_rows,
         expected_incoming_rows=materialized.expected_incoming_rows,
         logical_plan_digest=materialized.logical_plan_digest,
@@ -180,6 +185,7 @@ def test_validator_rejects_missing_first_slice_with_gap() -> None:
         phase=broken_plan.phase,
         payload_specs=broken_plan.payload_specs,
         batches=broken_plan.batches,
+        rank_map=broken_plan.rank_map,
         expected_outgoing_rows=broken_plan.expected_outgoing_rows,
         expected_incoming_rows=broken_plan.expected_incoming_rows,
         logical_plan_digest=broken_plan.logical_plan_digest,
@@ -202,6 +208,7 @@ def test_validator_rejects_materialized_digest_mismatch() -> None:
         phase=materialized.phase,
         payload_specs=materialized.payload_specs,
         batches=materialized.batches,
+        rank_map=materialized.rank_map,
         expected_outgoing_rows=materialized.expected_outgoing_rows,
         expected_incoming_rows=materialized.expected_incoming_rows,
         logical_plan_digest=materialized.logical_plan_digest,
@@ -227,8 +234,10 @@ def test_validator_rejects_duplicate_slice_overlap() -> None:
                 task_id="overlap-extra-task",
                 flow_id=f"{duplicated.flow_id}:overlap",
                 payload_role=duplicated.payload_role,
-                src_rank=duplicated.src_rank,
-                dst_rank=duplicated.dst_rank,
+                src_group_rank=duplicated.src_group_rank,
+                dst_group_rank=duplicated.dst_group_rank,
+                src_global_rank=duplicated.src_global_rank,
+                dst_global_rank=duplicated.dst_global_rank,
                 row_count=duplicated.row_count,
                 send_offset_rows=duplicated.send_offset_rows,
                 recv_offset_rows=duplicated.recv_offset_rows,
@@ -244,6 +253,7 @@ def test_validator_rejects_duplicate_slice_overlap() -> None:
         phase=materialized.phase,
         payload_specs=materialized.payload_specs,
         batches=(broken_batch,),
+        rank_map=materialized.rank_map,
         expected_outgoing_rows=materialized.expected_outgoing_rows,
         expected_incoming_rows=materialized.expected_incoming_rows,
         logical_plan_digest=materialized.logical_plan_digest,
@@ -259,6 +269,7 @@ def test_validator_rejects_duplicate_slice_overlap() -> None:
         phase=broken_plan.phase,
         payload_specs=broken_plan.payload_specs,
         batches=broken_plan.batches,
+        rank_map=broken_plan.rank_map,
         expected_outgoing_rows=broken_plan.expected_outgoing_rows,
         expected_incoming_rows=broken_plan.expected_incoming_rows,
         logical_plan_digest=broken_plan.logical_plan_digest,
@@ -293,6 +304,7 @@ def test_publisher_rejects_forged_logical_digest() -> None:
         published_plan_digest=published.published_plan_digest,
         root_global_rank=published.root_global_rank,
         root_group_rank=published.root_group_rank,
+        rank_map=published.rank_map,
         version=published.version,
         metadata=published.metadata,
     )
@@ -302,3 +314,58 @@ def test_publisher_rejects_forged_logical_digest() -> None:
         assert "logical_plan_digest" in str(exc)
     else:
         raise AssertionError("expected forged logical digest to be rejected")
+
+
+def test_materializer_adds_release_dependencies_for_p1() -> None:
+    contexts = make_contexts_from_matrix(phase="P1", matrix=((0, 4), (0, 0)), p2_hint_mode="deterministic_stub")
+    publisher = CanonicalPlanPublisher(rank_map=RankMap(group_ranks=(0, 1), root_rank=0))
+    window_plan = WindowPlan(
+        planner_id="barrier_criticality_joint",
+        planner_family="joint",
+        request_digest="0->1:p1",
+        waves=(
+            PlanWave(
+                wave_id=0,
+                flows=(
+                    PlannedFlow(
+                        flow_id="p1_0_1",
+                        phase="p1_return",
+                        src_rank=0,
+                        dst_rank=1,
+                        row_count=4,
+                        release_state="ready",
+                        executable=True,
+                    ),
+                ),
+                estimated_duration=4.0,
+            ),
+        ),
+        metadata={"source_layer_id": "0", "target_layer_id": "1"},
+    )
+    published = publisher.build(
+        publication_slot={
+            "run_id": "run",
+            "forward_generation": 0,
+            "microbatch_id": "mb",
+            "source_layer_id": "0",
+            "target_layer_id": "1",
+            "planning_slot": "0->1",
+        },
+        window_plan=window_plan,
+    )
+    actual_context = ActualPhaseContext(
+        layer_id="0",
+        phase="P1",
+        world_size=2,
+        rank_space="global",
+        layout_digest=str(contexts[1].canonical_receive_layout_id),
+        metadata={"phase_ready_context": contexts[1].to_dict()},
+    )
+    materialized = CommonPlanMaterializer().materialize(published, actual_context)
+    dependency_ids = {
+        dep
+        for batch in materialized.batches
+        for slice_ in batch.slices
+        for dep in slice_.dependency_ids
+    }
+    assert "release:p0_inbound_complete:0" in dependency_ids

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from rs.core.contracts.execution import (
@@ -32,16 +31,16 @@ def _coerce_phase_ready_context(payload: object) -> PhaseReadyContext:
     raise ValueError("phase_ready_context metadata is required")
 
 
-def _expected_rows_for_roles(context: PhaseReadyContext, *, use_send: bool) -> dict[str, tuple[int, ...]]:
+def _expected_rows_for_roles(context: PhaseReadyContext, *, use_send: bool) -> dict[str, dict[int, int]]:
     splits = context.send_splits if use_send else context.recv_splits
     return {
-        str(spec.tensor_role): tuple(int(value) for value in splits)
+        str(spec.tensor_role): {int(index): int(value) for index, value in enumerate(splits)}
         for spec in context.payload_specs
     }
 
 
 def _payload_specs(context: PhaseReadyContext) -> tuple[PayloadSpec, ...]:
-    recv_rows = int(sum(context.recv_splits))
+    send_rows = int(sum(context.send_splits))
     payloads: list[PayloadSpec] = []
     for spec in context.payload_specs:
         elements_per_row = 1
@@ -50,9 +49,9 @@ def _payload_specs(context: PhaseReadyContext) -> tuple[PayloadSpec, ...]:
         payloads.append(
             PayloadSpec(
                 payload_role=str(spec.tensor_role),
-                row_count=recv_rows,
-                element_count=int(recv_rows * elements_per_row),
-                byte_count=int(recv_rows * elements_per_row * int(spec.element_size_bytes)),
+                row_count=send_rows,
+                element_count=int(send_rows * elements_per_row),
+                byte_count=int(send_rows * elements_per_row * int(spec.element_size_bytes)),
                 bytes_per_row=int(elements_per_row * int(spec.element_size_bytes)),
                 dtype=str(spec.dtype),
                 shape_suffix=tuple(int(dim) for dim in spec.shape_suffix),
@@ -87,7 +86,7 @@ class CommonPlanMaterializer:
         expected_outgoing = _expected_rows_for_roles(phase_ready_context, use_send=True)
         expected_incoming = _expected_rows_for_roles(phase_ready_context, use_send=False)
         local_global_rank = int(phase_ready_context.global_rank)
-        local_group_rank = int(phase_ready_context.local_rank)
+        local_group_rank = int(phase_ready_context.ep_group_ranks.index(int(local_global_rank)))
         send_offsets = {
             str(role): [0 for _ in phase_ready_context.ep_group_ranks]
             for role in expected_outgoing
@@ -103,37 +102,39 @@ class CommonPlanMaterializer:
             for flow in wave.flows:
                 if str(flow.phase) != str(flow_phase) or int(flow.row_count) <= 0:
                     continue
-                if int(flow.src_rank) != local_global_rank and int(flow.dst_rank) != local_global_rank:
+                src_group_rank = int(flow.src_rank)
+                dst_group_rank = int(flow.dst_rank)
+                src_global_rank = int(plan.rank_map.group_rank_to_global_rank(src_group_rank))
+                dst_global_rank = int(plan.rank_map.group_rank_to_global_rank(dst_group_rank))
+                if int(src_global_rank) != local_global_rank and int(dst_global_rank) != local_global_rank:
                     continue
                 for spec in payload_specs:
                     dependency_ids: tuple[str, ...] = ()
                     if str(flow.phase) == "p1_return":
-                        parent = produced_task_ids.get(_dependency_key("p0_dispatch", int(flow.dst_rank), int(flow.src_rank), spec.payload_role))
-                        dependency_ids = () if parent is None else (str(parent),)
+                        dependency_ids = (f"release:p0_inbound_complete:{src_group_rank}",)
                     elif str(flow.phase) == "p2_dispatch":
-                        parent = produced_task_ids.get(_dependency_key("p1_return", int(flow.dst_rank), int(flow.src_rank), spec.payload_role))
-                        dependency_ids = () if parent is None else (str(parent),)
-                    src_group_rank = phase_ready_context.ep_group_ranks.index(int(flow.src_rank))
-                    dst_group_rank = phase_ready_context.ep_group_ranks.index(int(flow.dst_rank))
-                    send_offset = int(send_offsets[str(spec.payload_role)][dst_group_rank]) if int(flow.src_rank) == local_global_rank else 0
-                    recv_offset = int(recv_offsets[str(spec.payload_role)][src_group_rank]) if int(flow.dst_rank) == local_global_rank else 0
+                        dependency_ids = (f"release:p1_inbound_complete:{src_group_rank}",)
+                    send_offset = int(send_offsets[str(spec.payload_role)][dst_group_rank]) if int(src_global_rank) == local_global_rank else 0
+                    recv_offset = int(recv_offsets[str(spec.payload_role)][src_group_rank]) if int(dst_global_rank) == local_global_rank else 0
                     task_id = f"{flow.flow_id}:{spec.payload_role}"
                     slice_ = TransferSlice(
                         task_id=task_id,
                         flow_id=str(flow.flow_id),
                         payload_role=str(spec.payload_role),
-                        src_rank=int(flow.src_rank),
-                        dst_rank=int(flow.dst_rank),
+                        src_group_rank=int(src_group_rank),
+                        dst_group_rank=int(dst_group_rank),
+                        src_global_rank=int(src_global_rank),
+                        dst_global_rank=int(dst_global_rank),
                         row_count=int(flow.row_count),
                         send_offset_rows=int(send_offset),
                         recv_offset_rows=int(recv_offset),
                         dependency_ids=dependency_ids,
                     )
                     slices.append(slice_)
-                    produced_task_ids[_dependency_key(str(flow.phase), int(flow.src_rank), int(flow.dst_rank), str(spec.payload_role))] = str(task_id)
-                    if int(flow.src_rank) == local_global_rank:
+                    produced_task_ids[_dependency_key(str(flow.phase), int(src_global_rank), int(dst_global_rank), str(spec.payload_role))] = str(task_id)
+                    if int(src_global_rank) == local_global_rank:
                         send_offsets[str(spec.payload_role)][dst_group_rank] += int(flow.row_count)
-                    if int(flow.dst_rank) == local_global_rank:
+                    if int(dst_global_rank) == local_global_rank:
                         recv_offsets[str(spec.payload_role)][src_group_rank] += int(flow.row_count)
             if slices:
                 batches.append(
@@ -151,6 +152,7 @@ class CommonPlanMaterializer:
             phase=str(context.phase),
             payload_specs=payload_specs,
             batches=tuple(batches),
+            rank_map=plan.rank_map,
             expected_outgoing_rows=expected_outgoing,
             expected_incoming_rows=expected_incoming,
             logical_plan_digest=str(plan.logical_plan_digest),
@@ -169,6 +171,7 @@ class CommonPlanMaterializer:
             phase=draft.phase,
             payload_specs=draft.payload_specs,
             batches=draft.batches,
+            rank_map=draft.rank_map,
             expected_outgoing_rows=draft.expected_outgoing_rows,
             expected_incoming_rows=draft.expected_incoming_rows,
             logical_plan_digest=draft.logical_plan_digest,
