@@ -12,7 +12,9 @@
     "formal M2 Gloo execution gate including sparse-wave coverage passes on integration baseline",
     "host/runtime now instantiate CanonicalPlanPublisher, RuntimeExecutionPipeline, and RuntimeInstrumentation on the formal path",
     "merged runtime transport path records typed executor_submit measurement events in off/perf_light modes without file I/O, JSON serialization, D2H, or extra collectives from M3",
-    "merged runtime execution failure propagates unresolved_task into TargetPlanStore.fail on the formal path"
+    "merged runtime execution failure propagates unresolved_task into TargetPlanStore.fail on the formal path",
+    "prepared target path short-circuits after cancellation/cleared store without entering RuntimeExecutionPipeline.prepare",
+    "prepared target path marks TargetPlanStore FAILED with execution_origin=materialization_invalid when materialization validation fails"
   ],
   "implemented_not_verified": [
     "lifecycle caches PublishedPlan authority and prepared execution for target-phase execution",
@@ -20,8 +22,6 @@
     "debug on/off digest invariance now has a focused merged-runtime unit assertion"
   ],
   "hard_blockers": [
-    "cancellation -> no materialize/execute is still not asserted on the merged runtime baseline",
-    "materialization_invalid -> store FAILED is still not asserted through the merged lifecycle path",
     "store COMPLETED propagation still lacks a dedicated merged-runtime assertion"
   ],
   "deferred_cleanup": [
@@ -33,6 +33,7 @@
     "python -m compileall RS/src RS/tests",
     "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/unit/test_m3_measurement_and_evidence.py RS/tests/test_architecture_dependencies.py",
     "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m123_runtime_integration.py",
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m2_formal_execution_gloo.py"

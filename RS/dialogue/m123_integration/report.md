@@ -19,4 +19,6 @@ Runtime wiring now present in code:
 Still blocked:
 - merged-runtime M3 side-effect assertions now pass through `MegatronPhaseTransportAdapter -> RuntimeExecutionPipeline -> RuntimeInstrumentation`;
 - merged-runtime executor failure now has a direct assertion that `TargetPlanStore.fail(..., execution_origin="unresolved_task")` is invoked on the formal path;
-- remaining hard blockers are cancellation short-circuit coverage, explicit `materialization_invalid -> FAILED` coverage, and an explicit merged-runtime `COMPLETED` propagation assertion.
+- prepared-target cancellation/cleared-store short-circuit is now asserted and does not enter `RuntimeExecutionPipeline.prepare(...)`;
+- prepared-target `materialization_invalid -> FAILED` is now asserted directly through `_try_prepared_target_plan_for_p0(...)`;
+- remaining hard blocker is an explicit merged-runtime `COMPLETED` propagation assertion.
