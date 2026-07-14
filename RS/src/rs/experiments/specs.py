@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
 
 
 class RunKind(str, Enum):
@@ -127,19 +127,25 @@ class ExperimentSpec:
 
 @dataclass(frozen=True)
 class RunPlan:
+    experiment_id: str
     suite_id: str
     case_id: str
     run_kind: RunKind
     config_digest: str
     planning_case: PlanningCase
     commit_sha: str = ""
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+    config_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "experiment_id": str(self.experiment_id),
             "suite_id": str(self.suite_id),
             "case_id": str(self.case_id),
             "run_kind": self.run_kind.value,
             "config_digest": str(self.config_digest),
             "commit_sha": str(self.commit_sha),
+            "defaults": dict(self.defaults),
+            "config_path": str(self.config_path),
             "planning_case": self.planning_case.to_dict(),
         }

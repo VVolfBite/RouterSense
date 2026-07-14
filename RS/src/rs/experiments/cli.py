@@ -18,12 +18,15 @@ def _build_run_plans(config_path: str | Path) -> tuple[RunPlan, ...]:
             case = cases[case_id]
             plans.append(
                 RunPlan(
+                    experiment_id=loaded.spec.experiment_id,
                     suite_id=suite.suite_id,
                     case_id=case.case_id,
                     run_kind=case.run_kind,
                     config_digest=loaded.config_digest,
                     planning_case=case,
                     commit_sha="",
+                    defaults=dict(loaded.spec.defaults),
+                    config_path=str(Path(config_path).resolve()),
                 )
             )
     return tuple(plans)

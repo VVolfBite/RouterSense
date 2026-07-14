@@ -144,7 +144,11 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert len(run_payload) == 2
     by_kind = {item["details"]["run_kind"]: item for item in run_payload}
     assert by_kind["DIAGNOSTIC"]["status"] == "success"
-    assert by_kind["OFFLINE_EVALUATION"]["status"] == "invalid"
+    assert by_kind["OFFLINE_EVALUATION"]["status"] == "success"
+    assert by_kind["OFFLINE_EVALUATION"]["summary"]["offline_replay_complete"] is True
+    assert by_kind["OFFLINE_EVALUATION"]["summary"]["evaluation_spec_digest"]
+    assert by_kind["OFFLINE_EVALUATION"]["summary"]["task_set_digest"]
+    assert by_kind["OFFLINE_EVALUATION"]["summary"]["execution_truth_digest"]
 
 
 def test_loader_rejects_legacy_v1_config_without_lossy_migration(tmp_path: Path) -> None:
@@ -254,3 +258,36 @@ def test_initialize_run_artifacts_uses_handoff_manifest_sha_without_git(tmp_path
     assert manifest["commit_sha"] == "manifest-sha-456"
     assert manifest["commit_sha_source"] == "handoff_manifest"
     assert manifest["source_archive_digest"]
+
+
+def test_gloo_runner_returns_non_placeholder_bundle() -> None:
+    registry = RunnerRegistry()
+    plan = type(
+        "Plan",
+        (),
+        {
+            "experiment_id": "official-gloo-functional",
+            "suite_id": "gloo-functional",
+            "case_id": "gloo-functional-core",
+            "run_kind": RunKind.GLOO_FUNCTIONAL,
+            "config_digest": "cfg",
+            "commit_sha": "",
+            "defaults": {"topology": {"world_size": 4}},
+            "planning_case": type(
+                "Case",
+                (),
+                {
+                    "prediction_mode": "none",
+                    "planner_id": "routersense_joint_phase_sync",
+                    "planner_family": "joint",
+                    "execution_backend": "gloo_functional",
+                    "instrumentation_mode": "contract",
+                    "predictor_id": "none",
+                },
+            )(),
+        },
+    )()
+    result = registry.resolve(RunKind.GLOO_FUNCTIONAL).run(plan)
+    assert result.status == "success"
+    assert result.details["gate_summary"]["status"] == "passed"
+    assert result.summary["all_work_completed"] is True
