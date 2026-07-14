@@ -46,6 +46,7 @@ from rs.planning import (
     PlanningCostModel,
 )
 from rs.planning.api import to_logical_plan
+from rs.planning.request_builder import build_window_planning_request
 from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
@@ -1417,7 +1418,7 @@ class RouterSenseInjectionRuntime:
             )
             return
         if published_plan is not None:
-            self._execution_plan_cache()[self._target_plan_store._key(ready.key)] = published_plan
+            self._execution_plan_cache()[self.target_plan_store._key(ready.key)] = published_plan
         self._ready_target_plan_candidates.pop(slot_digest, None)
         self._published_publication_slots.add(slot_digest)
         self._store_target_planner_predictions(ready=ready)
@@ -2286,7 +2287,7 @@ class RouterSenseInjectionRuntime:
         information_mode: str = "p0_p1_p2",
         max_waves: int = 256,
     ) -> PlanningRequest:
-        return PlanningRequest(
+        return build_window_planning_request(
             identity=PlanningIdentity(
                 request_id=str(request_id),
                 run_id=str(self.run_id),
@@ -2295,19 +2296,11 @@ class RouterSenseInjectionRuntime:
                 source_layer_id=str(source_layer_id),
                 target_layer_id=str(target_layer_id),
             ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
-                p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
-            ),
-            prediction_hint=PredictionHint(
-                predictor_id=str(predictor_name or "zero"),
-                hint_type="traffic_matrix",
-                target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
-                confidence=float(prediction_confidence),
-                oracle=False,
-                source_layer_id=str(source_layer_id),
-                target_layer_id=str(target_layer_id),
-            ),
+            p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
+            p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
+            p2_hint_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
+            predictor_id=str(predictor_name or "zero"),
+            confidence=float(prediction_confidence),
             topology=PlanningTopology(world_size=int(len(p0_dispatch_rows)), full_duplex=True),
             constraints=PlanningConstraints(
                 bucket_rows=int(self.config.bucket_rows),

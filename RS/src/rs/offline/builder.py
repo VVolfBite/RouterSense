@@ -19,6 +19,7 @@ from rs.core.contracts import (
     PredictionResult,
     TrafficProvenance,
 )
+from rs.planning.request_builder import build_window_planning_request
 from rs.core.hashing import stable_hash_dict
 
 
@@ -204,27 +205,20 @@ class OfflinePlanningRequestBuilder:
         hint = prediction.hint
         if tuple(tuple(int(value) for value in row) for row in hint.target_dispatch_rows) == ():
             raise ValueError("prediction hint must not be empty")
-        request = PlanningRequest(
+        return build_window_planning_request(
             identity=PlanningIdentity(
                 request_id=str(window.window_identity),
                 run_id=str(window.trace_digest),
+                forward_id="offline",
                 window_id=str(window.window_identity),
                 source_layer_id=str(window.source_layer),
                 target_layer_id=str(window.target_layer),
             ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=window.p0_actual,
-                p1_return_rows=window.p1_actual,
-            ),
-            prediction_hint=PredictionHint(
-                predictor_id=str(hint.predictor_id),
-                hint_type=str(hint.hint_type),
-                target_dispatch_rows=hint.target_dispatch_rows,
-                confidence=hint.confidence,
-                oracle=bool(hint.oracle),
-                source_layer_id=str(window.source_layer),
-                target_layer_id=str(window.target_layer),
-            ),
+            p0_dispatch_rows=window.p0_actual,
+            p1_return_rows=window.p1_actual,
+            p2_hint_rows=hint.target_dispatch_rows,
+            predictor_id=str(hint.predictor_id),
+            confidence=float(hint.confidence),
             topology=PlanningTopology(world_size=int(spec.world_size), full_duplex=bool(spec.full_duplex)),
             constraints=PlanningConstraints(
                 bucket_rows=int(self.bucket_rows),
@@ -234,9 +228,9 @@ class OfflinePlanningRequestBuilder:
             ),
             weights=PlanningWeights(),
             information_mode=str(self.information_mode),
+            hint_type=str(hint.hint_type),
+            oracle=bool(hint.oracle),
         )
-        request.validate()
-        return request
 
 
 def prediction_digest(prediction: PredictionResult) -> str:

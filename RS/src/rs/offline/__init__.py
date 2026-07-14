@@ -13,7 +13,6 @@ from .parity import (
     MaterializationParityCase,
     PlanningParityCase,
     build_materialization_parity_case,
-    build_online_sync_request,
     build_planning_parity_case,
     expected_completed_task_ids,
 )
@@ -34,7 +33,6 @@ __all__ = [
     "build_evaluation_task_set",
     "build_execution_truth",
     "build_materialization_parity_case",
-    "build_online_sync_request",
     "build_planning_parity_case",
     "evaluate_comparison_eligibility",
     "expected_completed_task_ids",
