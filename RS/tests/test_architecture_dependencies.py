@@ -130,6 +130,18 @@ def test_runtime_does_not_import_legacy_registry_catalog_modules() -> None:
     assert not bad, bad
 
 
+def test_formal_materialization_modules_do_not_import_legacy_phase_execution() -> None:
+    bad = []
+    forbidden = (
+        "rs.scheduling.phase_execution",
+        "rs.scheduling.unified_interface",
+    )
+    for path, lineno, module in _collect_imports(Path("src/rs/runtime/online/megatron_ep/materialization")):
+        if module.startswith(forbidden):
+            bad.append(f"{path}:{lineno}:{module}")
+    assert not bad, bad
+
+
 def test_lifecycle_does_not_use_legacy_enqueue_or_main_thread_prediction() -> None:
     source = (Path(__file__).resolve().parents[1] / "src/rs/runtime/online/megatron_ep/lifecycle.py").read_text(encoding="utf-8")
     assert ".enqueue(" not in source
