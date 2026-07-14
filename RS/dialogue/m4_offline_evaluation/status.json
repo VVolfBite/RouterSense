@@ -1,0 +1,10 @@
+{
+  "phase_a_status": "M4_OFFLINE_CORE_READY",
+  "final_status": "M4_OFFLINE_EVALUATION_BLOCKED",
+  "blocking_reasons": [
+    "Phase B requires M123_PARALLEL_INTEGRATION_READY",
+    "OR-Tools is unavailable in this environment, so exact CP-SAT coverage is unsupported",
+    "offline/online materialization parity is not available on the interface-lock baseline",
+    "execution-semantics parity depends on M2 execution contracts"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "predictor": "copy_current_dispatch",
+  "record_count": 2,
+  "mean_relative_l1_error": 1.157051282051282
+}

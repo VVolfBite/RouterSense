@@ -1,0 +1,14 @@
+{
+  "compileall": {
+    "passed": true
+  },
+  "pytest": {
+    "passed": true,
+    "files": 4,
+    "tests": 12
+  },
+  "offline_smoke": {
+    "passed": true,
+    "output_dir": "outputs/offline/m4_phase_a_smoke"
+  }
+}

@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 from rs.core.contracts import (
+    EvaluationSpec,
+    OfflineWindow,
     PlanningConstraints,
     PlanningIdentity,
     PlanningRequest,
@@ -11,7 +13,11 @@ from rs.core.contracts import (
     PlanningTraffic,
     PlanningWeights,
     PredictionHint as FormalPredictionHint,
+    PredictionIdentity,
+    PredictionResult,
+    TrafficProvenance,
 )
+from rs.offline import OfflineEvaluator, OfflinePlanningRequestBuilder, build_execution_truth as build_offline_execution_truth, prediction_digest
 from rs.planning import PlannerRegistry
 from rs.planning.api import to_logical_plan
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
@@ -235,55 +241,84 @@ class ReplayEngine:
         planning_hint: PlanningHint,
         policy_name: str,
     ) -> dict[str, Any]:
-        planning_problem = build_planning_problem(replay_window=replay_window, planning_hint=planning_hint)
-        execution_truth = build_execution_truth(replay_window)
-        problem = build_multiphase_problem(
-            planning_problem=planning_problem,
-            execution_truth=execution_truth,
-            scheduling_mode=self.scheduling_mode,
-            expert_compute_delay=self.expert_compute_delay,
+        offline_window = OfflineWindow(
+            window_identity=f"{replay_window.fixture_id}:{replay_window.window_id}",
+            source_layer=str(replay_window.layer_id),
+            target_layer=str(planning_hint.target_layer),
+            p0_actual=replay_window.p0_truth_rows,
+            p1_actual=replay_window.p1_truth_rows,
+            p2_actual=replay_window.p2_truth_rows,
+            placement_snapshot={"group_size": int(replay_window.group_size)},
+            traffic_provenance=TrafficProvenance.REAL_EP_OBSERVED,
+            matrix_unit=str(replay_window.matrix_unit),
+            return_model="transpose_dispatch",
+            raw_token_count=int(sum(sum(row) for row in replay_window.p0_truth_rows)),
+            used_token_count=int(sum(sum(row) for row in replay_window.p0_truth_rows)),
+            dropped_token_count=0,
+            drop_reason=None,
+            trace_digest=stable_hash_dict(
+                {
+                    "fixture_id": replay_window.fixture_id,
+                    "window_id": replay_window.window_id,
+                    "layer_id": replay_window.layer_id,
+                }
+            ),
         )
-        request = PlanningRequest(
-            identity=PlanningIdentity(
+        spec = EvaluationSpec(
+            track="execution_window" if str(self.scheduling_mode) == "execution_window" else "runtime_lookahead",
+            world_size=int(replay_window.group_size),
+            task_granularity="matrix_cell",
+            matrix_unit="rows",
+            time_unit="row_cost",
+            cost_model_id="offline_common_v1",
+            release_model="p1_return",
+            return_model="transpose_dispatch",
+            full_duplex=True,
+            launch_cost=0.0,
+            bytes_per_row=int(replay_window.payload_row_bytes_by_phase.get("P0", 1) or 1),
+            bandwidth=1.0,
+            compute_delay=float(self.expert_compute_delay),
+            p2_semantics="actual",
+            residual_policy="reject",
+        )
+        prediction = PredictionResult(
+            identity=PredictionIdentity(
                 request_id=f"{replay_window.fixture_id}:{replay_window.window_id}:{policy_name}",
                 run_id=str(replay_window.fixture_id),
-                window_id=str(replay_window.window_id),
                 source_layer_id=str(replay_window.layer_id),
                 target_layer_id=str(planning_hint.target_layer),
             ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=replay_window.p0_truth_rows,
-                p1_return_rows=replay_window.p1_truth_rows,
-            ),
-            prediction_hint=FormalPredictionHint(
+            hint=FormalPredictionHint(
                 predictor_id=str(planning_hint.hint_type),
-                hint_type=str(planning_hint.hint_type),
+                hint_type="traffic_matrix",
                 target_dispatch_rows=planning_hint.p2_hint_rows,
                 confidence=float(planning_hint.confidence),
                 oracle=bool(planning_hint.hint_type == "perfect_trace_hint"),
-                source_layer_id=None if planning_hint.source_layer is None else str(planning_hint.source_layer),
+                source_layer_id=str(replay_window.layer_id),
                 target_layer_id=str(planning_hint.target_layer),
             ),
-            topology=PlanningTopology(world_size=int(replay_window.group_size)),
-            constraints=PlanningConstraints(
-                bucket_rows=int(self.bucket_rows),
-                max_waves=256,
-                expert_compute_delay=float(self.expert_compute_delay),
-                phase_release_model="p1_return",
-            ),
-            weights=PlanningWeights(
-                p0_weight=1.0,
-                p1_weight=1.0,
-                p2_weight=float(planning_hint.confidence),
-            ),
-            information_mode="p0_p1_p2",
+        )
+        request = OfflinePlanningRequestBuilder(bucket_rows=int(self.bucket_rows), max_waves=256).build(
+            offline_window,
+            prediction,
+            spec,
         )
         planner = PlannerRegistry.create(str(policy_name), None)
         formal_plan = planner.plan(request)
         logical_plan = to_logical_plan(formal_plan)
+        planning_problem = build_planning_problem(replay_window=replay_window, planning_hint=planning_hint)
+        legacy_execution_truth = build_execution_truth(replay_window)
+        problem = build_multiphase_problem(
+            planning_problem=planning_problem,
+            execution_truth=legacy_execution_truth,
+            scheduling_mode=self.scheduling_mode,
+            expert_compute_delay=self.expert_compute_delay,
+        )
         audit = replay_and_audit_logical_plan(problem, logical_plan)
+        truth = build_offline_execution_truth(offline_window, spec)
+        evaluation = OfflineEvaluator().evaluate(formal_plan, truth, spec)
         planning_tasks = bucketize_planning_request(request)
-        truth_digest = execution_truth_digest(execution_truth)
+        truth_digest = truth.truth_digest
         return {
             "policy_name": str(policy_name),
             "bucket_rows": int(self.bucket_rows),
@@ -300,10 +335,17 @@ class ReplayEngine:
             "logical_plan_policy_name": str(logical_plan.policy_name),
             "logical_plan_digest": str(formal_plan.semantic_digest()),
             "logical_plan_audit_digest": str(formal_plan.audit_digest()),
+            "planning_request_digest": request.semantic_digest(),
+            "prediction_digest": prediction_digest(prediction),
             "planner_family": str(formal_plan.planner_family),
-            "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
-            "audit_valid": bool(audit.get("valid", False)),
+            "makespan": float(
+                evaluation.realized_makespan
+                if evaluation.realized_makespan is not None
+                else audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0
+            ),
+            "audit_valid": bool(audit.get("valid", False)) and bool(evaluation.valid),
             "audit": audit,
+            "formal_evaluation": evaluation.to_dict(),
         }
 
 

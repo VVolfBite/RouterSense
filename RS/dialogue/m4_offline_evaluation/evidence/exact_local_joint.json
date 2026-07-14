@@ -1,0 +1,9 @@
+{
+  "status": "pending_or_unsupported",
+  "local": {
+    "solver_status": "UNSUPPORTED"
+  },
+  "joint": {
+    "solver_status": "UNSUPPORTED"
+  }
+}

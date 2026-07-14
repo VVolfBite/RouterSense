@@ -21,6 +21,17 @@ from .execution import (
 )
 from .flow import FlowEdge
 from .measurement import MeasurementEvent, MeasurementSink, MeasurementSnapshot
+from .offline import (
+    EvaluationSpec,
+    EvaluationTask,
+    EvaluationTaskSet,
+    ExecutionTruth,
+    OfflineEvaluationBundle,
+    OfflineEvaluationRecord,
+    OfflineWindow,
+    PlanEvaluation,
+    TrafficProvenance,
+)
 from .planning import (
     PlanScore,
     PlanWave,
@@ -87,6 +98,10 @@ __all__ = [
     "Executor",
     "ExpertBucketRecord",
     "EpExecutionTrace",
+    "EvaluationSpec",
+    "EvaluationTask",
+    "EvaluationTaskSet",
+    "ExecutionTruth",
     "EligibilityResult",
     "FlowEdge",
     "FutureInformationMode",
@@ -97,10 +112,14 @@ __all__ = [
     "MeasurementEvent",
     "MeasurementSink",
     "MeasurementSnapshot",
+    "OfflineEvaluationBundle",
+    "OfflineEvaluationRecord",
+    "OfflineWindow",
     "OFFLINE_PIPELINE",
     "ONLINE_PIPELINE",
     "PayloadSpec",
     "PlacementSnapshot",
+    "PlanEvaluation",
     "PlanScore",
     "PlanMaterializer",
     "PlanPublisher",
@@ -131,6 +150,7 @@ __all__ = [
     "TraceEvent",
     "TraceSink",
     "TransferSlice",
+    "TrafficProvenance",
     "TrafficHistoryContext",
     "ExpertRouteContext",
     "ExpertRoutePrediction",
