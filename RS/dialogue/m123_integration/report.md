@@ -16,9 +16,14 @@ Runtime wiring now present in code:
 - transport activation carries `PreparedExecution`;
 - payload execution can call `RuntimeExecutionPipeline.execute(...)` and emit typed measurement events.
 
-Still blocked:
-- merged-runtime M3 side-effect assertions now pass through `MegatronPhaseTransportAdapter -> RuntimeExecutionPipeline -> RuntimeInstrumentation`;
-- merged-runtime executor failure now has a direct assertion that `TargetPlanStore.fail(..., execution_origin="unresolved_task")` is invoked on the formal path;
-- prepared-target cancellation/cleared-store short-circuit is now asserted and does not enter `RuntimeExecutionPipeline.prepare(...)`;
-- prepared-target `materialization_invalid -> FAILED` is now asserted directly through `_try_prepared_target_plan_for_p0(...)`;
-- remaining hard blocker is an explicit merged-runtime `COMPLETED` propagation assertion.
+Merged-baseline closure now additionally proves:
+- prepared-target cancellation/cleared-store short-circuit does not enter `RuntimeExecutionPipeline.prepare(...)`;
+- prepared-target `materialization_invalid -> FAILED` is asserted directly through `_try_prepared_target_plan_for_p0(...)`;
+- `after_token_combine(...)` completes prepared-target execution through `TargetPlanStore.complete(...)` on the merged runtime path.
+
+Current integration verdict:
+- `M123_PARALLEL_INTEGRATION_READY`
+
+Deferred, but no longer hard blockers for M123:
+- richer passive evidence/result-bundle wiring beyond typed measurement events;
+- broader merged-runtime scenario coverage once M4 parity consumes this baseline.

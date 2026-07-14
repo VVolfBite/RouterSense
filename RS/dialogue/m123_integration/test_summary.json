@@ -35,7 +35,7 @@
     {
       "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py",
       "exit_code": 0,
-      "passed": 5,
+      "passed": 6,
       "failed": 0,
       "skipped": 0,
       "not_run": 0

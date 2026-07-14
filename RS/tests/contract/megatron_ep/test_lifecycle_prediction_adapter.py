@@ -264,3 +264,45 @@ def test_materialization_invalid_marks_store_failed_on_prepared_target_path() ->
     assert len(failed) == 1
     assert failed[0][1] == "materialization_invalid"
     assert runtime._runtime_state.read("execution_origin") == "materialization_invalid"  # noqa: SLF001
+
+
+def test_after_token_combine_completes_prepared_target_execution() -> None:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(scheduler_mode="disabled", online_p2_predictor="copy_current_dispatch"),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="req",
+        hostname="host",
+    )
+    completed: list[tuple[object, str]] = []
+    released: list[tuple[str, str]] = []
+    runtime._timeline = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    runtime._record_hook_timing = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    runtime._record_planning_timing = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    runtime._record_window_state = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    runtime._record_release_update = lambda *, layer_name, event: released.append((str(layer_name), str(event)))  # type: ignore[method-assign]
+    runtime._pump_target_planner_publications = lambda: None  # type: ignore[method-assign]
+    runtime._poll_target_plan_slot = lambda **_kwargs: None  # type: ignore[method-assign]
+    runtime.layer_role_for_name = lambda _layer_name: "selected"  # type: ignore[method-assign]
+    runtime.current_transport = lambda: {"layer_name": "model.layers.1.mlp", "phase": "P1"}  # type: ignore[method-assign]
+    runtime.clear_transport = lambda **_kwargs: None  # type: ignore[method-assign]
+    runtime._is_joint_window_async_mode = lambda: True  # type: ignore[method-assign]
+    runtime._layer_selected = lambda _layer_name: True  # type: ignore[method-assign]
+    runtime._should_stop_after_layer = lambda **_kwargs: False  # type: ignore[method-assign]
+    runtime._runtime_state.write("execution_origin", "prepared_exact")
+    runtime._pending_p1["model.layers.1.mlp"] = object()  # noqa: SLF001
+
+    class _Store:
+        def complete(self, key, *, execution_origin):
+            completed.append((key, str(execution_origin)))
+
+    runtime.target_plan_store = _Store()  # type: ignore[assignment]
+    runtime.after_token_combine(layer_name="model.layers.1.mlp")
+
+    assert len(completed) == 1
+    assert completed[0][1] == "prepared_exact"
+    assert released == [("model.layers.1.mlp", "p1_return_completed")]

@@ -29,17 +29,16 @@
       "completed_with_evidence": [
         "published/materialized execution contracts",
         "real distributed execution gates",
-        "validator negative coverage"
+        "validator negative coverage",
+        "integration runtime wiring into host/lifecycle/transport path"
       ],
-      "implemented_unverified": [
-        "integration-only lifecycle call-chain coverage"
-      ],
+      "implemented_unverified": [],
       "blockers": [],
       "dependencies": [
         "M1 lifecycle publication outputs",
         "M3 passive instrumentation sinks"
       ],
-      "next_entry": "integration runtime wiring"
+      "next_entry": "consume from M4 parity"
     },
     "M3": {
       "status": "BLOCKED",
@@ -50,10 +49,10 @@
         "artifact writer confinement"
       ],
       "implemented_unverified": [
-        "RuntimeInstrumentation adapter"
+        "typed evidence/result sink wiring beyond passive measurement path"
       ],
       "blockers": [
-        "latest runtime/M2 pipeline is not yet wired to passive sinks on integration baseline"
+        "merged runtime baseline currently proves passive measurement/debug side-effect safety, but does not yet prove full typed result/evidence sink usage on the formal path"
       ],
       "dependencies": [
         "M2 execution outcomes",
@@ -93,18 +92,19 @@
         "CLI",
         "runner registry",
         "official v2 config preservation",
-        "default collect-only stability"
+        "default collect-only stability",
+        "typed DiagnosticRunner success ResultBundle"
       ],
       "implemented_unverified": [
-        "service-backed runners"
+        "service-backed OfflineEvaluationRunner and GlooFunctionalRunner"
       ],
       "blockers": [
-        "formal runners still return placeholder ResultBundle objects instead of invoking M4/M123 services"
+        "OfflineEvaluationRunner and GlooFunctionalRunner still return placeholder ResultBundle objects instead of invoking M4/M123 services"
       ],
       "dependencies": [
         "formal M2/M4 services for future run execution"
       ],
-      "next_entry": "wire OfflineEvaluationRunner/GlooFunctionalRunner/DiagnosticRunner before claiming core READY"
+      "next_entry": "wire OfflineEvaluationRunner and GlooFunctionalRunner before claiming core READY"
     }
   }
 }

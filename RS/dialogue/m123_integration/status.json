@@ -1,5 +1,5 @@
 {
-  "status": "M123_PARALLEL_INTEGRATION_BLOCKED",
+  "status": "M123_PARALLEL_INTEGRATION_READY",
   "completed_with_evidence": [
     "integration branch now contains latest M1 ancestry",
     "integration branch now contains latest M2 ancestry",
@@ -14,16 +14,15 @@
     "merged runtime transport path records typed executor_submit measurement events in off/perf_light modes without file I/O, JSON serialization, D2H, or extra collectives from M3",
     "merged runtime execution failure propagates unresolved_task into TargetPlanStore.fail on the formal path",
     "prepared target path short-circuits after cancellation/cleared store without entering RuntimeExecutionPipeline.prepare",
-    "prepared target path marks TargetPlanStore FAILED with execution_origin=materialization_invalid when materialization validation fails"
+    "prepared target path marks TargetPlanStore FAILED with execution_origin=materialization_invalid when materialization validation fails",
+    "after_token_combine completes prepared target execution through TargetPlanStore.complete on the merged runtime path"
   ],
   "implemented_not_verified": [
     "lifecycle caches PublishedPlan authority and prepared execution for target-phase execution",
     "transport adapter can execute via RuntimeExecutionPipeline and emit measurement events",
     "debug on/off digest invariance now has a focused merged-runtime unit assertion"
   ],
-  "hard_blockers": [
-    "store COMPLETED propagation still lacks a dedicated merged-runtime assertion"
-  ],
+  "hard_blockers": [],
   "deferred_cleanup": [
     "legacy root-level dialogue files remain noisy",
     "compatibility and legacy observation/runtime modules are not yet retired"
