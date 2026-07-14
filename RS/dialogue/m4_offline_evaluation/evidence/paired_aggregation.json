@@ -1,0 +1,14 @@
+{
+  "sample_count": 2,
+  "mean_paired_gain": 0.0,
+  "median_paired_gain": 0.0,
+  "p25": 0.0,
+  "p75": 0.0,
+  "win_rate": 0.0,
+  "tie_rate": 1.0,
+  "loss_rate": 0.0,
+  "worst_case": 0.0,
+  "best_case": 0.0,
+  "invalid_count": 0,
+  "fallback_count": 0
+}

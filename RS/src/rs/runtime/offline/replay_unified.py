@@ -3,9 +3,25 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from rs.core.contracts import (
+    EvaluationSpec,
+    OfflineWindow,
+    PlanningConstraints,
+    PlanningIdentity,
+    PlanningRequest,
+    PlanningTopology,
+    PlanningTraffic,
+    PlanningWeights,
+    PredictionHint as FormalPredictionHint,
+    PredictionIdentity,
+    PredictionResult,
+    TrafficProvenance,
+)
+from rs.offline import OfflineEvaluator, OfflinePlanningRequestBuilder, build_execution_truth as build_offline_execution_truth, prediction_digest
+from rs.planning import PlannerRegistry
+from rs.planning.api import to_logical_plan
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
-from rs.scheduling.unified_interface import PolicyOptions, build_policy, build_request_from_replay_window
 from rs.scheduling.validation import stable_hash
 from rs.scheduling import (
     FlowDemand,
@@ -17,6 +33,7 @@ from rs.scheduling import (
     ReleaseConstraint,
 )
 from rs.scheduling.traffic_matrix import canonicalize_remote_matrix, matrix_digest_remote, matrix_remote_bytes
+from rs.core.hashing import stable_hash_dict
 
 
 Matrix = tuple[tuple[int, ...], ...]
@@ -71,6 +88,12 @@ class ReplayWindow:
     group_size: int
     payload_row_bytes_by_phase: dict[str, int]
     metadata: dict[str, Any]
+    traffic_provenance: TrafficProvenance = TrafficProvenance.ROUTE_RECONSTRUCTED
+    return_model: str = "transpose_dispatch"
+    raw_token_count: int | None = None
+    used_token_count: int | None = None
+    dropped_token_count: int = 0
+    drop_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -167,7 +190,6 @@ def build_multiphase_problem(
             metadata={
                 "planning_hint_matrix": [list(row) for row in hint.p2_hint_rows],
                 "planning_hint_digest": matrix_digest_remote(hint.p2_hint_rows),
-                "execution_truth_digest": matrix_digest_remote(execution_truth.p2_truth_rows),
                 "replay_window_id": replay_window.window_id,
                 "replay_matrix_unit": replay_window.matrix_unit,
             },
@@ -180,7 +202,34 @@ def build_multiphase_problem(
         ),
         p0_dispatch_matrix=replay_window.p0_truth_rows,
         p1_return_matrix=replay_window.p1_truth_rows,
-        p2_next_dispatch_forecast_matrix=execution_truth.p2_truth_rows,
+        p2_next_dispatch_forecast_matrix=hint.p2_hint_rows,
+    )
+
+
+@dataclass(frozen=True)
+class _PlanningBucketWindow:
+    p0_truth_rows: Matrix
+    p1_truth_rows: Matrix
+    p2_truth_rows: Matrix
+
+
+def bucketize_planning_request(request: PlanningRequest) -> tuple[CanonicalBucketTask, ...]:
+    planning_window = _PlanningBucketWindow(
+        p0_truth_rows=request.traffic.p0_dispatch_rows,
+        p1_truth_rows=request.traffic.p1_return_rows,
+        p2_truth_rows=request.prediction_hint.target_dispatch_rows,
+    )
+    return CanonicalBucketizer(bucket_rows=int(request.constraints.bucket_rows)).bucketize(planning_window)
+
+
+def execution_truth_digest(execution_truth: ExecutionTruth) -> str:
+    return stable_hash_dict(
+        {
+            "execution_truth_version": "v1",
+            "p0_truth_rows": [list(row) for row in execution_truth.p0_truth_rows],
+            "p1_truth_rows": [list(row) for row in execution_truth.p1_truth_rows],
+            "p2_truth_rows": [list(row) for row in execution_truth.p2_truth_rows],
+        }
     )
 
 
@@ -197,43 +246,108 @@ class ReplayEngine:
         planning_hint: PlanningHint,
         policy_name: str,
     ) -> dict[str, Any]:
+        offline_window = OfflineWindow(
+            window_identity=f"{replay_window.fixture_id}:{replay_window.window_id}",
+            source_layer=str(replay_window.layer_id),
+            target_layer=str(planning_hint.target_layer),
+            p0_actual=replay_window.p0_truth_rows,
+            p1_actual=replay_window.p1_truth_rows,
+            p2_actual=replay_window.p2_truth_rows,
+            placement_snapshot={"group_size": int(replay_window.group_size)},
+            traffic_provenance=replay_window.traffic_provenance,
+            matrix_unit=str(replay_window.matrix_unit),
+            return_model=str(replay_window.return_model),
+            raw_token_count=int(replay_window.raw_token_count or 0),
+            used_token_count=int(replay_window.used_token_count or 0),
+            dropped_token_count=int(replay_window.dropped_token_count),
+            drop_reason=replay_window.drop_reason,
+            trace_digest=stable_hash_dict(
+                {
+                    "fixture_id": replay_window.fixture_id,
+                    "window_id": replay_window.window_id,
+                    "layer_id": replay_window.layer_id,
+                }
+            ),
+        )
+        spec = EvaluationSpec(
+            track="execution_window" if str(self.scheduling_mode) == "execution_window" else "runtime_lookahead",
+            world_size=int(replay_window.group_size),
+            task_granularity="matrix_cell",
+            matrix_unit="rows",
+            time_unit="row_cost",
+            cost_model_id="offline_common_v1",
+            release_model="p1_return",
+            return_model=str(replay_window.return_model),
+            full_duplex=True,
+            launch_cost=0.0,
+            bytes_per_row=int(replay_window.payload_row_bytes_by_phase.get("P0", 1) or 1),
+            bandwidth=1.0,
+            compute_delay=float(self.expert_compute_delay),
+            p2_semantics="actual",
+            residual_policy="reject",
+        )
+        prediction = PredictionResult(
+            identity=PredictionIdentity(
+                request_id=f"{replay_window.fixture_id}:{replay_window.window_id}:{policy_name}",
+                run_id=str(replay_window.fixture_id),
+                source_layer_id=str(replay_window.layer_id),
+                target_layer_id=str(planning_hint.target_layer),
+            ),
+            hint=FormalPredictionHint(
+                predictor_id=str(planning_hint.hint_type),
+                hint_type="traffic_matrix",
+                target_dispatch_rows=planning_hint.p2_hint_rows,
+                confidence=float(planning_hint.confidence),
+                oracle=bool(planning_hint.hint_type == "perfect_trace_hint"),
+                source_layer_id=str(replay_window.layer_id),
+                target_layer_id=str(planning_hint.target_layer),
+            ),
+        )
+        request = OfflinePlanningRequestBuilder(bucket_rows=int(self.bucket_rows), max_waves=256).build(
+            offline_window,
+            prediction,
+            spec,
+        )
+        planner = PlannerRegistry.create(str(policy_name), None)
+        formal_plan = planner.plan(request)
+        logical_plan = to_logical_plan(formal_plan)
         planning_problem = build_planning_problem(replay_window=replay_window, planning_hint=planning_hint)
-        execution_truth = build_execution_truth(replay_window)
+        legacy_execution_truth = build_execution_truth(replay_window)
         problem = build_multiphase_problem(
             planning_problem=planning_problem,
-            execution_truth=execution_truth,
+            execution_truth=legacy_execution_truth,
             scheduling_mode=self.scheduling_mode,
             expert_compute_delay=self.expert_compute_delay,
         )
-        request = build_request_from_replay_window(
-            replay_window=replay_window,
-            p2_hint_rows=planning_hint.p2_hint_rows,
-            hint_type=str(planning_hint.hint_type),
-            confidence=float(planning_hint.confidence),
-            bucket_rows=int(self.bucket_rows),
-            policy_options=PolicyOptions(
-                p0_weight=1.0,
-                p1_weight=1.0,
-                p2_hint_weight=float(planning_hint.confidence),
-            ),
-        )
-        policy = build_policy(str(policy_name), request.policy_options)
-        logical_plan = policy.plan(request)
         audit = replay_and_audit_logical_plan(problem, logical_plan)
-        canonical_tasks = CanonicalBucketizer(bucket_rows=self.bucket_rows).bucketize(replay_window)
+        truth = build_offline_execution_truth(offline_window, spec)
+        evaluation = OfflineEvaluator().evaluate(formal_plan, truth, spec)
+        planning_tasks = bucketize_planning_request(request)
+        truth_digest = truth.truth_digest
         return {
             "policy_name": str(policy_name),
             "bucket_rows": int(self.bucket_rows),
             "planning_hint": planning_hint.to_dict(),
             "replay_window": replay_window.to_dict(),
-            "input_task_count": len(canonical_tasks),
-            "input_total_rows": int(sum(task.row_count for task in canonical_tasks)),
-            "input_task_digest": CanonicalBucketizer.digest(canonical_tasks),
+            "planning_task_count": len(planning_tasks),
+            "planning_task_total_rows": int(sum(task.row_count for task in planning_tasks)),
+            "planning_task_digest": CanonicalBucketizer.digest(planning_tasks),
+            "execution_truth_digest": truth_digest,
+            "input_task_count": len(planning_tasks),
+            "input_total_rows": int(sum(task.row_count for task in planning_tasks)),
+            "input_task_digest": CanonicalBucketizer.digest(planning_tasks),
+            "input_task_digest_deprecated": True,
             "logical_plan_policy_name": str(logical_plan.policy_name),
-            "logical_plan_digest": stable_hash(logical_plan.to_dict()),
-            "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
-            "audit_valid": bool(audit.get("valid", False)),
+            "logical_plan_digest": str(formal_plan.semantic_digest()),
+            "logical_plan_audit_digest": str(formal_plan.audit_digest()),
+            "planning_request_digest": request.semantic_digest(),
+            "prediction_digest": prediction_digest(prediction),
+            "planner_family": str(formal_plan.planner_family),
+            "makespan": None if not evaluation.valid else evaluation.realized_makespan,
+            "legacy_diagnostic_makespan": audit.get("replay_makespan", audit.get("makespan")),
+            "audit_valid": bool(evaluation.valid),
             "audit": audit,
+            "formal_evaluation": evaluation.to_dict(),
         }
 
 
@@ -246,7 +360,9 @@ __all__ = [
     "PlanningProblem",
     "ReplayEngine",
     "ReplayWindow",
+    "bucketize_planning_request",
     "build_execution_truth",
     "build_multiphase_problem",
     "build_planning_problem",
+    "execution_truth_digest",
 ]

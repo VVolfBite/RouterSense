@@ -15,5 +15,7 @@
   "remaining": [
     "short 4GPU verification run"
   ],
-  "final_status": "SHADOW_PATH_RETIRE_CPU_READY"
+  "final_status": "SHADOW_PATH_RETIRE_CPU_READY",
+  "deprecated": true,
+  "note": "Historical status moved out of dialogue root; module-local status files are authoritative."
 }

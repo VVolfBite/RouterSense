@@ -1,0 +1,36 @@
+{
+  "tests": [
+    {
+      "command": "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\test_experiments_cli_v2.py",
+      "exit_code": 0,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest --collect-only -q",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src python -m rs.experiments.cli run --config .\\configs\\official\\offline_evaluation.yaml --output-dir .\\outputs\\r4_offline_cli",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src python -m rs.experiments.cli run --config .\\configs\\official\\gloo_functional.yaml --output-dir .\\outputs\\r4_gloo_cli",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    }
+  ]
+}

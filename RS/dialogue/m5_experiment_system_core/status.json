@@ -1,0 +1,40 @@
+{
+  "status": "M5_EXPERIMENT_REPRODUCIBILITY_READY",
+  "completed_with_evidence": [
+    "ExperimentSpec / SuiteSpec / PlanningCase / RunPlan contracts",
+    "schema_version=2 ExperimentConfigLoader",
+    "lossy schema v1 migration replaced with explicit UnsupportedLegacyExperimentConfig failure",
+    "resolved_config.yaml and migration_report.json emission",
+    "single CLI entrypoint python -m rs.experiments.cli",
+    "official schema v2 config set with preserved model/topology/workload/runtime/evaluation semantics",
+    "default pytest collect-only succeeds without OR-Tools import-time failure",
+    "OfflineEvaluationRunner invokes formal M4 services and returns non-placeholder typed ResultBundle",
+    "suite-level offline aggregation writes typed paired aggregates for offline matrix outputs",
+    "GlooFunctionalRunner invokes formal M123 gate through subprocess and records typed gate artifacts with quiet summary capture",
+    "CLI run writes reproducible per-run artifacts and emits pure JSON on stdout",
+    "committed-tree source archives resolve commit identity without .git via handoff manifest fallback",
+    "single-GPU flow correctness runner is wired and returns environment_not_run with captured environment diagnostics when Megatron/model prerequisites are missing"
+  ],
+  "implemented_not_verified": [
+    "multinode runners remain environment-scoped and may return environment_not_run"
+  ],
+  "hard_blockers": [],
+  "environment_not_run": [
+    "single-GPU flow correctness environment missing Megatron/model prerequisites",
+    "GPU performance evidence",
+    "multinode evidence",
+    "OR-Tools exact oracle evidence"
+  ],
+  "deferred_cleanup": [
+    "legacy core.experiment_config remains in tree for compatibility and should be retired after migration",
+    "legacy v1 configs are archived but still present for historical reference"
+  ],
+  "test_commands": [
+    "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\test_experiments_cli_v2.py",
+    "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest --collect-only -q",
+    "PYTHONPATH=.;src python -m rs.experiments.cli run --config .\\configs\\official\\offline_evaluation.yaml --output-dir .\\outputs\\r4_offline_cli",
+    "PYTHONPATH=.;src python -m rs.experiments.cli run --config .\\configs\\official\\gloo_functional.yaml --output-dir .\\outputs\\r4_gloo_cli",
+    "PYTHONPATH=.;src python .\\experiments\\distributed\\run_gpu_singlecard_flow_correctness.py --config .\\configs\\official\\gpu_singlecard_flow.yaml --summary-path .\\outputs\\gpu_singlecard_flow\\singlecard_summary.json --output-dir .\\outputs\\gpu_singlecard_flow",
+    "PYTHONPATH=.;src python -m rs.experiments.cli run --config .\\configs\\official\\gpu_singlecard_flow.yaml --output-dir .\\outputs\\r5_1_gpu_singlecard_cli"
+  ]
+}

@@ -41,6 +41,18 @@ def test_validate_official_entrypoint_config_rejects_non_power_of_two_bucket() -
         )
 
 
+def test_validate_official_entrypoint_config_accepts_power_of_two_bucket_list() -> None:
+    validate_official_entrypoint_config(
+        config_snapshot={
+            "schema_version": 1,
+            "runtime": {"line": "offline_replay", "invariant_mode": "diagnostic"},
+            "traffic": {"bucket_rows": [512, 1024]},
+        },
+        expected_runtime_line="offline_replay",
+        official_entrypoint="experiments/run_offline_replay.py",
+    )
+
+
 def test_validate_official_entrypoint_config_rejects_reference_only_online_policy() -> None:
     with pytest.raises(Exception):
         validate_official_entrypoint_config(

@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "command": "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\offline\\test_offline_core.py .\\tests\\offline\\test_offline_rollout_and_aggregation.py .\\tests\\offline\\test_online_materialization_parity.py",
+      "exit_code": 0,
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src python .\\experiments\\distributed\\run_m4_offline_online_parity_gloo.py",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    }
+  ]
+}

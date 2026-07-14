@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "source_test": "tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py",
+  "verified": [
+    "formal predictor path returns typed runtime compatibility object",
+    "downstream lifecycle state write path does not raise AttributeError",
+    "predictor_name, forecast_matrix, matrix_digest are written into runtime state"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "source": "RS/tests/contract/megatron_ep/test_target_planner_service.py",
+  "status": "passed",
+  "assertions": {
+    "submit_returns_explicit_status": true,
+    "stale_same_target_request_is_replaced": true,
+    "cancelled_generation_is_rejected": true,
+    "closed_service_is_rejected": true,
+    "queue_overload_path_is_nonblocking_by_contract": true
+  }
+}

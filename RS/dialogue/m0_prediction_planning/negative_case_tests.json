@@ -1,0 +1,26 @@
+{
+  "covered_negative_cases": [
+    "invalid planner compare selection when one candidate is invalid",
+    "invalid planner compare selection when both candidates are invalid",
+    "traffic prediction shape mismatch",
+    "expert-route top-k width mismatch",
+    "negative source rank",
+    "negative owner rank",
+    "out-of-range source rank",
+    "out-of-range owner rank",
+    "invalid expert id",
+    "ranked world-size mismatch",
+    "test_only predictor rejected for runtime/offline usage",
+    "request digest mismatch in estimator",
+    "negative row count in estimator",
+    "same-wave port conflict in estimator",
+    "invalid planning matrix values",
+    "invalid planning information mode"
+  ],
+  "source_tests": [
+    "RS/tests/contract/test_prediction_api.py",
+    "RS/tests/contract/test_planning_api.py",
+    "RS/tests/unit/test_planner_selector.py",
+    "RS/tests/unit/test_plan_estimator.py"
+  ]
+}

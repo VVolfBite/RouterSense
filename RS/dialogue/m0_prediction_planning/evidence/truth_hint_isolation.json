@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "checks": [
+    "changing P2 truth alone leaves PlanningRequest semantic digest unchanged",
+    "changing P2 truth alone leaves planning_task_digest unchanged",
+    "changing P2 truth alone leaves WindowPlan semantic digest unchanged on the same hint",
+    "changing P2 truth alone leaves PlanScore unchanged on the same hint",
+    "changing P2 truth alone changes execution_truth_digest",
+    "changing P2 hint changes PlanningRequest semantic digest",
+    "changing P2 hint changes planning_task_digest",
+    "perfect hint equals truth only by value, not by shared contract object"
+  ],
+  "source_tests": [
+    "tests/contract/test_truth_hint_isolation.py"
+  ]
+}

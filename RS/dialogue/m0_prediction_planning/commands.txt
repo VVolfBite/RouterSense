@@ -1,0 +1,11 @@
+git branch --show-current
+git rev-parse HEAD
+git status --short
+rg -n "semantic_digest|identity_digest|audit_digest|hash\(|PlannerSelector|PredictionRegistry\.create|PlannerRegistry\.create|build_runtime_policy|build_runtime_request_from_problem|runtime_compat|prediction_hint|p2_truth|execution_truth_digest|legacy_makespan|estimated_duration|mock_gate_replay|offline_only|test_only|source_layer_id|target_layer_id" RS/src RS/tests
+rg --files RS/src/rs/core/contracts RS/src/rs/prediction RS/src/rs/planning RS/src/rs/runtime/offline RS/src/rs/runtime/online/megatron_ep/target_planning RS/tests
+python -m compileall RS/src RS/experiments RS/tests
+$env:PYTHONPATH='RS/src;.'
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+python -m pytest -q RS/tests/contract/test_prediction_api.py RS/tests/contract/test_planning_api.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/unit/test_planner_selector.py RS/tests/unit/test_plan_estimator.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/contract/megatron_ep/test_target_plan_contracts.py RS/tests/contract/megatron_ep/test_two_horizon_prediction.py RS/tests/test_architecture_dependencies.py
+$env:PYTHONPATH='src;.'
+python experiments/run_offline_replay.py --config tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m0_final_closure_smoke

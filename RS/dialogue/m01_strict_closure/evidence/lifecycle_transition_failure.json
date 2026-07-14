@@ -1,0 +1,4 @@
+﻿{
+  "lifecycle_swallows_state_errors": false,
+  "validated_by": "target plan store transition tests and runtime handle failure tests"
+}

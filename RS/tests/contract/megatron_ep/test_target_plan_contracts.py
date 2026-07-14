@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rs.core.contracts import WindowPlan
+from rs.planning.api import to_logical_plan
 from rs.runtime.online.megatron_ep.target_planning import (
     CurrentWindowJointPlan,
     PreparedPriorityHint,
@@ -7,10 +9,21 @@ from rs.runtime.online.megatron_ep.target_planning import (
     TargetLayerPreparedJointPlan,
 )
 from rs.scheduling.contracts import LogicalSchedulePlan
+from rs.scheduling.validation import stable_hash
 
 
 def _plan(name: str = "policy") -> LogicalSchedulePlan:
     return LogicalSchedulePlan(policy_name=name, waves=(), diagnostics={})
+
+
+def _window_plan(name: str = "policy") -> WindowPlan:
+    return WindowPlan(
+        planner_id=name,
+        planner_family="joint",
+        request_digest="req",
+        waves=(),
+        metadata={"legacy_policy_name": name},
+    )
 
 
 def test_current_window_joint_plan_contract() -> None:
@@ -31,6 +44,8 @@ def test_current_window_joint_plan_contract() -> None:
 
 
 def test_target_prepared_plan_contract() -> None:
+    window_plan = _window_plan("u")
+    logical_plan = to_logical_plan(window_plan)
     plan = TargetLayerPreparedJointPlan(
         source_layer_id="0",
         target_layer_id="1",
@@ -40,8 +55,10 @@ def test_target_prepared_plan_contract() -> None:
         h1_prediction_digest="h1",
         h2_prediction_digest="h2",
         target_problem_digest="tp",
-        logical_plan=_plan("u"),
-        logical_plan_digest="ld",
+        window_plan=window_plan,
+        logical_plan=logical_plan,
+        logical_plan_digest=window_plan.semantic_digest(),
+        legacy_logical_plan_digest=stable_hash(logical_plan.to_dict()),
         policy="u_pred",
         weights={"prediction_weight": 0.3},
         bucket_contract_digest="bucket",

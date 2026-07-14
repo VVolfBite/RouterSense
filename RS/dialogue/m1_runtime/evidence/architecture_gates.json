@@ -1,0 +1,10 @@
+{
+  "source": "RS/tests/test_architecture_dependencies.py",
+  "status": "passed",
+  "checks": [
+    "runtime does not import experiments",
+    "runtime does not import legacy predictor implementations",
+    "runtime does not import legacy scheduling registry/catalog modules",
+    "planning package does not export legacy runtime builders"
+  ]
+}

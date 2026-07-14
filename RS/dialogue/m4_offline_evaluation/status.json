@@ -1,0 +1,29 @@
+{
+  "phase_a_status": "M4_OFFLINE_CORE_READY",
+  "status": "M4_OFFLINE_EVALUATION_READY",
+  "completed_with_evidence": [
+    "two-phase offline evaluator with release_time and compute_delay semantics",
+    "fail-closed replay and aggregation eligibility",
+    "truth/hint isolation preserved in planning-visible artifacts",
+    "offline planning request builder parity against captured runtime request",
+    "window plan parity against captured root-published runtime plan",
+    "materialized plan parity against captured runtime prepared execution",
+    "independent ExecutionTruth transfer parity against actual completed runtime transfers",
+    "phase_sync and async_release CPU-Gloo parity gate both pass"
+  ],
+  "implemented_not_verified": [
+    "OR-Tools exact evidence remains environment-scoped"
+  ],
+  "hard_blockers": [],
+  "environment_not_run": [
+    "OR-Tools exact oracle evidence"
+  ],
+  "deferred_cleanup": [
+    "reference-only simulator remains present but is not used as formal makespan authority",
+    "legacy offline wrappers remain for compatibility and diagnostics"
+  ],
+  "test_commands": [
+    "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\offline\\test_offline_core.py .\\tests\\offline\\test_offline_rollout_and_aggregation.py .\\tests\\offline\\test_online_materialization_parity.py",
+    "PYTHONPATH=.;src python .\\experiments\\distributed\\run_m4_offline_online_parity_gloo.py"
+  ]
+}
