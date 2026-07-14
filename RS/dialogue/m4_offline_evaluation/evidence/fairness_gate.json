@@ -1,4 +1,4 @@
 {
-  "status": "pending_phase_b",
-  "reason": "formal fairness gate requires integrated task-set/spec comparison across online/offline tracks"
+  "eligible": true,
+  "reason": null
 }

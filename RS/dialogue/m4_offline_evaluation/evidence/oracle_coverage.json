@@ -1,6 +1,26 @@
 {
-  "solver_status": "UNSUPPORTED",
-  "certified_optimal": false,
-  "objective": null,
-  "task_count": 6
+  "local": {
+    "solver_id": "cp_sat",
+    "solver_status": "UNSUPPORTED",
+    "certified_optimal": false,
+    "objective": null,
+    "best_bound": null,
+    "relative_gap": null,
+    "solve_time": 0.0,
+    "task_count": 6,
+    "model_digest": "bf2ef43a8cea7f70df19ea9d9e78b2bb82668c7d55fbe5f09e5b1b154ecb596b",
+    "schedule": []
+  },
+  "joint": {
+    "solver_id": "cp_sat",
+    "solver_status": "UNSUPPORTED",
+    "certified_optimal": false,
+    "objective": null,
+    "best_bound": null,
+    "relative_gap": null,
+    "solve_time": 0.0,
+    "task_count": 6,
+    "model_digest": "0c9c08ab012877daea476b673c76e218a92ff55b355ff866dc74da47a5c86fe0",
+    "schedule": []
+  }
 }

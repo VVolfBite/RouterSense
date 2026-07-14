@@ -1,5 +1,7 @@
 {
-  "status": "pending_phase_b",
-  "single_record_makespan": 14.0,
-  "formal_evaluation_valid": true
+  "valid": true,
+  "gain_vs_zero": 0.0,
+  "regret_vs_perfect": 0.0,
+  "plan_digest_difference_vs_zero": true,
+  "plan_digest_difference_vs_perfect": true
 }

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from rs.core.contracts import EvaluationTaskSet, MaterializedPlan, WindowPlan
+from rs.offline.evaluation import evaluate_window_plan_against_task_set
 
 
 @dataclass(frozen=True)
@@ -49,17 +50,38 @@ class CommonTaskSetSimulator:
         plan: WindowPlan | MaterializedPlan,
         spec: SimulationSpec,
     ) -> SimulationResult:
-        unresolved = tuple(task.task_id for task in task_set.tasks)
-        model_digest = f"simulation_phase_a:{spec.service_model}:{spec.port_model}"
+        model_digest = f"simulation_v1:{spec.service_model}:{spec.port_model}:{spec.release_model}:{spec.task_granularity}"
+        if isinstance(plan, MaterializedPlan):
+            unresolved = tuple(task.task_id for task in task_set.tasks)
+            return SimulationResult(
+                success=False,
+                realized_makespan=None,
+                task_timeline=(),
+                completed_tasks=(),
+                unresolved_tasks=unresolved,
+                dependency_violations=(),
+                coverage_valid=False,
+                port_valid=False,
+                model_digest=model_digest,
+            )
+        phase_filter = {"p0_dispatch", "p1_return", "p2_next_dispatch"}
+        evaluation = evaluate_window_plan_against_task_set(
+            plan=plan,
+            task_set=task_set,
+            phase_filter=phase_filter,
+            launch_cost=float(spec.launch_cost),
+            bytes_per_row=int(spec.bytes_per_row),
+            bandwidth=float(spec.bandwidth),
+        )
         return SimulationResult(
-            success=False,
-            realized_makespan=None,
-            task_timeline=(),
-            completed_tasks=(),
-            unresolved_tasks=unresolved,
-            dependency_violations=(),
-            coverage_valid=False,
-            port_valid=False,
+            success=bool(evaluation.valid),
+            realized_makespan=evaluation.realized_makespan,
+            task_timeline=tuple(evaluation.completed_tasks),
+            completed_tasks=tuple(evaluation.completed_tasks),
+            unresolved_tasks=tuple(evaluation.unresolved_tasks),
+            dependency_violations=tuple(evaluation.dependency_violations),
+            coverage_valid=bool(evaluation.coverage_valid),
+            port_valid=bool(evaluation.port_valid),
             model_digest=model_digest,
         )
 

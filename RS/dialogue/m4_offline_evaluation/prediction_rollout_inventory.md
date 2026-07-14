@@ -9,6 +9,7 @@
 - `OfflinePlanningRequestBuilder` consumes `PredictionResult`
 - `ReplayEngine.execute` now converts replay hints into `PredictionResult`
 - `prediction_digest()` added as the formal offline record digest input
+- `rs.offline.rollout.run_prediction_rollout()` adds a formal roll-forward offline prediction path with explicit split and cold-start semantics
 
 **Still legacy / reference**
 

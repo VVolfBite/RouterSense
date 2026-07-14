@@ -5,7 +5,8 @@
 **Current state**
 
 - namespace created in Phase A
-- fail-closed placeholder only
+- `WindowPlan` simulation now reuses the same formal task-set semantics as `OfflineEvaluator`
+- `MaterializedPlan` simulation remains fail-closed until M2 execution contracts are authoritative
 - no second formal runtime simulator was added
 
 **Legacy simulation paths**
@@ -15,4 +16,4 @@
 
 **Reason**
 
-Materialized-plan simulation and online functional parity require M2 execution contracts to be READY. Phase A keeps the formal namespace and blocks unresolved execution semantics instead of inventing a second simulation model.
+Materialized-plan simulation and online functional parity require M2 execution contracts to be READY. Phase A now closes the logical `WindowPlan` side but still blocks unresolved execution/materialization semantics instead of inventing a second runtime model.

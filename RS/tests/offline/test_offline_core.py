@@ -114,6 +114,34 @@ def test_common_evaluator_rejects_unexpected_or_incomplete_tasks() -> None:
     assert evaluation.reason in {"row_count_mismatch:p1_return:1->0", "unexpected_task:p1_return:1->0"}
 
 
+def test_common_evaluator_ignores_reported_metadata_makespan() -> None:
+    truth = build_execution_truth(_window(), _spec(track="execution_window"))
+    plan_a = WindowPlan(
+        planner_id="test",
+        planner_family="local",
+        request_digest="digest",
+        waves=(
+            PlanWave(0, (PlannedFlow("p0_dispatch:0->1", "p0_dispatch", 0, 1, 2, "ready", True),), 2.0),
+            PlanWave(1, (PlannedFlow("p0_dispatch:1->0", "p0_dispatch", 1, 0, 3, "ready", True),), 3.0),
+            PlanWave(2, (PlannedFlow("p1_return:0->1", "p1_return", 0, 1, 3, "blocked", False),), 3.0),
+            PlanWave(3, (PlannedFlow("p1_return:1->0", "p1_return", 1, 0, 2, "blocked", False),), 2.0),
+            PlanWave(4, (PlannedFlow("p2_next_dispatch:0->1", "p2_next_dispatch", 0, 1, 4, "after_p1", False),), 4.0),
+            PlanWave(5, (PlannedFlow("p2_next_dispatch:1->0", "p2_next_dispatch", 1, 0, 1, "after_p1", False),), 1.0),
+        ),
+        metadata={"legacy_makespan": 1.0},
+    )
+    plan_b = WindowPlan(
+        planner_id="test",
+        planner_family="local",
+        request_digest="digest",
+        waves=plan_a.waves,
+        metadata={"legacy_makespan": 999.0},
+    )
+    eval_a = OfflineEvaluator().evaluate(plan_a, truth, _spec(track="execution_window"))
+    eval_b = OfflineEvaluator().evaluate(plan_b, truth, _spec(track="execution_window"))
+    assert eval_a.realized_makespan == eval_b.realized_makespan
+
+
 def test_task_set_tracks_all_three_phases() -> None:
     task_set = build_evaluation_task_set(_window(), _spec(track="execution_window"))
     assert len(task_set.p0_tasks) == 2

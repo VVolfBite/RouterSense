@@ -13,3 +13,4 @@
 - authoritative realized result now comes from `OfflineEvaluator`
 - legacy plan-replay audit remains compatibility-only diagnostic
 - bucketized flows are validated by aggregated `(phase, src, dst)` coverage, not by single unsplit matrix-cell identity
+- schedule-quality comparison and paired aggregation now live in `rs.offline.analysis`

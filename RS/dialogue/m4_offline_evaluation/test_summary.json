@@ -4,11 +4,12 @@
   },
   "pytest": {
     "passed": true,
-    "files": 4,
-    "tests": 12
+    "files": 5,
+    "tests": 17
   },
   "offline_smoke": {
     "passed": true,
     "output_dir": "outputs/offline/m4_phase_a_smoke"
-  }
+  },
+  "bundle_record_count": 3
 }

@@ -1,5 +1,19 @@
 {
   "success": false,
-  "unresolved_task_count": 6,
-  "model_digest": "simulation_phase_a:offline_common_v1:full_duplex"
+  "realized_makespan": null,
+  "completed_tasks": [
+    "p0_dispatch:0->1",
+    "p0_dispatch:1->0",
+    "p1_return:0->1",
+    "p1_return:1->0",
+    "p2_next_dispatch:0->1"
+  ],
+  "unresolved_tasks": [
+    "p2_next_dispatch:0->1",
+    "p2_next_dispatch:1->0"
+  ],
+  "dependency_violations": [],
+  "coverage_valid": false,
+  "port_valid": false,
+  "model_digest": "simulation_v1:offline_common_v1:full_duplex:p1_return:matrix_cell"
 }

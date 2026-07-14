@@ -1,6 +1,6 @@
-**Status**
+﻿**Status**
 
-Phase A is implemented and CPU-validated.
+Phase A is implemented and CPU-validated. Formal rollout, paired aggregation, fairness gate, and WindowPlan-level simulation are now included.
 
 Current branch status:
 
@@ -57,4 +57,4 @@ Phase B requires:
 - execution semantics parity
 - solver-backed exact-local/exact-joint coverage
 
-Those conditions are outside this branch’s ownership and are not faked here.
+Those conditions are outside this branch's ownership and are not faked here.
