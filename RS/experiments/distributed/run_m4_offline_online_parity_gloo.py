@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import time
+import uuid
 from collections import Counter
 from pathlib import Path
 
-from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend
 from rs.core.contracts import (
     ActualPhaseContext,
     EvaluationSpec,
@@ -28,6 +32,60 @@ from rs.runtime.online.megatron_ep.materialization import CommonPlanMaterializer
 
 
 OUT_DIR = Path("outputs/closure/m4_offline_online_parity")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True, text=True)
+
+
+def _run_gate_subprocess(*, execution_backend: str, timeout_seconds: float = 180.0) -> dict[str, object]:
+    run_dir = OUT_DIR / f"{execution_backend}_{uuid.uuid4().hex}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    summary_path = run_dir / "summary.json"
+    stdout_log = run_dir / "stdout.log"
+    stderr_log = run_dir / "stderr.log"
+    env = dict(os.environ)
+    existing = str(env.get("PYTHONPATH", "") or "")
+    env["PYTHONPATH"] = os.pathsep.join(part for part in ("src", ".", existing) if part)
+    command = [
+        sys.executable,
+        str(_repo_root() / "experiments" / "distributed" / "run_m123_integrated_publication_execution_gloo.py"),
+        "--execution-backend",
+        str(execution_backend),
+        "--instrumentation-mode",
+        "perf_light",
+        "--summary-path",
+        str(summary_path),
+    ]
+    started = time.monotonic()
+    proc = subprocess.Popen(command, cwd=str(_repo_root()), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process_tree(proc)
+        stdout, stderr = proc.communicate(timeout=15)
+    stdout_log.write_text(stdout or "", encoding="utf-8")
+    stderr_log.write_text(stderr or "", encoding="utf-8")
+    if timed_out:
+        raise TimeoutError(f"parity gate timed out for backend={execution_backend}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"parity gate failed for backend={execution_backend} rc={proc.returncode}")
+    if not summary_path.is_file():
+        raise RuntimeError(f"missing gate summary for backend={execution_backend}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if str(summary.get("status")) != "passed":
+        raise RuntimeError(f"gate summary failed for backend={execution_backend}")
+    summary["summary_path"] = str(summary_path)
+    summary["stdout_log"] = str(stdout_log)
+    summary["stderr_log"] = str(stderr_log)
+    summary["duration_seconds"] = round(time.monotonic() - started, 3)
+    return summary
 
 
 def _offline_window(summary: dict[str, object]) -> OfflineWindow:
@@ -112,9 +170,7 @@ def _planning_request_from_payload(payload: dict[str, object]) -> PlanningReques
         prediction_hint=PredictionHint(
             predictor_id=str(payload["prediction_hint"]["predictor_id"]),
             hint_type=str(payload["prediction_hint"]["hint_type"]),
-            target_dispatch_rows=tuple(
-                tuple(int(v) for v in row) for row in payload["prediction_hint"]["target_dispatch_rows"]
-            ),
+            target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in payload["prediction_hint"]["target_dispatch_rows"]),
             confidence=payload["prediction_hint"]["confidence"],
             oracle=bool(payload["prediction_hint"]["oracle"]),
             source_layer_id=payload["prediction_hint"]["source_layer_id"],
@@ -149,12 +205,7 @@ def _aggregate_transfer_counter(counter: Counter[str]) -> Counter[str]:
     grouped: dict[tuple[str, str, int, int], int] = {}
     for key, multiplicity in counter.items():
         payload = json.loads(key)
-        group_key = (
-            str(payload["phase"]),
-            str(payload["payload_role"]),
-            int(payload["src_group_rank"]),
-            int(payload["dst_group_rank"]),
-        )
+        group_key = (str(payload["phase"]), str(payload["payload_role"]), int(payload["src_group_rank"]), int(payload["dst_group_rank"]))
         grouped[group_key] = int(grouped.get(group_key, 0)) + int(payload["row_count"]) * int(multiplicity)
     return Counter(
         json.dumps(
@@ -175,39 +226,15 @@ def _expected_transfer_counter_from_truth(truth) -> Counter[str]:
     rows: list[dict[str, object]] = []
     for task in truth.task_set.tasks:
         if str(task.phase) == "p0_dispatch":
-            rows.append(
-                {
-                    "phase": "P0",
-                    "payload_role": "hidden_states",
-                    "src_group_rank": int(task.src_rank),
-                    "dst_group_rank": int(task.dst_rank),
-                    "row_count": int(task.row_count),
-                }
-            )
-            rows.append(
-                {
-                    "phase": "P0",
-                    "payload_role": "routing_probs",
-                    "src_group_rank": int(task.src_rank),
-                    "dst_group_rank": int(task.dst_rank),
-                    "row_count": int(task.row_count),
-                }
-            )
+            rows.append({"phase": "P0", "payload_role": "hidden_states", "src_group_rank": int(task.src_rank), "dst_group_rank": int(task.dst_rank), "row_count": int(task.row_count)})
+            rows.append({"phase": "P0", "payload_role": "routing_probs", "src_group_rank": int(task.src_rank), "dst_group_rank": int(task.dst_rank), "row_count": int(task.row_count)})
         elif str(task.phase) == "p1_return":
-            rows.append(
-                {
-                    "phase": "P1",
-                    "payload_role": "hidden_states",
-                    "src_group_rank": int(task.src_rank),
-                    "dst_group_rank": int(task.dst_rank),
-                    "row_count": int(task.row_count),
-                }
-            )
+            rows.append({"phase": "P1", "payload_role": "hidden_states", "src_group_rank": int(task.src_rank), "dst_group_rank": int(task.dst_rank), "row_count": int(task.row_count)})
     return _transfer_counter(rows)
 
 
 def _evaluate_backend(*, execution_backend: str) -> dict[str, object]:
-    runtime_summary = run_gate_with_backend(instrumentation_mode="perf_light", execution_backend=execution_backend)
+    runtime_summary = _run_gate_subprocess(execution_backend=execution_backend)
     window = _offline_window(runtime_summary)
     rank0 = dict(runtime_summary["ranks"][0])
     runtime_request = _planning_request_from_payload(dict(rank0["publication_candidate_planning_request"]))
@@ -222,21 +249,12 @@ def _evaluate_backend(*, execution_backend: str) -> dict[str, object]:
     planner = PlannerRegistry.create(str(runtime_window_plan.planner_id), None)
     offline_plan = planner.plan(offline_request)
     truth = build_execution_truth(window, spec)
-
     input_parity_ok = str(offline_request.semantic_digest()) == str(rank0["planning_request_digest"])
     plan_parity_ok = str(offline_plan.semantic_digest()) == str(rank0["window_plan_digest"])
-
     publisher = CanonicalPlanPublisher(
-        rank_map=RankMap(
-            group_ranks=tuple(int(v) for v in dict(rank0["rank_map"])["group_ranks"]),
-            root_rank=int(dict(rank0["rank_map"])["root_global_rank"]),
-        )
+        rank_map=RankMap(group_ranks=tuple(int(v) for v in dict(rank0["rank_map"])["group_ranks"]), root_rank=int(dict(rank0["rank_map"])["root_global_rank"]))
     )
-    published_plan = publisher.build(
-        publication_slot=dict(rank0["publication_slot"]),
-        window_plan=runtime_window_plan,
-    )
-
+    published_plan = publisher.build(publication_slot=dict(rank0["publication_slot"]), window_plan=runtime_window_plan)
     materialized_runtime: dict[str, str] = {}
     materialized_offline: dict[str, str] = {}
     materializer = CommonPlanMaterializer()
@@ -251,7 +269,6 @@ def _evaluate_backend(*, execution_backend: str) -> dict[str, object]:
         materialized_runtime[f"rank{rank}:P0"] = str(item["p0_materialized_plan_digest"])
         materialized_runtime[f"rank{rank}:P1"] = str(item["p1_materialized_plan_digest"])
     materialization_ok = materialized_offline == materialized_runtime
-
     expected_transfers = _expected_transfer_counter_from_truth(truth)
     actual_rows: list[dict[str, object]] = []
     for item in runtime_summary["ranks"]:
@@ -259,10 +276,12 @@ def _evaluate_backend(*, execution_backend: str) -> dict[str, object]:
         actual_rows.extend(list(item["p1_completed_transfer_keys"]))
     actual_transfers = _aggregate_transfer_counter(_transfer_counter(actual_rows))
     execution_ok = actual_transfers == expected_transfers
-
     return {
         "status": "passed" if all((input_parity_ok, plan_parity_ok, materialization_ok, execution_ok)) else "failed",
         "execution_backend": str(execution_backend),
+        "gate_summary_path": str(runtime_summary.get("summary_path", "")),
+        "gate_stdout_log": str(runtime_summary.get("stdout_log", "")),
+        "gate_stderr_log": str(runtime_summary.get("stderr_log", "")),
         "input_parity": {
             "status": "PASS" if input_parity_ok else "FAIL",
             "offline_planning_request_digest": str(offline_request.semantic_digest()),
