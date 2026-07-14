@@ -17,6 +17,6 @@ Runtime wiring now present in code:
 - payload execution can call `RuntimeExecutionPipeline.execute(...)` and emit typed measurement events.
 
 Still blocked:
-- cross-module cancellation/failure/passive-evidence tests are still missing on this merged baseline;
-- M3 runtime side-effect assertions have not yet been rerun through the merged host/runtime path;
-- store completion/failure propagation still needs explicit integration assertions.
+- merged-runtime M3 side-effect assertions now pass through `MegatronPhaseTransportAdapter -> RuntimeExecutionPipeline -> RuntimeInstrumentation`;
+- merged-runtime executor failure now has a direct assertion that `TargetPlanStore.fail(..., execution_origin="unresolved_task")` is invoked on the formal path;
+- remaining hard blockers are cancellation short-circuit coverage, explicit `materialization_invalid -> FAILED` coverage, and an explicit merged-runtime `COMPLETED` propagation assertion.

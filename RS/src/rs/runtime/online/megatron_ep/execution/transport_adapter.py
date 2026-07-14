@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import time
 from typing import Any
 
 import torch

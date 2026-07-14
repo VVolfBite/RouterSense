@@ -10,16 +10,19 @@
     "formal M1 attach/control-group gate passes on integration baseline",
     "formal M1 lifecycle publication gate passes on integration baseline",
     "formal M2 Gloo execution gate including sparse-wave coverage passes on integration baseline",
-    "host/runtime now instantiate CanonicalPlanPublisher, RuntimeExecutionPipeline, and RuntimeInstrumentation on the formal path"
+    "host/runtime now instantiate CanonicalPlanPublisher, RuntimeExecutionPipeline, and RuntimeInstrumentation on the formal path",
+    "merged runtime transport path records typed executor_submit measurement events in off/perf_light modes without file I/O, JSON serialization, D2H, or extra collectives from M3",
+    "merged runtime execution failure propagates unresolved_task into TargetPlanStore.fail on the formal path"
   ],
   "implemented_not_verified": [
     "lifecycle caches PublishedPlan authority and prepared execution for target-phase execution",
-    "transport adapter can execute via RuntimeExecutionPipeline and emit measurement events"
+    "transport adapter can execute via RuntimeExecutionPipeline and emit measurement events",
+    "debug on/off digest invariance now has a focused merged-runtime unit assertion"
   ],
   "hard_blockers": [
-    "cross-module cancellation/failure/passive-evidence integration tests have not been added on this merged baseline",
-    "M3 runtime side-effect gate has not yet been rerun through the merged host/runtime path",
-    "store failure/completion propagation still lacks dedicated integration assertions on this merged baseline"
+    "cancellation -> no materialize/execute is still not asserted on the merged runtime baseline",
+    "materialization_invalid -> store FAILED is still not asserted through the merged lifecycle path",
+    "store COMPLETED propagation still lacks a dedicated merged-runtime assertion"
   ],
   "deferred_cleanup": [
     "legacy root-level dialogue files remain noisy",
@@ -29,6 +32,7 @@
     "python -c \"import sys; sys.path[:0]=['RS/src','RS','.']; import rs.runtime.online.megatron_ep.host\"",
     "python -m compileall RS/src RS/tests",
     "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/unit/test_m3_measurement_and_evidence.py RS/tests/test_architecture_dependencies.py",
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m123_runtime_integration.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
     "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m2_formal_execution_gloo.py"
