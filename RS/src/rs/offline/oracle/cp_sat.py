@@ -61,12 +61,12 @@ def solve_cp_sat(
     except Exception:
         objective, schedule = tiny_exact_solve(task_set=task_set, spec=spec, mode=str(mode))
         return OracleResult(
-            solver_id="tiny_exact",
+            solver_id="tiny_serial_reference",
             solver_status="UNSUPPORTED",
-            certified_optimal=objective is not None,
+            certified_optimal=False,
             objective=objective,
-            best_bound=objective,
-            relative_gap=0.0 if objective is not None else None,
+            best_bound=None,
+            relative_gap=None,
             solve_time=0.0,
             task_count=len(task_set.tasks),
             model_digest=model_digest,

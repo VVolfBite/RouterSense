@@ -88,6 +88,12 @@ class ReplayWindow:
     group_size: int
     payload_row_bytes_by_phase: dict[str, int]
     metadata: dict[str, Any]
+    traffic_provenance: TrafficProvenance = TrafficProvenance.ROUTE_RECONSTRUCTED
+    return_model: str = "transpose_dispatch"
+    raw_token_count: int | None = None
+    used_token_count: int | None = None
+    dropped_token_count: int = 0
+    drop_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -184,7 +190,6 @@ def build_multiphase_problem(
             metadata={
                 "planning_hint_matrix": [list(row) for row in hint.p2_hint_rows],
                 "planning_hint_digest": matrix_digest_remote(hint.p2_hint_rows),
-                "execution_truth_digest": matrix_digest_remote(execution_truth.p2_truth_rows),
                 "replay_window_id": replay_window.window_id,
                 "replay_matrix_unit": replay_window.matrix_unit,
             },
@@ -249,13 +254,13 @@ class ReplayEngine:
             p1_actual=replay_window.p1_truth_rows,
             p2_actual=replay_window.p2_truth_rows,
             placement_snapshot={"group_size": int(replay_window.group_size)},
-            traffic_provenance=TrafficProvenance.REAL_EP_OBSERVED,
+            traffic_provenance=replay_window.traffic_provenance,
             matrix_unit=str(replay_window.matrix_unit),
-            return_model="transpose_dispatch",
-            raw_token_count=int(sum(sum(row) for row in replay_window.p0_truth_rows)),
-            used_token_count=int(sum(sum(row) for row in replay_window.p0_truth_rows)),
-            dropped_token_count=0,
-            drop_reason=None,
+            return_model=str(replay_window.return_model),
+            raw_token_count=int(replay_window.raw_token_count or 0),
+            used_token_count=int(replay_window.used_token_count or 0),
+            dropped_token_count=int(replay_window.dropped_token_count),
+            drop_reason=replay_window.drop_reason,
             trace_digest=stable_hash_dict(
                 {
                     "fixture_id": replay_window.fixture_id,
@@ -272,7 +277,7 @@ class ReplayEngine:
             time_unit="row_cost",
             cost_model_id="offline_common_v1",
             release_model="p1_return",
-            return_model="transpose_dispatch",
+            return_model=str(replay_window.return_model),
             full_duplex=True,
             launch_cost=0.0,
             bytes_per_row=int(replay_window.payload_row_bytes_by_phase.get("P0", 1) or 1),
@@ -338,12 +343,9 @@ class ReplayEngine:
             "planning_request_digest": request.semantic_digest(),
             "prediction_digest": prediction_digest(prediction),
             "planner_family": str(formal_plan.planner_family),
-            "makespan": float(
-                evaluation.realized_makespan
-                if evaluation.realized_makespan is not None
-                else audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0
-            ),
-            "audit_valid": bool(audit.get("valid", False)) and bool(evaluation.valid),
+            "makespan": None if not evaluation.valid else evaluation.realized_makespan,
+            "legacy_diagnostic_makespan": audit.get("replay_makespan", audit.get("makespan")),
+            "audit_valid": bool(evaluation.valid),
             "audit": audit,
             "formal_evaluation": evaluation.to_dict(),
         }

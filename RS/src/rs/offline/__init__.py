@@ -9,7 +9,7 @@ from .builder import OfflinePlanningRequestBuilder, build_evaluation_task_set, b
 from .evaluation import OfflineEvaluator
 from .fairness import PlannerComparisonEligibility, evaluate_comparison_eligibility
 from .oracle import OracleResult, solve_cp_sat
-from .rollout import PredictionRolloutRecord, PredictionRolloutSpec, run_prediction_rollout
+from .rollout import PredictionRolloutRecord, PredictionRolloutSample, PredictionRolloutSpec, run_prediction_rollout
 
 __all__ = [
     "OfflineEvaluator",
@@ -17,6 +17,7 @@ __all__ = [
     "OracleResult",
     "PlannerComparisonEligibility",
     "PredictionRolloutRecord",
+    "PredictionRolloutSample",
     "PredictionRolloutSpec",
     "build_evaluation_bundle",
     "build_offline_record",

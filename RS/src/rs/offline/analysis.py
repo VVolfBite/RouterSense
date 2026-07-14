@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from statistics import median
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from rs.core.contracts import (
     EvaluationSpec,
@@ -71,14 +71,40 @@ def validate_comparable_records(left: OfflineEvaluationRecord, right: OfflineEva
             raise ValueError(f"records_not_comparable:{field}")
 
 
-def paired_aggregate(records: Sequence[OfflineEvaluationRecord], *, baseline_predictor_id: str) -> dict[str, object]:
-    grouped: dict[tuple[str, str, str, str], list[OfflineEvaluationRecord]] = {}
+def _eligible_for_aggregate(record: OfflineEvaluationRecord) -> bool:
+    eligibility = dict(record.eligibility)
+    return (
+        str(record.audit_status) == "valid"
+        and str(record.coverage_status) == "complete"
+        and str(record.fallback_status) == "none"
+        and record.realized_makespan is not None
+        and not bool(eligibility.get("timeout", False))
+        and bool(eligibility.get("performance_eligible", eligibility.get("offline_replay_eligible", False)))
+    )
+
+
+def paired_aggregate(
+    records: Sequence[OfflineEvaluationRecord],
+    *,
+    baseline_predictor_id: str,
+    candidate_predictor_id: str | None = None,
+    planner_id: str | None = None,
+    track: str | None = None,
+) -> dict[str, object]:
+    grouped: dict[tuple[str, str, str, str, str, str], list[OfflineEvaluationRecord]] = {}
     for record in records:
+        if planner_id is not None and str(record.planner_id) != str(planner_id):
+            continue
+        if track is not None and str(record.track) != str(track):
+            continue
         key = (
             str(record.window_identity),
             str(record.evaluation_spec_digest),
-            str(record.planner_family),
+            str(record.task_set_digest),
+            str(record.execution_truth_digest),
+            str(record.planner_id),
             str(record.track),
+            str(record.metrics.get("repeat", "")),
         )
         grouped.setdefault(key, []).append(record)
     gains: list[float] = []
@@ -86,20 +112,28 @@ def paired_aggregate(records: Sequence[OfflineEvaluationRecord], *, baseline_pre
     fallback_count = 0
     for bucket in grouped.values():
         baseline = next((item for item in bucket if item.predictor_id == baseline_predictor_id), None)
-        if baseline is None or baseline.realized_makespan is None:
+        if baseline is None or not _eligible_for_aggregate(baseline):
             invalid_count += 1
             continue
         for item in bucket:
             if item.predictor_id == baseline_predictor_id:
                 continue
-            if item.realized_makespan is None:
+            if candidate_predictor_id is not None and str(item.predictor_id) != str(candidate_predictor_id):
+                continue
+            if not _eligible_for_aggregate(item):
                 invalid_count += 1
+                if str(item.fallback_status) != "none":
+                    fallback_count += 1
                 continue
             gains.append(float(baseline.realized_makespan) - float(item.realized_makespan))
             if str(item.fallback_status) != "none":
                 fallback_count += 1
     if not gains:
         return {
+            "baseline_predictor_id": str(baseline_predictor_id),
+            "candidate_predictor_id": candidate_predictor_id,
+            "planner_id": planner_id,
+            "track": track,
             "sample_count": 0,
             "mean_paired_gain": None,
             "median_paired_gain": None,
@@ -118,6 +152,10 @@ def paired_aggregate(records: Sequence[OfflineEvaluationRecord], *, baseline_pre
     ties = sum(1 for gain in gains if gain == 0.0)
     losses = sum(1 for gain in gains if gain < 0.0)
     return {
+        "baseline_predictor_id": str(baseline_predictor_id),
+        "candidate_predictor_id": candidate_predictor_id,
+        "planner_id": planner_id,
+        "track": track,
         "sample_count": len(gains),
         "mean_paired_gain": sum(gains) / len(gains),
         "median_paired_gain": median(gains),

@@ -1,5 +1,5 @@
 {
-  "phase_a_status": "M4_OFFLINE_CORE_BLOCKED",
+  "phase_a_status": "M4_OFFLINE_CORE_READY",
   "final_status": "M4_OFFLINE_EVALUATION_BLOCKED",
   "completed_with_evidence": [
     "two-phase wave evaluation semantics",
@@ -8,13 +8,16 @@
     "task-set and execution-truth digest recomputation",
     "builder world-size and identity validation",
     "cost-model sharing between evaluator and oracle entrypoints",
-    "tiny exact fallback when OR-Tools is unavailable"
+    "replay fail-closed semantics with no formal makespan fallback",
+    "planning-visible truth leakage removed from replay metadata",
+    "rollout group isolation and training-history scoping",
+    "paired aggregation fail-closed filtering and comparison separation",
+    "tiny exact fallback no longer claims certified optimum when OR-Tools is unavailable"
   ],
   "implemented_not_verified": [
     "CP-SAT exact parity on environments with OR-Tools installed"
   ],
   "hard_blockers": [
-    "rollout/aggregation fairness closure is not fully revalidated after semantic changes",
     "MaterializedPlan and completed-task parity require latest M2/M123 integration",
     "simulator still remains partial and cannot be claimed READY"
   ],
@@ -27,6 +30,6 @@
   ],
   "test_commands": [
     "python -m compileall RS/src RS/tests",
-    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/solver/test_offline_oracle_cp_sat.py"
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py"
   ]
 }
