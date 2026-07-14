@@ -29,7 +29,7 @@ from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline, build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
@@ -860,7 +860,9 @@ def attach_dispatch_facade(
             root_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         )
     )
-    runtime.execution_pipeline = RuntimeExecutionPipeline()
+    runtime.execution_pipeline = build_runtime_execution_pipeline(
+        execution_mode=str(getattr(config, "execution_mode", "phase_sync_wave") or "phase_sync_wave"),
+    )
     runtime._instrumentation_mode = str(getattr(config, "observation_profile", "off") or "off")
     runtime._commit_sha, runtime._git_clean = _detect_runtime_commit()
     runtime.runtime_instrumentation = build_runtime_instrumentation(

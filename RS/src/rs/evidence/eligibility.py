@@ -6,6 +6,8 @@ from rs.core.contracts.result import EligibilityResult, ResultBundle
 def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResult:
     reasons: list[str] = []
     summary = dict(bundle.summary)
+    details = dict(bundle.details)
+    run_kind = str(details.get("run_kind", "") or summary.get("run_kind", "")).strip().upper()
     if str(bundle.status) != "success":
         reasons.append("non_success_status")
     if str(bundle.correctness_status) != "valid":
@@ -40,9 +42,19 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
         reasons.append("measurement_incomplete")
     if str(bundle.audit_evidence_level) == "unavailable":
         reasons.append("audit_unavailable")
-    performance_eligible = not reasons
+    performance_allowed_kinds = {"GPU_PERFORMANCE", "MULTINODE_PERFORMANCE", "OFFLINE_EVALUATION_FORMAL"}
+    performance_reasons = list(reasons)
+    if run_kind not in performance_allowed_kinds:
+        performance_reasons.append("run_kind_not_performance_claimable")
+    if not bool(summary.get("performance_measurement_complete", False)):
+        performance_reasons.append("performance_measurement_incomplete")
+    if int(summary.get("measured_repeat_count", 0) or 0) <= 0:
+        performance_reasons.append("missing_measured_repeats")
+    if summary.get("warmup_excluded") is not True:
+        performance_reasons.append("warmup_not_excluded")
+    performance_eligible = not performance_reasons
     prediction_reasons: list[str] = []
-    if not performance_eligible:
+    if reasons:
         prediction_reasons.append("base_ineligible")
     if summary.get("prediction_evaluation_complete") is not True:
         prediction_reasons.append("prediction_evaluation_incomplete")
@@ -57,7 +69,7 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
     if summary.get("truth_leakage_check") is not True:
         prediction_reasons.append("truth_leakage_check_failed")
     offline_reasons: list[str] = []
-    if not performance_eligible:
+    if reasons:
         offline_reasons.append("base_ineligible")
     if summary.get("offline_replay_complete") is not True:
         offline_reasons.append("offline_replay_incomplete")
@@ -82,5 +94,10 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
         performance_eligible=bool(performance_eligible),
         prediction_evaluation_eligible=not prediction_reasons,
         offline_replay_eligible=not offline_reasons,
-        reasons=tuple(reasons + [f"prediction:{item}" for item in prediction_reasons] + [f"offline:{item}" for item in offline_reasons]),
+        reasons=tuple(
+            reasons
+            + [f"performance:{item}" for item in performance_reasons]
+            + [f"prediction:{item}" for item in prediction_reasons]
+            + [f"offline:{item}" for item in offline_reasons]
+        ),
     )

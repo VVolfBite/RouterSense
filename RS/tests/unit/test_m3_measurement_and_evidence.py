@@ -266,6 +266,10 @@ def test_prediction_and_offline_eligibility_pass_with_complete_summary() -> None
     bundle = _valid_result_bundle()
     bundle.summary.update(
         {
+            "run_kind": "OFFLINE_EVALUATION_FORMAL",
+            "performance_measurement_complete": True,
+            "measured_repeat_count": 1,
+            "warmup_excluded": True,
             "prediction_evaluation_complete": True,
             "prediction_truth_digest": "pred-truth",
             "prediction_record_count": 2,

@@ -1,7 +1,15 @@
 {
   "commands": [
     {
-      "command": "python -c \"import sys; sys.path[:0]=['RS/src','RS','.']; import rs.runtime.online.megatron_ep.host\"",
+      "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m123_runtime_integration.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py",
+      "exit_code": 0,
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; print(json.dumps(run_gate_with_backend(instrumentation_mode='perf_light', execution_backend='phase_sync'), sort_keys=True))\"",
       "exit_code": 0,
       "passed": true,
       "failed": 0,
@@ -9,7 +17,7 @@
       "not_run": 0
     },
     {
-      "command": "python -m compileall RS/src RS/tests",
+      "command": "PYTHONPATH=RS/src;RS;. python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; print(json.dumps(run_gate_with_backend(instrumentation_mode='perf_light', execution_backend='async_release'), sort_keys=True))\"",
       "exit_code": 0,
       "passed": true,
       "failed": 0,
@@ -17,31 +25,7 @@
       "not_run": 0
     },
     {
-      "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/unit/test_m3_measurement_and_evidence.py RS/tests/test_architecture_dependencies.py",
-      "exit_code": 0,
-      "passed": 51,
-      "failed": 0,
-      "skipped": 0,
-      "not_run": 0
-    },
-    {
-      "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m123_runtime_integration.py",
-      "exit_code": 0,
-      "passed": 3,
-      "failed": 0,
-      "skipped": 0,
-      "not_run": 0
-    },
-    {
-      "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py",
-      "exit_code": 0,
-      "passed": 6,
-      "failed": 0,
-      "skipped": 0,
-      "not_run": 0
-    },
-    {
-      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py",
+      "command": "PYTHONPATH=RS/src;RS;. python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; print(json.dumps({'status': run_gate_with_backend(instrumentation_mode='off', execution_backend='phase_sync')['status']}, sort_keys=True))\"",
       "exit_code": 0,
       "passed": true,
       "failed": 0,
@@ -49,15 +33,7 @@
       "not_run": 0
     },
     {
-      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
-      "exit_code": 0,
-      "passed": true,
-      "failed": 0,
-      "skipped": 0,
-      "not_run": 0
-    },
-    {
-      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m2_formal_execution_gloo.py",
+      "command": "PYTHONPATH=RS/src;RS;. python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; print(json.dumps({'status': run_gate_with_backend(instrumentation_mode='debug', execution_backend='phase_sync')['status']}, sort_keys=True))\"",
       "exit_code": 0,
       "passed": true,
       "failed": 0,
