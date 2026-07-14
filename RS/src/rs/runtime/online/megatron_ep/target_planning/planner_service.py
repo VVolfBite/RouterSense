@@ -91,6 +91,7 @@ class _BuiltPlanningResult:
     key: TargetPlanKey
     task_key: str
     request: TargetLayerPlanningRequest
+    planning_request: PlanningRequest
     bundle: TwoHorizonPredictionBundle
     plan: TargetLayerPreparedJointPlan
     metrics: TargetLayerPlannerMetrics
@@ -395,7 +396,7 @@ class TargetLayerPlannerService:
             started_ns = time.perf_counter_ns()
             metrics = TargetLayerPlannerMetrics(queue_wait_us=max(0.0, (started_ns / 1000.0) - float(item.queued_at_us)))
             try:
-                bundle, plan = self._build_target_plan(request=request, metrics=metrics)
+                bundle, plan, planning_request = self._build_target_plan(request=request, metrics=metrics)
                 key = TargetPlanKey(
                     run_id=request.run_id,
                     forward_epoch=int(request.forward_epoch),
@@ -429,6 +430,7 @@ class TargetLayerPlannerService:
                             key=key,
                             task_key=task_key,
                             request=request,
+                            planning_request=planning_request,
                             bundle=bundle,
                             plan=plan,
                             metrics=metrics,
@@ -594,6 +596,7 @@ class TargetLayerPlannerService:
             status="READY",
             metadata={
                 "target_key": ready.key.to_dict(),
+                "planning_request": ready.planning_request.to_dict(),
                 "plan": ready.plan.to_dict(),
                 "h1_digest": str(ready.bundle.h1.matrix_digest),
                 "h2_digest": str(ready.bundle.h2.matrix_digest),
@@ -636,7 +639,7 @@ class TargetLayerPlannerService:
         *,
         request: TargetLayerPlanningRequest,
         metrics: TargetLayerPlannerMetrics,
-    ) -> tuple[TwoHorizonPredictionBundle, TargetLayerPreparedJointPlan]:
+    ) -> tuple[TwoHorizonPredictionBundle, TargetLayerPreparedJointPlan, PlanningRequest]:
         planner_started_ns = time.perf_counter_ns()
         predictor_factory = self.two_horizon_predictor_factory or (lambda predictor_name: SharedTwoHorizonPredictor(predictor_name=predictor_name))
         predictor = predictor_factory(request.predictor_name)
@@ -784,7 +787,7 @@ class TargetLayerPlannerService:
             paired_b_plan_was_scored=paired_b_plan_was_scored,
             paired_b_plan_was_selected=paired_b_plan_was_selected,
         )
-        return bundle, plan
+        return bundle, plan, planning_request
 
     @staticmethod
     def _build_planning_request(

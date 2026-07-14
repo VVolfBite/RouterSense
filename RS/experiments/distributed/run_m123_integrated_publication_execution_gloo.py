@@ -23,6 +23,7 @@ from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _dispatcher_for_phase,
     _emit_source_events,
     _end_forward,
+    _matrix_for_world_size,
     _runtime,
     _wait_until,
 )
@@ -141,6 +142,34 @@ def _execute_role(
     return output
 
 
+def _transfer_keys_from_completed_tasks(materialized_plan, completed_task_ids: tuple[str, ...]) -> tuple[dict[str, object], ...]:
+    completed = set(str(item) for item in completed_task_ids)
+    keys: list[dict[str, object]] = []
+    for batch in materialized_plan.batches:
+        for item in batch.slices:
+            if str(item.task_id) not in completed:
+                continue
+            keys.append(
+                {
+                    "phase": str(materialized_plan.phase),
+                    "payload_role": str(item.payload_role),
+                    "src_group_rank": int(item.src_group_rank),
+                    "dst_group_rank": int(item.dst_group_rank),
+                    "row_count": int(item.row_count),
+                }
+            )
+    return tuple(keys)
+
+
+def _outcome_task_ids(item: dict[str, object]) -> tuple[str, ...]:
+    completed = tuple(str(task_id) for task_id in item.get("completed_task_ids", ()))
+    if completed:
+        return completed
+    if bool(item.get("success")) and bool(item.get("all_work_completed")):
+        return tuple(str(task_id) for task_id in item.get("submitted_task_ids", ()))
+    return ()
+
+
 def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
@@ -184,6 +213,9 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
         _begin_forward(runtime)
         slot = _emit_source_events(runtime, rank=rank, group_ranks=group_ranks)
         _wait_until(lambda: runtime.target_planner_service.publication_state_for_slot(slot) is not None, timeout_seconds=10.0)  # type: ignore[union-attr]
+        publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
+        assert publication_state is not None
+        publication_metadata = dict(publication_state.metadata)
 
         p0_dispatcher, p0_hidden, p0_probs = _dispatcher_for_phase(rank=rank, group_ranks=group_ranks, phase="P0")
         runtime.handle(
@@ -195,6 +227,10 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
                 layer_role="selected",
             )
         )
+        target_key = runtime._target_plan_key(layer_name="model.layers.1.mlp")  # noqa: SLF001
+        store_key = runtime.target_plan_store._key(target_key)  # type: ignore[union-attr]  # noqa: SLF001
+        published_plan = runtime._execution_plan_cache()[store_key]  # noqa: SLF001
+        prepared_p0 = runtime._prepared_execution_cache()[store_key]  # noqa: SLF001
         hidden_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_hidden = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
         probs_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
@@ -217,6 +253,7 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
                 packed_hidden_states=p1_hidden,
             )
         )
+        prepared_p1 = runtime._prepared_execution_cache()[store_key]  # noqa: SLF001
         release_before_p1 = tuple(sorted(runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1")))
         p1_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
         runtime.handle(
@@ -238,11 +275,35 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
         assert local_release in release_after_probs
         assert local_release in release_before_p1
         assert f"release:p1_inbound_complete:{group_ranks.index(rank)}" in release_after_p1
+        p0_outcomes = [
+            item
+            for item in runtime._latest_execution_outcomes  # noqa: SLF001
+            if str(item.get("phase")) == "P0"
+        ]
+        p1_outcomes = [
+            item
+            for item in runtime._latest_execution_outcomes  # noqa: SLF001
+            if str(item.get("phase")) == "P1"
+        ]
+        p0_completed_task_ids = tuple(
+            str(task_id)
+            for item in p0_outcomes
+            if str(item.get("payload_role")) in {"hidden_states", "routing_probs"}
+            for task_id in _outcome_task_ids(item)
+        )
+        p1_completed_task_ids = tuple(
+            str(task_id)
+            for item in p1_outcomes
+            if str(item.get("payload_role")) == "hidden_states"
+            for task_id in _outcome_task_ids(item)
+        )
         summary = {
             "rank": int(rank),
             "status": "passed",
             "publication_trace_count": int(len(trace)),
             "late_suffix_call_count": int(spy["late_suffix_call_count"]),
+            "late_suffix_provider_call_count": int(spy["late_suffix_provider_call_count"]),
+            "late_suffix_consume_count": int(spy["late_suffix_consume_count"]),
             "release_after_hidden": list(release_after_hidden),
             "release_after_probs": list(release_after_probs),
             "release_before_p1": list(release_before_p1),
@@ -250,6 +311,23 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
             "result_status": str(result_bundle.status),
             "measurement_event_count": int(result_bundle.summary.get("measurement_event_count", 0) or 0),
             "instrumentation_mode": instrumentation_mode,
+            "planning_request_digest": str(published_plan.window_plan.request_digest),
+            "window_plan_digest": str(published_plan.window_plan.semantic_digest()),
+            "published_plan_digest": str(published_plan.published_plan_digest),
+            "publication_slot": dict(published_plan.publication_slot),
+            "rank_map": published_plan.rank_map.to_dict(),
+            "window_plan": published_plan.window_plan.to_dict(),
+            "p0_actual_phase_context": prepared_p0.actual_phase_context.to_dict(),
+            "p1_actual_phase_context": prepared_p1.actual_phase_context.to_dict(),
+            "p0_materialized_plan_digest": str(prepared_p0.materialized_plan.materialized_plan_digest),
+            "p1_materialized_plan_digest": str(prepared_p1.materialized_plan.materialized_plan_digest),
+            "p0_completed_task_ids": list(p0_completed_task_ids),
+            "p1_completed_task_ids": list(p1_completed_task_ids),
+            "p0_completed_transfer_keys": list(_transfer_keys_from_completed_tasks(prepared_p0.materialized_plan, p0_completed_task_ids)),
+            "p1_completed_transfer_keys": list(_transfer_keys_from_completed_tasks(prepared_p1.materialized_plan, p1_completed_task_ids)),
+            "publication_candidate_status": str(publication_state.status),
+            "publication_candidate_logical_plan_digest": str(publication_state.logical_plan_digest),
+            "publication_candidate_planning_request": dict(publication_metadata.get("planning_request", {})),
         }
     except Exception as exc:  # noqa: BLE001
         summary = {
@@ -277,6 +355,8 @@ def run_gate(*, instrumentation_mode: str = "perf_light") -> dict[str, object]:
         "status": "passed",
         "world_size": world_size,
         "instrumentation_mode": str(instrumentation_mode),
+        "p0_matrix": [list(row) for row in _matrix_for_world_size(world_size)],
+        "p1_matrix": [list(row) for row in tuple(tuple(_matrix_for_world_size(world_size)[src][dst] for src in range(world_size)) for dst in range(world_size))],
         "ranks": payloads,
     }
     (RUN_DIR / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
