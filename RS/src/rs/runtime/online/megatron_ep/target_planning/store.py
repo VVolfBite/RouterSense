@@ -76,6 +76,10 @@ class TargetPlanStore:
         with self._lock:
             self._publish_tokens[self._key(token.target_key)] = token
 
+    def clear_expected_publication(self, key: TargetPlanKey) -> None:
+        with self._lock:
+            self._publish_tokens.pop(self._key(key), None)
+
     def publish_if_current(
         self,
         *,
@@ -377,6 +381,34 @@ class TargetPlanStore:
                 self._publish_tokens.pop(skey, None)
         for skey in doomed:
             self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+
+    def cleanup_before_generation(self, *, run_id: str, microbatch_id: str, current_generation: int) -> None:
+        with self._lock:
+            doomed = [
+                skey
+                for skey in tuple(self._plans) + tuple(self._claimed)
+                if skey[0] == str(run_id)
+                and skey[2] == str(microbatch_id)
+                and int(skey[1]) < int(current_generation)
+            ]
+            token_doomed = [
+                skey
+                for skey in tuple(self._publish_tokens)
+                if skey[0] == str(run_id)
+                and skey[2] == str(microbatch_id)
+                and int(skey[1]) < int(current_generation)
+            ]
+            for skey in token_doomed:
+                self._publish_tokens.pop(skey, None)
+        for skey in doomed:
+            self.cancel(
+                TargetPlanKey(
+                    run_id=skey[0],
+                    forward_epoch=skey[1],
+                    microbatch_id=skey[2],
+                    target_layer_id=skey[3],
+                )
+            )
 
     def shutdown(self) -> None:
         with self._lock:

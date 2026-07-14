@@ -127,6 +127,13 @@ def test_target_plan_store_publish_if_current_is_atomic_and_structured() -> None
         task_version=2,
         publish_sequence=3,
     )
+
+
+def _plan_for_epoch(epoch: int) -> TargetLayerPreparedJointPlan:
+    plan = _plan()
+    payload = plan.to_dict()
+    payload["forward_epoch"] = int(epoch)
+    return TargetLayerPreparedJointPlan.from_dict(payload)
     store.register_expected_publication(token)
     published = store.publish_if_current(token=token, plan=_plan())
     assert published.status == "PUBLISHED"
@@ -142,3 +149,33 @@ def test_target_plan_store_publish_if_current_is_atomic_and_structured() -> None
         plan=_plan(),
     )
     assert stale.status in {"TERMINAL", "STALE_TOKEN", "CONFLICTING_PLAN", "ALREADY_PUBLISHED_SAME"}
+
+
+def test_target_plan_store_cleanup_before_generation_clears_all_older_tokens() -> None:
+    store = TargetPlanStore()
+    key1 = TargetPlanKey("run", 1, "mb", "1")
+    key2 = TargetPlanKey("run", 2, "mb", "1")
+    key3 = TargetPlanKey("run", 3, "mb", "1")
+    store.register_expected_publication(
+        PreparationToken(service_session_id=1, forward_generation=1, target_key=key1, task_version=1, publish_sequence=1)
+    )
+    store.register_expected_publication(
+        PreparationToken(service_session_id=1, forward_generation=2, target_key=key2, task_version=1, publish_sequence=1)
+    )
+    store.register_expected_publication(
+        PreparationToken(service_session_id=1, forward_generation=3, target_key=key3, task_version=1, publish_sequence=1)
+    )
+    store.cleanup_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    assert store.publish_if_current(
+        token=PreparationToken(service_session_id=1, forward_generation=1, target_key=key1, task_version=1, publish_sequence=1),
+        plan=_plan_for_epoch(1),
+    ).status in {"STALE_TOKEN", "TERMINAL"}
+    assert store.publish_if_current(
+        token=PreparationToken(service_session_id=1, forward_generation=2, target_key=key2, task_version=1, publish_sequence=1),
+        plan=_plan_for_epoch(2),
+    ).status in {"STALE_TOKEN", "TERMINAL"}
+    result = store.publish_if_current(
+        token=PreparationToken(service_session_id=1, forward_generation=3, target_key=key3, task_version=1, publish_sequence=1),
+        plan=_plan_for_epoch(3),
+    )
+    assert result.status == "PUBLISHED"

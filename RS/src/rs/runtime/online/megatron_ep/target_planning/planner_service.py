@@ -279,6 +279,57 @@ class TargetLayerPlannerService:
                         metadata=dict(candidate.metadata),
                     )
 
+    def cancel_before_generation(self, *, run_id: str, microbatch_id: str, current_generation: int) -> None:
+        with self._lock:
+            generation_keys = {
+                (str(item.request.run_id), int(item.request.forward_epoch), str(item.request.microbatch_id))
+                for item in self._pending_by_key.values()
+                if str(item.request.run_id) == str(run_id)
+                and str(item.request.microbatch_id) == str(microbatch_id)
+                and int(item.request.forward_epoch) < int(current_generation)
+            }
+            generation_keys.update(
+                {
+                    (str(item.request.run_id), int(item.request.forward_epoch), str(item.request.microbatch_id))
+                    for item in self._inflight_by_key.values()
+                    if str(item.request.run_id) == str(run_id)
+                    and str(item.request.microbatch_id) == str(microbatch_id)
+                    and int(item.request.forward_epoch) < int(current_generation)
+                }
+            )
+            generation_keys.update(
+                {
+                    (str(item.request.run_id), int(item.request.forward_epoch), str(item.request.microbatch_id))
+                    for item in self._ready_results
+                    if str(item.request.run_id) == str(run_id)
+                    and str(item.request.microbatch_id) == str(microbatch_id)
+                    and int(item.request.forward_epoch) < int(current_generation)
+                }
+            )
+        for generation_key in sorted(generation_keys, key=lambda item: int(item[1])):
+            self.cancel_generation(
+                run_id=str(generation_key[0]),
+                forward_epoch=int(generation_key[1]),
+                microbatch_id=str(generation_key[2]),
+            )
+
+    def cancel_slot(self, slot: PublicationSlot, *, final_status: str) -> None:
+        slot_digest = str(slot.semantic_digest())
+        terminal_status = str(final_status).upper()
+        with self._lock:
+            candidate = self._publication_state_by_slot.get(slot_digest)
+            if candidate is None:
+                return
+            if str(candidate.status).upper() in {"READY", "BUILDING", "FAILED", "CANCELLED", "EXPIRED", "SLOT_MISMATCH"}:
+                self._publication_state_by_slot[slot_digest] = LocalPublicationCandidate(
+                    slot=candidate.slot,
+                    planner_id=str(candidate.planner_id),
+                    logical_plan_digest=str(candidate.logical_plan_digest),
+                    token=candidate.token,
+                    status=terminal_status,
+                    metadata=dict(candidate.metadata),
+                )
+
     def drain_ready_publications(self) -> list[_BuiltPlanningResult]:
         with self._lock:
             ready = list(self._ready_results)
@@ -392,6 +443,15 @@ class TargetLayerPlannerService:
                     microbatch_id=request.microbatch_id,
                     target_layer_id=request.target_layer_id,
                 )
+                publish_failed = False
+                slot = PublicationSlot(
+                    run_id=str(request.run_id),
+                    forward_generation=int(request.forward_epoch),
+                    microbatch_id=str(request.microbatch_id),
+                    source_layer_id=str(request.source_layer_id),
+                    target_layer_id=str(request.target_layer_id),
+                    planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+                )
                 with self._lock:
                     current = self._inflight_by_key.get(task_key)
                     if current is not None and current.task_version == item.task_version:
@@ -399,33 +459,42 @@ class TargetLayerPlannerService:
                     newer_pending_exists = task_key in self._pending_by_key
                     stale_session = int(item.service_session_id) != int(self._service_session_id)
                     cancelled = self._generation_key(request) in self._cancelled_generations
-                if not newer_pending_exists and not stale_session and not cancelled:
+                    if not newer_pending_exists and not stale_session and not cancelled:
+                        publish_failed = True
+                        self._publication_state_by_slot[str(slot.semantic_digest())] = LocalPublicationCandidate(
+                            slot=slot,
+                            planner_id=str(request.policy_id),
+                            logical_plan_digest="",
+                            token=LocalPreparationToken(
+                                service_session_id=int(item.service_session_id),
+                                forward_generation=int(request.forward_epoch),
+                                target_layer_id=str(request.target_layer_id),
+                                task_version=int(item.task_version),
+                                publication_slot_digest=str(slot.semantic_digest()),
+                            ),
+                            status="FAILED",
+                            metadata={"error": f"{type(exc).__name__}: {exc}"},
+                        )
+                    elif cancelled:
+                        self._publication_state_by_slot[str(slot.semantic_digest())] = LocalPublicationCandidate(
+                            slot=slot,
+                            planner_id=str(request.policy_id),
+                            logical_plan_digest="",
+                            token=LocalPreparationToken(
+                                service_session_id=int(item.service_session_id),
+                                forward_generation=int(request.forward_epoch),
+                                target_layer_id=str(request.target_layer_id),
+                                task_version=int(item.task_version),
+                                publication_slot_digest=str(slot.semantic_digest()),
+                            ),
+                            status="CANCELLED",
+                            metadata={"error": f"{type(exc).__name__}: {exc}"},
+                        )
+                if publish_failed:
                     self.store.close_key_if_unclaimed(
                         key,
                         final_status="FAILED",
                         execution_origin=f"task_failure:{type(exc).__name__}",
-                    )
-                    slot = PublicationSlot(
-                        run_id=str(request.run_id),
-                        forward_generation=int(request.forward_epoch),
-                        microbatch_id=str(request.microbatch_id),
-                        source_layer_id=str(request.source_layer_id),
-                        target_layer_id=str(request.target_layer_id),
-                        planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
-                    )
-                    self._publication_state_by_slot[str(slot.semantic_digest())] = LocalPublicationCandidate(
-                        slot=slot,
-                        planner_id=str(request.policy_id),
-                        logical_plan_digest="",
-                        token=LocalPreparationToken(
-                            service_session_id=int(item.service_session_id),
-                            forward_generation=int(request.forward_epoch),
-                            target_layer_id=str(request.target_layer_id),
-                            task_version=int(item.task_version),
-                            publication_slot_digest=str(slot.semantic_digest()),
-                        ),
-                        status="FAILED",
-                        metadata={"error": f"{type(exc).__name__}: {exc}"},
                     )
                 self._timeline.append(
                     {

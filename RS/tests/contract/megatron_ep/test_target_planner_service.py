@@ -497,3 +497,20 @@ def test_target_planner_stale_inflight_version_cannot_publish() -> None:
     result = service.store.publish_if_current(token=ready[0].token, plan=plan)
     assert result.status == "PUBLISHED"
     service.shutdown()
+
+
+def test_target_planner_cancel_before_generation_cleans_all_older_generations() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 2})
+    third = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 3})
+    service.submit(first)
+    service.submit(second)
+    service.submit(third)
+    service.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    expired_first = service.submit(first)
+    expired_second = service.submit(second)
+    accepted_third = service.submit(third)
+    assert expired_first.status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert expired_second.status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert accepted_third.status in {PreparationSubmitStatus.ACCEPTED, PreparationSubmitStatus.REPLACED_STALE}

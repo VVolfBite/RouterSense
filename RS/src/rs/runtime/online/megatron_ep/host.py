@@ -33,6 +33,7 @@ from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
     CombineReadyEvent,
+    ControlGroupHandle,
     DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
@@ -166,6 +167,46 @@ def _maybe_create_dedicated_p2p_group(
         "local_dedicated_group_ranks": list(registry.local_group_ranks),
         "new_group_call_order": [list(item) for item in registry.new_group_call_order],
     }
+
+
+def _create_control_group_handle(
+    *,
+    ep_process_group: dist.ProcessGroup | None,
+    ep_group_ranks: tuple[int, ...],
+    root_global_rank: int,
+) -> ControlGroupHandle:
+    if not dist.is_available() or not dist.is_initialized():
+        return ControlGroupHandle(
+            process_group=None,
+            group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+            root_global_rank=int(root_global_rank),
+            root_group_rank=0,
+            owned=False,
+        )
+    group_ranks = tuple(int(rank) for rank in ep_group_ranks)
+    root_global = int(root_global_rank)
+    root_group = int(group_ranks.index(root_global)) if root_global in group_ranks else 0
+    backend = ""
+    try:
+        backend = str(dist.get_backend(ep_process_group)) if ep_process_group is not None else str(dist.get_backend())
+    except Exception:
+        backend = ""
+    if backend == "gloo":
+        return ControlGroupHandle(
+            process_group=ep_process_group,
+            group_ranks=group_ranks,
+            root_global_rank=root_global,
+            root_group_rank=root_group,
+            owned=False,
+        )
+    process_group = dist.new_group(ranks=list(group_ranks), backend="gloo")
+    return ControlGroupHandle(
+        process_group=process_group,
+        group_ranks=group_ranks,
+        root_global_rank=root_global,
+        root_group_rank=root_group,
+        owned=True,
+    )
 
 
 def model_is_local_path(model: str) -> bool:
@@ -687,6 +728,12 @@ def attach_dispatch_facade(
         ep_group_root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         ep_process_group=ep_process_group,
     )
+    runtime.target_plan_control_group_handle = _create_control_group_handle(
+        ep_process_group=ep_process_group,
+        ep_group_ranks=ep_group_ranks,
+        root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
+    )
+    runtime.target_plan_control_group = runtime.target_plan_control_group_handle.process_group
     handle = RuntimeHandle(runtime=runtime)
     model._routersense_runtime_owner = str(run_id)
     handle.add_restore_callback(
@@ -916,6 +963,7 @@ def attach_dispatch_facade(
                 delattr(_dispatcher, "_routersense_facade_wrapped")
         handle.add_restore_callback(_restore_dispatcher)
     handle.add_close_callback(runtime._cleanup_target_plan_runtime)
+    handle.add_close_callback(runtime.target_plan_control_group_handle.close)
     return handle
 
 

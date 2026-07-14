@@ -141,6 +141,15 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
             details={"gathered_statuses": tuple(str(item.get("status")) for item in gathered)},
         )
 
+    def cancel_before_generation(
+        self,
+        *,
+        run_id: str,
+        microbatch_id: str,
+        current_generation: int,
+    ) -> None:
+        return None
+
     def _local_status_payload(
         self,
         *,
