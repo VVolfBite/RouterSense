@@ -14,7 +14,7 @@ import torch.multiprocessing as mp
 from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
-from rs.runtime.online.megatron_ep.execution.api import _source_input_offset, _target_output_offset
+from rs.runtime.online.megatron_ep.execution.api import _target_output_offset
 from rs.runtime.online.megatron_ep.execution.pipeline import build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.public_types import CombineCompleteEvent, CombineReadyEvent, DispatchCompleteEvent, DispatchReadyEvent
@@ -28,9 +28,6 @@ from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _runtime,
     _wait_until,
 )
-from experiments.distributed.run_m2_formal_execution_gloo import _input_tensor
-
-
 RUN_DIR = Path("outputs/closure/m123_integrated_publication_execution_gloo")
 
 
@@ -40,9 +37,22 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _input_tensor(spec, *, source_global_rank: int) -> torch.Tensor:
+    rows = int(spec.row_count)
+    hidden = int(spec.shape_suffix[0]) if spec.shape_suffix else 1
+    base = int(source_global_rank) * 10000
+    values = torch.arange(base, base + max(rows, 1), dtype=torch.float32)
+    target_dtype = getattr(torch, str(spec.dtype).replace("torch.", ""), torch.float32)
+    if hidden <= 1:
+        return values[:rows].to(dtype=target_dtype).reshape(rows, 1)
+    return values[:rows].unsqueeze(1).repeat(1, hidden).to(dtype=target_dtype)
+
+
 def _execute_role(
     *,
     runtime,
+    published_plan,
+    source_payload_specs_by_rank,
     adapter: MegatronPhaseTransportAdapter,
     dispatcher,
     tensor_role: str,
@@ -76,28 +86,37 @@ def _execute_role(
     expected = torch.zeros_like(output)
     width = int(tensor.shape[1]) if tensor.ndim > 1 else 1
     max_rows_by_src = {int(global_rank): 0 for global_rank in group_ranks}
+    flow_phase = "p0_dispatch" if str(phase) == "P0" else "p1_return"
+    flow_source_offset_by_id: dict[str, int] = {}
+    source_progress: dict[int, int] = {int(global_rank): 0 for global_rank in group_ranks}
+    for wave in published_plan.window_plan.waves:
+        for flow in wave.flows:
+            if str(flow.phase) != flow_phase:
+                continue
+            src_global_rank = int(published_plan.rank_map.group_rank_to_global_rank(int(flow.src_rank)))
+            flow_source_offset_by_id[str(flow.flow_id)] = int(source_progress.get(int(src_global_rank), 0))
+            source_progress[int(src_global_rank)] = int(source_progress.get(int(src_global_rank), 0)) + int(flow.row_count)
+    for src_global_rank, total_rows in source_progress.items():
+        max_rows_by_src[int(src_global_rank)] = max(int(max_rows_by_src[int(src_global_rank)]), int(total_rows))
     for batch in prepared.materialized_plan.batches:
         for item in batch.slices:
             if str(item.payload_role) != str(tensor_role):
                 continue
-            source_extent = _source_input_offset(
-                prepared.materialized_plan,
-                str(tensor_role),
-                int(item.dst_group_rank),
-                int(item.send_offset_rows),
-            ) + int(item.row_count)
             max_rows_by_src[int(item.src_global_rank)] = max(
                 int(max_rows_by_src[int(item.src_global_rank)]),
-                int(source_extent),
+                int(flow_source_offset_by_id.get(str(item.flow_id), 0)) + int(item.row_count),
             )
     source_tensors: dict[int, torch.Tensor] = {}
     for global_rank in group_ranks:
-        rows = max(int(max_rows_by_src[int(global_rank)]), 1)
+        source_spec = dict(source_payload_specs_by_rank.get(int(global_rank), {}).get(str(tensor_role), {}))
+        rows = max(int(source_spec.get("row_count", max_rows_by_src[int(global_rank)] or 0)), 1)
+        source_dtype_name = str(source_spec.get("dtype", str(tensor.dtype)))
+        source_dtype = getattr(torch, source_dtype_name.replace("torch.", ""), tensor.dtype)
         values = torch.arange(int(global_rank) * 10000, int(global_rank) * 10000 + rows, dtype=torch.float32)
         if width <= 1:
-            source_tensors[int(global_rank)] = values.reshape(rows, 1).to(dtype=tensor.dtype)
+            source_tensors[int(global_rank)] = values.reshape(rows, 1).to(dtype=source_dtype)
         else:
-            source_tensors[int(global_rank)] = values.unsqueeze(1).repeat(1, width).to(dtype=tensor.dtype)
+            source_tensors[int(global_rank)] = values.unsqueeze(1).repeat(1, width).to(dtype=source_dtype)
     for batch in prepared.materialized_plan.batches:
         for item in batch.slices:
             if str(item.payload_role) != str(tensor_role):
@@ -105,12 +124,7 @@ def _execute_role(
             if int(item.dst_global_rank) != int(rank):
                 continue
             source_tensor = source_tensors[int(item.src_global_rank)]
-            src_offset = _source_input_offset(
-                prepared.materialized_plan,
-                str(tensor_role),
-                int(item.dst_group_rank),
-                int(item.send_offset_rows),
-            )
+            src_offset = int(flow_source_offset_by_id.get(str(item.flow_id), 0))
             dst_offset = _target_output_offset(
                 prepared.materialized_plan,
                 str(tensor_role),
@@ -123,6 +137,32 @@ def _execute_role(
     if tuple(int(dim) for dim in output.shape) != tuple(int(dim) for dim in expected.shape):
         raise AssertionError(
             f"unexpected {phase} {tensor_role} shape rank={rank}: expected={tuple(expected.shape)} actual={tuple(output.shape)}"
+        )
+    if not torch.equal(output, expected):
+        mismatches = (output != expected).nonzero(as_tuple=False)
+        first = mismatches[0].tolist() if int(mismatches.shape[0]) > 0 else [0, 0]
+        row_index = int(first[0])
+        col_index = int(first[1]) if len(first) > 1 else 0
+        expected_value = expected[row_index, col_index].item() if expected.ndim > 1 else expected[row_index].item()
+        actual_value = output[row_index, col_index].item() if output.ndim > 1 else output[row_index].item()
+        local_slices = [
+            {
+                "flow_id": str(item.flow_id),
+                "src_group_rank": int(item.src_group_rank),
+                "dst_group_rank": int(item.dst_group_rank),
+                "src_global_rank": int(item.src_global_rank),
+                "dst_global_rank": int(item.dst_global_rank),
+                "row_count": int(item.row_count),
+                "send_offset_rows": int(item.send_offset_rows),
+                "recv_offset_rows": int(item.recv_offset_rows),
+                "transfer_tag": int(getattr(item, "transfer_tag", 0)),
+            }
+            for batch in prepared.materialized_plan.batches
+            for item in batch.slices
+            if str(item.payload_role) == str(tensor_role)
+        ]
+        raise AssertionError(
+            f"tensor_mismatch phase={phase} payload_role={tensor_role} rank={rank} row={row_index} col={col_index} expected={expected_value} actual={actual_value} expected_rows={expected.float().tolist()} actual_rows={output.float().tolist()} slices={local_slices}"
         )
     expected_source_ranks = {
         int(item.src_global_rank)
@@ -169,14 +209,13 @@ def _transfer_keys_from_completed_tasks(
     return tuple(keys)
 
 
-def _outcome_task_ids(item: dict[str, object]) -> tuple[str, ...]:
-    payload = dict(item.get("outcome", item))
-    completed = tuple(str(task_id) for task_id in payload.get("completed_task_ids", ()))
-    if completed:
-        return completed
-    if bool(payload.get("success")) and bool(payload.get("all_work_completed")):
-        return tuple(str(task_id) for task_id in payload.get("submitted_task_ids", ()))
-    return ()
+def _all_task_ids(materialized_plan, *, payload_roles: set[str]) -> tuple[str, ...]:
+    return tuple(
+        str(item.task_id)
+        for batch in materialized_plan.batches
+        for item in batch.slices
+        if str(item.payload_role) in payload_roles
+    )
 
 
 def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str) -> None:
@@ -252,9 +291,60 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         store_key = runtime.target_plan_store._key(target_key)  # type: ignore[union-attr]  # noqa: SLF001
         published_plan = runtime._execution_plan_cache()[store_key]  # noqa: SLF001
         prepared_p0 = runtime._prepared_execution_cache()[store_key]  # noqa: SLF001
-        hidden_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
+        local_payload_specs = {
+            str(spec.payload_role): {
+                "row_count": int(spec.row_count),
+                "dtype": str(spec.dtype),
+                "shape_suffix": tuple(int(dim) for dim in spec.shape_suffix),
+            }
+            for spec in prepared_p0.materialized_plan.payload_specs
+        }
+        gathered_payload_specs: list[dict[str, object] | None] = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_payload_specs, local_payload_specs)
+        source_payload_specs_by_rank = {
+            int(global_rank): dict(gathered_payload_specs[index] or {})
+            for index, global_rank in enumerate(group_ranks)
+        }
+        (RUN_DIR / f"rank{rank}_p0_materialized.json").write_text(
+            json.dumps(
+                {
+                    "rank": int(rank),
+                    "local_payload_specs": local_payload_specs,
+                    "source_payload_specs_by_rank": source_payload_specs_by_rank,
+                    "expected_outgoing_rows": prepared_p0.materialized_plan.expected_outgoing_rows,
+                    "expected_incoming_rows": prepared_p0.materialized_plan.expected_incoming_rows,
+                    "batches": [
+                        {
+                            "batch_id": str(batch.batch_id),
+                            "wave_id": int(batch.wave_id),
+                            "slices": [slice_.to_dict() for slice_ in batch.slices],
+                        }
+                        for batch in prepared_p0.materialized_plan.batches
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        hidden_debug_spec = next(item for item in prepared_p0.materialized_plan.payload_specs if str(item.payload_role) == "hidden_states")
+        hidden_debug_tensor = _input_tensor(hidden_debug_spec, source_global_rank=int(rank))
+        (RUN_DIR / f"rank{rank}_p0_hidden_input.json").write_text(
+            json.dumps(
+                {
+                    "rank": int(rank),
+                    "shape": tuple(int(dim) for dim in hidden_debug_tensor.shape),
+                    "dtype": str(hidden_debug_tensor.dtype),
+                    "rows": hidden_debug_tensor.float().tolist(),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        hidden_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_hidden = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
-        probs_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
+        probs_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_probs = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
         runtime.handle(
             DispatchCompleteEvent(
@@ -275,8 +365,22 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             )
         )
         prepared_p1 = runtime._prepared_execution_cache()[store_key]  # noqa: SLF001
+        local_p1_payload_specs = {
+            str(spec.payload_role): {
+                "row_count": int(spec.row_count),
+                "dtype": str(spec.dtype),
+                "shape_suffix": tuple(int(dim) for dim in spec.shape_suffix),
+            }
+            for spec in prepared_p1.materialized_plan.payload_specs
+        }
+        gathered_p1_payload_specs: list[dict[str, object] | None] = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_p1_payload_specs, local_p1_payload_specs)
+        p1_source_payload_specs_by_rank = {
+            int(global_rank): dict(gathered_p1_payload_specs[index] or {})
+            for index, global_rank in enumerate(group_ranks)
+        }
         release_before_p1 = tuple(sorted(runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1")))
-        p1_out = _execute_role(runtime=runtime, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
+        p1_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
         runtime.handle(
             CombineCompleteEvent(
                 layer_name="model.layers.1.mlp",
@@ -292,10 +396,10 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         assert result_bundle is not None
         assert result_bundle.status == "success"
         assert release_after_hidden == ()
-        local_release = f"release:p0_inbound_complete:{group_ranks.index(rank)}"
+        local_release = f"release:1:p0_inbound_complete:{group_ranks.index(rank)}"
         assert local_release in release_after_probs
         assert local_release in release_before_p1
-        assert f"release:p1_inbound_complete:{group_ranks.index(rank)}" in release_after_p1
+        assert f"release:1:p1_inbound_complete:{group_ranks.index(rank)}" in release_after_p1
         p0_outcomes = [
             item
             for item in runtime._latest_execution_outcomes  # noqa: SLF001
@@ -310,14 +414,18 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             str(task_id)
             for item in p0_outcomes
             if str(item.get("payload_role")) in {"hidden_states", "routing_probs"}
-            for task_id in _outcome_task_ids(item)
+            for task_id in tuple(str(task_id) for task_id in dict(item.get("outcome", item)).get("completed_task_ids", ()))
         )
         p1_completed_task_ids = tuple(
             str(task_id)
             for item in p1_outcomes
             if str(item.get("payload_role")) == "hidden_states"
-            for task_id in _outcome_task_ids(item)
+            for task_id in tuple(str(task_id) for task_id in dict(item.get("outcome", item)).get("completed_task_ids", ()))
         )
+        if not p0_completed_task_ids:
+            raise AssertionError("missing actual P0 completed_task_ids")
+        if not p1_completed_task_ids:
+            raise AssertionError("missing actual P1 completed_task_ids")
         summary = {
             "rank": int(rank),
             "status": "passed",

@@ -194,9 +194,9 @@ class ReleaseStateLedger:
         if not required.issubset(completed):
             return ()
         if str(phase) == "P0":
-            release_id = f"release:p0_inbound_complete:{int(local_group_rank)}"
+            release_id = f"release:{str(layer_id)}:p0_inbound_complete:{int(local_group_rank)}"
         elif str(phase) == "P1":
-            release_id = f"release:p1_inbound_complete:{int(local_group_rank)}"
+            release_id = f"release:{str(layer_id)}:p1_inbound_complete:{int(local_group_rank)}"
         else:
             return ()
         if release_id in self.satisfied_release_ids:
@@ -731,8 +731,20 @@ class RouterSenseInjectionRuntime:
     ) -> tuple[str, ...]:
         layer_id = str(layer_id)
         phase = str(phase)
-        local_group_rank
-        return tuple(sorted(str(item) for item in self.release_state_ledger.satisfied_release_ids))
+        rank = self._local_group_rank() if local_group_rank is None else int(local_group_rank)
+        if phase == "P1":
+            prefix = f"release:{layer_id}:p0_inbound_complete:{rank}"
+        elif phase == "P2":
+            prefix = f"release:{layer_id}:p1_inbound_complete:{rank}"
+        else:
+            return ()
+        return tuple(
+            sorted(
+                str(item)
+                for item in self.release_state_ledger.satisfied_release_ids
+                if str(item) == prefix
+            )
+        )
 
     def record_execution_outcome(
         self,
@@ -763,16 +775,41 @@ class RouterSenseInjectionRuntime:
         commit_sha = str(getattr(self, "_commit_sha", "") or "")
         git_clean = bool(getattr(self, "_git_clean", False))
         outcomes = list(self._latest_execution_outcomes)
-        all_work_completed = all(
-            bool(dict(item.get("outcome", {})).get("all_work_completed", False))
-            for item in outcomes
-        ) if outcomes else True
+        formal_execution_expected = bool(
+            any(
+                str(row.get("state", "")).upper() == "EXECUTING"
+                for row in list(getattr(self, "prepared_plan_bindings", ()))
+            )
+            or bool(getattr(self, "_prepared_executions", {}))
+        )
+        if formal_execution_expected and not outcomes:
+            all_work_completed = False
+            correctness_status = "invalid"
+            status = "failure"
+            failure_reason = "missing_execution_outcomes"
+        elif outcomes:
+            all_work_completed = all(
+                bool(dict(item.get("outcome", {})).get("success", False))
+                and bool(dict(item.get("outcome", {})).get("all_work_completed", False))
+                and not tuple(dict(item.get("outcome", {})).get("unresolved_task_ids", ()))
+                for item in outcomes
+            )
+            correctness_status = "valid" if all_work_completed else "invalid"
+            status = "success" if all_work_completed else "failure"
+            failure_reason = "" if all_work_completed else "execution_incomplete"
+        else:
+            all_work_completed = True
+            correctness_status = "valid"
+            status = "success"
+            failure_reason = ""
         summary = {
+            "formal_execution_expected": bool(formal_execution_expected),
             "all_work_completed": bool(all_work_completed),
             "fallback_count": 0,
             "timeout_count": 0,
             "check_failure_count": 0,
             "execution_outcome_count": int(len(outcomes)),
+            "missing_execution_outcome_count": int(1 if formal_execution_expected and not outcomes else 0),
             "release_id_count": int(len(self.release_state_ledger.satisfied_release_ids)),
             "measurement_event_count": int(getattr(measurement_snapshot, "event_count", 0) or 0) if measurement_snapshot is not None else 0,
         }
@@ -784,8 +821,8 @@ class RouterSenseInjectionRuntime:
                 trace_origin="runtime",
                 future_information_mode=str(getattr(self.config, "future_hint_mode", "runtime")),
             ),
-            status="success" if all_work_completed else "failure",
-            correctness_status="valid" if all_work_completed else "invalid",
+            status=status,
+            correctness_status=correctness_status,
             performance_status="unknown",
             pipeline="online",
             commit_sha=commit_sha or "unknown",
@@ -798,12 +835,13 @@ class RouterSenseInjectionRuntime:
                 performance_eligible=False,
                 prediction_evaluation_eligible=False,
                 offline_replay_eligible=False,
-                reasons=() if all_work_completed else ("execution_incomplete",),
+                reasons=() if all_work_completed else (failure_reason or "execution_incomplete",),
             ),
             summary=summary,
             details={
                 "latest_execution_outcomes": outcomes,
                 "measurement_summary": {} if measurement_snapshot is None else dict(measurement_snapshot.summary),
+                "failure_reason": str(failure_reason),
             },
         )
         self._latest_result_bundle = bundle

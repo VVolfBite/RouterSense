@@ -52,10 +52,7 @@ def test_release_ledger_requires_all_p0_payload_roles_before_p1_release() -> Non
         payload_role="routing_probs",
     )
     assert routing_release == (
-        "release:p0_inbound_complete:0",
-        "release:p0_inbound_complete:1",
-        "release:p0_inbound_complete:2",
-        "release:p0_inbound_complete:3",
+        "release:1:p0_inbound_complete:2",
     )
     assert runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1") == routing_release
 
@@ -65,10 +62,7 @@ def test_release_ledger_requires_all_p0_payload_roles_before_p1_release() -> Non
         payload_role="hidden_states",
     )
     assert p1_release == (
-        "release:p1_inbound_complete:0",
-        "release:p1_inbound_complete:1",
-        "release:p1_inbound_complete:2",
-        "release:p1_inbound_complete:3",
+        "release:1:p1_inbound_complete:2",
     )
     assert all(item in runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P2") for item in p1_release)
 
@@ -91,7 +85,7 @@ def test_release_ledger_clears_on_new_forward_and_result_bundle_finalizes() -> N
     bundle = runtime._finalize_result_bundle()  # noqa: SLF001
     assert bundle is not None
     assert bundle.status == "success"
-    assert bundle.summary["release_id_count"] == 4
+    assert bundle.summary["release_id_count"] == 1
     evidence_sink = runtime.runtime_instrumentation.evidence_sink
     assert isinstance(evidence_sink, BufferedEvidenceSink)
     assert evidence_sink.latest_result() is not None
