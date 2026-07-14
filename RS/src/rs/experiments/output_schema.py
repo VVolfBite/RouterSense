@@ -56,6 +56,35 @@ def detect_git_state(repo_root: Path) -> tuple[str, bool]:
     return sha, dirty
 
 
+def _manifest_sha(repo_root: Path) -> tuple[str, str]:
+    manifest_path = repo_root / "handoff" / "manifest.json"
+    if not manifest_path.is_file():
+        return "", ""
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "", ""
+    final_sha = str(payload.get("final_sha", "") or "").strip()
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    return final_sha, digest
+
+
+def resolve_commit_identity(*, repo_root: Path, run_plan_commit_sha: str = "") -> tuple[str, bool, str, str]:
+    direct = str(run_plan_commit_sha or "").strip()
+    if direct:
+        return direct, False, "run_plan", ""
+    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "") or "").strip()
+    if env_sha:
+        return env_sha, False, "env", ""
+    manifest_sha, manifest_digest = _manifest_sha(repo_root)
+    if manifest_sha:
+        return manifest_sha, False, "handoff_manifest", manifest_digest
+    sha, dirty = detect_git_state(repo_root)
+    if sha:
+        return sha, bool(dirty), "git", ""
+    return "", False, "", manifest_digest
+
+
 def _config_digest(config_snapshot: dict[str, Any]) -> str:
     encoded = json.dumps(config_snapshot, ensure_ascii=True, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -209,10 +238,14 @@ def initialize_run_artifacts(
     run_type: str,
     official_entrypoint: str,
     config_snapshot: dict[str, Any],
+    run_plan_commit_sha: str = "",
     manifest_overrides: dict[str, Any] | None = None,
 ) -> OutputLayout:
     layout = build_output_layout(output_dir)
-    commit_sha, git_dirty = detect_git_state(repo_root)
+    commit_sha, git_dirty, commit_sha_source, source_archive_digest = resolve_commit_identity(
+        repo_root=repo_root,
+        run_plan_commit_sha=str(run_plan_commit_sha),
+    )
     runtime = dict(config_snapshot.get("runtime", {}) or {})
     invariant_mode = normalize_invariant_mode(runtime.get("invariant_mode", "diagnostic"))
     require_invariant(
@@ -233,6 +266,7 @@ def initialize_run_artifacts(
         "run_id": layout.root.name,
         "run_type": str(run_type),
         "commit_sha": commit_sha,
+        "commit_sha_source": str(commit_sha_source),
         "source_commit_sha": commit_sha,
         "runtime_commit_sha": commit_sha,
         "result_commit_sha": commit_sha,
@@ -240,6 +274,7 @@ def initialize_run_artifacts(
         "config_schema_version": int(config_snapshot.get("schema_version", 0) or 0),
         "config_digest": _config_digest(config_snapshot),
         "source_tree_digest": commit_sha,
+        "source_archive_digest": str(source_archive_digest),
         "official_entrypoint": str(official_entrypoint),
         "runtime_line": str((config_snapshot.get("runtime", {}) or {}).get("line", "")),
         "policy_id": str((config_snapshot.get("policy", {}) or {}).get("name", "")),

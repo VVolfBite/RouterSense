@@ -132,6 +132,7 @@ class RunPlan:
     run_kind: RunKind
     config_digest: str
     planning_case: PlanningCase
+    commit_sha: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -139,5 +140,6 @@ class RunPlan:
             "case_id": str(self.case_id),
             "run_kind": self.run_kind.value,
             "config_digest": str(self.config_digest),
+            "commit_sha": str(self.commit_sha),
             "planning_case": self.planning_case.to_dict(),
         }

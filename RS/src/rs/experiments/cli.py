@@ -23,6 +23,7 @@ def _build_run_plans(config_path: str | Path) -> tuple[RunPlan, ...]:
                     run_kind=case.run_kind,
                     config_digest=loaded.config_digest,
                     planning_case=case,
+                    commit_sha="",
                 )
             )
     return tuple(plans)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from rs.experiments.cli import main
 from rs.experiments.config_loader import ExperimentConfigLoader, UnsupportedLegacyExperimentConfig
+from rs.experiments.output_schema import initialize_run_artifacts
 from rs.experiments.registry import RunnerRegistry
 from rs.experiments.specs import RunKind
 
@@ -174,7 +176,7 @@ fallback_policy: fail_closed
 
 def test_official_v2_configs_preserve_model_topology_workload_and_strategy_semantics() -> None:
     loader = ExperimentConfigLoader()
-    base = Path("RS/configs/official")
+    base = Path(__file__).resolve().parents[1] / "configs" / "official"
     expected = {
         "offline_evaluation.yaml": "OFFLINE_EVALUATION",
         "gloo_functional.yaml": "GLOO_FUNCTIONAL",
@@ -194,3 +196,61 @@ def test_official_v2_configs_preserve_model_topology_workload_and_strategy_seman
         assert loaded.spec.defaults["evaluation"]["repeats"] >= 1
         assert loaded.spec.defaults["evaluation"]["warmup"] >= 0
         assert len(loaded.spec.defaults["runtime"]["selected_layers"]) >= 1
+
+
+def test_initialize_run_artifacts_uses_env_commit_sha_without_git(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "archive"
+    repo_root.mkdir()
+    output_dir = tmp_path / "run"
+    monkeypatch.setenv("ROUTERSENSE_COMMIT_SHA", "env-sha-123")
+    layout = initialize_run_artifacts(
+        repo_root=repo_root,
+        output_dir=output_dir,
+        run_type="offline",
+        official_entrypoint="offline_evaluation",
+        config_snapshot={
+            "schema_version": 1,
+            "runtime": {"invariant_mode": "diagnostic", "line": "offline_replay"},
+            "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+            "policy": {"name": ""},
+            "prediction": {"name": ""},
+            "topology": {"world_size": 1},
+            "model": {"id": "archive"},
+            "workload": {"id": "smoke"},
+        },
+    )
+    manifest = json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["commit_sha"] == "env-sha-123"
+    assert manifest["commit_sha_source"] == "env"
+    assert manifest["source_archive_digest"] == ""
+    monkeypatch.delenv("ROUTERSENSE_COMMIT_SHA", raising=False)
+
+
+def test_initialize_run_artifacts_uses_handoff_manifest_sha_without_git(tmp_path: Path) -> None:
+    repo_root = tmp_path / "archive"
+    handoff_dir = repo_root / "handoff"
+    handoff_dir.mkdir(parents=True)
+    (handoff_dir / "manifest.json").write_text(
+        json.dumps({"final_sha": "manifest-sha-456"}, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    layout = initialize_run_artifacts(
+        repo_root=repo_root,
+        output_dir=tmp_path / "run",
+        run_type="gloo",
+        official_entrypoint="gloo_functional",
+        config_snapshot={
+            "schema_version": 1,
+            "runtime": {"invariant_mode": "diagnostic", "line": "phase_sync"},
+            "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+            "policy": {"name": ""},
+            "prediction": {"name": ""},
+            "topology": {"world_size": 1},
+            "model": {"id": "archive"},
+            "workload": {"id": "smoke"},
+        },
+    )
+    manifest = json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["commit_sha"] == "manifest-sha-456"
+    assert manifest["commit_sha_source"] == "handoff_manifest"
+    assert manifest["source_archive_digest"]
