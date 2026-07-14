@@ -1,14 +1,25 @@
 {
   "branch": "convergence/m1-final-publication",
-  "status": "M1_RUNTIME_LIFECYCLE_BLOCKED",
+  "starting_sha": "d1a6f61",
+  "status": "M1_RUNTIME_LIFECYCLE_READY",
   "completed": [
-    "interface lock fast-forwarded from b2ec885",
-    "ControlCommunicationLane implementation skeleton added"
+    "ControlGroupHandle owns deterministic control-process-group lifecycle outside lifecycle hooks",
+    "Lifecycle publication uses expected PublicationSlot registry and safe-point retry semantics",
+    "Terminal lane outcomes clean TargetLayerPlannerService and TargetPlanStore on every rank",
+    "Older generations are cancelled and cleaned across service, store, and lane",
+    "Formal target publication payload carries WindowPlan and validates against semantic digest",
+    "Formal 4-rank CPU/Gloo lifecycle gate implemented and passing",
+    "Formal path proved no late suffix publication"
   ],
-  "blockers": [
-    "lane not yet wired into lifecycle publication path",
-    "root canonical publish/decode not yet complete",
-    "4-rank formal Gloo proof missing",
-    "formal no-late-suffix proof missing"
-  ]
+  "remaining_blockers": [],
+  "test_commands": [
+    "python -m compileall RS/src RS/tests RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_communication_lane.py RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py RS/tests/contract/megatron_ep/test_target_plan_contracts.py RS/tests/contract/megatron_ep/test_target_plan_reconciliation.py RS/tests/contract/megatron_ep/test_target_plan_store.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/test_architecture_dependencies.py",
+    "PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py"
+  ],
+  "test_results": {
+    "compileall": "passed",
+    "targeted_pytest": "54 passed",
+    "formal_gloo_gate": "passed"
+  }
 }
