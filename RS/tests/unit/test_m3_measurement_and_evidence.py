@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -251,3 +252,43 @@ def test_debug_mode_is_not_performance_eligible() -> None:
     eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle(instrumentation_mode="debug"))
     assert eligibility.performance_eligible is False
     assert "debug_mode" in eligibility.reasons
+
+
+def test_prediction_and_offline_eligibility_require_domain_specific_fields() -> None:
+    eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle())
+    assert eligibility.prediction_evaluation_eligible is False
+    assert eligibility.offline_replay_eligible is False
+    assert "prediction:prediction_evaluation_incomplete" in eligibility.reasons
+    assert "offline:offline_replay_incomplete" in eligibility.reasons
+
+
+def test_prediction_and_offline_eligibility_pass_with_complete_summary() -> None:
+    bundle = _valid_result_bundle()
+    bundle.summary.update(
+        {
+            "prediction_evaluation_complete": True,
+            "prediction_truth_digest": "pred-truth",
+            "prediction_record_count": 2,
+            "prediction_metric_count": 5,
+            "prediction_audit_status": "valid",
+            "truth_leakage_check": True,
+            "offline_replay_complete": True,
+            "evaluation_spec_digest": "spec",
+            "task_set_digest": "taskset",
+            "execution_truth_digest": "truth",
+            "offline_record_count": 3,
+            "offline_audit_status": "valid",
+            "coverage_status": "complete",
+        }
+    )
+    eligibility = evaluate_result_bundle_eligibility(bundle)
+    assert eligibility.performance_eligible is True
+    assert eligibility.prediction_evaluation_eligible is True
+    assert eligibility.offline_replay_eligible is True
+
+
+def test_result_bundle_performance_status_must_match_eligibility() -> None:
+    bundle = replace(_valid_result_bundle(), measurement_complete=False)
+    eligibility = evaluate_result_bundle_eligibility(bundle)
+    assert eligibility.performance_eligible is False
+    assert "performance_status_inconsistent" in eligibility.reasons
