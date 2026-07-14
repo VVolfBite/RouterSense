@@ -1,28 +1,29 @@
 {
-  "status": "M3_OBSERVABILITY_EVIDENCE_BLOCKED",
+  "status": "M3_OBSERVABILITY_EVIDENCE_READY",
   "completed_with_evidence": [
     "typed ResultBundle validation and roundtrip",
     "typed ReferenceTraceBundle roundtrip",
-    "fail-closed eligibility core",
-    "typed prediction/offline eligibility requirements",
+    "purpose-aware eligibility split between correctness, performance, prediction, and offline replay",
     "bounded measurement/debug buffers",
     "artifact writer root-path guard and atomic replace",
-    "off/perf_light side-effect unit coverage"
+    "off/perf_light side-effect unit coverage",
+    "integration branch formal gate validated off/perf_light/debug instrumentation behavior on the runtime path"
   ],
   "implemented_not_verified": [
-    "RuntimeInstrumentation adapter for integration wiring"
+    "GPU and multinode evidence modes remain environment-scoped"
   ],
-  "hard_blockers": [
-    "formal Runtime/M2 pipeline is not yet wired to MeasurementSink/DebugProbe/EvidenceSink on this branch baseline",
-    "cross-module passive evidence tests must run after latest M2 merge into integration"
+  "hard_blockers": [],
+  "environment_not_run": [
+    "GPU evidence",
+    "multinode evidence"
   ],
-  "environment_not_run": [],
   "deferred_cleanup": [
-    "old top-level dialogue status files are stale and should be retired after integration",
-    "legacy observation modules remain in tree and are not deleted in this branch"
+    "stale legacy dialogue/status files remain outside the formal module path",
+    "legacy observation modules are still present for compatibility"
   ],
   "test_commands": [
-    "python -m compileall RS/src RS/tests",
-    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m3_measurement_and_evidence.py"
+    "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\unit\\test_m3_measurement_and_evidence.py",
+    "PYTHONPATH=.;src python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; s=run_gate_with_backend(instrumentation_mode='off', execution_backend='phase_sync'); print(json.dumps({'status': s['status'], 'measurement_counts': [r['measurement_event_count'] for r in s['ranks']], 'modes': [r['instrumentation_mode'] for r in s['ranks']]}, sort_keys=True))\"",
+    "PYTHONPATH=.;src python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; s=run_gate_with_backend(instrumentation_mode='debug', execution_backend='phase_sync'); print(json.dumps({'status': s['status'], 'measurement_counts': [r['measurement_event_count'] for r in s['ranks']], 'modes': [r['instrumentation_mode'] for r in s['ranks']], 'result_statuses': [r['result_bundle']['performance_status'] if 'result_bundle' in r else None for r in s['ranks']]}, sort_keys=True))\""
   ]
 }

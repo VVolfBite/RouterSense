@@ -1,16 +1,28 @@
 {
-  "commands": [
+  "tests": [
     {
-      "command": "python -m compileall RS/src RS/tests",
-      "exit_code": 0,
-      "passed": true
-    },
-    {
-      "command": "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m3_measurement_and_evidence.py",
+      "command": "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\unit\\test_m3_measurement_and_evidence.py",
       "exit_code": 0,
       "passed": 14,
       "failed": 0,
-      "skipped": 0
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; s=run_gate_with_backend(instrumentation_mode='off', execution_backend='phase_sync'); print(json.dumps({'status': s['status'], 'measurement_counts': [r['measurement_event_count'] for r in s['ranks']], 'modes': [r['instrumentation_mode'] for r in s['ranks']]}, sort_keys=True))\"",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=.;src python -c \"from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend; import json; s=run_gate_with_backend(instrumentation_mode='debug', execution_backend='phase_sync'); print(json.dumps({'status': s['status'], 'measurement_counts': [r['measurement_event_count'] for r in s['ranks']], 'modes': [r['instrumentation_mode'] for r in s['ranks']], 'result_statuses': [r['result_bundle']['performance_status'] if 'result_bundle' in r else None for r in s['ranks']]}, sort_keys=True))\"",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
     }
   ]
 }
