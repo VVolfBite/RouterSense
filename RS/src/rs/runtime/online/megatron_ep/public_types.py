@@ -27,6 +27,10 @@ class LegacyObserverConflictError(RuntimeError):
     pass
 
 
+class FormalRuntimeAttachPreflightError(RuntimeError):
+    pass
+
+
 @dataclass
 class ControlGroupHandle:
     process_group: Any | None

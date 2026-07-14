@@ -1,47 +1,24 @@
-M1 runtime lifecycle closure status
+M1 runtime lifecycle closure
 
 Branch: `convergence/m1-final-publication`
-Starting SHA for this closure pass: `1ff916f2ad317eb21d92a0e25290af89f0fddce1`
+Starting SHA for this closure pass: `02e74e856126079580ba71f1124dc4ca9e4d1eee`
 
-Implemented in this pass:
+Current status: `M1_RUNTIME_LIFECYCLE_READY`
 
-- added `ControlGroupRegistry` in runtime host bootstrap so all world ranks create all EP control groups in the same deterministic order before lifecycle publication begins
-- updated `ControlGroupHandle.close()` so registry-owned groups are not double-destroyed
-- converted the formal Gloo lifecycle gate at `RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py` to drive publication through `runtime.handle(...)` events instead of private submit/pump helpers for the main lifecycle path
-- added dynamic spies for `_agree_late_suffix`, `_late_suffix_provider`, `consume_once(execution_origin="provisional_then_late_suffix")`, and post-target-commit publication
-- fixed `TargetPlanStore` generation cleanup and shutdown so older generations and unfinished executing entries close deterministically instead of hitting illegal `EXECUTING -> CANCELLED` transitions
-- exercised subgroup control-lane publication with runtime bootstrap-created Gloo groups and root global rank `2`
-- exercised mismatch and stale-replacement scenarios against the actual publication path
+Closed in this pass:
 
-Formal gate coverage now includes:
+- `TargetLayerPlannerService`, `TargetPlanStore`, and `GlooControlCommunicationLane` now maintain persistent generation floors, so stale generations are rejected even if no earlier task was ever submitted.
+- `cleanup_before_generation()` now rejects later direct token registration and direct publish paths for old generations instead of only cleaning currently visible tasks.
+- formal lifecycle gate now has centralized pass/fail validation, explicit `target_commit_miss_then_worker_ready`, and successful paths that reach terminal `COMPLETED`.
+- dynamic no-late-suffix counters now assert zero late-suffix provider calls, zero late-suffix consume paths, and zero post-commit publication.
+- `attach_formal_online_runtime()` now runs collective preflight before control-group bootstrap and rolls back owner/wrappers on mid-install failures.
+- a dedicated 4-rank attach/control-group gate now verifies deterministic two-group bootstrap and collective preflight failure handling.
 
-- all-ready publication
-- first safe point `NOT_READY`, second safe point `READY`
-- remote planner failure
-- cancelled generation
-- slot/token mismatch
-- canonical plan digest mismatch
-- subgroup `(2, 3)` with root global rank `2`
-- generation cleanup before generation `3`
-- stale inflight replacement publishing only the newest version
+Verification completed in this pass:
 
-Dynamic no-late-suffix evidence:
-
-- `late_suffix_call_count = 0`
-- `late_suffix_provider_present = false`
-- `formal_target_commit_after_miss = false`
-- `post_commit_publication_count = 0`
-
-Executed commands:
-
-- `python -m compileall RS/src RS/tests RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py`
-- `PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/contract/megatron_ep/test_communication_lane.py RS/tests/contract/megatron_ep/test_lifecycle_prediction_adapter.py RS/tests/contract/megatron_ep/test_target_plan_contracts.py RS/tests/contract/megatron_ep/test_target_plan_reconciliation.py RS/tests/contract/megatron_ep/test_target_plan_store.py RS/tests/contract/megatron_ep/test_target_planner_service.py RS/tests/test_architecture_dependencies.py`
-- `PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py`
-
-Observed results:
-
-- compileall passed
-- targeted M1 suite passed: `54 passed`
-- formal 4-rank lifecycle gate passed on CPU/Gloo
-
-Current branch status: `M1_RUNTIME_LIFECYCLE_READY`
+- `python -m compileall RS/src RS/tests RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py`
+- narrow M1 regression: `40 passed`
+- target M1 suite: `68 passed`
+- M0 regression subset covering prediction/planning parity and digests: `72 passed`
+- formal 4-rank lifecycle publication Gloo gate: `passed`
+- formal 4-rank attach/control-group Gloo gate: `passed`

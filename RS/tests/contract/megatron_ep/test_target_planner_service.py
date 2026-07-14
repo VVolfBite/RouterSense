@@ -514,3 +514,21 @@ def test_target_planner_cancel_before_generation_cleans_all_older_generations() 
     assert expired_first.status is PreparationSubmitStatus.REJECTED_EXPIRED
     assert expired_second.status is PreparationSubmitStatus.REJECTED_EXPIRED
     assert accepted_third.status in {PreparationSubmitStatus.ACCEPTED, PreparationSubmitStatus.REPLACED_STALE}
+
+
+def test_target_planner_generation_floor_rejects_old_generation_without_prior_submission() -> None:
+    service = TargetLayerPlannerService(store=TargetPlanStore(), max_queue_size=4)
+    first = _request(safe_projection_mode="disabled")
+    second = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 2})
+    third = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 3})
+    fourth = TargetLayerPlanningRequest(**{**first.__dict__, "forward_epoch": 4})
+    service.start()
+    service.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    assert service.submit(first).status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert service.submit(second).status is PreparationSubmitStatus.REJECTED_EXPIRED
+    assert service.submit(third).status is PreparationSubmitStatus.ACCEPTED
+    assert service.submit(fourth).status in {
+        PreparationSubmitStatus.ACCEPTED,
+        PreparationSubmitStatus.REPLACED_STALE,
+    }
+    service.shutdown()

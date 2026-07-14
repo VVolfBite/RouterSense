@@ -192,3 +192,17 @@ def test_lane_uses_global_root_rank_for_broadcast(monkeypatch) -> None:
     result = lane.poll(slot, local)
     assert result.status is PublicationPollStatus.READY
     assert seen["src"] == 2
+
+
+def test_lane_generation_floor_marks_old_slot_expired() -> None:
+    slot = slot_from_request(
+        run_id="run",
+        forward_generation=1,
+        microbatch_id="mb",
+        source_layer_id="0",
+        target_layer_id="1",
+    )
+    lane = GlooControlCommunicationLane(rank=0, world_size=1, root_rank=0, process_group=None, group_ranks=(0,))
+    lane.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    result = lane.poll(slot, None)
+    assert result.status is PublicationPollStatus.EXPIRED

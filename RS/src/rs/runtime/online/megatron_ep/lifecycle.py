@@ -4361,8 +4361,15 @@ class RouterSenseInjectionRuntime:
                             self._target_plan_key(layer_name=layer_name),
                             execution_origin=execution_origin,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        try:
+                            self.target_plan_store.fail(
+                                self._target_plan_key(layer_name=layer_name),
+                                execution_origin="complete_failed",
+                            )
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"prepared target completion failed for {layer_name}") from exc
             self._record_release_update(layer_name=layer_name, event="p1_return_completed")
             if self._should_stop_after_layer(layer_name=layer_name, phase="P1"):
                 raise SelectedLayerStop(f"Stopped after selected P1 layer {layer_name}")

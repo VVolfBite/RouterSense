@@ -34,6 +34,7 @@ from rs.runtime.online.megatron_ep.public_types import (
 from rs.runtime.online.megatron_ep.target_planning.contracts import TwoHorizonPrediction
 from rs.runtime.online.megatron_ep.target_planning.predictor import TwoHorizonPredictionBundle
 from rs.runtime.online.megatron_ep.target_planning.planner_service import TargetLayerPlannerService, TargetLayerPlanningRequest
+from rs.runtime.online.megatron_ep.target_planning.contracts import TargetPlanKey
 from rs.runtime.online.megatron_ep.target_planning.store import TargetPlanStore
 
 
@@ -156,9 +157,9 @@ def _dispatcher_for_phase(*, rank: int, group_ranks: tuple[int, ...], phase: str
             torch.zeros((probs_rows, 1), dtype=torch.float32),
         )
     if phase == "P1":
-        input_splits = col
-        output_splits = row
-        hidden_rows = int(sum(col))
+        input_splits = row
+        output_splits = col
+        hidden_rows = int(sum(row))
         return (
             _FakeDispatcher(input_splits=input_splits, output_splits=output_splits),
             torch.zeros((hidden_rows, 4), dtype=torch.float32),
@@ -348,6 +349,25 @@ def _emit_target_dispatch_complete(runtime: RouterSenseInjectionRuntime, *, rank
     spy["target_commit_seen"] = True
 
 
+def _emit_target_combine_complete(runtime: RouterSenseInjectionRuntime, *, rank: int, group_ranks: tuple[int, ...]) -> None:
+    target_dispatcher, target_hidden, _ = _dispatcher_for_phase(rank=rank, group_ranks=group_ranks, phase="P1")
+    runtime.handle(
+        CombineReadyEvent(
+            layer_name="model.layers.1.mlp",
+            dispatcher=target_dispatcher,
+            packed_hidden_states=target_hidden,
+        )
+    )
+    runtime.handle(
+        CombineCompleteEvent(
+            layer_name="model.layers.1.mlp",
+            dispatcher=target_dispatcher,
+            packed_hidden_states=target_hidden,
+            result=target_hidden.clone(),
+        )
+    )
+
+
 def _end_forward(runtime: RouterSenseInjectionRuntime) -> None:
     runtime.handle(ForwardEndEvent())
 
@@ -394,6 +414,7 @@ def _scenario_all_ready(rank: int, process_group) -> dict[str, object]:
         state = runtime.target_plan_store.get_state_record(runtime._target_plan_key(layer_name="model.layers.1.mlp"))  # noqa: SLF001
         assert state is not None
         _emit_target_dispatch_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3), spy=spy)
+        _emit_target_combine_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
         _end_forward(runtime)
         terminal = runtime.target_plan_store.get_terminal_record(runtime._target_plan_key(layer_name="model.layers.1.mlp"))  # noqa: SLF001
         assert terminal is not None
@@ -421,6 +442,7 @@ def _scenario_not_ready_then_ready(rank: int, process_group) -> dict[str, object
         state = runtime.target_plan_store.get_state_record(runtime._target_plan_key(layer_name="model.layers.1.mlp"))  # noqa: SLF001
         assert state is not None
         _emit_target_dispatch_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3), spy=spy)
+        _emit_target_combine_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
         _end_forward(runtime)
         return {
             "scenario": "not_ready_then_ready",
@@ -593,7 +615,24 @@ def _scenario_cleanup_before_generation(rank: int, process_group) -> dict[str, o
         runtime.begin_forward(forward_epoch=2)
         _emit_source_events(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
         runtime.begin_forward(forward_epoch=3)
-        state1 = runtime.target_plan_store.get_terminal_record(runtime._target_plan_key(layer_name="model.layers.1.mlp"))  # noqa: SLF001
+        old_key_1 = TargetPlanKey(
+            run_id=str(runtime.run_id),
+            forward_epoch=1,
+            microbatch_id=str(runtime.microbatch_id),
+            target_layer_id="1",
+        )
+        old_key_2 = TargetPlanKey(
+            run_id=str(runtime.run_id),
+            forward_epoch=2,
+            microbatch_id=str(runtime.microbatch_id),
+            target_layer_id="1",
+        )
+        current_key = TargetPlanKey(
+            run_id=str(runtime.run_id),
+            forward_epoch=3,
+            microbatch_id=str(runtime.microbatch_id),
+            target_layer_id="1",
+        )
         submit1 = runtime.target_planner_service.submit(  # type: ignore[union-attr]
             TargetLayerPlanningRequest(
                 run_id=str(runtime.run_id),
@@ -601,14 +640,35 @@ def _scenario_cleanup_before_generation(rank: int, process_group) -> dict[str, o
                 microbatch_id=str(runtime.microbatch_id),
                 source_layer_id="0",
                 target_layer_id="1",
-                current_p0_rows=((0, 1), (1, 0)),
-                previous_p0_rows=((0, 1), (1, 0)),
+                current_p0_rows=_matrix_for_world_size(4),
+                previous_p0_rows=_matrix_for_world_size(4),
                 predictor_name="copy_current_dispatch",
                 policy_id="U_barrier_criticality_global_matching",
                 raw_u_policy_id="U_barrier_criticality_global_matching",
                 paired_b_policy_id="",
                 safe_projection_mode="disabled",
-                group_size=2,
+                group_size=4,
+                bucket_rows=0,
+                policy_options=PlannerPolicyConfig(),
+                topology_digest="topo",
+                bucket_contract_digest="dynamic_current",
+            )
+        )
+        submit2 = runtime.target_planner_service.submit(  # type: ignore[union-attr]
+            TargetLayerPlanningRequest(
+                run_id=str(runtime.run_id),
+                forward_epoch=2,
+                microbatch_id=str(runtime.microbatch_id),
+                source_layer_id="0",
+                target_layer_id="1",
+                current_p0_rows=_matrix_for_world_size(4),
+                previous_p0_rows=_matrix_for_world_size(4),
+                predictor_name="copy_current_dispatch",
+                policy_id="U_barrier_criticality_global_matching",
+                raw_u_policy_id="U_barrier_criticality_global_matching",
+                paired_b_policy_id="",
+                safe_projection_mode="disabled",
+                group_size=4,
                 bucket_rows=0,
                 policy_options=PlannerPolicyConfig(),
                 topology_digest="topo",
@@ -617,8 +677,11 @@ def _scenario_cleanup_before_generation(rank: int, process_group) -> dict[str, o
         )
         return {
             "scenario": "cleanup_before_generation",
-            "old_terminal_present": state1 is not None,
+            "old_terminal_1": None if runtime.target_plan_store.get_terminal_record(old_key_1) is None else runtime.target_plan_store.get_terminal_record(old_key_1).to_dict(),
+            "old_terminal_2": None if runtime.target_plan_store.get_terminal_record(old_key_2) is None else runtime.target_plan_store.get_terminal_record(old_key_2).to_dict(),
+            "current_state": None if runtime.target_plan_store.get_state_record(current_key) is None else runtime.target_plan_store.get_state_record(current_key).to_dict(),
             "old_submit_status": str(submit1.status.value),
+            "old_submit_status_2": str(submit2.status.value),
             "spy": dict(spy),
         }
     finally:
@@ -670,6 +733,75 @@ def _scenario_stale_replacement(rank: int, process_group) -> dict[str, object]:
         runtime._cleanup_target_plan_runtime()  # noqa: SLF001
 
 
+def _scenario_target_commit_miss_then_worker_ready(rank: int, process_group) -> dict[str, object]:
+    runtime, trace, spy = _runtime(
+        rank=rank,
+        world_size=4,
+        group_ranks=(0, 1, 2, 3),
+        root_rank=0,
+        process_group=process_group,
+        predictor_delay_seconds=0.8,
+    )
+    try:
+        _begin_forward(runtime)
+        slot = _emit_source_events(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
+        assert _wait_until(lambda: any(str(item.get("safe_status")) == "not_ready" for item in trace), timeout_seconds=10.0)
+        _emit_target_dispatch_ready(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
+        assert len([item for item in trace if str(item.get("safe_status")) == "not_ready"]) >= 2
+        _emit_target_dispatch_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3), spy=spy)
+        _wait_for_slot_status(runtime, slot, "READY", timeout_seconds=10.0)
+        _emit_target_combine_complete(runtime, rank=rank, group_ranks=(0, 1, 2, 3))
+        _end_forward(runtime)
+        return {
+            "scenario": "target_commit_miss_then_worker_ready",
+            "trace": trace,
+            "post_commit_publication_count": int(spy["post_commit_publication_count"]),
+            "late_suffix_call_count": int(spy["late_suffix_call_count"]),
+            "late_suffix_consume_count": int(spy["late_suffix_consume_count"]),
+            "state_after_end": None if runtime.target_plan_store.get_state_record(runtime._target_plan_key(layer_name="model.layers.1.mlp")) is None else runtime.target_plan_store.get_state_record(runtime._target_plan_key(layer_name="model.layers.1.mlp")).to_dict(),  # noqa: SLF001
+            "terminal_after_end": None if runtime.target_plan_store.get_terminal_record(runtime._target_plan_key(layer_name="model.layers.1.mlp")) is None else runtime.target_plan_store.get_terminal_record(runtime._target_plan_key(layer_name="model.layers.1.mlp")).to_dict(),  # noqa: SLF001
+            "spy": dict(spy),
+        }
+    finally:
+        runtime._cleanup_target_plan_runtime()  # noqa: SLF001
+
+
+def _validate_global_gate_result(gathered: list[dict[str, object] | None]) -> None:
+    ranks = [dict(item or {}) for item in gathered]
+    assert all("scenarios" in item for item in ranks), gathered
+    total_late_suffix_calls = sum(int(item.get("late_suffix_call_count", 0)) for item in ranks)
+    total_late_suffix_provider_calls = sum(int(item.get("late_suffix_provider_call_count", 0)) for item in ranks)
+    total_late_suffix_consumes = sum(int(item.get("late_suffix_consume_count", 0)) for item in ranks)
+    total_post_commit_publications = sum(int(item.get("post_commit_publication_count", 0)) for item in ranks)
+    assert total_late_suffix_calls == 0, gathered
+    assert total_late_suffix_provider_calls == 0, gathered
+    assert total_late_suffix_consumes == 0, gathered
+    assert total_post_commit_publications == 0, gathered
+    for item in ranks:
+        scenarios = {str(entry.get("scenario")): dict(entry) for entry in list(item.get("scenarios", []))}
+        all_ready = scenarios["all_ready"]
+        assert str(all_ready["terminal_after_end"]["final_status"]) == "COMPLETED", all_ready
+        assert any(str(entry.get("safe_status")) == "ready" for entry in all_ready["trace"]), all_ready
+        not_ready_then_ready = scenarios["not_ready_then_ready"]
+        statuses = [str(entry.get("safe_status")) for entry in not_ready_then_ready["trace"]]
+        assert "not_ready" in statuses and "ready" in statuses, not_ready_then_ready
+        failed_rank = scenarios["failed_rank"]
+        assert str(failed_rank["terminal"]["final_status"]) == "FAILED", failed_rank
+        cancelled = scenarios["cancelled"]
+        assert str(cancelled["terminal"]["final_status"]) == "CANCELLED", cancelled
+        slot_mismatch = scenarios["slot_mismatch"]
+        assert str(slot_mismatch["terminal"]["final_status"]) == "FAILED", slot_mismatch
+        plan_mismatch = scenarios["plan_digest_mismatch"]
+        assert str(plan_mismatch["terminal"]["final_status"]) == "FAILED", plan_mismatch
+        cleanup = scenarios["cleanup_before_generation"]
+        assert str(cleanup["old_submit_status"]) == "rejected_expired", cleanup
+        assert str(cleanup["old_submit_status_2"]) == "rejected_expired", cleanup
+        commit_miss = scenarios["target_commit_miss_then_worker_ready"]
+        assert int(commit_miss["post_commit_publication_count"]) == 0, commit_miss
+        assert int(commit_miss["late_suffix_call_count"]) == 0, commit_miss
+        assert int(commit_miss["late_suffix_consume_count"]) == 0, commit_miss
+
+
 def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(master_port)
@@ -699,6 +831,7 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
             _scenario_subgroup(rank, dist.group.WORLD, subgroup),
             _scenario_cleanup_before_generation(rank, dist.group.WORLD),
             _scenario_stale_replacement(rank, dist.group.WORLD),
+            _scenario_target_commit_miss_then_worker_ready(rank, dist.group.WORLD),
         ]
         local_late_suffix_call_count = sum(
             int((scenario.get("spy") or {}).get("late_suffix_call_count", 0))
@@ -710,6 +843,11 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
             for scenario in scenarios
             if isinstance(scenario, dict)
         )
+        local_late_suffix_consume_count = sum(
+            int((scenario.get("spy") or {}).get("late_suffix_consume_count", 0))
+            for scenario in scenarios
+            if isinstance(scenario, dict)
+        )
         local_post_commit_publication_count = sum(
             int((scenario.get("spy") or {}).get("post_commit_publication_count", 0))
             for scenario in scenarios
@@ -718,24 +856,32 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
         local = {
             "rank": int(rank),
             "late_suffix_call_count": int(local_late_suffix_call_count),
-            "late_suffix_provider_present": bool(local_late_suffix_provider_calls > 0),
-            "formal_target_commit_after_miss": bool(local_post_commit_publication_count > 0),
+            "late_suffix_provider_call_count": int(local_late_suffix_provider_calls),
+            "late_suffix_consume_count": int(local_late_suffix_consume_count),
+            "post_commit_publication_count": int(local_post_commit_publication_count),
+            "late_suffix_provider_installed": False,
+            "supports_late_suffix_splice": False,
             "scenarios": scenarios,
         }
         gathered = [None for _ in range(world_size)]
         dist.all_gather_object(gathered, local)
         (out_path / f"rank{rank}_m1_formal_gloo.json").write_text(json.dumps(local, indent=2), encoding="utf-8")
         if rank == 0:
+            _validate_global_gate_result(gathered)
             total_late_suffix_calls = sum(int((item or {}).get("late_suffix_call_count", 0)) for item in gathered)
-            any_late_suffix_provider = any(bool((item or {}).get("late_suffix_provider_present", False)) for item in gathered)
-            any_post_commit_publication = any(bool((item or {}).get("formal_target_commit_after_miss", False)) for item in gathered)
+            total_late_suffix_provider_calls = sum(int((item or {}).get("late_suffix_provider_call_count", 0)) for item in gathered)
+            total_late_suffix_consumes = sum(int((item or {}).get("late_suffix_consume_count", 0)) for item in gathered)
+            total_post_commit_publication = sum(int((item or {}).get("post_commit_publication_count", 0)) for item in gathered)
+            supports_late_suffix_splice = any(bool((item or {}).get("supports_late_suffix_splice", False)) for item in gathered)
             summary = {
-                "status": "completed",
+                "status": "passed",
                 "world_size": int(world_size),
                 "all_ranks": gathered,
                 "late_suffix_call_count": int(total_late_suffix_calls),
-                "late_suffix_provider_present": bool(any_late_suffix_provider),
-                "formal_target_commit_after_miss": bool(any_post_commit_publication),
+                "late_suffix_provider_call_count": int(total_late_suffix_provider_calls),
+                "late_suffix_consume_count": int(total_late_suffix_consumes),
+                "post_commit_publication_count": int(total_post_commit_publication),
+                "supports_late_suffix_splice": bool(supports_late_suffix_splice),
             }
             (out_path / "m1_formal_lifecycle_gloo_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             print(json.dumps(summary, indent=2))

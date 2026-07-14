@@ -33,11 +33,20 @@ class TargetPlanStore:
         self._claimed: dict[tuple[str, int, str, str], _StoredTargetPlan] = {}
         self._terminal: dict[tuple[str, int, str, str], TargetPlanTerminalRecord] = {}
         self._publish_tokens: dict[tuple[str, int, str, str], PreparationToken] = {}
+        self._generation_floor_by_stream: dict[tuple[str, str], int] = {}
         self._lock = threading.RLock()
 
     @staticmethod
     def _key(key: TargetPlanKey) -> tuple[str, int, str, str]:
         return (str(key.run_id), int(key.forward_epoch), str(key.microbatch_id), str(key.target_layer_id))
+
+    @staticmethod
+    def _stream_key(run_id: str, microbatch_id: str) -> tuple[str, str]:
+        return (str(run_id), str(microbatch_id))
+
+    def _generation_expired(self, key: TargetPlanKey) -> bool:
+        floor = int(self._generation_floor_by_stream.get(self._stream_key(key.run_id, key.microbatch_id), 0))
+        return int(key.forward_epoch) < floor
 
     @staticmethod
     def _transition_table() -> dict[str, set[str]]:
@@ -72,9 +81,12 @@ class TargetPlanStore:
     def put(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         self.publish_logical(key, plan)
 
-    def register_expected_publication(self, token: PreparationToken) -> None:
+    def register_expected_publication(self, token: PreparationToken) -> bool:
         with self._lock:
+            if self._generation_expired(token.target_key):
+                return False
             self._publish_tokens[self._key(token.target_key)] = token
+            return True
 
     def clear_expected_publication(self, key: TargetPlanKey) -> None:
         with self._lock:
@@ -92,6 +104,8 @@ class TargetPlanStore:
             except Exception:
                 return PublishCurrentResult(status="INVALID_PLAN")
             skey = self._key(token.target_key)
+            if self._generation_expired(token.target_key):
+                return PublishCurrentResult(status="EXPIRED_GENERATION")
             if (
                 str(plan.run_id) != str(token.target_key.run_id)
                 or int(plan.forward_epoch) != int(token.target_key.forward_epoch)
@@ -132,6 +146,15 @@ class TargetPlanStore:
     def publish_logical(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         skey = self._key(key)
         with self._lock:
+            if self._generation_expired(key):
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-EXPIRED",
+                        stage="target_plan_store",
+                        message="target plan publish rejected for expired generation",
+                        actual={"key": key.to_dict()},
+                    )
+                )
             terminal = self._terminal.get(skey)
             if terminal is not None:
                 raise RouterSenseInvariantError(
@@ -192,6 +215,15 @@ class TargetPlanStore:
     def claim(self, key: TargetPlanKey, *, claim_owner: str) -> TargetLayerPreparedJointPlan:
         skey = self._key(key)
         with self._lock:
+            if self._generation_expired(key):
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-EXPIRED",
+                        stage="target_plan_store",
+                        message="target plan claim rejected for expired generation",
+                        actual={"key": key.to_dict()},
+                    )
+                )
             item = self._plans.pop(skey, None)
             if item is None:
                 if skey in self._claimed:
@@ -374,11 +406,16 @@ class TargetPlanStore:
 
     def cleanup_before_generation(self, *, run_id: str, microbatch_id: str, current_generation: int) -> None:
         with self._lock:
+            stream_key = self._stream_key(run_id, microbatch_id)
+            self._generation_floor_by_stream[stream_key] = max(
+                int(current_generation),
+                int(self._generation_floor_by_stream.get(stream_key, 0)),
+            )
             self._cleanup_matching_locked(
                 lambda skey: (
                     skey[0] == str(run_id)
                     and skey[2] == str(microbatch_id)
-                    and int(skey[1]) < int(current_generation)
+                    and int(skey[1]) < int(self._generation_floor_by_stream[stream_key])
                 ),
                 execution_origin="generation_cleanup",
             )
