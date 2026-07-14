@@ -1,0 +1,26 @@
+{
+  "status": "M5_EXPERIMENT_SYSTEM_CORE_READY",
+  "completed_with_evidence": [
+    "ExperimentSpec / SuiteSpec / PlanningCase / RunPlan contracts",
+    "schema_version=2 ExperimentConfigLoader",
+    "v1->v2 migration report generation",
+    "resolved_config.yaml and migration_report.json emission",
+    "single CLI entrypoint python -m rs.experiments.cli",
+    "RunnerRegistry for Phase A run kinds"
+  ],
+  "implemented_not_verified": [
+    "real service-backed runner execution beyond Phase A stubs"
+  ],
+  "hard_blockers": [],
+  "environment_not_run": [
+    "GPU, multinode, and OR-Tools-backed suites"
+  ],
+  "deferred_cleanup": [
+    "legacy core.experiment_config remains in tree for compatibility and should be retired after migration",
+    "Phase A runners currently return explicit non-claiming ResultBundle placeholders until M2/M4 services are wired"
+  ],
+  "test_commands": [
+    "python -m compileall RS/src RS/tests",
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/test_experiments_cli_v2.py"
+  ]
+}
