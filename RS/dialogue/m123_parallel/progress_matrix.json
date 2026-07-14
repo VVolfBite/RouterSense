@@ -68,13 +68,15 @@
         "compute-delay semantics",
         "digest recomputation",
         "builder validation",
-        "tiny exact fallback"
+        "replay fail-closed semantics",
+        "rollout group isolation",
+        "aggregation fail-closed filtering",
+        "tiny exact fallback without fake certification"
       ],
       "implemented_unverified": [
         "OR-Tools-backed CP-SAT parity"
       ],
       "blockers": [
-        "rollout/aggregation parity incomplete",
         "simulator still partial",
         "M123 materialization parity pending"
       ],
@@ -85,21 +87,24 @@
       "next_entry": "finish parity after integration"
     },
     "M5": {
-      "status": "READY",
+      "status": "BLOCKED",
       "completed_with_evidence": [
         "schema v2 loader",
         "CLI",
         "runner registry",
-        "migration artifacts"
+        "official v2 config preservation",
+        "default collect-only stability"
       ],
       "implemented_unverified": [
         "service-backed runners"
       ],
-      "blockers": [],
+      "blockers": [
+        "formal runners still return placeholder ResultBundle objects instead of invoking M4/M123 services"
+      ],
       "dependencies": [
         "formal M2/M4 services for future run execution"
       ],
-      "next_entry": "review or later merge"
+      "next_entry": "wire OfflineEvaluationRunner/GlooFunctionalRunner/DiagnosticRunner before claiming core READY"
     }
   }
 }
