@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave
+from rs.scheduling.validation import stable_hash
 
 
 MatrixRows = tuple[tuple[int, ...], ...]
@@ -97,7 +98,39 @@ class TargetLayerPreparedJointPlan:
     plan_version: int = 1
     parent_plan_version: int = 0
 
+    def validate(self) -> None:
+        if not str(self.source_layer_id):
+            raise ValueError("source_layer_id must be non-empty")
+        if not str(self.target_layer_id):
+            raise ValueError("target_layer_id must be non-empty")
+        if not str(self.run_id):
+            raise ValueError("run_id must be non-empty")
+        if int(self.forward_epoch) < 0:
+            raise ValueError("forward_epoch must be >= 0")
+        if not str(self.microbatch_id):
+            raise ValueError("microbatch_id must be non-empty")
+        if str(self.plan_origin) not in {"current_window", "prepared_priority_hint", "target_prepared", "provisional", "late_spliced"}:
+            raise ValueError(f"unsupported plan_origin {self.plan_origin!r}")
+        recomputed_digest = str(stable_hash(self.logical_plan.to_dict()))
+        if recomputed_digest != str(self.logical_plan_digest):
+            raise ValueError("logical_plan_digest does not match logical_plan payload")
+        if str(self.selected_logical_plan_digest) and str(self.selected_logical_plan_digest) != str(self.logical_plan_digest):
+            raise ValueError("selected_logical_plan_digest must match logical_plan_digest")
+        for matrix_name, matrix in {
+            "h1_rows": self.h1_rows,
+            "derived_p1_rows": self.derived_p1_rows,
+            "h2_rows": self.h2_rows,
+        }.items():
+            widths = {len(row) for row in matrix}
+            if matrix and len(widths) != 1:
+                raise ValueError(f"{matrix_name} must not be ragged")
+            for row in matrix:
+                for value in row:
+                    if int(value) < 0:
+                        raise ValueError(f"{matrix_name} must be non-negative")
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         payload = asdict(self)
         payload["h1_rows"] = [list(row) for row in self.h1_rows]
         payload["derived_p1_rows"] = [list(row) for row in self.derived_p1_rows]

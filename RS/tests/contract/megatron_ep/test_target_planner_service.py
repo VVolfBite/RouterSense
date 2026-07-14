@@ -487,18 +487,13 @@ def test_target_planner_stale_inflight_version_cannot_publish() -> None:
     ready = []
     while time.time() < deadline:
         ready.extend(service.drain_ready_publications())
-        if len(ready) >= 2:
+        if len(ready) >= 1:
             break
         time.sleep(0.01)
-    assert len(ready) >= 2
-    first_candidate = service.local_publication_candidate(ready[0])
-    second_candidate = service.local_publication_candidate(ready[1])
-    assert first_candidate is not None
-    assert second_candidate is not None
-    first_plan = TargetLayerPreparedJointPlan.from_dict(dict(first_candidate.metadata)["plan"])
-    second_plan = TargetLayerPreparedJointPlan.from_dict(dict(second_candidate.metadata)["plan"])
-    first_result = service.store.publish_if_current(token=ready[0].token, plan=first_plan)
-    second_result = service.store.publish_if_current(token=ready[1].token, plan=second_plan)
-    assert first_result.status in {"STALE_TOKEN", "SLOT_MISMATCH"}
-    assert second_result.status == "PUBLISHED"
+    assert len(ready) == 1
+    candidate = service.local_publication_candidate(ready[0])
+    assert candidate is not None
+    plan = TargetLayerPreparedJointPlan.from_dict(dict(candidate.metadata)["plan"])
+    result = service.store.publish_if_current(token=ready[0].token, plan=plan)
+    assert result.status == "PUBLISHED"
     service.shutdown()

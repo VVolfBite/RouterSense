@@ -11,6 +11,36 @@ from rs.runtime.online.megatron_ep.public_types import (
     PublicationPollStatus,
     PublicationSlot,
 )
+
+
+def _validated_plan_payload(candidate: dict[str, Any], slot: PublicationSlot) -> tuple[dict[str, object], str] | None:
+    try:
+        from rs.runtime.online.megatron_ep.target_planning.contracts import TargetLayerPreparedJointPlan
+
+        plan_payload = dict(candidate.get("metadata", {})).get("plan") or candidate.get("plan")
+        if not isinstance(plan_payload, dict):
+            return None
+        plan = TargetLayerPreparedJointPlan.from_dict(dict(plan_payload))
+        plan.validate()
+        if (
+            str(plan.run_id) != str(slot.run_id)
+            or int(plan.forward_epoch) != int(slot.forward_generation)
+            or str(plan.microbatch_id) != str(slot.microbatch_id)
+            or str(plan.source_layer_id) != str(slot.source_layer_id)
+            or str(plan.target_layer_id) != str(slot.target_layer_id)
+        ):
+            return None
+        advertised = str(candidate.get("logical_plan_digest", ""))
+        if advertised != str(plan.logical_plan_digest):
+            return None
+        normalized = dict(candidate)
+        normalized["plan"] = plan.to_dict()
+        normalized["logical_plan_digest"] = str(plan.logical_plan_digest)
+        return normalized, str(plan.logical_plan_digest)
+    except Exception:
+        return None
+
+
 class GlooControlCommunicationLane(ControlCommunicationLane):
     def __init__(
         self,
@@ -66,15 +96,31 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
                 root_rank=int(self.root_rank),
                 details={"reason": "missing_root_payload"},
             )
-        root_candidate = dict(root_payload.get("candidate") or {})
-        published_digest = str(root_candidate.get("logical_plan_digest", ""))
-        if any(str(dict(item.get("candidate") or {}).get("logical_plan_digest", "")) != published_digest for item in gathered):
+        normalized_root = _validated_plan_payload(dict(root_payload.get("candidate") or {}), slot)
+        if normalized_root is None:
             return PublicationPollResult(
                 slot=slot,
                 status=PublicationPollStatus.FAILED,
                 root_rank=int(self.root_rank),
-                details={"reason": "plan_digest_mismatch"},
+                details={"reason": "invalid_root_candidate"},
             )
+        root_candidate, published_digest = normalized_root
+        for item in gathered:
+            normalized = _validated_plan_payload(dict(item.get("candidate") or {}), slot)
+            if normalized is None:
+                return PublicationPollResult(
+                    slot=slot,
+                    status=PublicationPollStatus.FAILED,
+                    root_rank=int(self.root_rank),
+                    details={"reason": "invalid_candidate_payload"},
+                )
+            if str(normalized[1]) != published_digest:
+                return PublicationPollResult(
+                    slot=slot,
+                    status=PublicationPollStatus.FAILED,
+                    root_rank=int(self.root_rank),
+                    details={"reason": "plan_digest_mismatch"},
+                )
         canonical_payload = self._broadcast_root_plan(
             slot=slot,
             root_candidate=root_candidate,
@@ -105,8 +151,18 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
             status = "NOT_SUBMITTED"
             candidate = {}
         else:
-            status = str(local_candidate.status).upper()
-            candidate = local_candidate.to_dict()
+            candidate_digest = str(local_candidate.slot.semantic_digest())
+            if (
+                candidate_digest != str(slot.semantic_digest())
+                or str(local_candidate.token.publication_slot_digest) != str(slot.semantic_digest())
+                or int(local_candidate.token.forward_generation) != int(slot.forward_generation)
+                or str(local_candidate.token.target_layer_id) != str(slot.target_layer_id)
+            ):
+                status = "SLOT_MISMATCH"
+                candidate = {}
+            else:
+                status = str(local_candidate.status).upper()
+                candidate = local_candidate.to_dict()
         return {
             "slot_digest": str(slot.semantic_digest()),
             "group_rank": int(self.group_rank),
@@ -136,20 +192,16 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
         if not dist.is_available() or not dist.is_initialized() or self.group_world_size <= 1:
             return dict(payload or {})
         object_list: list[dict[str, object] | None] = [payload]
-        dist.broadcast_object_list(object_list, src=int(self.root_group_rank), group=self.process_group)
+        dist.broadcast_object_list(object_list, src=int(self.root_rank), group=self.process_group)
         broadcast_payload = dict(object_list[0] or {})
-        plan_payload = dict(broadcast_payload.get("plan") or {})
-        if plan_payload:
-            from rs.runtime.online.megatron_ep.target_planning.contracts import TargetLayerPreparedJointPlan
-
-            plan = TargetLayerPreparedJointPlan.from_dict(plan_payload)
-            if str(plan.logical_plan_digest) != str(broadcast_payload.get("logical_plan_digest", "")):
-                return {
-                    "slot": slot.semantic_payload(),
-                    "status": "FAILED",
-                    "reason": "broadcast_plan_digest_mismatch",
-                }
-        return broadcast_payload
+        normalized = _validated_plan_payload(broadcast_payload, slot)
+        if normalized is None:
+            return {
+                "slot": slot.semantic_payload(),
+                "status": "FAILED",
+                "reason": "broadcast_plan_digest_mismatch",
+            }
+        return normalized[0]
 
     @staticmethod
     def _resolve_terminal(
@@ -174,6 +226,12 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
             return PublicationPollResult(
                 slot=slot,
                 status=PublicationPollStatus.EXPIRED,
+                details={"gathered_statuses": tuple(sorted(statuses))},
+            )
+        if "SLOT_MISMATCH" in statuses:
+            return PublicationPollResult(
+                slot=slot,
+                status=PublicationPollStatus.SLOT_MISMATCH,
                 details={"gathered_statuses": tuple(sorted(statuses))},
             )
         return None

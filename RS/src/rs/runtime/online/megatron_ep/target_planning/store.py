@@ -83,7 +83,18 @@ class TargetPlanStore:
         plan: TargetLayerPreparedJointPlan,
     ) -> PublishCurrentResult:
         with self._lock:
+            try:
+                plan.validate()
+            except Exception:
+                return PublishCurrentResult(status="INVALID_PLAN")
             skey = self._key(token.target_key)
+            if (
+                str(plan.run_id) != str(token.target_key.run_id)
+                or int(plan.forward_epoch) != int(token.target_key.forward_epoch)
+                or str(plan.microbatch_id) != str(token.target_key.microbatch_id)
+                or str(plan.target_layer_id) != str(token.target_key.target_layer_id)
+            ):
+                return PublishCurrentResult(status="SLOT_MISMATCH")
             current = self._publish_tokens.get(skey)
             if current is None:
                 terminal = self._terminal.get(skey)

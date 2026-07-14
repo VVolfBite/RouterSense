@@ -5,6 +5,7 @@ import time
 
 import torch
 
+from rs.runtime.online.megatron_ep.public_types import PublicationPollResult, PublicationPollStatus
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 
@@ -57,3 +58,40 @@ def test_lifecycle_prediction_adapter_records_worker_prediction_without_attribut
     assert predicted_dispatch_by_layer[target_layer_id]["predictor_name"] == "copy_current"
     assert latest_digest == active_prediction["matrix_digest"]
     runtime._cleanup_target_plan_runtime()  # noqa: SLF001
+
+
+def test_publication_slot_retries_after_not_ready() -> None:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(scheduler_mode="disabled", online_p2_predictor="copy_current_dispatch"),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="req",
+        hostname="host",
+    )
+    calls = {"count": 0}
+    slot = SimpleNamespace(
+        semantic_digest=lambda: "slot-digest",
+        run_id="run",
+        forward_generation=1,
+        microbatch_id="mb",
+        source_layer_id="1",
+        target_layer_id="2",
+    )
+    runtime._forward_epoch = 1  # noqa: SLF001
+    runtime._expected_publication_slots[("run", 1, "mb", "2")] = slot  # noqa: SLF001
+
+    class _Lane:
+        def poll(self, _slot, _candidate):
+            calls["count"] += 1
+            status = PublicationPollStatus.NOT_READY if calls["count"] == 1 else PublicationPollStatus.READY
+            return PublicationPollResult(slot=_slot, status=status, root_rank=0, canonical_payload={}, details={})
+
+    runtime.control_communication_lane = _Lane()  # noqa: SLF001
+    runtime.target_plan_store = SimpleNamespace(close_key_if_unclaimed=lambda *a, **k: None)  # noqa: SLF001
+    runtime._poll_target_plan_slot(target_layer_id="2", safe_point="source_combine_complete")  # noqa: SLF001
+    runtime._poll_target_plan_slot(target_layer_id="2", safe_point="target_dispatch_ready")  # noqa: SLF001
+    assert calls["count"] == 2

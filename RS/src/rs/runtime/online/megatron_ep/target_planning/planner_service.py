@@ -112,6 +112,7 @@ class TargetLayerPlannerService:
     _queued_keys: set[str] = field(init=False, default_factory=set)
     _inflight_by_key: dict[str, _QueuedPlanningTask] = field(init=False, default_factory=dict)
     _ready_results: list[_BuiltPlanningResult] = field(init=False, default_factory=list)
+    _publication_state_by_slot: dict[str, LocalPublicationCandidate] = field(init=False, default_factory=dict)
     _cancelled_generations: set[tuple[str, int, str]] = field(init=False, default_factory=set)
     _closed: bool = field(init=False, default=False)
     _service_session_id: int = field(init=False, default=0)
@@ -136,6 +137,7 @@ class TargetLayerPlannerService:
             self._queued_keys.clear()
             self._inflight_by_key.clear()
             self._ready_results.clear()
+            self._publication_state_by_slot.clear()
             self._cancelled_generations.clear()
         self._thread = threading.Thread(target=self._worker, name="target-layer-planner", daemon=True)
         self._thread.start()
@@ -148,6 +150,7 @@ class TargetLayerPlannerService:
             self._queued_keys.clear()
             self._inflight_by_key.clear()
             self._ready_results.clear()
+            self._publication_state_by_slot.clear()
         while True:
             try:
                 self._queue.get_nowait()
@@ -217,6 +220,28 @@ class TargetLayerPlannerService:
                     publish_sequence=int(queued.publish_sequence),
                 )
             )
+            slot = PublicationSlot(
+                run_id=str(request.run_id),
+                forward_generation=int(request.forward_epoch),
+                microbatch_id=str(request.microbatch_id),
+                source_layer_id=str(request.source_layer_id),
+                target_layer_id=str(request.target_layer_id),
+                planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+            )
+            self._publication_state_by_slot[str(slot.semantic_digest())] = LocalPublicationCandidate(
+                slot=slot,
+                planner_id=str(request.policy_id),
+                logical_plan_digest="",
+                token=LocalPreparationToken(
+                    service_session_id=int(queued.service_session_id),
+                    forward_generation=int(queued.request.forward_epoch),
+                    target_layer_id=str(queued.request.target_layer_id),
+                    task_version=int(queued.task_version),
+                    publication_slot_digest=str(slot.semantic_digest()),
+                ),
+                status="BUILDING",
+                metadata={"task_key": task_key},
+            )
         return PreparationSubmitResult(
             status=PreparationSubmitStatus.REPLACED_STALE if replaced else PreparationSubmitStatus.ACCEPTED,
             task_key=task_key,
@@ -239,6 +264,20 @@ class TargetLayerPlannerService:
                 self._pending_by_key.pop(task_key, None)
                 self._queued_keys.discard(task_key)
             self._ready_results = [item for item in self._ready_results if self._generation_key(item.request) != generation_key]
+            for slot_digest, candidate in list(self._publication_state_by_slot.items()):
+                if (
+                    str(candidate.slot.run_id),
+                    int(candidate.slot.forward_generation),
+                    str(candidate.slot.microbatch_id),
+                ) == generation_key:
+                    self._publication_state_by_slot[slot_digest] = LocalPublicationCandidate(
+                        slot=candidate.slot,
+                        planner_id=str(candidate.planner_id),
+                        logical_plan_digest=str(candidate.logical_plan_digest),
+                        token=candidate.token,
+                        status="CANCELLED",
+                        metadata=dict(candidate.metadata),
+                    )
 
     def drain_ready_publications(self) -> list[_BuiltPlanningResult]:
         with self._lock:
@@ -282,6 +321,9 @@ class TargetLayerPlannerService:
                     if current is None or current.task_version != item.task_version:
                         continue
                     self._inflight_by_key.pop(task_key, None)
+                    newer_pending = self._pending_by_key.get(task_key)
+                    if newer_pending is not None and int(newer_pending.task_version) > int(item.task_version):
+                        continue
                     if (
                         self._generation_key(request) in self._cancelled_generations
                         or int(item.service_session_id) != int(self._service_session_id)
@@ -297,6 +339,41 @@ class TargetLayerPlannerService:
                             metrics=metrics,
                             token=token,
                         )
+                    )
+                    slot_digest = str(PublicationSlot(
+                        run_id=str(request.run_id),
+                        forward_generation=int(request.forward_epoch),
+                        microbatch_id=str(request.microbatch_id),
+                        source_layer_id=str(request.source_layer_id),
+                        target_layer_id=str(request.target_layer_id),
+                        planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+                    ).semantic_digest())
+                    self._publication_state_by_slot[slot_digest] = LocalPublicationCandidate(
+                        slot=PublicationSlot(
+                            run_id=str(request.run_id),
+                            forward_generation=int(request.forward_epoch),
+                            microbatch_id=str(request.microbatch_id),
+                            source_layer_id=str(request.source_layer_id),
+                            target_layer_id=str(request.target_layer_id),
+                            planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+                        ),
+                        planner_id=str(plan.policy),
+                        logical_plan_digest=str(plan.logical_plan_digest),
+                        token=LocalPreparationToken(
+                            service_session_id=int(token.service_session_id),
+                            forward_generation=int(token.forward_generation),
+                            target_layer_id=str(key.target_layer_id),
+                            task_version=int(token.task_version),
+                            publication_slot_digest=slot_digest,
+                        ),
+                        status="READY",
+                        metadata={
+                            "target_key": key.to_dict(),
+                            "plan": plan.to_dict(),
+                            "h1_digest": str(bundle.h1.matrix_digest),
+                            "h2_digest": str(bundle.h2.matrix_digest),
+                            "planner_wall_us": float(metrics.planner_wall_us),
+                        },
                     )
                 self._timeline.append(
                     {
@@ -327,6 +404,28 @@ class TargetLayerPlannerService:
                         key,
                         final_status="FAILED",
                         execution_origin=f"task_failure:{type(exc).__name__}",
+                    )
+                    slot = PublicationSlot(
+                        run_id=str(request.run_id),
+                        forward_generation=int(request.forward_epoch),
+                        microbatch_id=str(request.microbatch_id),
+                        source_layer_id=str(request.source_layer_id),
+                        target_layer_id=str(request.target_layer_id),
+                        planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+                    )
+                    self._publication_state_by_slot[str(slot.semantic_digest())] = LocalPublicationCandidate(
+                        slot=slot,
+                        planner_id=str(request.policy_id),
+                        logical_plan_digest="",
+                        token=LocalPreparationToken(
+                            service_session_id=int(item.service_session_id),
+                            forward_generation=int(request.forward_epoch),
+                            target_layer_id=str(request.target_layer_id),
+                            task_version=int(item.task_version),
+                            publication_slot_digest=str(slot.semantic_digest()),
+                        ),
+                        status="FAILED",
+                        metadata={"error": f"{type(exc).__name__}: {exc}"},
                     )
                 self._timeline.append(
                     {
@@ -372,6 +471,10 @@ class TargetLayerPlannerService:
                 "planner_wall_us": float(ready.metrics.planner_wall_us),
             },
         )
+
+    def publication_state_for_slot(self, slot: PublicationSlot) -> LocalPublicationCandidate | None:
+        with self._lock:
+            return self._publication_state_by_slot.get(str(slot.semantic_digest()))
 
     def _select_candidate_plans(
         self,

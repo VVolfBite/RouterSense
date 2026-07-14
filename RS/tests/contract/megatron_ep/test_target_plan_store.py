@@ -6,9 +6,11 @@ from rs.runtime.online.megatron_ep.target_planning import TargetLayerPreparedJoi
 from rs.runtime.online.megatron_ep.target_planning.contracts import PreparationToken
 from rs.scheduling.contracts import LogicalSchedulePlan
 from rs.runtime.guards import RouterSenseInvariantError
+from rs.scheduling.validation import stable_hash
 
 
 def _plan() -> TargetLayerPreparedJointPlan:
+    logical_plan = LogicalSchedulePlan(policy_name="u", waves=(), diagnostics={})
     return TargetLayerPreparedJointPlan(
         source_layer_id="0",
         target_layer_id="1",
@@ -18,8 +20,8 @@ def _plan() -> TargetLayerPreparedJointPlan:
         h1_prediction_digest="h1",
         h2_prediction_digest="h2",
         target_problem_digest="tp",
-        logical_plan=LogicalSchedulePlan(policy_name="u", waves=(), diagnostics={}),
-        logical_plan_digest="ld",
+        logical_plan=logical_plan,
+        logical_plan_digest=stable_hash(logical_plan.to_dict()),
         policy="u",
         weights={},
         bucket_contract_digest="bucket",
@@ -39,10 +41,10 @@ def test_target_plan_store_put_peek_consume_once() -> None:
     store.put(key, plan)
     assert store.peek(key) is plan
     claimed = store.claim_for_reconciliation(key)
-    assert claimed.logical_plan_digest == "ld"
+    assert claimed.logical_plan_digest == plan.logical_plan_digest
     assert store.peek(key) is None
     consumed = store.consume_once(key)
-    assert consumed.logical_plan_digest == "ld"
+    assert consumed.logical_plan_digest == plan.logical_plan_digest
     with pytest.raises(RouterSenseInvariantError):
         store.consume_once(key)
 
@@ -76,7 +78,7 @@ def test_target_plan_store_formal_state_transitions() -> None:
     store.publish_logical(key, plan)
     assert store.get_state_record(key).state == "LOGICAL_READY"
     claimed = store.claim(key, claim_owner="runtime")
-    assert claimed.logical_plan_digest == "ld"
+    assert claimed.logical_plan_digest == plan.logical_plan_digest
     assert store.get_state_record(key).state == "CLAIMED"
     store.bind(key, bound_owner="executor")
     assert store.get_state_record(key).state == "BOUND"
@@ -85,7 +87,7 @@ def test_target_plan_store_formal_state_transitions() -> None:
     assert state.state == "EXECUTING"
     assert state.execution_origin == "executor_start"
     completed = store.complete(key, execution_origin="executor_complete")
-    assert completed.logical_plan_digest == "ld"
+    assert completed.logical_plan_digest == plan.logical_plan_digest
     terminal = store.get_terminal_record(key)
     assert terminal is not None
     assert terminal.final_status == "COMPLETED"
