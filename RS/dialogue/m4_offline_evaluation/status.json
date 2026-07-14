@@ -1,10 +1,32 @@
 {
-  "phase_a_status": "M4_OFFLINE_CORE_READY",
+  "phase_a_status": "M4_OFFLINE_CORE_BLOCKED",
   "final_status": "M4_OFFLINE_EVALUATION_BLOCKED",
-  "blocking_reasons": [
-    "Phase B requires M123_PARALLEL_INTEGRATION_READY",
-    "OR-Tools is unavailable in this environment, so exact CP-SAT coverage is unsupported",
-    "offline/online materialization parity is not available on the interface-lock baseline",
-    "execution-semantics parity depends on M2 execution contracts"
+  "completed_with_evidence": [
+    "two-phase wave evaluation semantics",
+    "compute_delay and release_time affect ready-time/makespan",
+    "flow-order invariance coverage",
+    "task-set and execution-truth digest recomputation",
+    "builder world-size and identity validation",
+    "cost-model sharing between evaluator and oracle entrypoints",
+    "tiny exact fallback when OR-Tools is unavailable"
+  ],
+  "implemented_not_verified": [
+    "CP-SAT exact parity on environments with OR-Tools installed"
+  ],
+  "hard_blockers": [
+    "rollout/aggregation fairness closure is not fully revalidated after semantic changes",
+    "MaterializedPlan and completed-task parity require latest M2/M123 integration",
+    "simulator still remains partial and cannot be claimed READY"
+  ],
+  "environment_not_run": [
+    "OR-Tools-backed CP-SAT exact coverage"
+  ],
+  "deferred_cleanup": [
+    "legacy runtime/offline replay entrypoints still remain in tree",
+    "reporting and parity evidence files need regeneration after M123 integration"
+  ],
+  "test_commands": [
+    "python -m compileall RS/src RS/tests",
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/solver/test_offline_oracle_cp_sat.py"
   ]
 }

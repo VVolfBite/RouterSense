@@ -85,6 +85,10 @@ def _release_dependencies(
 def build_evaluation_task_set(window: OfflineWindow, spec: EvaluationSpec) -> EvaluationTaskSet:
     window.validate()
     spec.validate()
+    if len(window.p0_actual) != int(spec.world_size):
+        raise ValueError("offline window world size does not match evaluation spec world_size")
+    if str(window.return_model) != str(spec.return_model):
+        raise ValueError("offline window return_model does not match evaluation spec return_model")
     p0_tasks = _tasks_from_matrix(
         window.p0_actual,
         phase="p0_dispatch",
@@ -118,16 +122,8 @@ def build_evaluation_task_set(window: OfflineWindow, spec: EvaluationSpec) -> Ev
         )
         for task in (*p0_tasks, *p1_tasks, *p2_tasks)
     )
-    digest = stable_hash_dict(
-        {
-            "task_set_version": "offline_task_set_v1",
-            "window_identity": str(window.window_identity),
-            "evaluation_spec_digest": spec.semantic_digest(),
-            "tasks": [task.to_dict() for task in tasks],
-        }
-    )
     task_set = EvaluationTaskSet(
-        task_set_digest=digest,
+        task_set_digest="pending",
         tasks=tasks,
         p0_tasks=tuple(task.task_id for task in tasks if task.phase == "p0_dispatch"),
         p1_tasks=tuple(task.task_id for task in tasks if task.phase == "p1_return"),
@@ -141,6 +137,16 @@ def build_evaluation_task_set(window: OfflineWindow, spec: EvaluationSpec) -> Ev
             "total_row_count": int(sum(task.row_count for task in tasks)),
         },
     )
+    task_set = EvaluationTaskSet(
+        task_set_digest=task_set.recompute_digest(),
+        tasks=task_set.tasks,
+        p0_tasks=task_set.p0_tasks,
+        p1_tasks=task_set.p1_tasks,
+        p2_tasks=task_set.p2_tasks,
+        world_size=task_set.world_size,
+        task_granularity=task_set.task_granularity,
+        coverage_summary=task_set.coverage_summary,
+    )
     task_set.validate()
     return task_set
 
@@ -148,19 +154,6 @@ def build_evaluation_task_set(window: OfflineWindow, spec: EvaluationSpec) -> Ev
 def build_execution_truth(window: OfflineWindow, spec: EvaluationSpec) -> ExecutionTruth:
     task_set = build_evaluation_task_set(window, spec)
     dependencies = {task.task_id: task.release_dependencies for task in task_set.tasks}
-    truth_digest = stable_hash_dict(
-        {
-            "execution_truth_version": "offline_truth_v1",
-            "task_set_digest": task_set.task_set_digest,
-            "actual_matrices": {
-                "p0_dispatch": _matrix_payload(window.p0_actual),
-                "p1_return": _matrix_payload(window.p1_actual),
-                "p2_next_dispatch": _matrix_payload(window.p2_actual),
-            },
-            "release_dependencies": {key: list(value) for key, value in dependencies.items()},
-            "provenance": str(window.traffic_provenance.value),
-        }
-    )
     truth = ExecutionTruth(
         task_set=task_set,
         actual_matrices={
@@ -169,8 +162,15 @@ def build_execution_truth(window: OfflineWindow, spec: EvaluationSpec) -> Execut
             "p2_next_dispatch": window.p2_actual,
         },
         actual_release_dependencies=dependencies,
-        truth_digest=truth_digest,
+        truth_digest="pending",
         provenance=window.traffic_provenance,
+    )
+    truth = ExecutionTruth(
+        task_set=truth.task_set,
+        actual_matrices=truth.actual_matrices,
+        actual_release_dependencies=truth.actual_release_dependencies,
+        truth_digest=truth.recompute_digest(),
+        provenance=truth.provenance,
     )
     truth.validate()
     return truth
@@ -189,12 +189,22 @@ class OfflinePlanningRequestBuilder:
         spec: EvaluationSpec,
     ) -> PlanningRequest:
         window.validate()
-        prediction.validate(world_size=int(spec.world_size))
         spec.validate()
+        if len(window.p0_actual) != int(spec.world_size):
+            raise ValueError("window world size does not match spec.world_size")
+        if len(prediction.hint.target_dispatch_rows) != int(spec.world_size):
+            raise ValueError("prediction world size does not match spec.world_size")
+        prediction.validate(world_size=int(spec.world_size))
+        if str(window.source_layer) != str(prediction.identity.source_layer_id):
+            raise ValueError("prediction source_layer_id does not match offline window")
+        if str(window.target_layer) != str(prediction.identity.target_layer_id):
+            raise ValueError("prediction target_layer_id does not match offline window")
+        if str(window.return_model) != str(spec.return_model):
+            raise ValueError("window return_model does not match evaluation spec")
         hint = prediction.hint
         if tuple(tuple(int(value) for value in row) for row in hint.target_dispatch_rows) == ():
             raise ValueError("prediction hint must not be empty")
-        return PlanningRequest(
+        request = PlanningRequest(
             identity=PlanningIdentity(
                 request_id=str(window.window_identity),
                 run_id=str(window.trace_digest),
@@ -225,6 +235,8 @@ class OfflinePlanningRequestBuilder:
             weights=PlanningWeights(),
             information_mode=str(self.information_mode),
         )
+        request.validate()
+        return request
 
 
 def prediction_digest(prediction: PredictionResult) -> str:

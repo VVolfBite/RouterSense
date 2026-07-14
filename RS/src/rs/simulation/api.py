@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from rs.core.contracts import EvaluationTaskSet, MaterializedPlan, WindowPlan
+from rs.core.contracts import EvaluationSpec, EvaluationTaskSet, MaterializedPlan, WindowPlan
 from rs.offline.evaluation import evaluate_window_plan_against_task_set
 
 
@@ -69,9 +69,23 @@ class CommonTaskSetSimulator:
             plan=plan,
             task_set=task_set,
             phase_filter=phase_filter,
-            launch_cost=float(spec.launch_cost),
-            bytes_per_row=int(spec.bytes_per_row),
-            bandwidth=float(spec.bandwidth),
+            spec=EvaluationSpec(
+                track="execution_window",
+                world_size=int(task_set.world_size),
+                task_granularity=str(spec.task_granularity),
+                matrix_unit="rows",
+                time_unit=str(spec.time_unit),
+                cost_model_id=str(spec.service_model),
+                release_model=str(spec.release_model),
+                return_model="transpose_dispatch",
+                full_duplex=str(spec.port_model) == "full_duplex",
+                launch_cost=float(spec.launch_cost),
+                bytes_per_row=int(spec.bytes_per_row),
+                bandwidth=float(spec.bandwidth),
+                compute_delay=0.0,
+                p2_semantics="actual",
+                residual_policy="reject",
+            ),
         )
         return SimulationResult(
             success=bool(evaluation.valid),

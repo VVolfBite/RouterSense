@@ -233,6 +233,25 @@ class EvaluationTaskSet:
     task_granularity: str
     coverage_summary: Mapping[str, object]
 
+    def recompute_digest(self) -> str:
+        return stable_hash_dict(
+            {
+                "task_set_version": "offline_task_set_v1",
+                "world_size": int(self.world_size),
+                "task_granularity": str(self.task_granularity),
+                "tasks": [task.to_dict() for task in self.tasks],
+                "coverage_summary": self.recompute_coverage_summary(),
+            }
+        )
+
+    def recompute_coverage_summary(self) -> dict[str, object]:
+        return {
+            "p0_task_count": len([task for task in self.tasks if task.phase == "p0_dispatch"]),
+            "p1_task_count": len([task for task in self.tasks if task.phase == "p1_return"]),
+            "p2_task_count": len([task for task in self.tasks if task.phase == "p2_next_dispatch"]),
+            "total_row_count": int(sum(int(task.row_count) for task in self.tasks)),
+        }
+
     def validate(self) -> None:
         if not str(self.task_set_digest):
             raise ValueError("task_set_digest must be non-empty")
@@ -254,6 +273,13 @@ class EvaluationTaskSet:
             raise ValueError("p1_tasks do not match tasks")
         if by_phase["p2_next_dispatch"] != set(self.p2_tasks):
             raise ValueError("p2_tasks do not match tasks")
+        for task in self.tasks:
+            if int(task.src_rank) == int(task.dst_rank):
+                raise ValueError("self traffic task is not allowed")
+        if dict(self.coverage_summary) != self.recompute_coverage_summary():
+            raise ValueError("coverage_summary does not match tasks")
+        if str(self.task_set_digest) != self.recompute_digest():
+            raise ValueError("task_set_digest does not match canonical task set payload")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -277,6 +303,17 @@ class ExecutionTruth:
     truth_digest: str
     provenance: TrafficProvenance
 
+    def recompute_digest(self) -> str:
+        return stable_hash_dict(
+            {
+                "execution_truth_version": "offline_truth_v1",
+                "task_set_digest": self.task_set.task_set_digest,
+                "actual_matrices": {key: _matrix_payload(value) for key, value in self.actual_matrices.items()},
+                "release_dependencies": {key: list(value) for key, value in self.actual_release_dependencies.items()},
+                "provenance": str(self.provenance.value),
+            }
+        )
+
     def validate(self) -> None:
         self.task_set.validate()
         if not str(self.truth_digest):
@@ -287,12 +324,28 @@ class ExecutionTruth:
                 raise ValueError(f"actual_matrices missing {phase_name}")
             _validate_matrix(phase_name, normalized[phase_name], world_size=int(self.task_set.world_size))
         task_ids = {task.task_id for task in self.task_set.tasks}
+        if set(self.actual_release_dependencies) != task_ids:
+            raise ValueError("actual_release_dependencies must cover every task exactly once")
         for task_id, dependencies in self.actual_release_dependencies.items():
             if task_id not in task_ids:
                 raise ValueError(f"release dependency references unknown task {task_id!r}")
             for dependency in dependencies:
                 if dependency not in task_ids:
                     raise ValueError(f"release dependency {dependency!r} not found in task set")
+        expected_phase_matrix = {
+            "p0_dispatch": self.actual_matrices["p0_dispatch"],
+            "p1_return": self.actual_matrices["p1_return"],
+            "p2_next_dispatch": self.actual_matrices["p2_next_dispatch"],
+        }
+        for task in self.task_set.tasks:
+            matrix = expected_phase_matrix[str(task.phase)]
+            if int(matrix[int(task.src_rank)][int(task.dst_rank)]) != int(task.row_count):
+                raise ValueError(f"task {task.task_id!r} row_count does not match actual matrix")
+            expected_bytes = int(task.row_count) * max(int(task.byte_count) // max(int(task.row_count), 1), 1)
+            if int(task.byte_count) < int(task.row_count) or int(expected_bytes) < int(task.row_count):
+                raise ValueError(f"task {task.task_id!r} byte_count is invalid")
+        if str(self.truth_digest) != self.recompute_digest():
+            raise ValueError("truth_digest does not match canonical execution truth payload")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
