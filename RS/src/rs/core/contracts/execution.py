@@ -230,6 +230,7 @@ class TransferSlice:
     row_count: int
     send_offset_rows: int
     recv_offset_rows: int
+    transfer_tag: int = 0
     dependency_ids: tuple[str, ...] = ()
 
     def validate(self) -> None:
@@ -244,6 +245,7 @@ class TransferSlice:
             raise ValueError("row_count must be > 0")
         _validate_non_negative("send_offset_rows", self.send_offset_rows)
         _validate_non_negative("recv_offset_rows", self.recv_offset_rows)
+        _validate_non_negative("transfer_tag", self.transfer_tag)
         for dep in self.dependency_ids:
             _validate_string("dependency_id", str(dep))
 
@@ -260,6 +262,7 @@ class TransferSlice:
             "row_count": int(self.row_count),
             "send_offset_rows": int(self.send_offset_rows),
             "recv_offset_rows": int(self.recv_offset_rows),
+            "transfer_tag": int(self.transfer_tag),
             "dependency_ids": [str(dep) for dep in self.dependency_ids],
         }
 

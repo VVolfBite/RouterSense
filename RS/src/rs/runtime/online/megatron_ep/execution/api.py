@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any
 
 import torch
@@ -172,17 +172,20 @@ def _collective_required_for_role(plan: MaterializedPlan, payload_role: str) -> 
 
 
 def _p2p_tag_for_slice(item: Any) -> int:
-    payload_offset = {
-        "hidden_states": 1,
-        "routing_probs": 2,
-        "p1_hidden_states": 3,
-    }.get(str(item.payload_role), 9)
-    return int(
-        int(item.src_group_rank) * 100000
-        + int(item.dst_group_rank) * 10000
-        + payload_offset * 1000
-        + (sum(ord(ch) for ch in str(item.flow_id)) % 1000)
-    )
+    return int(getattr(item, "transfer_tag", 0))
+
+
+def _chunked_batches(items: list[Any], size: int) -> list[list[Any]]:
+    if int(size) <= 0:
+        raise ValueError("max_inflight_batches must be > 0")
+    iterator = iter(items)
+    windows: list[list[Any]] = []
+    while True:
+        window = list(islice(iterator, int(size)))
+        if not window:
+            break
+        windows.append(window)
+    return windows
 
 
 class _BaseExecutor:
@@ -355,77 +358,75 @@ class P2PReleaseExecutor(_BaseExecutor):
         output = _make_output_tensor(invocation, total_rows=_peer_rows_total(expected_incoming))
         max_inflight_batches = int(dict(context.metadata).get("max_inflight_batches", 2) or 2)
         satisfied_release_ids = {str(value) for value in context.satisfied_release_dependency_ids}
-        pending_batches = []
-        for batch in plan.batches:
-            role_slices = [item for item in batch.slices if str(item.payload_role) == payload_role]
-            if role_slices:
-                pending_batches.append((batch, role_slices))
-        inflight: deque[tuple[str, list[Any], list[tuple[Any, torch.Tensor]], list[torch.Tensor], list[Any]]] = deque()
+        all_role_batches = [
+            (batch, [item for item in batch.slices if str(item.payload_role) == payload_role])
+            for batch in plan.batches
+        ]
         completed_batches: list[str] = []
         completed_task_ids: list[str] = []
-        submitted_task_ids: list[str] = []
+        submitted_task_ids: list[str] = list(submitted)
         peak_inflight = 0
         p2p_operation_count = 0
 
-        def _batch_ready(role_slices: list[Any]) -> tuple[bool, str | None]:
-            for item in role_slices:
-                for dep in item.dependency_ids:
-                    if str(dep) not in satisfied_release_ids:
-                        return False, str(dep)
-            return True, None
+        missing_dependencies = sorted(
+            {
+                str(dep)
+                for _, role_slices in all_role_batches
+                for item in role_slices
+                if int(item.src_global_rank) == int(plan.local_global_rank)
+                for dep in item.dependency_ids
+                if str(dep) not in satisfied_release_ids
+            }
+        )
+        if missing_dependencies:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
+                executed_batch_count=0,
+                all_work_completed=False,
+                failure_code=f"unresolved_dependency:{missing_dependencies[0]}",
+                details={
+                    "backend_id": str(self.backend_id),
+                    "missing_dependencies": tuple(missing_dependencies),
+                    "distributed_operation_count": 0,
+                    "peak_inflight_batches": 0,
+                },
+            )
 
-        def _submit_batch(batch_id: str, role_slices: list[Any]) -> tuple[str, list[Any], list[tuple[Any, torch.Tensor]], list[torch.Tensor], list[Any]]:
-            handles: list[Any] = []
-            recv_payloads: list[tuple[Any, torch.Tensor]] = []
-            retained_send_tensors: list[torch.Tensor] = []
-            local_completions: list[Any] = []
-            for item in role_slices:
-                if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) == int(plan.local_global_rank):
-                    local_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
-                    local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
-                    _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
-                    local_completions.append(item)
-                    continue
+        for window in _chunked_batches(all_role_batches, max_inflight_batches):
+            peak_inflight = max(peak_inflight, len(window))
+            posted_batches: list[tuple[Any, list[Any], list[tuple[Any, torch.Tensor]], list[torch.Tensor], tuple[str, ...]]] = []
+            for batch, role_slices in window:
+                handles: list[Any] = []
+                recv_payloads: list[tuple[Any, torch.Tensor]] = []
+                retained_send_tensors: list[torch.Tensor] = []
+                completion_candidates: list[Any] = []
                 shape_suffix = tuple(int(dim) for dim in input_tensor.shape[1:])
-                if int(item.dst_global_rank) == int(plan.local_global_rank) and int(item.src_global_rank) != int(plan.local_global_rank):
-                    recv_tensor = input_tensor.new_empty((int(item.row_count), *shape_suffix)) if input_tensor.ndim > 1 else input_tensor.new_empty((int(item.row_count),))
-                    handles.append(dist.irecv(recv_tensor, src=int(item.src_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
-                    recv_payloads.append((item, recv_tensor))
-                if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) != int(plan.local_global_rank):
-                    src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
-                    send_tensor = input_tensor.narrow(0, int(src_input_offset), int(item.row_count)).contiguous()
-                    retained_send_tensors.append(send_tensor)
-                    handles.append(dist.isend(send_tensor, dst=int(item.dst_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
-            return (str(batch_id), handles, recv_payloads, retained_send_tensors, role_slices + local_completions)
-
-        remaining = list(pending_batches)
-        stalled_rounds = 0
-        while remaining or inflight:
-            ready_index = None
-            blocked_reason = None
-            for index, (batch, role_slices) in enumerate(remaining):
-                ready, missing = _batch_ready(role_slices)
-                if ready:
-                    ready_index = index
-                    break
-                blocked_reason = missing
-            while ready_index is not None and len(inflight) < max_inflight_batches:
-                batch, role_slices = remaining.pop(ready_index)
-                inflight.append(_submit_batch(str(batch.batch_id), role_slices))
-                submitted_task_ids.extend(str(item.task_id) for item in role_slices)
-                p2p_operation_count += int(len(inflight[-1][1]) > 0)
-                peak_inflight = max(peak_inflight, len(inflight))
-                completed_batches.append(str(batch.batch_id))
-                ready_index = None
-                blocked_reason = None
-                for index, (next_batch, next_slices) in enumerate(remaining):
-                    ready, missing = _batch_ready(next_slices)
-                    if ready:
-                        ready_index = index
-                        break
-                    blocked_reason = missing
-            if inflight:
-                batch_id, handles, recv_payloads, retained_send_tensors, role_slices = inflight.popleft()
+                for item in role_slices:
+                    if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) == int(plan.local_global_rank):
+                        local_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
+                        local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                        _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
+                        completion_candidates.append(item)
+                    elif int(item.dst_global_rank) == int(plan.local_global_rank) and int(item.src_global_rank) != int(plan.local_global_rank):
+                        recv_tensor = input_tensor.new_empty((int(item.row_count), *shape_suffix)) if input_tensor.ndim > 1 else input_tensor.new_empty((int(item.row_count),))
+                        handles.append(dist.irecv(recv_tensor, src=int(item.src_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
+                        recv_payloads.append((item, recv_tensor))
+                for item in role_slices:
+                    if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) != int(plan.local_global_rank):
+                        src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
+                        send_tensor = input_tensor.narrow(0, int(src_input_offset), int(item.row_count)).contiguous()
+                        retained_send_tensors.append(send_tensor)
+                        handles.append(dist.isend(send_tensor, dst=int(item.dst_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
+                        completion_candidates.append(item)
+                if handles:
+                    p2p_operation_count += 1
+                posted_batches.append((batch, handles, recv_payloads, retained_send_tensors, tuple(str(item.task_id) for item in completion_candidates)))
+            for batch, handles, recv_payloads, retained_send_tensors, completion_task_ids in posted_batches:
                 try:
                     for handle in handles:
                         handle.wait()
@@ -435,36 +436,24 @@ class P2PReleaseExecutor(_BaseExecutor):
                         output_payload=None,
                         submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
                         completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
-                        failed_task_ids=tuple(str(item.task_id) for item in role_slices),
-                        unresolved_task_ids=tuple(str(item.task_id) for _, slices in remaining for item in slices),
+                        failed_task_ids=tuple(completion_task_ids),
+                        unresolved_task_ids=tuple(task_id for task_id in submitted if task_id not in set(completed_task_ids)),
                         executed_batch_count=int(len(completed_batches)),
                         all_work_completed=False,
                         failure_code=f"work_wait_failed:{type(exc).__name__}",
-                        details={"backend_id": str(self.backend_id)},
+                        details={
+                            "backend_id": str(self.backend_id),
+                            "distributed_operation_count": int(p2p_operation_count),
+                            "peak_inflight_batches": int(peak_inflight),
+                            "failed_batch_id": str(batch.batch_id),
+                        },
                     )
                 for item, recv_tensor in recv_payloads:
                     output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
                     _copy_rows(output, output_offset, recv_tensor, 0, int(item.row_count))
-                for item in role_slices:
                     completed_task_ids.append(str(item.task_id))
-                    if str(item.task_id).startswith("release:p0_inbound_complete") or str(item.task_id).startswith("release:p1_inbound_complete"):
-                        satisfied_release_ids.add(str(item.task_id))
-                stalled_rounds = 0
-            elif remaining:
-                stalled_rounds += 1
-                if stalled_rounds > 0:
-                    return ExecutionOutcome(
-                        success=False,
-                        output_payload=None,
-                        submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
-                        completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
-                        failed_task_ids=tuple(),
-                        unresolved_task_ids=tuple(str(item.task_id) for _, slices in remaining for item in slices),
-                        executed_batch_count=int(len(completed_batches)),
-                        all_work_completed=False,
-                        failure_code=f"unresolved_dependency_or_cycle:{blocked_reason or 'unknown'}",
-                        details={"backend_id": str(self.backend_id)},
-                    )
+                completed_task_ids.extend(completion_task_ids)
+                completed_batches.append(str(batch.batch_id))
         submitted_tuple = tuple(dict.fromkeys(submitted_task_ids))
         completed_tuple = tuple(dict.fromkeys(completed_task_ids))
         unresolved = tuple(task_id for task_id in submitted if task_id not in set(completed_tuple))
@@ -485,6 +474,8 @@ class P2PReleaseExecutor(_BaseExecutor):
                 "max_inflight_batches": max_inflight_batches,
                 "peak_inflight_batches": int(peak_inflight),
                 "distributed_operation_count": int(p2p_operation_count),
+                "completed_task_count": int(len(completed_tuple)),
+                "unresolved_task_count": int(len(unresolved)),
             },
         )
 

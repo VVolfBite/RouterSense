@@ -359,7 +359,15 @@ def test_materializer_adds_release_dependencies_for_p1() -> None:
         },
         window_plan=window_plan,
     )
-    actual_context = ActualPhaseContext(
+    sender_context = ActualPhaseContext(
+        layer_id="0",
+        phase="P1",
+        world_size=2,
+        rank_space="global",
+        layout_digest=str(contexts[0].canonical_receive_layout_id),
+        metadata={"phase_ready_context": contexts[0].to_dict()},
+    )
+    receiver_context = ActualPhaseContext(
         layer_id="0",
         phase="P1",
         world_size=2,
@@ -367,14 +375,22 @@ def test_materializer_adds_release_dependencies_for_p1() -> None:
         layout_digest=str(contexts[1].canonical_receive_layout_id),
         metadata={"phase_ready_context": contexts[1].to_dict()},
     )
-    materialized = CommonPlanMaterializer().materialize(published, actual_context)
-    dependency_ids = {
+    sender_plan = CommonPlanMaterializer().materialize(published, sender_context)
+    receiver_plan = CommonPlanMaterializer().materialize(published, receiver_context)
+    sender_dependencies = {
         dep
-        for batch in materialized.batches
+        for batch in sender_plan.batches
         for slice_ in batch.slices
         for dep in slice_.dependency_ids
     }
-    assert "release:p0_inbound_complete:0" in dependency_ids
+    receiver_dependencies = {
+        dep
+        for batch in receiver_plan.batches
+        for slice_ in batch.slices
+        for dep in slice_.dependency_ids
+    }
+    assert "release:0:p0_inbound_complete:0" in sender_dependencies
+    assert receiver_dependencies == set()
 
 
 def test_materializer_keeps_sparse_collective_batches_for_idle_rank() -> None:

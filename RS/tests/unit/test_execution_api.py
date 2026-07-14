@@ -344,7 +344,8 @@ def test_phase_sync_executor_rejects_missing_release_dependency() -> None:
                         row_count=slice_.row_count,
                         send_offset_rows=slice_.send_offset_rows,
                         recv_offset_rows=slice_.recv_offset_rows,
-                        dependency_ids=("release:p0_inbound_complete:0",),
+                        transfer_tag=slice_.transfer_tag,
+                        dependency_ids=("release:0:p0_inbound_complete:0",),
                     ),
                 ),
                 collective_required=batch.collective_required,
@@ -401,7 +402,7 @@ def test_phase_sync_executor_rejects_missing_release_dependency() -> None:
         ),
     )
     assert outcome.success is False
-    assert outcome.failure_code == "unresolved_dependency:release:p0_inbound_complete:0"
+    assert outcome.failure_code == "unresolved_dependency:release:0:p0_inbound_complete:0"
 
 
 def test_p2p_executor_rejects_missing_release_dependency() -> None:
@@ -433,7 +434,8 @@ def test_p2p_executor_rejects_missing_release_dependency() -> None:
                         row_count=slice_.row_count,
                         send_offset_rows=slice_.send_offset_rows,
                         recv_offset_rows=slice_.recv_offset_rows,
-                        dependency_ids=("release:p0_inbound_complete:0",),
+                        transfer_tag=slice_.transfer_tag,
+                        dependency_ids=("release:0:p0_inbound_complete:0",),
                     ),
                 ),
                 collective_required=batch.collective_required,
@@ -490,4 +492,4 @@ def test_p2p_executor_rejects_missing_release_dependency() -> None:
         ),
     )
     assert outcome.success is False
-    assert outcome.failure_code == "unresolved_dependency_or_cycle:release:p0_inbound_complete:0"
+    assert outcome.failure_code == "unresolved_dependency:release:0:p0_inbound_complete:0"

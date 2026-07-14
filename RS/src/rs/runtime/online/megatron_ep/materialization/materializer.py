@@ -64,6 +64,29 @@ def _window_plan(plan: PublishedPlan) -> WindowPlan:
     plan.validate()
     return plan.window_plan
 
+
+def _dependency_layer_id(*, flow_phase: str, context_layer_id: str, target_layer_id: str) -> str:
+    if str(flow_phase) == "p2_dispatch":
+        return str(target_layer_id)
+    return str(context_layer_id)
+
+
+def _release_dependency_ids(
+    *,
+    flow_phase: str,
+    dependency_layer_id: str,
+    src_group_rank: int,
+    src_global_rank: int,
+    local_global_rank: int,
+) -> tuple[str, ...]:
+    if int(src_global_rank) != int(local_global_rank):
+        return ()
+    if str(flow_phase) == "p1_return":
+        return (f"release:{dependency_layer_id}:p0_inbound_complete:{src_group_rank}",)
+    if str(flow_phase) == "p2_dispatch":
+        return (f"release:{dependency_layer_id}:p1_inbound_complete:{src_group_rank}",)
+    return ()
+
 class CommonPlanMaterializer:
     def materialize(self, plan: PublishedPlan, context: ActualPhaseContext) -> MaterializedPlan:
         plan.validate()
@@ -91,6 +114,7 @@ class CommonPlanMaterializer:
             for role in expected_incoming
         }
         batches: list[ExecutionBatch] = []
+        next_transfer_tag = 1
         for wave in window_plan.waves:
             phase_flows = [
                 flow
@@ -105,14 +129,22 @@ class CommonPlanMaterializer:
                 dst_group_rank = int(flow.dst_rank)
                 src_global_rank = int(plan.rank_map.group_rank_to_global_rank(src_group_rank))
                 dst_global_rank = int(plan.rank_map.group_rank_to_global_rank(dst_group_rank))
+                dependency_layer_id = _dependency_layer_id(
+                    flow_phase=str(flow.phase),
+                    context_layer_id=str(context.layer_id),
+                    target_layer_id=str(plan.publication_slot["target_layer_id"]),
+                )
                 if int(src_global_rank) != local_global_rank and int(dst_global_rank) != local_global_rank:
+                    next_transfer_tag += int(len(payload_specs))
                     continue
                 for spec in payload_specs:
-                    dependency_ids: tuple[str, ...] = ()
-                    if str(flow.phase) == "p1_return":
-                        dependency_ids = (f"release:p0_inbound_complete:{src_group_rank}",)
-                    elif str(flow.phase) == "p2_dispatch":
-                        dependency_ids = (f"release:p1_inbound_complete:{src_group_rank}",)
+                    dependency_ids = _release_dependency_ids(
+                        flow_phase=str(flow.phase),
+                        dependency_layer_id=dependency_layer_id,
+                        src_group_rank=src_group_rank,
+                        src_global_rank=src_global_rank,
+                        local_global_rank=local_global_rank,
+                    )
                     send_offset = int(send_offsets[str(spec.payload_role)][dst_group_rank]) if int(src_global_rank) == local_global_rank else 0
                     recv_offset = int(recv_offsets[str(spec.payload_role)][src_group_rank]) if int(dst_global_rank) == local_global_rank else 0
                     task_id = f"{flow.flow_id}:{spec.payload_role}"
@@ -127,8 +159,10 @@ class CommonPlanMaterializer:
                         row_count=int(flow.row_count),
                         send_offset_rows=int(send_offset),
                         recv_offset_rows=int(recv_offset),
+                        transfer_tag=int(next_transfer_tag),
                         dependency_ids=dependency_ids,
                     )
+                    next_transfer_tag += 1
                     slices.append(slice_)
                     if int(src_global_rank) == local_global_rank:
                         send_offsets[str(spec.payload_role)][dst_group_rank] += int(flow.row_count)
