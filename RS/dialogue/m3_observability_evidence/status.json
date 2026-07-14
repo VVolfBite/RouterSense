@@ -1,0 +1,27 @@
+{
+  "status": "M3_OBSERVABILITY_EVIDENCE_BLOCKED",
+  "completed_with_evidence": [
+    "typed ResultBundle validation and roundtrip",
+    "typed ReferenceTraceBundle roundtrip",
+    "fail-closed eligibility core",
+    "bounded measurement/debug buffers",
+    "artifact writer root-path guard and atomic replace",
+    "off/perf_light side-effect unit coverage"
+  ],
+  "implemented_not_verified": [
+    "RuntimeInstrumentation adapter for integration wiring"
+  ],
+  "hard_blockers": [
+    "formal Runtime/M2 pipeline is not yet wired to MeasurementSink/DebugProbe/EvidenceSink on this branch baseline",
+    "cross-module passive evidence tests must run after latest M2 merge into integration"
+  ],
+  "environment_not_run": [],
+  "deferred_cleanup": [
+    "old top-level dialogue status files are stale and should be retired after integration",
+    "legacy observation modules remain in tree and are not deleted in this branch"
+  ],
+  "test_commands": [
+    "python -m compileall RS/src RS/tests",
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m3_measurement_and_evidence.py"
+  ]
+}
