@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from rs.experiments.cli import main
-from rs.experiments.config_loader import ExperimentConfigLoader
+from rs.experiments.config_loader import ExperimentConfigLoader, UnsupportedLegacyExperimentConfig
 from rs.experiments.registry import RunnerRegistry
 from rs.experiments.specs import RunKind
 
@@ -110,7 +110,7 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert {item["status"] for item in run_payload} == {"invalid"}
 
 
-def test_loader_migrates_v1_single_case_config(tmp_path: Path) -> None:
+def test_loader_rejects_legacy_v1_config_without_lossy_migration(tmp_path: Path) -> None:
     path = tmp_path / "v1.yaml"
     path.write_text(
         """
@@ -129,7 +129,33 @@ fallback_policy: fail_closed
 """.strip(),
         encoding="utf-8",
     )
-    loaded = ExperimentConfigLoader().load(config_path=path)
-    assert loaded.spec.schema_version == 2
-    assert loaded.migration_report["migrated"] is True
-    assert loaded.spec.planning_cases[0].case_id == "legacy-case"
+    try:
+        ExperimentConfigLoader().load(config_path=path)
+    except UnsupportedLegacyExperimentConfig as exc:
+        assert "schema v1 experiment config is unsupported" in str(exc)
+    else:
+        raise AssertionError("expected legacy v1 config rejection")
+
+
+def test_official_v2_configs_preserve_model_topology_workload_and_strategy_semantics() -> None:
+    loader = ExperimentConfigLoader()
+    base = Path("RS/configs/official")
+    expected = {
+        "offline_evaluation.yaml": "OFFLINE_EVALUATION",
+        "gloo_functional.yaml": "GLOO_FUNCTIONAL",
+        "gpu_correctness.yaml": "GPU_CORRECTNESS",
+        "gpu_performance.yaml": "GPU_PERFORMANCE",
+        "multinode_correctness.yaml": "MULTINODE_CORRECTNESS",
+        "multinode_performance.yaml": "MULTINODE_PERFORMANCE",
+    }
+    for name, run_kind in expected.items():
+        loaded = loader.load(config_path=base / name)
+        assert loaded.spec.schema_version == 2
+        case = loaded.spec.planning_cases[0]
+        assert case.run_kind.value == run_kind
+        assert loaded.spec.defaults["model"]["id"]
+        assert loaded.spec.defaults["topology"]["world_size"] > 0
+        assert loaded.spec.defaults["workload"]["id"]
+        assert loaded.spec.defaults["evaluation"]["repeats"] >= 1
+        assert loaded.spec.defaults["evaluation"]["warmup"] >= 0
+        assert len(loaded.spec.defaults["runtime"]["selected_layers"]) >= 1

@@ -1,0 +1,25 @@
+schema_version: 2
+experiment_id: official-gpu-performance
+suites:
+  - suite_id: gpu-performance
+    markers: [gpu_performance]
+    case_ids: [gpu-performance-core]
+    run_kinds: [GPU_PERFORMANCE]
+planning_cases:
+  - case_id: gpu-performance-core
+    run_kind: GPU_PERFORMANCE
+    planner_id: routersense_joint_phase_sync
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: history
+    prediction_mode: history
+    execution_backend: async_release
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+defaults:
+  model: {id: olmoe_1b_7b_instruct}
+  topology: {world_size: 4, topology_id: local-4gpu}
+  workload: {id: comparison-64-prompts}
+  runtime: {selected_layers: [0, 1], line: gpu_performance}
+  evaluation: {repeats: 3, warmup: 1}
+  strategies: [routersense_joint_phase_sync]

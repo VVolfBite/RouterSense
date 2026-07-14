@@ -1,0 +1,28 @@
+{
+  "tests": [
+    {
+      "command": "python -m compileall RS/src RS/tests",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "python -m pytest --collect-only -q",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. python -m pytest -q RS/tests/test_experiments_cli_v2.py",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    }
+  ]
+}

@@ -1,17 +1,21 @@
 {
-  "status": "M5_EXPERIMENT_SYSTEM_CORE_READY",
+  "status": "M5_EXPERIMENT_SYSTEM_CORE_BLOCKED",
   "completed_with_evidence": [
     "ExperimentSpec / SuiteSpec / PlanningCase / RunPlan contracts",
     "schema_version=2 ExperimentConfigLoader",
-    "v1->v2 migration report generation",
+    "lossy schema v1 migration replaced with explicit UnsupportedLegacyExperimentConfig failure",
     "resolved_config.yaml and migration_report.json emission",
     "single CLI entrypoint python -m rs.experiments.cli",
-    "RunnerRegistry for Phase A run kinds"
+    "RunnerRegistry for Phase A run kinds",
+    "official schema v2 config set with preserved model/topology/workload/runtime/evaluation semantics",
+    "default pytest collect-only succeeds without OR-Tools import-time failure"
   ],
   "implemented_not_verified": [
     "real service-backed runner execution beyond Phase A stubs"
   ],
-  "hard_blockers": [],
+  "hard_blockers": [
+    "OfflineEvaluationRunner, GlooFunctionalRunner, and DiagnosticRunner still return explicit placeholder ResultBundle states instead of invoking formal M4/M123 services"
+  ],
   "environment_not_run": [
     "GPU, multinode, and OR-Tools-backed suites"
   ],
@@ -21,6 +25,7 @@
   ],
   "test_commands": [
     "python -m compileall RS/src RS/tests",
-    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/test_experiments_cli_v2.py"
+    "python -m pytest --collect-only -q",
+    "PYTHONPATH=RS/src;RS;. python -m pytest -q RS/tests/test_experiments_cli_v2.py"
   ]
 }

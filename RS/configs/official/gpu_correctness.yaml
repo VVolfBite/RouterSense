@@ -1,0 +1,25 @@
+schema_version: 2
+experiment_id: official-gpu-correctness
+suites:
+  - suite_id: gpu-correctness
+    markers: [gpu_correctness]
+    case_ids: [gpu-correctness-core]
+    run_kinds: [GPU_CORRECTNESS]
+planning_cases:
+  - case_id: gpu-correctness-core
+    run_kind: GPU_CORRECTNESS
+    planner_id: native
+    planner_family: native
+    selector_mode: fixed
+    predictor_id: none
+    prediction_mode: none
+    execution_backend: phase_sync
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+defaults:
+  model: {id: olmoe_1b_7b_instruct}
+  topology: {world_size: 4, topology_id: local-4gpu}
+  workload: {id: comparison-64-prompts}
+  runtime: {selected_layers: [0, 1], line: gpu_correctness}
+  evaluation: {repeats: 1, warmup: 0}
+  strategies: [native]

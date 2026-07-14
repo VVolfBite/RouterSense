@@ -10,6 +10,10 @@ import yaml
 from rs.experiments.specs import ExperimentSpec, PlanningCase, RunKind, SuiteSpec
 
 
+class UnsupportedLegacyExperimentConfig(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class LoadedExperimentConfig:
     spec: ExperimentSpec
@@ -61,38 +65,9 @@ class ExperimentConfigLoader:
             }
         if schema_version != 1:
             raise ValueError(f"unsupported experiment schema_version {schema_version!r}")
-        case = {
-            "case_id": str(payload.get("case_id", "default-case")),
-            "run_kind": str(payload.get("run_kind", "DIAGNOSTIC")),
-            "planner_id": str(payload.get("planner_id", "none")),
-            "planner_family": str(payload.get("planner_family", "none")),
-            "selector_mode": str(payload.get("selector_mode", "single")),
-            "predictor_id": str(payload.get("predictor_id", "none")),
-            "prediction_mode": str(payload.get("prediction_mode", "none")),
-            "execution_backend": str(payload.get("execution_backend", "diagnostic")),
-            "instrumentation_mode": str(payload.get("instrumentation_mode", "off")),
-            "fallback_policy": str(payload.get("fallback_policy", "fail_closed")),
-        }
-        suite = {
-            "suite_id": str(payload.get("suite_id", "default-suite")),
-            "markers": [str(payload.get("marker", "unit"))],
-            "case_ids": [str(case["case_id"])],
-            "run_kinds": [str(case["run_kind"])],
-            "description": str(payload.get("description", "")),
-        }
-        migrated = {
-            "schema_version": 2,
-            "experiment_id": str(payload.get("experiment_id", payload.get("name", "migrated-experiment"))),
-            "suites": [suite],
-            "planning_cases": [case],
-            "defaults": dict(payload.get("defaults", {})) if isinstance(payload.get("defaults"), Mapping) else {},
-        }
-        return migrated, {
-            "source_schema_version": schema_version,
-            "target_schema_version": self.schema_version,
-            "migrated": True,
-            "changes": ["wrapped v1 single-case config into v2 suites/planning_cases"],
-        }
+        raise UnsupportedLegacyExperimentConfig(
+            "schema v1 experiment config is unsupported without a field-preserving migration; rewrite to schema_version: 2"
+        )
 
     def _build_spec(self, payload: Mapping[str, object]) -> ExperimentSpec:
         unknown = set(payload) - {"schema_version", "experiment_id", "suites", "planning_cases", "defaults"}

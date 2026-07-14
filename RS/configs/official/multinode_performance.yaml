@@ -1,0 +1,25 @@
+schema_version: 2
+experiment_id: official-multinode-performance
+suites:
+  - suite_id: multinode-performance
+    markers: [multinode, slow]
+    case_ids: [multinode-performance-core]
+    run_kinds: [MULTINODE_PERFORMANCE]
+planning_cases:
+  - case_id: multinode-performance-core
+    run_kind: MULTINODE_PERFORMANCE
+    planner_id: routersense_joint_phase_sync
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: history
+    prediction_mode: history
+    execution_backend: multinode
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+defaults:
+  model: {id: olmoe_1b_7b_instruct}
+  topology: {world_size: 2, topology_id: two-node-2gpu}
+  workload: {id: comparison-64-prompts}
+  runtime: {selected_layers: [0, 1], line: multinode_performance}
+  evaluation: {repeats: 3, warmup: 1}
+  strategies: [routersense_joint_phase_sync]
