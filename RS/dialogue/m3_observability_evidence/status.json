@@ -4,6 +4,7 @@
     "typed ResultBundle validation and roundtrip",
     "typed ReferenceTraceBundle roundtrip",
     "fail-closed eligibility core",
+    "typed prediction/offline eligibility requirements",
     "bounded measurement/debug buffers",
     "artifact writer root-path guard and atomic replace",
     "off/perf_light side-effect unit coverage"

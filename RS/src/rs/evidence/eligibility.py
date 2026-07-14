@@ -41,10 +41,46 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
     if str(bundle.audit_evidence_level) == "unavailable":
         reasons.append("audit_unavailable")
     performance_eligible = not reasons
+    prediction_reasons: list[str] = []
+    if not performance_eligible:
+        prediction_reasons.append("base_ineligible")
+    if summary.get("prediction_evaluation_complete") is not True:
+        prediction_reasons.append("prediction_evaluation_incomplete")
+    if not str(summary.get("prediction_truth_digest", "")).strip():
+        prediction_reasons.append("missing_prediction_truth_digest")
+    if int(summary.get("prediction_record_count", 0) or 0) <= 0:
+        prediction_reasons.append("missing_prediction_records")
+    if int(summary.get("prediction_metric_count", 0) or 0) <= 0:
+        prediction_reasons.append("missing_prediction_metrics")
+    if str(summary.get("prediction_audit_status", "")).lower() != "valid":
+        prediction_reasons.append("prediction_audit_invalid")
+    if summary.get("truth_leakage_check") is not True:
+        prediction_reasons.append("truth_leakage_check_failed")
+    offline_reasons: list[str] = []
+    if not performance_eligible:
+        offline_reasons.append("base_ineligible")
+    if summary.get("offline_replay_complete") is not True:
+        offline_reasons.append("offline_replay_incomplete")
+    if not str(summary.get("evaluation_spec_digest", "")).strip():
+        offline_reasons.append("missing_evaluation_spec_digest")
+    if not str(summary.get("task_set_digest", "")).strip():
+        offline_reasons.append("missing_task_set_digest")
+    if not str(summary.get("execution_truth_digest", "")).strip():
+        offline_reasons.append("missing_execution_truth_digest")
+    if int(summary.get("offline_record_count", 0) or 0) <= 0:
+        offline_reasons.append("missing_offline_records")
+    if str(summary.get("offline_audit_status", "")).lower() != "valid":
+        offline_reasons.append("offline_audit_invalid")
+    if str(summary.get("coverage_status", "")).lower() != "complete":
+        offline_reasons.append("coverage_incomplete")
+    if str(bundle.performance_status).lower() == "eligible" and not performance_eligible:
+        reasons.append("performance_status_inconsistent")
+    if performance_eligible and str(bundle.performance_status).lower() not in {"eligible", ""}:
+        reasons.append("performance_status_missing")
     return EligibilityResult(
         correctness_eligible=bool(bundle.status == "success" and bundle.correctness_status == "valid"),
         performance_eligible=bool(performance_eligible),
-        prediction_evaluation_eligible=bool(bundle.status == "success" and bundle.correctness_status == "valid"),
-        offline_replay_eligible=bool(bundle.status == "success" and bundle.correctness_status == "valid"),
-        reasons=tuple(reasons),
+        prediction_evaluation_eligible=not prediction_reasons,
+        offline_replay_eligible=not offline_reasons,
+        reasons=tuple(reasons + [f"prediction:{item}" for item in prediction_reasons] + [f"offline:{item}" for item in offline_reasons]),
     )
