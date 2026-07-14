@@ -213,3 +213,92 @@ def test_validator_rejects_materialized_digest_mismatch() -> None:
     validation = CommonPlanValidator().validate(broken_plan, actual_context)
     assert validation.valid is False
     assert validation.reason == "materialized_digest_mismatch"
+
+
+def test_validator_rejects_duplicate_slice_overlap() -> None:
+    _, actual_context, materialized = _build_materialized_plan()
+    batch = materialized.batches[0]
+    duplicated = batch.slices[0]
+    broken_batch = ExecutionBatch(
+        batch_id=batch.batch_id,
+        wave_id=batch.wave_id,
+        slices=batch.slices + (
+            TransferSlice(
+                task_id="overlap-extra-task",
+                flow_id=f"{duplicated.flow_id}:overlap",
+                payload_role=duplicated.payload_role,
+                src_rank=duplicated.src_rank,
+                dst_rank=duplicated.dst_rank,
+                row_count=duplicated.row_count,
+                send_offset_rows=duplicated.send_offset_rows,
+                recv_offset_rows=duplicated.recv_offset_rows,
+                dependency_ids=duplicated.dependency_ids,
+            ),
+        ),
+        metadata=batch.metadata,
+    )
+    broken_plan = MaterializedPlan(
+        publication_slot=materialized.publication_slot,
+        local_global_rank=materialized.local_global_rank,
+        local_group_rank=materialized.local_group_rank,
+        phase=materialized.phase,
+        payload_specs=materialized.payload_specs,
+        batches=(broken_batch,),
+        expected_outgoing_rows=materialized.expected_outgoing_rows,
+        expected_incoming_rows=materialized.expected_incoming_rows,
+        logical_plan_digest=materialized.logical_plan_digest,
+        published_plan_digest=materialized.published_plan_digest,
+        layout_digest=materialized.layout_digest,
+        materialized_plan_digest="pending",
+        metadata=materialized.metadata,
+    )
+    broken_plan = MaterializedPlan(
+        publication_slot=broken_plan.publication_slot,
+        local_global_rank=broken_plan.local_global_rank,
+        local_group_rank=broken_plan.local_group_rank,
+        phase=broken_plan.phase,
+        payload_specs=broken_plan.payload_specs,
+        batches=broken_plan.batches,
+        expected_outgoing_rows=broken_plan.expected_outgoing_rows,
+        expected_incoming_rows=broken_plan.expected_incoming_rows,
+        logical_plan_digest=broken_plan.logical_plan_digest,
+        published_plan_digest=broken_plan.published_plan_digest,
+        layout_digest=broken_plan.layout_digest,
+        materialized_plan_digest=broken_plan.recompute_materialized_plan_digest(),
+        metadata=broken_plan.metadata,
+    )
+    validation = CommonPlanValidator().validate(broken_plan, actual_context)
+    assert validation.valid is False
+    assert validation.reason in {"send_offset_overlap", "recv_offset_overlap", "multiple_outgoing_same_wave", "multiple_incoming_same_wave"}
+
+
+def test_publisher_rejects_forged_logical_digest() -> None:
+    publisher = CanonicalPlanPublisher(rank_map=RankMap(group_ranks=(0, 1), root_rank=0))
+    plan = _build_window_plan()
+    published = publisher.build(
+        publication_slot={
+            "run_id": "run",
+            "forward_generation": 0,
+            "microbatch_id": "mb",
+            "source_layer_id": "0",
+            "target_layer_id": "1",
+            "planning_slot": "0->1",
+        },
+        window_plan=plan,
+    )
+    forged = type(published)(
+        publication_slot=published.publication_slot,
+        window_plan=published.window_plan,
+        logical_plan_digest="forged",
+        published_plan_digest=published.published_plan_digest,
+        root_global_rank=published.root_global_rank,
+        root_group_rank=published.root_group_rank,
+        version=published.version,
+        metadata=published.metadata,
+    )
+    try:
+        publisher.publish(forged)
+    except ValueError as exc:
+        assert "logical_plan_digest" in str(exc)
+    else:
+        raise AssertionError("expected forged logical digest to be rejected")

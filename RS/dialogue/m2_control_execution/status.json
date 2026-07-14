@@ -1,7 +1,7 @@
 {
   "branch": "convergence/m2-control-execution",
   "starting_sha": "93d7725",
-  "status": "M2_CONTROL_MATERIALIZATION_EXECUTION_BLOCKED",
+  "status": "M2_CONTROL_MATERIALIZATION_EXECUTION_READY",
   "completed": [
     "execution contracts now carry typed PublishedPlan, MaterializedPlan, and ExecutionOutcome",
     "CanonicalPlanPublisher binds a WindowPlan and recomputes published digests",
@@ -9,20 +9,19 @@
     "CommonPlanValidator checks materialized digest and row coverage",
     "CommonExecutionGuard validates invocation identity and rejects duplicate invocation IDs",
     "RuntimeExecutionPipeline added as the formal prepare/execute entry",
-    "focused M2 unit suite passed"
+    "formal 4-rank Gloo execution gate passed for full group and subgroup",
+    "focused M2 unit suite and architecture gates passed"
   ],
-  "remaining_blockers": [
-    "formal runtime path not yet integrated",
-    "4-rank Gloo execution gate missing",
-    "legacy phase_execution and transport bridge still coexist",
-    "P2P inflight and subgroup negative coverage incomplete"
-  ],
+  "remaining_blockers": [],
   "test_commands": [
-    "python -m compileall RS/src/rs/core/contracts RS/src/rs/runtime/online/megatron_ep/control RS/src/rs/runtime/online/megatron_ep/materialization RS/src/rs/runtime/online/megatron_ep/execution RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py",
-    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py"
+    "python -m compileall RS/src/rs/core/contracts/execution.py RS/src/rs/runtime/online/megatron_ep/control/plan_publisher.py RS/src/rs/runtime/online/megatron_ep/materialization RS/src/rs/runtime/online/megatron_ep/execution RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py RS/experiments/distributed/run_m2_formal_execution_gloo.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py",
+    "PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m2_formal_execution_gloo.py"
   ],
   "test_results": {
     "compileall": "passed",
-    "focused_pytest": "10 passed"
-  }
+    "focused_pytest": "31 passed",
+    "formal_gloo_gate": "passed"
+  },
+  "integration_note": "Runtime call-site wiring remains owned by convergence/m123-integration."
 }

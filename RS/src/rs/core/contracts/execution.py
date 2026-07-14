@@ -402,7 +402,7 @@ class PlanValidator(Protocol):
 
 
 class ExecutionGuard(Protocol):
-    def validate(self, plan: MaterializedPlan, context: ExecutionContext) -> ValidationResult:
+    def validate(self, *, plan: MaterializedPlan, invocation: Any, context: ExecutionContext) -> ValidationResult:
         ...
 
 

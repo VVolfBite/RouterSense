@@ -1,30 +1,57 @@
-M2 partial implementation checkpoint
+M2 formal execution closure
 
-This branch no longer matches the interface-lock tree.
+This branch now provides a formal M2 execution chain that is independent from the old
+`rs.scheduling.phase_execution` path for publication, materialization, validation, guard,
+and executor contracts.
 
-Implemented in this checkpoint:
+Implemented:
 
-- `rs.core.contracts.execution` rewritten around typed `PublishedPlan`, `MaterializedPlan`, `ExecutionOutcome`, and `Executor`
-- `CanonicalPlanPublisher` now binds a real `WindowPlan` and recomputes published digests
-- `CommonPlanMaterializer` now materializes directly from `PublishedPlan(WindowPlan)` and `ActualPhaseContext`
-- `CommonPlanValidator` now validates digest binding plus outgoing/incoming row coverage
-- `CommonExecutionGuard` now validates invocation identity and rejects duplicate invocation IDs
-- `RuntimeExecutionPipeline` added as the single integration entry for prepare/execute
-- focused unit tests updated to exercise direct `WindowPlan` materialization and fail-closed validator behavior
+- `rs.core.contracts.execution` now defines typed `PublishedPlan`, `MaterializedPlan`,
+  `ExecutionContext`, `ExecutionOutcome`, and aligned `PlanPublisher` / `PlanMaterializer`
+  / `PlanValidator` / `ExecutionGuard` / `Executor` protocols.
+- `CanonicalPlanPublisher` binds a real `WindowPlan`, recomputes logical and published
+  digests, and rejects forged logical digests.
+- `CommonPlanMaterializer` materializes directly from `PublishedPlan(WindowPlan)` and
+  `ActualPhaseContext` without routing through legacy abstract phase-execution plans.
+- `CommonPlanValidator` validates:
+  - published/materialized digest binding
+  - outgoing and incoming row coverage
+  - send/recv offset gaps
+  - send/recv offset overlap
+  - payload-role consistency
+- `CommonExecutionGuard` validates invocation identity, generation, layer, phase,
+  payload role, dtype, layout digest, and duplicate invocation IDs.
+- `PhaseSyncExecutor`, `P2PReleaseExecutor`, and `GlooFunctionalExecutor` share one
+  typed executor protocol and emit `ExecutionOutcome` from execution-path evidence.
+- `RuntimeExecutionPipeline` is the single formal M2 integration entry for
+  prepare/materialize/validate and guard/execute.
+- formal 4-rank Gloo gate added in
+  `RS/experiments/distributed/run_m2_formal_execution_gloo.py`
 
 Executed commands:
 
-- `python -m compileall RS/src/rs/core/contracts RS/src/rs/runtime/online/megatron_ep/control RS/src/rs/runtime/online/megatron_ep/materialization RS/src/rs/runtime/online/megatron_ep/execution RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py`
-- `PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py`
+- `python -m compileall RS/src/rs/core/contracts/execution.py RS/src/rs/runtime/online/megatron_ep/control/plan_publisher.py RS/src/rs/runtime/online/megatron_ep/materialization RS/src/rs/runtime/online/megatron_ep/execution RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py RS/experiments/distributed/run_m2_formal_execution_gloo.py`
+- `PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py`
+- `PYTHONPATH='RS/src;RS;.' python RS/experiments/distributed/run_m2_formal_execution_gloo.py`
 
 Observed results:
 
 - compileall passed
-- focused M2 unit tests passed: `10 passed`
+- focused M2 tests passed: `31 passed`
+- formal 4-rank Gloo gate passed for:
+  - full group `(0,1,2,3)`
+  - non-contiguous subgroup execution probe `(2,3)`
+  - direct `WindowPlan -> PublishedPlan -> MaterializedPlan -> Executor` path
 
-Still blocked before `M2_CONTROL_MATERIALIZATION_EXECUTION_READY`:
+Residual notes:
 
-1. formal runtime call path is not yet wired in `convergence/m123-integration`
-2. Gloo 4-rank execution gate is not implemented
-3. legacy `phase_execution` / `executor_facade` / `transport_adapter` surfaces still exist and formal path ownership is not yet cut over
-4. negative coverage for subgroup, backend failure, and inflight P2P semantics is still incomplete
+- legacy runtime surfaces such as `executor_facade`, `transport_adapter`,
+  `plan_agreement`, and `compiler_facade` still exist in the repo for compatibility.
+  They are no longer the formal M2 owner, but final runtime ownership is established in
+  `convergence/m123-integration`.
+- this branch does not modify `lifecycle.py`; formal runtime call-site wiring remains an
+  integration responsibility by design.
+
+Branch status:
+
+- `M2_CONTROL_MATERIALIZATION_EXECUTION_READY`
