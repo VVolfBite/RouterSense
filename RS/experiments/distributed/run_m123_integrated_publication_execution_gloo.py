@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
+import subprocess
+import time
 import traceback
+import uuid
 from pathlib import Path
 
 import torch
@@ -28,7 +32,6 @@ from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _runtime,
     _wait_until,
 )
-RUN_DIR = Path("outputs/closure/m123_integrated_publication_execution_gloo")
 
 
 def _free_port() -> int:
@@ -183,6 +186,38 @@ def _execute_role(
     return output
 
 
+def _close_runtime_services(runtime, adapter) -> dict[str, object]:
+    errors: list[dict[str, object]] = []
+    planner_service = getattr(runtime, "target_planner_service", None)
+    if planner_service is not None:
+        try:
+            planner_service.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "target_planner_service", "error_type": type(exc).__name__, "error": str(exc)})
+    target_store = getattr(runtime, "target_plan_store", None)
+    if target_store is not None and hasattr(target_store, "shutdown"):
+        try:
+            target_store.shutdown()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "target_plan_store", "error_type": type(exc).__name__, "error": str(exc)})
+    instrumentation = getattr(runtime, "runtime_instrumentation", None)
+    if instrumentation is not None and hasattr(instrumentation, "close"):
+        try:
+            instrumentation.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "runtime_instrumentation", "error_type": type(exc).__name__, "error": str(exc)})
+    if adapter is not None and hasattr(adapter, "close"):
+        try:
+            adapter.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "transport_adapter", "error_type": type(exc).__name__, "error": str(exc)})
+    planner_alive = bool(planner_service is not None and hasattr(planner_service, "is_alive") and planner_service.is_alive())
+    return {
+        "cleanup_errors": errors,
+        "planner_thread_alive": planner_alive,
+    }
+
+
 def _transfer_keys_from_completed_tasks(
     materialized_plan,
     completed_task_ids: tuple[str, ...],
@@ -218,14 +253,17 @@ def _all_task_ids(materialized_plan, *, payload_roles: set[str]) -> tuple[str, .
     )
 
 
-def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str) -> None:
+def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str, run_dir: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
     dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    run_root = Path(str(run_dir))
+    run_root.mkdir(parents=True, exist_ok=True)
     summary = {"rank": int(rank), "status": "failed"}
+    runtime = None
+    adapter = None
     try:
         group_ranks = tuple(range(world_size))
         runtime, trace, spy = _runtime(
@@ -305,7 +343,7 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             int(global_rank): dict(gathered_payload_specs[index] or {})
             for index, global_rank in enumerate(group_ranks)
         }
-        (RUN_DIR / f"rank{rank}_p0_materialized.json").write_text(
+        (run_root / f"rank{rank}_p0_materialized.json").write_text(
             json.dumps(
                 {
                     "rank": int(rank),
@@ -329,7 +367,7 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         )
         hidden_debug_spec = next(item for item in prepared_p0.materialized_plan.payload_specs if str(item.payload_role) == "hidden_states")
         hidden_debug_tensor = _input_tensor(hidden_debug_spec, source_global_rank=int(rank))
-        (RUN_DIR / f"rank{rank}_p0_hidden_input.json").write_text(
+        (run_root / f"rank{rank}_p0_hidden_input.json").write_text(
             json.dumps(
                 {
                     "rank": int(rank),
@@ -481,24 +519,95 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         }
         raise
     finally:
-        (RUN_DIR / f"rank{rank}.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path = run_root / f"rank{rank}.json.tmp"
+        final_path = run_root / f"rank{rank}.json"
+        cleanup = _close_runtime_services(runtime, adapter)
+        summary["cleanup_errors"] = list(cleanup["cleanup_errors"])
+        summary["planner_thread_alive"] = bool(cleanup["planner_thread_alive"])
         if dist.is_initialized():
             dist.destroy_process_group()
+        summary["dist_destroyed"] = not dist.is_initialized()
+        if summary.get("status") == "passed":
+            if summary["cleanup_errors"] or bool(summary["planner_thread_alive"]) or not bool(summary["dist_destroyed"]):
+                summary["status"] = "failed"
+                summary["error_type"] = "CleanupError"
+                summary["error"] = "runtime cleanup incomplete"
+        tmp_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp_path, final_path)
+
+
+def _terminate_all_processes(context: mp.SpawnContext) -> None:
+    for pid in context.pids():
+        if int(pid) <= 0:
+            continue
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
 
 def run_gate(*, instrumentation_mode: str = "perf_light") -> dict[str, object]:
     return run_gate_with_backend(instrumentation_mode=instrumentation_mode, execution_backend="phase_sync")
 
 
-def run_gate_with_backend(*, instrumentation_mode: str = "perf_light", execution_backend: str = "phase_sync") -> dict[str, object]:
+def run_gate_with_backend(
+    *,
+    instrumentation_mode: str = "perf_light",
+    execution_backend: str = "phase_sync",
+    output_dir: str | Path = Path("outputs/closure/m123_integrated_publication_execution_gloo"),
+    timeout_seconds: float = 180.0,
+) -> dict[str, object]:
     world_size = 4
     port = _free_port()
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    mp.spawn(_worker, args=(world_size, port, str(instrumentation_mode), str(execution_backend)), nprocs=world_size, join=True)
-    payloads = [json.loads((RUN_DIR / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
+    run_token = uuid.uuid4().hex
+    run_root = Path(output_dir).resolve() / f"m123_{execution_backend}_{run_token}"
+    if run_root.exists():
+        raise FileExistsError(f"run dir already exists: {run_root}")
+    run_root.mkdir(parents=True, exist_ok=False)
+    started_at = time.time()
+    (run_root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_token,
+                "run_dir": str(run_root),
+                "execution_backend": str(execution_backend),
+                "instrumentation_mode": str(instrumentation_mode),
+                "world_size": int(world_size),
+                "port": int(port),
+                "started_at": started_at,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    context = mp.spawn(
+        _worker,
+        args=(world_size, port, str(instrumentation_mode), str(execution_backend), str(run_root)),
+        nprocs=world_size,
+        join=False,
+    )
+    deadline = time.monotonic() + float(timeout_seconds)
+    timed_out = False
+    while True:
+        if context.join(timeout=1.0):
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            _terminate_all_processes(context)
+            break
+    if timed_out:
+        raise TimeoutError(f"m123 gate timed out after {timeout_seconds:.1f}s")
+    payloads = [json.loads((run_root / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
     assert all(item["status"] == "passed" for item in payloads), payloads
     summary = {
         "status": "passed",
+        "run_id": run_token,
+        "run_dir": str(run_root),
+        "started_at": started_at,
+        "finished_at": time.time(),
         "world_size": world_size,
         "instrumentation_mode": str(instrumentation_mode),
         "execution_backend": str(execution_backend),
@@ -506,7 +615,7 @@ def run_gate_with_backend(*, instrumentation_mode: str = "perf_light", execution
         "p1_matrix": [list(row) for row in tuple(tuple(_matrix_for_world_size(world_size)[src][dst] for src in range(world_size)) for dst in range(world_size))],
         "ranks": payloads,
     }
-    (RUN_DIR / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
 
@@ -514,15 +623,33 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execution-backend", default=str(os.environ.get("RS_M123_GATE_EXECUTION_BACKEND", "phase_sync") or "phase_sync"))
     parser.add_argument("--instrumentation-mode", default=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
+    parser.add_argument("--output-dir", default="outputs/closure/m123_integrated_publication_execution_gloo")
     parser.add_argument("--summary-path", default="")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     summary = run_gate_with_backend(
         instrumentation_mode=str(args.instrumentation_mode),
         execution_backend=str(args.execution_backend),
+        output_dir=str(args.output_dir),
     )
+    summary_digest = hashlib.sha256(json.dumps(summary, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
     if str(args.summary_path).strip():
         Path(str(args.summary_path)).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps(summary, sort_keys=True))
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "status": str(summary["status"]),
+                    "execution_backend": str(summary["execution_backend"]),
+                    "summary_path": str(Path(str(args.summary_path)).resolve()) if str(args.summary_path).strip() else str(Path(summary["run_dir"]) / "summary.json"),
+                    "summary_digest": summary_digest,
+                    "duration_seconds": round(float(summary["finished_at"]) - float(summary["started_at"]), 3),
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print(json.dumps(summary, sort_keys=True))
 
 
 if __name__ == "__main__":
