@@ -657,7 +657,8 @@ class TargetLayerPlannerService:
             paired_b_makespan = float(selected.local_score.estimated_makespan if selected.local_score is not None else 0.0)
         selected_logical_plan = to_logical_plan(selected_plan)
         encode_start = time.perf_counter_ns()
-        logical_digest = stable_hash(selected_logical_plan.to_dict())
+        logical_digest = str(selected_plan.semantic_digest())
+        legacy_logical_digest = str(stable_hash(selected_logical_plan.to_dict()))
         target_problem_digest = stable_hash(
             {
                 "target_layer_id": request.target_layer_id,
@@ -684,8 +685,10 @@ class TargetLayerPlannerService:
             h1_prediction_digest=str(bundle.h1.matrix_digest),
             h2_prediction_digest=str(bundle.h2.matrix_digest),
             target_problem_digest=str(target_problem_digest),
+            window_plan=selected_plan,
             logical_plan=selected_logical_plan,
             logical_plan_digest=str(logical_digest),
+            legacy_logical_plan_digest=str(legacy_logical_digest),
             policy=str(raw_policy_id if selected_variant == "raw_u" else (request.paired_b_policy_id or raw_policy_id)),
             weights={
                 "residual_weight": float(request.policy_options.residual_weight),
@@ -702,11 +705,11 @@ class TargetLayerPlannerService:
             ready_at_ns=int(finished_ns),
             safe_projection_mode=safe_projection_mode,
             selected_variant=str(selected_variant),
-            raw_logical_plan_digest=str(stable_hash(raw_logical_plan.to_dict())),
+            raw_logical_plan_digest=str(raw_plan.semantic_digest()),
             paired_b_logical_plan_digest=(
                 ""
                 if safe_projection_mode != "host_select"
-                else str(stable_hash(paired_b_logical_plan.to_dict()))
+                else str(paired_b_plan.semantic_digest())
             ),
             selected_logical_plan_digest=str(logical_digest),
             raw_u_estimated_makespan=float(raw_score.estimated_makespan),

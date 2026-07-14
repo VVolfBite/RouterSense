@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import pytest
 
+from rs.core.contracts import WindowPlan
+from rs.planning.api import to_logical_plan
 from rs.runtime.online.megatron_ep.target_planning import TargetLayerPreparedJointPlan, TargetPlanKey, TargetPlanStore
 from rs.runtime.online.megatron_ep.target_planning.contracts import PreparationToken
-from rs.scheduling.contracts import LogicalSchedulePlan
 from rs.runtime.guards import RouterSenseInvariantError
 from rs.scheduling.validation import stable_hash
 
 
 def _plan() -> TargetLayerPreparedJointPlan:
-    logical_plan = LogicalSchedulePlan(policy_name="u", waves=(), diagnostics={})
+    window_plan = WindowPlan(
+        planner_id="u",
+        planner_family="joint",
+        request_digest="req",
+        waves=(),
+        metadata={"legacy_policy_name": "u"},
+    )
+    logical_plan = to_logical_plan(window_plan)
     return TargetLayerPreparedJointPlan(
         source_layer_id="0",
         target_layer_id="1",
@@ -20,8 +28,10 @@ def _plan() -> TargetLayerPreparedJointPlan:
         h1_prediction_digest="h1",
         h2_prediction_digest="h2",
         target_problem_digest="tp",
+        window_plan=window_plan,
         logical_plan=logical_plan,
-        logical_plan_digest=stable_hash(logical_plan.to_dict()),
+        logical_plan_digest=window_plan.semantic_digest(),
+        legacy_logical_plan_digest=stable_hash(logical_plan.to_dict()),
         policy="u",
         weights={},
         bucket_contract_digest="bucket",
