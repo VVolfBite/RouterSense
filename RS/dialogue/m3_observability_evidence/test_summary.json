@@ -1,0 +1,16 @@
+{
+  "commands": [
+    {
+      "command": "python -m compileall RS/src RS/tests",
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "command": "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m3_measurement_and_evidence.py",
+      "exit_code": 0,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    }
+  ]
+}

@@ -1,18 +1,63 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
 from rs.core.contracts.debug import DebugEvent
 from rs.core.contracts.measurement import MeasurementEvent
-from rs.core.contracts.result import ResultBundle, RunIdentity
-from rs.core.contracts.trace import AuditEvidenceLevel, ReferenceTraceBundle
+from rs.core.contracts.result import EligibilityResult, ResultBundle, RunIdentity
+from rs.core.contracts.trace import AuditEvidenceLevel, ReferenceTraceBundle, TrafficObservationRecord
 from rs.evidence.artifact_writer import FilesystemArtifactWriter
 from rs.evidence.eligibility import evaluate_result_bundle_eligibility
 from rs.evidence.serialization import EvidenceSerializer
 from rs.runtime.debug.api import BufferedDebugProbe, NullDebugProbe, TensorCapture
 from rs.runtime.measurement.api import NullMeasurementSink, PerfLightMeasurementSink
+from rs.runtime.observation.instrumentation import RuntimeInstrumentation
+
+
+def _base_run_identity() -> RunIdentity:
+    return RunIdentity(
+        run_id="run",
+        pipeline="online",
+        claim_scope="formal",
+        trace_origin="observed",
+        future_information_mode="predicted",
+    )
+
+
+def _valid_result_bundle(*, instrumentation_mode: str = "off") -> ResultBundle:
+    bundle = ResultBundle(
+        run_identity=_base_run_identity(),
+        status="success",
+        correctness_status="valid",
+        performance_status="eligible",
+        pipeline="online",
+        commit_sha="abc123",
+        git_clean=True,
+        instrumentation_mode=instrumentation_mode,
+        audit_evidence_level="summary_only",
+        measurement_complete=True,
+        eligibility=EligibilityResult(
+            correctness_eligible=True,
+            performance_eligible=True,
+            prediction_evaluation_eligible=True,
+            offline_replay_eligible=True,
+            reasons=(),
+        ),
+        summary={
+            "all_work_completed": True,
+            "fallback_count": 0,
+            "timeout_count": 0,
+            "check_failure_count": 0,
+        },
+        details={"backend": "cpu"},
+        extensions={"lane": "formal"},
+    )
+    bundle.validate()
+    return bundle
 
 
 def test_null_measurement_sink_has_zero_events() -> None:
@@ -47,54 +92,100 @@ def test_debug_probe_is_bounded() -> None:
     assert NullDebugProbe().flush() == ()
 
 
+def test_result_bundle_rejects_reserved_extension_override() -> None:
+    bundle = ResultBundle(
+        run_identity=_base_run_identity(),
+        status="success",
+        correctness_status="valid",
+        performance_status="eligible",
+        pipeline="online",
+        commit_sha="abc123",
+        git_clean=True,
+        instrumentation_mode="off",
+        audit_evidence_level="summary_only",
+        measurement_complete=True,
+        eligibility=None,
+        summary={
+            "all_work_completed": True,
+            "fallback_count": 0,
+            "timeout_count": 0,
+            "check_failure_count": 0,
+        },
+        extensions={"pipeline": "bad"},
+    )
+    try:
+        bundle.validate()
+    except ValueError as exc:
+        assert "reserved field" in str(exc)
+    else:
+        raise AssertionError("expected reserved extension validation failure")
+
+
 def test_eligibility_fails_closed_for_empty_summary_and_debug() -> None:
     bundle = ResultBundle(
-        run_identity=RunIdentity(
-            run_id="run",
-            pipeline="online",
-            claim_scope="formal",
-            trace_origin="observed",
-            future_information_mode="predicted",
-        ),
+        run_identity=_base_run_identity(),
         status="success",
-        eligibility=evaluate_result_bundle_eligibility(
-            ResultBundle(
-                run_identity=RunIdentity(
-                    run_id="run",
-                    pipeline="online",
-                    claim_scope="formal",
-                    trace_origin="observed",
-                    future_information_mode="predicted",
-                ),
-                status="success",
-                eligibility=None,  # type: ignore[arg-type]
-                summary={},
-                details={"instrumentation_mode": "debug"},
-            )
-        ),
+        correctness_status="valid",
+        performance_status="eligible",
+        pipeline="online",
+        commit_sha="abc123",
+        git_clean=True,
+        instrumentation_mode="debug",
+        audit_evidence_level="unavailable",
+        measurement_complete=False,
+        eligibility=None,
         summary={},
-        details={"instrumentation_mode": "debug"},
     )
     eligibility = evaluate_result_bundle_eligibility(bundle)
     assert eligibility.performance_eligible is False
     assert "empty_summary" in eligibility.reasons
     assert "debug_mode" in eligibility.reasons
+    assert "measurement_incomplete" in eligibility.reasons
 
 
-def test_evidence_serializer_roundtrip_and_writer(tmp_path: Path) -> None:
+def test_result_bundle_roundtrip_returns_typed_bundle() -> None:
+    serializer = EvidenceSerializer()
+    bundle = _valid_result_bundle()
+    payload = serializer.deserialize_result(serializer.serialize_result(bundle))
+    assert isinstance(payload, ResultBundle)
+    assert payload.run_identity.run_id == "run"
+    assert payload.extensions["lane"] == "formal"
+
+
+def test_trace_bundle_roundtrip_returns_typed_bundle() -> None:
     serializer = EvidenceSerializer()
     trace_bundle = ReferenceTraceBundle(
         run_identity={"run_id": "run"},
         topology={"world_size": 2},
-        traffic_observations=({"layer_id": "0"},),
+        traffic_observations=(
+            TrafficObservationRecord(
+                run_id="run",
+                layer_id="1",
+                phase="p0",
+                layout_digest="layout",
+                payload_roles=("hidden_states",),
+            ),
+        ),
         evidence_level=AuditEvidenceLevel.SUMMARY_ONLY,
     )
-    text = serializer.serialize_trace(trace_bundle)
-    payload = serializer.deserialize_trace(text)
-    assert payload["run_identity"]["run_id"] == "run"
+    payload = serializer.deserialize_trace(serializer.serialize_trace(trace_bundle))
+    assert isinstance(payload, ReferenceTraceBundle)
+    assert payload.traffic_observations[0].layer_id == "1"
+
+
+def test_artifact_writer_roundtrip_and_path_guard(tmp_path: Path) -> None:
+    serializer = EvidenceSerializer()
     writer = FilesystemArtifactWriter(root_dir=tmp_path, serializer=serializer)
-    output = writer.write_text(relative_path="trace.json", payload=text)
-    assert Path(output).read_text(encoding="utf-8") == text
+    output = writer.write_text(relative_path="trace.json", payload="hello")
+    assert Path(output).read_text(encoding="utf-8") == "hello"
+    manifest = json.loads((tmp_path / "trace.json.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifact_path"] == "trace.json"
+    try:
+        writer.write_text(relative_path="../escape.txt", payload="bad")
+    except ValueError as exc:
+        assert "escapes root_dir" in str(exc)
+    else:
+        raise AssertionError("expected path escape validation failure")
 
 
 def test_measurement_and_debug_do_not_force_tensor_d2h(monkeypatch) -> None:
@@ -111,3 +202,93 @@ def test_measurement_and_debug_do_not_force_tensor_d2h(monkeypatch) -> None:
     sink.snapshot()
     probe.flush()
     assert calls == {"cpu": 0, "item": 0, "tolist": 0}
+
+
+def test_runtime_instrumentation_off_and_perf_light_have_no_side_effects(monkeypatch, tmp_path: Path) -> None:
+    calls = {
+        "path_open": 0,
+        "path_write_text": 0,
+        "json_dump": 0,
+        "json_dumps": 0,
+        "cpu": 0,
+        "item": 0,
+        "tolist": 0,
+    }
+
+    original_open = Path.open
+    original_write_text = Path.write_text
+    original_json_dump = json.dump
+    original_json_dumps = json.dumps
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: calls.__setitem__("path_open", calls["path_open"] + 1) or original_open(self, *a, **k))
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: calls.__setitem__("path_write_text", calls["path_write_text"] + 1) or original_write_text(self, *a, **k))
+    monkeypatch.setattr(json, "dump", lambda *a, **k: calls.__setitem__("json_dump", calls["json_dump"] + 1) or original_json_dump(*a, **k))
+    monkeypatch.setattr(json, "dumps", lambda *a, **k: calls.__setitem__("json_dumps", calls["json_dumps"] + 1) or original_json_dumps(*a, **k))
+    monkeypatch.setattr(torch.Tensor, "cpu", lambda self, *a, **k: calls.__setitem__("cpu", calls["cpu"] + 1) or self)
+    monkeypatch.setattr(torch.Tensor, "item", lambda self, *a, **k: calls.__setitem__("item", calls["item"] + 1) or 0)
+    monkeypatch.setattr(torch.Tensor, "tolist", lambda self, *a, **k: calls.__setitem__("tolist", calls["tolist"] + 1) or [])
+
+    off = RuntimeInstrumentation(measurement_sink=NullMeasurementSink(), debug_probe=NullDebugProbe())
+    off.record_measurement(MeasurementEvent(event_type="prediction", started_at_ns=1, ended_at_ns=2))
+    off.record_debug(DebugEvent(event_type="dbg", ts_ns=1, performance_eligible=False))
+
+    perf = RuntimeInstrumentation(
+        measurement_sink=PerfLightMeasurementSink(max_events=4),
+        debug_probe=NullDebugProbe(),
+    )
+    perf.record_measurement(MeasurementEvent(event_type="prediction", started_at_ns=2, ended_at_ns=3))
+    perf.measurement_sink.snapshot()
+
+    assert calls["cpu"] == 0
+    assert calls["item"] == 0
+    assert calls["tolist"] == 0
+    assert calls["path_open"] == 0
+    assert calls["path_write_text"] == 0
+    assert calls["json_dump"] == 0
+    assert calls["json_dumps"] == 0
+
+
+def test_debug_mode_is_not_performance_eligible() -> None:
+    eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle(instrumentation_mode="debug"))
+    assert eligibility.performance_eligible is False
+    assert "debug_mode" in eligibility.reasons
+
+
+def test_prediction_and_offline_eligibility_require_domain_specific_fields() -> None:
+    eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle())
+    assert eligibility.prediction_evaluation_eligible is False
+    assert eligibility.offline_replay_eligible is False
+    assert "prediction:prediction_evaluation_incomplete" in eligibility.reasons
+    assert "offline:offline_replay_incomplete" in eligibility.reasons
+
+
+def test_prediction_and_offline_eligibility_pass_with_complete_summary() -> None:
+    bundle = _valid_result_bundle()
+    bundle.summary.update(
+        {
+            "prediction_evaluation_complete": True,
+            "prediction_truth_digest": "pred-truth",
+            "prediction_record_count": 2,
+            "prediction_metric_count": 5,
+            "prediction_audit_status": "valid",
+            "truth_leakage_check": True,
+            "offline_replay_complete": True,
+            "evaluation_spec_digest": "spec",
+            "task_set_digest": "taskset",
+            "execution_truth_digest": "truth",
+            "offline_record_count": 3,
+            "offline_audit_status": "valid",
+            "coverage_status": "complete",
+        }
+    )
+    eligibility = evaluate_result_bundle_eligibility(bundle)
+    assert eligibility.performance_eligible is True
+    assert eligibility.prediction_evaluation_eligible is True
+    assert eligibility.offline_replay_eligible is True
+
+
+def test_result_bundle_performance_status_must_match_eligibility() -> None:
+    bundle = replace(_valid_result_bundle(), measurement_complete=False)
+    eligibility = evaluate_result_bundle_eligibility(bundle)
+    assert eligibility.performance_eligible is False
+    assert "performance_status_inconsistent" in eligibility.reasons

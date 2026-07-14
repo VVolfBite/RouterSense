@@ -18,6 +18,7 @@ from rs.core.contracts import (
 )
 from rs.planning import CommonCorePlanEstimator, PlannerPolicyConfig, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel, SelectedPlan
 from rs.planning.api import to_logical_plan
+from rs.planning.request_builder import build_window_planning_request
 from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.public_types import LocalPreparationToken, LocalPublicationCandidate, PublicationSlot
 
@@ -797,7 +798,7 @@ class TargetLayerPlannerService:
         source_layer_id: str,
         target_layer_id: str,
     ) -> PlanningRequest:
-        return PlanningRequest(
+        return build_window_planning_request(
             identity=PlanningIdentity(
                 request_id=f"{request.run_id}:{request.forward_epoch}:{request.microbatch_id}:{request.target_layer_id}",
                 run_id=request.run_id,
@@ -806,19 +807,11 @@ class TargetLayerPlannerService:
                 source_layer_id=str(source_layer_id),
                 target_layer_id=str(target_layer_id),
             ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
-                p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
-            ),
-            prediction_hint=PredictionHint(
-                predictor_id=str(predictor_id),
-                hint_type="traffic_matrix",
-                target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
-                confidence=float(prediction_confidence),
-                oracle=False,
-                source_layer_id=str(source_layer_id),
-                target_layer_id=str(target_layer_id),
-            ),
+            p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
+            p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
+            p2_hint_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
+            predictor_id=str(predictor_id),
+            confidence=float(prediction_confidence),
             topology=PlanningTopology(world_size=int(request.group_size)),
             constraints=PlanningConstraints(
                 bucket_rows=int(request.bucket_rows),

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -25,10 +26,14 @@ import torch
 import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
+from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
+from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
+from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
+from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
@@ -62,6 +67,36 @@ class DedicatedP2PGroupRegistry:
     groups: dict[tuple[int, ...], dist.ProcessGroup]
     local_group_ranks: tuple[int, ...]
     local_group: dist.ProcessGroup | None
+
+
+def _detect_runtime_commit() -> tuple[str, bool]:
+    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
+    if env_sha:
+        return env_sha, False
+    repo_root = Path(__file__).resolve().parents[5]
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            sha = proc.stdout.strip()
+            dirty = bool(
+                subprocess.run(
+                    ["git", "status", "--short"],
+                    cwd=str(repo_root),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).stdout.strip()
+            )
+            return sha, dirty
+    except Exception:
+        pass
+    return "unknown", False
     warmup_passed: bool
     new_group_call_order: tuple[tuple[int, ...], ...]
 
@@ -818,6 +853,19 @@ def attach_dispatch_facade(
         ep_group_ranks=ep_group_ranks,
         ep_group_root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         ep_process_group=ep_process_group,
+    )
+    runtime.plan_publisher = CanonicalPlanPublisher(
+        rank_map=RankMap(
+            group_ranks=tuple(int(item) for item in ep_group_ranks),
+            root_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
+        )
+    )
+    runtime.execution_pipeline = RuntimeExecutionPipeline()
+    runtime._instrumentation_mode = str(getattr(config, "observation_profile", "off") or "off")
+    runtime._commit_sha, runtime._git_clean = _detect_runtime_commit()
+    runtime.runtime_instrumentation = build_runtime_instrumentation(
+        instrumentation_mode=str(runtime._instrumentation_mode),
+        evidence_sink=BufferedEvidenceSink(),
     )
     runtime.target_plan_control_group_handle = _create_control_group_handle(
         ep_process_group=ep_process_group,

@@ -33,7 +33,10 @@ from rs.core.contracts import (
     PredictionIdentity,
     TrafficHistoryContext,
 )
+from rs.core.contracts.execution import ActualPhaseContext
+from rs.core.contracts.measurement import MeasurementEvent
 from rs.core.contracts.observation import RuntimeObservationConfig
+from rs.core.contracts.result import EligibilityResult, ResultBundle, RunIdentity
 from rs.prediction import PredictionRegistry, resolve_predictor_id
 from rs.planning import (
     CommonCorePlanEstimator,
@@ -44,6 +47,7 @@ from rs.planning import (
     PlanningCostModel,
 )
 from rs.planning.api import to_logical_plan
+from rs.planning.request_builder import build_window_planning_request
 from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
@@ -157,6 +161,48 @@ from rs.scheduling.traffic_matrix import (
     matrix_row_sums_remote,
 )
 from rs.scheduling.validation import stable_hash
+
+
+@dataclass
+class ReleaseStateLedger:
+    run_id: str
+    forward_generation: int
+    microbatch_id: str
+    completed_payload_roles_by_phase: dict[tuple[str, str, int], set[str]] = field(default_factory=dict)
+    satisfied_release_ids: set[str] = field(default_factory=set)
+
+    def reset(self, *, run_id: str, forward_generation: int, microbatch_id: str) -> None:
+        self.run_id = str(run_id)
+        self.forward_generation = int(forward_generation)
+        self.microbatch_id = str(microbatch_id)
+        self.completed_payload_roles_by_phase.clear()
+        self.satisfied_release_ids.clear()
+
+    def record_payload_completion(
+        self,
+        *,
+        layer_id: str,
+        phase: str,
+        local_group_rank: int,
+        payload_role: str,
+        required_payload_roles: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        key = (str(layer_id), str(phase), int(local_group_rank))
+        completed = self.completed_payload_roles_by_phase.setdefault(key, set())
+        completed.add(str(payload_role))
+        required = {str(item) for item in required_payload_roles}
+        if not required.issubset(completed):
+            return ()
+        if str(phase) == "P0":
+            release_id = f"release:p0_inbound_complete:{int(local_group_rank)}"
+        elif str(phase) == "P1":
+            release_id = f"release:p1_inbound_complete:{int(local_group_rank)}"
+        else:
+            return ()
+        if release_id in self.satisfied_release_ids:
+            return ()
+        self.satisfied_release_ids.add(release_id)
+        return (release_id,)
 
 
 @dataclass(frozen=True)
@@ -273,10 +319,24 @@ class RouterSenseInjectionRuntime:
     _current_plan_build_keys: set[tuple[int, int, str, str, str]] = field(default_factory=set)
     _selected_layer_active_ns: dict[tuple[int, str], int] = field(default_factory=dict)
     _expert_module_active_ns: dict[tuple[int, str], int] = field(default_factory=dict)
+    release_state_ledger: ReleaseStateLedger = field(
+        default_factory=lambda: ReleaseStateLedger(
+            run_id="",
+            forward_generation=0,
+            microbatch_id="",
+        )
+    )
+    _latest_execution_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    _latest_result_bundle: ResultBundle | None = None
 
     # Configuration and policy selection
 
     def __post_init__(self) -> None:
+        self.release_state_ledger.reset(
+            run_id=str(self.run_id),
+            forward_generation=int(self._forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+        )
         self._runtime_state.set_invariant_mode(str(getattr(self.config, "invariant_mode", "diagnostic")))
         if self.observation_recorder is None:
             self.observation_recorder = RuntimeObservationRecorder(
@@ -581,17 +641,29 @@ class RouterSenseInjectionRuntime:
             self._runtime_state.metrics.selected_transport_execution_count = int(
                 self._runtime_state.metrics.selected_transport_execution_count
             ) + 1
+        prepared_execution = None
+        if self._is_joint_window_async_mode():
+            prepared_execution = self._prepared_execution_cache().get(self.target_plan_store._key(self._target_plan_key(layer_name=layer_name))) if self.target_plan_store is not None else None
         self._active_transport = {
             "layer_name": layer_name,
             "phase": phase,
             "context": context,
             "plan": plan,
+            "prepared_execution": prepared_execution,
         }
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
             if hasattr(adapter, "set_effective_preflight_mode"):
                 adapter.set_effective_preflight_mode(effective_preflight_mode)
-            adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
+            adapter.activate(
+                layer_name=layer_name,
+                phase=phase,
+                context=context,
+                plan=plan,
+                prepared_execution=prepared_execution,
+                execution_pipeline=getattr(self, "execution_pipeline", None),
+                runtime=self,
+            )
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -605,6 +677,179 @@ class RouterSenseInjectionRuntime:
 
     def current_transport(self) -> dict[str, Any] | None:
         return self._active_transport
+
+    def _execution_plan_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_published_execution_plans", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_published_execution_plans", cache)
+        return cache
+
+    def _prepared_execution_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_prepared_executions", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_prepared_executions", cache)
+        return cache
+
+    def _local_group_rank(self) -> int:
+        ranks = tuple(int(value) for value in self.ep_group_ranks)
+        return int(ranks.index(int(self.rank))) if int(self.rank) in ranks else 0
+
+    def _required_payload_roles_for_phase(self, phase: str) -> tuple[str, ...]:
+        if str(phase) == "P0":
+            return ("hidden_states", "routing_probs")
+        if str(phase) == "P1":
+            return ("hidden_states",)
+        return ()
+
+    def record_phase_payload_completion(
+        self,
+        *,
+        layer_id: str,
+        phase: str,
+        payload_role: str,
+    ) -> tuple[str, ...]:
+        releases = self.release_state_ledger.record_payload_completion(
+            layer_id=str(layer_id),
+            phase=str(phase),
+            local_group_rank=self._local_group_rank(),
+            payload_role=str(payload_role),
+            required_payload_roles=self._required_payload_roles_for_phase(str(phase)),
+        )
+        if not releases:
+            return ()
+        propagated: list[str] = []
+        if str(phase) == "P0":
+            propagated = [f"release:p0_inbound_complete:{group_rank}" for group_rank in range(len(self.ep_group_ranks))]
+        elif str(phase) == "P1":
+            propagated = [f"release:p1_inbound_complete:{group_rank}" for group_rank in range(len(self.ep_group_ranks))]
+        else:
+            propagated = list(releases)
+        self.release_state_ledger.satisfied_release_ids.update(str(item) for item in propagated)
+        return tuple(str(item) for item in propagated)
+
+    def satisfied_release_dependency_ids_for(
+        self,
+        *,
+        layer_id: str,
+        phase: str,
+        local_group_rank: int | None = None,
+    ) -> tuple[str, ...]:
+        layer_id = str(layer_id)
+        phase = str(phase)
+        local_group_rank
+        return tuple(sorted(str(item) for item in self.release_state_ledger.satisfied_release_ids))
+
+    def record_execution_outcome(
+        self,
+        *,
+        layer_id: str,
+        phase: str,
+        payload_role: str,
+        outcome: dict[str, object],
+    ) -> None:
+        self._latest_execution_outcomes.append(
+            {
+                "layer_id": str(layer_id),
+                "phase": str(phase),
+                "payload_role": str(payload_role),
+                "outcome": dict(outcome),
+                "release_ids": list(sorted(self.release_state_ledger.satisfied_release_ids)),
+            }
+        )
+
+    def _finalize_result_bundle(self) -> ResultBundle | None:
+        instrumentation = getattr(self, "runtime_instrumentation", None)
+        if instrumentation is None:
+            return None
+        measurement_sink = getattr(instrumentation, "measurement_sink", None)
+        measurement_complete = hasattr(measurement_sink, "snapshot")
+        measurement_snapshot = measurement_sink.snapshot() if measurement_complete else None
+        mode = str(getattr(self, "_instrumentation_mode", "off") or "off")
+        commit_sha = str(getattr(self, "_commit_sha", "") or "")
+        git_clean = bool(getattr(self, "_git_clean", False))
+        outcomes = list(self._latest_execution_outcomes)
+        all_work_completed = all(
+            bool(dict(item.get("outcome", {})).get("all_work_completed", False))
+            for item in outcomes
+        ) if outcomes else True
+        summary = {
+            "all_work_completed": bool(all_work_completed),
+            "fallback_count": 0,
+            "timeout_count": 0,
+            "check_failure_count": 0,
+            "execution_outcome_count": int(len(outcomes)),
+            "release_id_count": int(len(self.release_state_ledger.satisfied_release_ids)),
+            "measurement_event_count": int(getattr(measurement_snapshot, "event_count", 0) or 0) if measurement_snapshot is not None else 0,
+        }
+        bundle = ResultBundle(
+            run_identity=RunIdentity(
+                run_id=str(self.run_id),
+                pipeline="online",
+                claim_scope="formal",
+                trace_origin="runtime",
+                future_information_mode=str(getattr(self.config, "future_hint_mode", "runtime")),
+            ),
+            status="success" if all_work_completed else "failure",
+            correctness_status="valid" if all_work_completed else "invalid",
+            performance_status="unknown",
+            pipeline="online",
+            commit_sha=commit_sha or "unknown",
+            git_clean=bool(git_clean),
+            instrumentation_mode=mode,
+            audit_evidence_level="summary_only",
+            measurement_complete=bool(measurement_complete),
+            eligibility=EligibilityResult(
+                correctness_eligible=bool(all_work_completed),
+                performance_eligible=False,
+                prediction_evaluation_eligible=False,
+                offline_replay_eligible=False,
+                reasons=() if all_work_completed else ("execution_incomplete",),
+            ),
+            summary=summary,
+            details={
+                "latest_execution_outcomes": outcomes,
+                "measurement_summary": {} if measurement_snapshot is None else dict(measurement_snapshot.summary),
+            },
+        )
+        self._latest_result_bundle = bundle
+        instrumentation.record_result(bundle)
+        return bundle
+
+    def _record_instrumentation_measurement(
+        self,
+        *,
+        event_type: str,
+        layer_id: str | None,
+        phase: str | None,
+        started_at_ns: int,
+        ended_at_ns: int,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        instrumentation = getattr(self, "runtime_instrumentation", None)
+        if instrumentation is None:
+            return
+        instrumentation.record_measurement(
+            MeasurementEvent(
+                event_type=str(event_type),
+                started_at_ns=int(started_at_ns),
+                ended_at_ns=int(ended_at_ns),
+                layer_id=None if layer_id is None else str(layer_id),
+                phase=None if phase is None else str(phase),
+                details=dict(details or {}),
+            )
+        )
+
+    def _actual_phase_context_from_ready_context(self, *, phase_ctx: PhaseReadyContext) -> ActualPhaseContext:
+        return ActualPhaseContext(
+            layer_id=str(phase_ctx.layer_id),
+            phase=str(phase_ctx.phase),
+            world_size=int(len(phase_ctx.ep_group_ranks)),
+            rank_space="global",
+            layout_digest=str(phase_ctx.canonical_receive_layout_id),
+            metadata={"phase_ready_context": phase_ctx.to_dict()},
+        )
 
     def clear_transport(self, *, layer_name: str, phase: str) -> None:
         adapter = getattr(self, "transport_adapter", None)
@@ -680,6 +925,24 @@ class RouterSenseInjectionRuntime:
         **detail: Any,
     ) -> float:
         duration_us = max(0.0, float(end_ns - start_ns) / 1000.0)
+        if str(stage).startswith("materialize"):
+            measurement_event_type = "materialization"
+        elif str(stage).startswith("validate"):
+            measurement_event_type = "validation"
+        elif "publish" in str(stage):
+            measurement_event_type = "publish"
+        elif "executor" in str(stage) or "transport" in str(stage):
+            measurement_event_type = "active_transport"
+        else:
+            measurement_event_type = "planning"
+        self._record_instrumentation_measurement(
+            event_type=measurement_event_type,
+            layer_id=parse_layer_id(layer_name),
+            phase=str(phase),
+            started_at_ns=int(start_ns),
+            ended_at_ns=int(end_ns),
+            details={"stage": str(stage), **detail},
+        )
         if self._is_perf_profile():
             counter = self.perf_counters.setdefault(
                 str(stage),
@@ -1246,6 +1509,8 @@ class RouterSenseInjectionRuntime:
         self._terminal_publication_slots.clear()
         self._published_publication_slots.clear()
         self._poll_attempts.clear()
+        self._execution_plan_cache().clear()
+        self._prepared_execution_cache().clear()
 
     @staticmethod
     def _target_plan_key_from_slot(slot: Any) -> TargetPlanKey:
@@ -1319,6 +1584,12 @@ class RouterSenseInjectionRuntime:
             )
             return
         published = TargetLayerPreparedJointPlan.from_dict(plan_payload)
+        published_plan = None
+        if getattr(self, "plan_publisher", None) is not None and published.window_plan is not None:
+            published_plan = self.plan_publisher.build(
+                publication_slot=slot.semantic_payload(),
+                window_plan=published.window_plan,
+            )
         publish_result = self.target_plan_store.publish_if_current(token=ready.token, plan=published)
         if publish_result.status not in {"PUBLISHED", "ALREADY_PUBLISHED_SAME"}:
             self._timeline(
@@ -1328,6 +1599,8 @@ class RouterSenseInjectionRuntime:
                 logical_plan_digest=str(published.logical_plan_digest),
             )
             return
+        if published_plan is not None:
+            self._execution_plan_cache()[self.target_plan_store._key(ready.key)] = published_plan
         self._ready_target_plan_candidates.pop(slot_digest, None)
         self._published_publication_slots.add(slot_digest)
         self._store_target_planner_predictions(ready=ready)
@@ -1531,6 +1804,11 @@ class RouterSenseInjectionRuntime:
             return RuntimeDecision(action="dispatch_complete", details={"layer_role": event.layer_role})
         if isinstance(event, DispatchFailedEvent):
             self._active_transport = None
+            self.release_state_ledger.reset(
+                run_id=str(self.run_id),
+                forward_generation=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
             return RuntimeDecision(action="dispatch_failed", details={"layer_role": event.layer_role, "error": type(event.error).__name__})
         if isinstance(event, CombineReadyEvent):
             self.before_token_combine(
@@ -1550,11 +1828,18 @@ class RouterSenseInjectionRuntime:
             return RuntimeDecision(action="combine_complete")
         if isinstance(event, CombineFailedEvent):
             self._active_transport = None
+            self.release_state_ledger.reset(
+                run_id=str(self.run_id),
+                forward_generation=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+            )
             return RuntimeDecision(action="combine_failed", details={"error": type(event.error).__name__})
         if isinstance(event, ForwardEndEvent):
+            self._finalize_result_bundle()
             self.end_forward()
             return RuntimeDecision(action="forward_end")
         if isinstance(event, ForwardFailedEvent):
+            self._finalize_result_bundle()
             self.end_forward()
             return RuntimeDecision(action="forward_failed", details={"error": type(event.error).__name__})
         raise TypeError(f"unsupported runtime event: {type(event).__name__}")
@@ -2196,7 +2481,7 @@ class RouterSenseInjectionRuntime:
         information_mode: str = "p0_p1_p2",
         max_waves: int = 256,
     ) -> PlanningRequest:
-        return PlanningRequest(
+        return build_window_planning_request(
             identity=PlanningIdentity(
                 request_id=str(request_id),
                 run_id=str(self.run_id),
@@ -2205,19 +2490,11 @@ class RouterSenseInjectionRuntime:
                 source_layer_id=str(source_layer_id),
                 target_layer_id=str(target_layer_id),
             ),
-            traffic=PlanningTraffic(
-                p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
-                p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
-            ),
-            prediction_hint=PredictionHint(
-                predictor_id=str(predictor_name or "zero"),
-                hint_type="traffic_matrix",
-                target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
-                confidence=float(prediction_confidence),
-                oracle=False,
-                source_layer_id=str(source_layer_id),
-                target_layer_id=str(target_layer_id),
-            ),
+            p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
+            p1_return_rows=tuple(tuple(int(v) for v in row) for row in p1_return_rows),
+            p2_hint_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
+            predictor_id=str(predictor_name or "zero"),
+            confidence=float(prediction_confidence),
             topology=PlanningTopology(world_size=int(len(p0_dispatch_rows)), full_duplex=True),
             constraints=PlanningConstraints(
                 bucket_rows=int(self.config.bucket_rows),
@@ -2731,6 +3008,28 @@ class RouterSenseInjectionRuntime:
         self.target_plan_store.start_execution(key, execution_origin=execution_origin, claim_owner="prepared_reconcile")
         self._runtime_state.write("execution_origin", execution_origin)
         self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
+        published_execution_plan = self._execution_plan_cache().get(self.target_plan_store._key(key))
+        execution_pipeline = getattr(self, "execution_pipeline", None)
+        if published_execution_plan is not None and execution_pipeline is not None:
+            prepare_start_ns = time.monotonic_ns()
+            prepared_execution = execution_pipeline.prepare(
+                published_execution_plan,
+                self._actual_phase_context_from_ready_context(phase_ctx=phase_ctx),
+            )
+            prepare_end_ns = time.monotonic_ns()
+            self._record_instrumentation_measurement(
+                event_type="materialization",
+                layer_id=str(phase_ctx.layer_id),
+                phase=str(phase_ctx.phase),
+                started_at_ns=prepare_start_ns,
+                ended_at_ns=prepare_end_ns,
+                details={"valid": bool(prepared_execution.validation.valid)},
+            )
+            if not prepared_execution.validation.valid:
+                self.target_plan_store.fail(key, execution_origin="materialization_invalid")
+                self._runtime_state.write("execution_origin", "materialization_invalid")
+                return None
+            self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution
         return compiled
 
     def _build_provisional_async_plan(
@@ -3349,6 +3648,13 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("forward_start_ns", int(time.monotonic_ns()))
         self._runtime_state.write("forward_end_ns", 0)
         self._target_plan_reconciled_keys.clear()
+        self._latest_execution_outcomes.clear()
+        self._latest_result_bundle = None
+        self.release_state_ledger.reset(
+            run_id=str(self.run_id),
+            forward_generation=int(self._forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+        )
         self._ready_target_plan_candidates.clear()
         self._expected_publication_slots.clear()
         self._terminal_publication_slots.clear()
@@ -3404,6 +3710,11 @@ class RouterSenseInjectionRuntime:
                 forward_epoch=int(self._forward_epoch),
                 microbatch_id=str(self.microbatch_id),
             )
+        self.release_state_ledger.reset(
+            run_id=str(self.run_id),
+            forward_generation=int(self._forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+        )
         return {
             "forward_epoch": int(self._forward_epoch),
             "active_transport_cleared": bool(active_transport),
@@ -4188,6 +4499,27 @@ class RouterSenseInjectionRuntime:
                     phase="P1",
                     local_context=phase_ctx,
                 )
+                if self.target_plan_store is not None and getattr(self, "execution_pipeline", None) is not None:
+                    key = self._target_plan_key(layer_name=layer_name)
+                    published_execution_plan = self._execution_plan_cache().get(self.target_plan_store._key(key))
+                    if published_execution_plan is not None:
+                        prepared_execution = self.execution_pipeline.prepare(
+                            published_execution_plan,
+                            self._actual_phase_context_from_ready_context(phase_ctx=phase_ctx),
+                        )
+                        self._record_instrumentation_measurement(
+                            event_type="materialization",
+                            layer_id=str(phase_ctx.layer_id),
+                            phase="P1",
+                            started_at_ns=int(time.monotonic_ns()),
+                            ended_at_ns=int(time.monotonic_ns()),
+                            details={"valid": bool(prepared_execution.validation.valid)},
+                        )
+                        if not prepared_execution.validation.valid:
+                            self.target_plan_store.fail(key, execution_origin="materialization_invalid_p1")
+                            self._runtime_state.write("execution_origin", "materialization_invalid_p1")
+                            return
+                        self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution
                 self._runtime_state.write("p1_planning_collective_count", 0)
                 if self.observation_recorder is not None:
                     self.observation_recorder.record_scheduled_plan(

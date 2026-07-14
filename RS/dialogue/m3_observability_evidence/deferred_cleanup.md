@@ -1,0 +1,2 @@
+- Retire stale root-level `RS/dialogue/status.json` and `report.md` after integration adopts the new branch-local status files.
+- Delete legacy observation/runtime export modules only after integration confirms no formal caller remains.
