@@ -15,6 +15,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -32,9 +33,7 @@ from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPip
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
-from rs.runtime.observation.instrumentation import RuntimeInstrumentation
-from rs.runtime.measurement.null_sink import NullMeasurementSink
-from rs.runtime.debug.null_probe import NullDebugProbe
+from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
@@ -68,6 +67,36 @@ class DedicatedP2PGroupRegistry:
     groups: dict[tuple[int, ...], dist.ProcessGroup]
     local_group_ranks: tuple[int, ...]
     local_group: dist.ProcessGroup | None
+
+
+def _detect_runtime_commit() -> tuple[str, bool]:
+    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
+    if env_sha:
+        return env_sha, False
+    repo_root = Path(__file__).resolve().parents[5]
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            sha = proc.stdout.strip()
+            dirty = bool(
+                subprocess.run(
+                    ["git", "status", "--short"],
+                    cwd=str(repo_root),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).stdout.strip()
+            )
+            return sha, dirty
+    except Exception:
+        pass
+    return "unknown", False
     warmup_passed: bool
     new_group_call_order: tuple[tuple[int, ...], ...]
 
@@ -832,9 +861,11 @@ def attach_dispatch_facade(
         )
     )
     runtime.execution_pipeline = RuntimeExecutionPipeline()
-    runtime.runtime_instrumentation = RuntimeInstrumentation(
-        measurement_sink=NullMeasurementSink(),
-        debug_probe=NullDebugProbe(),
+    runtime._instrumentation_mode = str(getattr(config, "observation_profile", "off") or "off")
+    runtime._commit_sha, runtime._git_clean = _detect_runtime_commit()
+    runtime.runtime_instrumentation = build_runtime_instrumentation(
+        instrumentation_mode=str(runtime._instrumentation_mode),
+        evidence_sink=BufferedEvidenceSink(),
     )
     runtime.target_plan_control_group_handle = _create_control_group_handle(
         ep_process_group=ep_process_group,

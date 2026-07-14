@@ -177,6 +177,12 @@ class MegatronPhaseTransportAdapter:
                 layer_id=str(state.context.layer_id),
                 phase=str(state.context.phase),
                 rank_space="global",
+                satisfied_release_dependency_ids=tuple(
+                    getattr(state.runtime, "satisfied_release_dependency_ids_for")(
+                        layer_id=str(state.context.layer_id),
+                        phase=str(state.context.phase),
+                    )
+                ) if state.runtime is not None and hasattr(state.runtime, "satisfied_release_dependency_ids_for") else (),
             )
             outcome = state.execution_pipeline.execute(state.prepared_execution, invocation, execution_context)
             execute_end_ns = time.monotonic_ns()
@@ -204,6 +210,19 @@ class MegatronPhaseTransportAdapter:
                     except Exception:
                         pass
                 raise HostAPIDriftError(f"formal execution pipeline failed: {outcome.failure_code or 'invalid_output'}")
+            if state.runtime is not None and hasattr(state.runtime, "record_phase_payload_completion"):
+                state.runtime.record_phase_payload_completion(
+                    layer_id=str(state.context.layer_id),
+                    phase=str(state.context.phase),
+                    payload_role=str(tensor_role),
+                )
+            if state.runtime is not None and hasattr(state.runtime, "record_execution_outcome"):
+                state.runtime.record_execution_outcome(
+                    layer_id=str(state.context.layer_id),
+                    phase=str(state.context.phase),
+                    payload_role=str(tensor_role),
+                    outcome=outcome.to_dict(),
+                )
             state.call_index += 1
             self._latest_results.append(
                 {
