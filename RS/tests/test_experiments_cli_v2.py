@@ -34,7 +34,7 @@ planning_cases:
     fallback_policy: fail_closed
   - case_id: offline-case
     run_kind: OFFLINE_EVALUATION
-    planner_id: fifo
+    planner_id: fifo_bucket
     planner_family: baseline
     selector_mode: fixed
     predictor_id: zero
@@ -146,6 +146,7 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert run_payload["status"] == "success"
     assert len(run_payload["runs"]) == 2
     assert all(Path(item["result_bundle_path"]).is_file() for item in run_payload["runs"])
+    assert (output_dir / "suites" / "cpu-core" / "offline_evaluation_bundle.json").exists()
     report_dir = tmp_path / "report"
     assert main(["report", "--input-dir", str(output_dir), "--output-dir", str(report_dir)]) == 0
     report_payload = json.loads(capsys.readouterr().out)
@@ -196,6 +197,7 @@ def test_official_v2_configs_preserve_model_topology_workload_and_strategy_seman
         "offline_core_matrix.yaml": "OFFLINE_EVALUATION",
         "gloo_functional.yaml": "GLOO_FUNCTIONAL",
         "gpu_correctness.yaml": "GPU_CORRECTNESS",
+        "gpu_singlecard_flow.yaml": "GPU_CORRECTNESS",
         "gpu_performance.yaml": "GPU_PERFORMANCE",
         "multinode_correctness.yaml": "MULTINODE_CORRECTNESS",
         "multinode_performance.yaml": "MULTINODE_PERFORMANCE",
@@ -211,6 +213,17 @@ def test_official_v2_configs_preserve_model_topology_workload_and_strategy_seman
         assert loaded.spec.defaults["evaluation"]["repeats"] >= 1
         assert loaded.spec.defaults["evaluation"]["warmup"] >= 0
         assert len(loaded.spec.defaults["runtime"]["selected_layers"]) >= 1
+
+
+def test_offline_core_matrix_uses_resolved_formal_planner_ids() -> None:
+    loaded = ExperimentConfigLoader().load(
+        config_path=Path(__file__).resolve().parents[1] / "configs" / "official" / "offline_core_matrix.yaml"
+    )
+    planner_ids = {case.planner_id for case in loaded.spec.planning_cases}
+    assert "fifo_bucket" in planner_ids
+    assert "greedy_bucket" in planner_ids
+    assert "birkhoff_bucket_phase_local" in planner_ids
+    assert "barrier_criticality_joint" in planner_ids
 
 
 def test_initialize_run_artifacts_uses_env_commit_sha_without_git(tmp_path: Path, monkeypatch) -> None:

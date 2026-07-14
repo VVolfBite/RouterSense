@@ -5,6 +5,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -30,6 +31,7 @@ from rs.offline import (
     build_evaluation_bundle,
     build_execution_truth,
     build_offline_record,
+    paired_aggregate,
 )
 from rs.planning import PlannerRegistry
 
@@ -225,6 +227,68 @@ def _offline_planner_id(case: PlanningCase) -> str:
     return planner_id
 
 
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+    try:
+        os.killpg(proc.pid, 15)
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(proc.pid, 9)
+        except Exception:
+            pass
+
+
+def _run_logged_subprocess(
+    *,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    stdout_log: Path,
+    stderr_log: Path,
+    timeout_seconds: int,
+) -> tuple[int, bool]:
+    stdout_log.parent.mkdir(parents=True, exist_ok=True)
+    stderr_log.parent.mkdir(parents=True, exist_ok=True)
+    creationflags = 0
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        popen_kwargs["start_new_session"] = True
+    with stdout_log.open("w", encoding="utf-8") as stdout_handle, stderr_log.open("w", encoding="utf-8") as stderr_handle:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            env=env,
+            text=True,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            creationflags=creationflags,
+            **popen_kwargs,
+        )
+        timed_out = False
+        try:
+            returncode = int(proc.wait(timeout=timeout_seconds))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process_tree(proc)
+            try:
+                returncode = int(proc.wait(timeout=5))
+            except Exception:
+                returncode = 124
+        return returncode, timed_out
+
+
 @dataclass
 class OfflineEvaluationRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
@@ -329,6 +393,27 @@ class OfflineEvaluationRunner:
                 "predictor_id": plan.planning_case.predictor_id,
                 "logical_plan_digest": window_plan.semantic_digest(),
                 "planning_request_digest": request.semantic_digest(),
+                "offline_record": {
+                    "window_identity": record.window_identity,
+                    "evaluation_spec_digest": record.evaluation_spec_digest,
+                    "task_set_digest": record.task_set_digest,
+                    "planning_request_digest": record.planning_request_digest,
+                    "prediction_digest": record.prediction_digest,
+                    "logical_plan_digest": record.logical_plan_digest,
+                    "execution_truth_digest": record.execution_truth_digest,
+                    "planner_id": record.planner_id,
+                    "planner_family": record.planner_family,
+                    "predictor_id": record.predictor_id,
+                    "track": record.track,
+                    "realized_makespan": record.realized_makespan,
+                    "planner_reported_makespan": record.planner_reported_makespan,
+                    "audit_status": record.audit_status,
+                    "coverage_status": record.coverage_status,
+                    "fallback_status": record.fallback_status,
+                    "oracle_status": record.oracle_status,
+                    "eligibility": dict(record.eligibility),
+                    "metrics": dict(record.metrics) | {"case_id": str(plan.case_id), "repeat": int(plan.repeat_index), "seed": int(plan.seed)},
+                },
                 "offline_bundle": {
                     "schema_version": offline_bundle.schema_version,
                     "evaluation_spec": offline_bundle.evaluation_spec.to_dict(),
@@ -366,22 +451,19 @@ class GlooFunctionalRunner:
             _instrumentation_mode(plan),
             "--summary-path",
             str(summary_path),
+            "--quiet",
         ]
         timeout_count = 0
-        try:
-            proc = subprocess.run(
-                command,
-                cwd=str(_repo_root()),
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=180,
-            )
-        except subprocess.TimeoutExpired as exc:
+        returncode, timed_out = _run_logged_subprocess(
+            command=command,
+            cwd=_repo_root(),
+            env=env,
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            timeout_seconds=180,
+        )
+        if timed_out:
             timeout_count = 1
-            stdout_log.write_text(str(exc.stdout or ""), encoding="utf-8")
-            stderr_log.write_text(str(exc.stderr or ""), encoding="utf-8")
             result = ResultBundle(
                 run_identity=RunIdentity(
                     run_id=_plan_run_id(plan),
@@ -431,13 +513,11 @@ class GlooFunctionalRunner:
                 },
             )
             return _finalize_bundle(plan=plan, bundle=result)
-        stdout_log.write_text(proc.stdout, encoding="utf-8")
-        stderr_log.write_text(proc.stderr, encoding="utf-8")
         if not summary_path.is_file():
             raise RuntimeError("missing_gate_summary")
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        if int(proc.returncode) != 0 or str(summary.get("status")) != "passed" or any(str(item.get("status")) != "passed" for item in summary.get("ranks", ())):
-            raise RuntimeError(f"gloo_gate_failed:{proc.returncode}")
+        if int(returncode) != 0 or str(summary.get("status")) != "passed" or any(str(item.get("status")) != "passed" for item in summary.get("ranks", ())):
+            raise RuntimeError(f"gloo_gate_failed:{returncode}")
         status = "success" if str(summary.get("status")) == "passed" else "failure"
         correctness_status = "valid" if status == "success" else "invalid"
         ranks = list(summary.get("ranks", ()))
@@ -498,7 +578,98 @@ class GlooFunctionalRunner:
 @dataclass
 class GPUCorrectnessRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
-        return _base_result(plan, pipeline="online", reason="environment_not_run")
+        commit_sha, git_dirty = _commit_identity(plan)
+        run_root = Path(str(getattr(plan, "output_dir", "") or (_repo_root() / "outputs" / "gpu_singlecard_runner"))).resolve()
+        run_id = _plan_run_id(plan).replace(":", "_")
+        artifact_dir = run_root / "runs" / run_id / "evidence"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = artifact_dir / "gpu_singlecard_flow_summary.json"
+        stdout_log = artifact_dir / "gpu_singlecard_flow.stdout.log"
+        stderr_log = artifact_dir / "gpu_singlecard_flow.stderr.log"
+        env = dict(os.environ)
+        existing = str(env.get("PYTHONPATH", "") or "")
+        env["PYTHONPATH"] = os.pathsep.join(part for part in ("src", ".", existing) if part)
+        gate_script = _repo_root() / "experiments" / "distributed" / "run_gpu_singlecard_flow_correctness.py"
+        config_path = str(getattr(plan, "config_path", "") or (_repo_root() / "configs" / "official" / "gpu_singlecard_flow.yaml"))
+        command = [
+            sys.executable,
+            str(gate_script),
+            "--config",
+            str(Path(config_path).resolve()),
+            "--summary-path",
+            str(summary_path),
+            "--output-dir",
+            str(artifact_dir),
+        ]
+        returncode, timed_out = _run_logged_subprocess(
+            command=command,
+            cwd=_repo_root(),
+            env=env,
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            timeout_seconds=1800,
+        )
+        if not summary_path.is_file():
+            if timed_out:
+                return _base_result(plan, pipeline="online", reason="environment_not_run")
+            raise RuntimeError("missing_gpu_singlecard_summary")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        status = str(summary.get("status", "invalid"))
+        if status == "environment_not_run":
+            return _base_result(plan, pipeline="online", reason="environment_not_run")
+        bundle = ResultBundle(
+            run_identity=RunIdentity(
+                run_id=_plan_run_id(plan),
+                pipeline="online",
+                claim_scope="formal",
+                trace_origin="runtime",
+                future_information_mode=str(getattr(plan.planning_case, "prediction_mode", "none")),
+            ),
+            status="success" if int(returncode) == 0 and status == "passed" else "failure",
+            correctness_status="valid" if int(returncode) == 0 and status == "passed" else "invalid",
+            performance_status="unknown",
+            pipeline="online",
+            commit_sha=commit_sha,
+            git_clean=not git_dirty,
+            instrumentation_mode=_instrumentation_mode(plan),
+            audit_evidence_level="summary_only",
+            measurement_complete=True,
+            eligibility=None,
+            summary={
+                "all_work_completed": bool(int(returncode) == 0 and status == "passed"),
+                "fallback_count": int(summary.get("fallback_count", 0) or 0),
+                "timeout_count": 1 if timed_out else int(summary.get("timeout_count", 0) or 0),
+                "check_failure_count": int(summary.get("check_failure_count", 0) or 0),
+                "measurement_event_count": int(summary.get("measurement_event_count", 0) or 0),
+                "performance_measurement_complete": False,
+                "measured_repeat_count": 0,
+                "warmup_excluded": False,
+                "prediction_evaluation_complete": False,
+                "prediction_record_count": 0,
+                "prediction_metric_count": 0,
+                "prediction_audit_status": "not_run",
+                "prediction_truth_digest": "",
+                "truth_leakage_check": True,
+                "offline_replay_complete": False,
+                "offline_record_count": 0,
+                "offline_audit_status": "not_run",
+                "coverage_status": "not_applicable",
+                "run_kind": plan.run_kind.value,
+            },
+            details={
+                "run_kind": plan.run_kind.value,
+                "planner_id": plan.planning_case.planner_id,
+                "execution_backend": plan.planning_case.execution_backend,
+                "gpu_singlecard_summary_path": str(summary_path),
+                "gpu_singlecard_stdout_log_path": str(stdout_log),
+                "gpu_singlecard_stderr_log_path": str(stderr_log),
+                "transport_validation_scope": str(summary.get("transport_validation_scope", "")),
+                "native_status": str(summary.get("native_status", "")),
+                "routersense_status": str(summary.get("routersense_status", "")),
+                "summary": summary,
+            },
+        )
+        return _finalize_bundle(plan=plan, bundle=bundle)
 
 
 @dataclass

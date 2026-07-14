@@ -515,6 +515,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--execution-backend", default=str(os.environ.get("RS_M123_GATE_EXECUTION_BACKEND", "phase_sync") or "phase_sync"))
     parser.add_argument("--instrumentation-mode", default=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
     parser.add_argument("--summary-path", default="")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     summary = run_gate_with_backend(
         instrumentation_mode=str(args.instrumentation_mode),
@@ -522,6 +523,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     if str(args.summary_path).strip():
         Path(str(args.summary_path)).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    if args.quiet:
+        payload = {
+            "status": str(summary.get("status", "")),
+            "execution_backend": str(args.execution_backend),
+            "summary_path": str(Path(str(args.summary_path)).resolve()) if str(args.summary_path).strip() else str((RUN_DIR / "summary.json").resolve()),
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return
     print(json.dumps(summary, sort_keys=True))
 
 

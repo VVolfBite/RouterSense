@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rs.core.contracts import EvaluationSpec, OfflineEvaluationRecord
 from rs.experiments.config_loader import ExperimentConfigLoader
 from rs.experiments.registry import RunnerRegistry
 from rs.experiments.reporting_cli import write_plot_artifacts, write_report_artifacts
 from rs.experiments.specs import RunPlan
+from rs.offline import build_evaluation_bundle, paired_aggregate
 
 
 def _plan_run_id(plan: RunPlan) -> str:
@@ -120,6 +122,71 @@ def _write_run_artifacts(
     return str(result_bundle_path.resolve())
 
 
+def _offline_record_from_payload(payload: dict[str, Any]) -> OfflineEvaluationRecord | None:
+    details = dict(payload.get("details", {}))
+    record = details.get("offline_record")
+    if not isinstance(record, dict):
+        return None
+    return OfflineEvaluationRecord(
+        window_identity=str(record["window_identity"]),
+        evaluation_spec_digest=str(record["evaluation_spec_digest"]),
+        task_set_digest=str(record["task_set_digest"]),
+        planning_request_digest=str(record["planning_request_digest"]),
+        prediction_digest=str(record["prediction_digest"]),
+        logical_plan_digest=str(record["logical_plan_digest"]),
+        execution_truth_digest=str(record["execution_truth_digest"]),
+        planner_id=str(record["planner_id"]),
+        planner_family=str(record["planner_family"]),
+        predictor_id=str(record["predictor_id"]),
+        track=str(record["track"]),
+        realized_makespan=record["realized_makespan"],
+        planner_reported_makespan=record["planner_reported_makespan"],
+        audit_status=str(record["audit_status"]),
+        coverage_status=str(record["coverage_status"]),
+        fallback_status=str(record["fallback_status"]),
+        oracle_status=str(record["oracle_status"]),
+        eligibility=dict(record.get("eligibility", {})),
+        metrics=dict(record.get("metrics", {})),
+    )
+
+
+def _write_offline_suite_aggregates(*, suite_dir: Path, suite_id: str, suite_results: list[dict[str, Any]]) -> None:
+    records = [item for item in (_offline_record_from_payload(payload) for payload in suite_results) if item is not None]
+    if not records:
+        return
+    first_offline_payload = next(
+        payload for payload in suite_results if isinstance(dict(payload.get("details", {})).get("offline_bundle"), dict)
+    )
+    eval_spec_payload = dict(first_offline_payload.get("details", {}).get("offline_bundle", {}).get("evaluation_spec", {}))
+    spec = EvaluationSpec(**eval_spec_payload)
+    paired = []
+    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", candidate_predictor_id="copy_current_dispatch", track=str(spec.track)))
+    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", candidate_predictor_id="perfect_trace_hint", track=str(spec.track)))
+    paired.append(paired_aggregate(records, baseline_predictor_id="copy_current_dispatch", candidate_predictor_id="perfect_trace_hint", track=str(spec.track)))
+    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", planner_id="barrier_criticality_joint", track=str(spec.track)))
+    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", planner_id="birkhoff_bucket_phase_local", track=str(spec.track)))
+    bundle = build_evaluation_bundle(
+        spec=spec,
+        records=tuple(records),
+        paired_aggregates=tuple(paired),
+        eligibility_summary={
+            "suite_id": str(suite_id),
+            "record_count": len(records),
+            "paired_aggregate_count": len(paired),
+        },
+    )
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": bundle.schema_version,
+        "evaluation_spec": bundle.evaluation_spec.to_dict(),
+        "record_count": len(bundle.records),
+        "paired_aggregate_count": len(bundle.paired_aggregates),
+        "paired_aggregates": list(bundle.paired_aggregates),
+        "eligibility_summary": dict(bundle.eligibility_summary),
+    }
+    (suite_dir / "offline_evaluation_bundle.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def _run_command(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     loaded = ExperimentConfigLoader().load(config_path=config_path)
@@ -156,6 +223,17 @@ def _run_command(args: argparse.Namespace) -> int:
                 "result_bundle_path": result_bundle_path,
                 "eligibility": None if result.eligibility is None else result.eligibility.to_dict(),
             }
+        )
+    by_suite: dict[str, list[dict[str, Any]]] = {}
+    for plan in plans:
+        run_id = _plan_run_id(plan).replace(":", "_")
+        payload = json.loads((run_root / "runs" / run_id / "result_bundle.json").read_text(encoding="utf-8"))
+        by_suite.setdefault(str(plan.suite_id), []).append(payload)
+    for suite_id, suite_results in by_suite.items():
+        _write_offline_suite_aggregates(
+            suite_dir=run_root / "suites" / str(suite_id),
+            suite_id=str(suite_id),
+            suite_results=suite_results,
         )
     print(json.dumps({"status": "success", "runs": results}, ensure_ascii=True, sort_keys=True))
     return 0

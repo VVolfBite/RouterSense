@@ -44,7 +44,7 @@ def dump_yaml(path: Path, payload: dict[str, Any]) -> None:
 def child_env() -> dict[str, str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = "src:." if not existing else f"src:.:{existing}"
+    env["PYTHONPATH"] = os.pathsep.join(part for part in ("src", ".", existing) if part)
     omp = env.get("OMP_NUM_THREADS", "").strip()
     if not omp or not omp.isdigit() or int(omp) <= 0:
         env["OMP_NUM_THREADS"] = "1"

@@ -8,6 +8,7 @@ import json
 import yaml
 
 from rs.experiments.specs import ExperimentSpec, PlanningCase, RunKind, SuiteSpec
+from rs.scheduling.catalog import resolve_algorithm_id
 
 
 class UnsupportedLegacyExperimentConfig(ValueError):
@@ -123,7 +124,7 @@ class ExperimentConfigLoader:
         }
         if unknown:
             raise ValueError(f"unknown planning case keys: {sorted(unknown)}")
-        return PlanningCase(
+        case = PlanningCase(
             case_id=str(payload.get("case_id", "")),
             run_kind=RunKind(str(payload.get("run_kind", ""))),
             planner_id=str(payload.get("planner_id", "")),
@@ -135,3 +136,6 @@ class ExperimentConfigLoader:
             instrumentation_mode=str(payload.get("instrumentation_mode", "")),
             fallback_policy=str(payload.get("fallback_policy", "")),
         )
+        if case.run_kind == RunKind.OFFLINE_EVALUATION:
+            resolve_algorithm_id(case.planner_id)
+        return case

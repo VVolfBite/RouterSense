@@ -8,7 +8,7 @@ suites:
 planning_cases:
   - case_id: offline-eval-core
     run_kind: OFFLINE_EVALUATION
-    planner_id: fifo
+    planner_id: fifo_bucket
     planner_family: baseline
     selector_mode: fixed
     predictor_id: perfect_trace_hint
