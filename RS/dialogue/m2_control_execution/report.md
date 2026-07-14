@@ -31,11 +31,14 @@ Implemented
   - rank-space consistency
 - `RuntimeExecutionPipeline` now uses guard reservation with commit/rollback.
 - `PhaseSyncExecutor` now performs real `dist.all_to_all_single` transport.
+- `PhaseSyncExecutor` now preserves globally ordered sparse collective rounds so zero-flow ranks
+  still participate in every formal wave with zero splits.
 - `P2PReleaseExecutor` now performs real asynchronous `dist.isend` / `dist.irecv`
   transport, waits actual work handles, and records `peak_inflight_batches`.
 - `GlooFunctionalExecutor` follows the same transport core instead of returning a local clone.
 - `run_m2_formal_execution_gloo.py` now asserts:
   - real distributed op count > 0
+  - sparse-wave collective rounds execute on all ranks, including zero-flow ranks
   - full-group and subgroup rank-space correctness
   - exact expected remote rows
   - PhaseSync output == P2P output
@@ -50,9 +53,11 @@ Focused verification
 Observed results
 
 - compileall passed
-- focused pytest passed: `33 passed`
+- focused pytest passed: `36 passed`
 - formal 4-rank Gloo gate passed for:
   - full group `(0,1,2,3)`
+  - sparse wave `0 -> 1` with ranks `2/3` participating via zero splits
+  - sparse two-wave execution with collective round count `2` on every rank
   - subgroup `(2,3)` with group-local `WindowPlan` ranks `(0,1)`
   - real remote tensor validation
   - real asynchronous P2P execution with `peak_inflight_batches = 2`

@@ -166,6 +166,11 @@ def _submitted_task_ids_for_role(plan: MaterializedPlan, payload_role: str) -> t
     return tuple(str(item.task_id) for item in _slices_for_role(plan, payload_role))
 
 
+def _collective_required_for_role(plan: MaterializedPlan, payload_role: str) -> bool:
+    role_names = {str(spec.payload_role) for spec in plan.payload_specs}
+    return str(payload_role) in role_names and any(bool(batch.collective_required) for batch in plan.batches)
+
+
 def _p2p_tag_for_slice(item: Any) -> int:
     payload_offset = {
         "hidden_states": 1,
@@ -217,7 +222,11 @@ class PhaseSyncExecutor(_BaseExecutor):
     backend_id = "phase_sync"
 
     def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
-        base = super().execute(plan=plan, invocation=invocation, context=context) if not _submitted_task_ids_for_role(plan, invocation.payload_role) else None
+        base = (
+            super().execute(plan=plan, invocation=invocation, context=context)
+            if not _submitted_task_ids_for_role(plan, invocation.payload_role) and not _collective_required_for_role(plan, invocation.payload_role)
+            else None
+        )
         if base is not None:
             return base
         payload_role = str(invocation.payload_role)
@@ -228,15 +237,44 @@ class PhaseSyncExecutor(_BaseExecutor):
         expected_incoming = {int(peer): int(value) for peer, value in plan.expected_incoming_rows[payload_role].items()}
         output = _make_output_tensor(invocation, total_rows=_peer_rows_total(expected_incoming))
         completed_task_ids: list[str] = []
-        all_to_all_call_count = 0
+        collective_call_count = 0
+        processed_batch_count = 0
+        satisfied_release_ids = {str(value) for value in context.satisfied_release_dependency_ids}
         for batch in plan.batches:
-            role_slices = [item for item in batch.slices if str(item.payload_role) == payload_role]
-            if not role_slices:
+            if not bool(batch.collective_required):
                 continue
+            processed_batch_count += 1
+            role_slices = [item for item in batch.slices if str(item.payload_role) == payload_role]
+            missing_dependency = next(
+                (
+                    str(dep)
+                    for item in role_slices
+                    for dep in item.dependency_ids
+                    if str(dep) not in satisfied_release_ids
+                ),
+                None,
+            )
+            if missing_dependency is not None:
+                submitted_task_ids = _submitted_task_ids_for_role(plan, payload_role)
+                return ExecutionOutcome(
+                    success=False,
+                    output_payload=None,
+                    submitted_task_ids=submitted_task_ids,
+                    completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
+                    failed_task_ids=tuple(),
+                    unresolved_task_ids=tuple(task_id for task_id in submitted_task_ids if task_id not in set(completed_task_ids)),
+                    executed_batch_count=int(processed_batch_count),
+                    all_work_completed=False,
+                    failure_code=f"unresolved_dependency:{missing_dependency}",
+                    details={
+                        "backend_id": str(self.backend_id),
+                        "collective_round_count": int(collective_call_count),
+                        "distributed_operation_count": int(collective_call_count),
+                    },
+                )
             send_splits = [0 for _ in range(world_size)]
             recv_splits = [0 for _ in range(world_size)]
             remote_send_slices = []
-            incoming_local = []
             incoming_remote = []
             for item in role_slices:
                 if int(item.src_global_rank) == int(plan.local_global_rank):
@@ -253,15 +291,15 @@ class PhaseSyncExecutor(_BaseExecutor):
                     incoming_remote.append(item)
             total_send = int(sum(send_splits))
             total_recv = int(sum(recv_splits))
-            if total_send > 0 or total_recv > 0:
-                send_buffer = input_tensor.new_empty((total_send, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_send,))
-                recv_buffer = input_tensor.new_empty((total_recv, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_recv,))
-                pack_cursor = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(send_splits)}, peer) for peer in range(world_size)}
-                for item in remote_send_slices:
-                    src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
-                    target_offset = int(pack_cursor[int(item.dst_group_rank)])
-                    _copy_rows(send_buffer, target_offset, input_tensor, src_input_offset, int(item.row_count))
-                    pack_cursor[int(item.dst_group_rank)] += int(item.row_count)
+            send_buffer = input_tensor.new_empty((total_send, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_send,))
+            recv_buffer = input_tensor.new_empty((total_recv, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_recv,))
+            pack_cursor = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(send_splits)}, peer) for peer in range(world_size)}
+            for item in remote_send_slices:
+                src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
+                target_offset = int(pack_cursor[int(item.dst_group_rank)])
+                _copy_rows(send_buffer, target_offset, input_tensor, src_input_offset, int(item.row_count))
+                pack_cursor[int(item.dst_group_rank)] += int(item.row_count)
+            if world_size > 1:
                 dist.all_to_all_single(
                     recv_buffer,
                     send_buffer,
@@ -269,15 +307,16 @@ class PhaseSyncExecutor(_BaseExecutor):
                     input_split_sizes=send_splits,
                     group=process_group,
                 )
-                all_to_all_call_count += 1
+                collective_call_count += 1
+            if total_recv > 0:
                 recv_base = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(recv_splits)}, peer) for peer in range(world_size)}
                 for item in incoming_remote:
                     output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
                     recv_offset = int(recv_base[int(item.src_group_rank)])
                     _copy_rows(output, output_offset, recv_buffer, recv_offset, int(item.row_count))
                     recv_base[int(item.src_group_rank)] += int(item.row_count)
-                completed_task_ids.extend(str(item.task_id) for item in remote_send_slices)
-                completed_task_ids.extend(str(item.task_id) for item in incoming_remote)
+            completed_task_ids.extend(str(item.task_id) for item in remote_send_slices)
+            completed_task_ids.extend(str(item.task_id) for item in incoming_remote)
         submitted_task_ids = _submitted_task_ids_for_role(plan, payload_role)
         completed_unique = tuple(dict.fromkeys(completed_task_ids))
         unresolved = tuple(task_id for task_id in submitted_task_ids if task_id not in set(completed_unique))
@@ -288,13 +327,14 @@ class PhaseSyncExecutor(_BaseExecutor):
             completed_task_ids=completed_unique,
             failed_task_ids=tuple(),
             unresolved_task_ids=unresolved,
-            executed_batch_count=int(len([batch for batch in plan.batches if any(str(item.payload_role) == payload_role for item in batch.slices)])),
+            executed_batch_count=int(processed_batch_count),
             all_work_completed=not unresolved,
             failure_code=None if not unresolved else "unresolved_task",
             details={
                 "backend_id": str(self.backend_id),
                 "submitted_task_count": int(len(submitted_task_ids)),
-                "distributed_operation_count": int(all_to_all_call_count),
+                "distributed_operation_count": int(collective_call_count),
+                "collective_round_count": int(collective_call_count),
             },
         )
 
@@ -330,7 +370,7 @@ class P2PReleaseExecutor(_BaseExecutor):
         def _batch_ready(role_slices: list[Any]) -> tuple[bool, str | None]:
             for item in role_slices:
                 for dep in item.dependency_ids:
-                    if str(dep).startswith("release:") and str(dep) not in satisfied_release_ids:
+                    if str(dep) not in satisfied_release_ids:
                         return False, str(dep)
             return True, None
 

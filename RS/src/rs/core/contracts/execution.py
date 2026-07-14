@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 from typing import Any, Literal, Mapping, Protocol
 
 from rs.core.contracts.planning import WindowPlan
-from rs.scheduling.validation import stable_hash
+
+
+def _stable_hash(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _validate_string(name: str, value: str) -> None:
@@ -131,7 +138,7 @@ class PublishedPlan:
         }
 
     def recompute_published_plan_digest(self) -> str:
-        return str(stable_hash(self.semantic_payload()))
+        return str(_stable_hash(self.semantic_payload()))
 
     def to_dict(self) -> dict[str, object]:
         self.validate()
@@ -261,12 +268,15 @@ class TransferSlice:
 class ExecutionBatch:
     batch_id: str
     wave_id: int
+    phase: str
     slices: tuple[TransferSlice, ...]
+    collective_required: bool = False
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
         _validate_string("batch_id", self.batch_id)
         _validate_non_negative("wave_id", self.wave_id)
+        _validate_string("phase", self.phase)
         seen_task_ids: set[str] = set()
         for item in self.slices:
             item.validate()
@@ -279,7 +289,9 @@ class ExecutionBatch:
         return {
             "batch_id": str(self.batch_id),
             "wave_id": int(self.wave_id),
+            "phase": str(self.phase),
             "slices": [item.to_dict() for item in self.slices],
+            "collective_required": bool(self.collective_required),
             "metadata": dict(self.metadata),
         }
 
@@ -377,7 +389,7 @@ class MaterializedPlan:
         }
 
     def recompute_materialized_plan_digest(self) -> str:
-        return str(stable_hash(self.semantic_payload()))
+        return str(_stable_hash(self.semantic_payload()))
 
     def to_dict(self) -> dict[str, object]:
         self.validate()

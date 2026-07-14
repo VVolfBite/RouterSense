@@ -99,6 +99,7 @@ def test_validator_rejects_payload_role_mismatch() -> None:
     broken_batch = ExecutionBatch(
         batch_id=batch.batch_id,
         wave_id=batch.wave_id,
+        phase=batch.phase,
         slices=(
                 TransferSlice(
                     flow_id=broken_slice.flow_id,
@@ -115,6 +116,7 @@ def test_validator_rejects_payload_role_mismatch() -> None:
             ),
         )
         + batch.slices[1:],
+        collective_required=batch.collective_required,
         metadata=batch.metadata,
     )
     broken_plan = MaterializedPlan(
@@ -159,7 +161,9 @@ def test_validator_rejects_missing_first_slice_with_gap() -> None:
     broken_batch = ExecutionBatch(
         batch_id=first_batch.batch_id,
         wave_id=first_batch.wave_id,
+        phase=first_batch.phase,
         slices=first_batch.slices[1:],
+        collective_required=first_batch.collective_required,
         metadata=first_batch.metadata,
     )
     broken_plan = MaterializedPlan(
@@ -229,6 +233,7 @@ def test_validator_rejects_duplicate_slice_overlap() -> None:
     broken_batch = ExecutionBatch(
         batch_id=batch.batch_id,
         wave_id=batch.wave_id,
+        phase=batch.phase,
         slices=batch.slices + (
             TransferSlice(
                 task_id="overlap-extra-task",
@@ -244,6 +249,7 @@ def test_validator_rejects_duplicate_slice_overlap() -> None:
                 dependency_ids=duplicated.dependency_ids,
             ),
         ),
+        collective_required=batch.collective_required,
         metadata=batch.metadata,
     )
     broken_plan = MaterializedPlan(
@@ -369,3 +375,57 @@ def test_materializer_adds_release_dependencies_for_p1() -> None:
         for dep in slice_.dependency_ids
     }
     assert "release:p0_inbound_complete:0" in dependency_ids
+
+
+def test_materializer_keeps_sparse_collective_batches_for_idle_rank() -> None:
+    contexts = make_contexts_from_matrix(
+        phase="P0",
+        matrix=((0, 4, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)),
+        p2_hint_mode="deterministic_stub",
+    )
+    publisher = CanonicalPlanPublisher(rank_map=RankMap(group_ranks=(0, 1, 2, 3), root_rank=0))
+    published = publisher.build(
+        publication_slot={
+            "run_id": "run",
+            "forward_generation": 0,
+            "microbatch_id": "mb",
+            "source_layer_id": "0",
+            "target_layer_id": "1",
+            "planning_slot": "0->1",
+        },
+        window_plan=WindowPlan(
+            planner_id="barrier_criticality_joint",
+            planner_family="joint",
+            request_digest="sparse:0->1",
+            waves=(
+                PlanWave(
+                    wave_id=0,
+                    flows=(
+                        PlannedFlow(
+                            flow_id="p0_0_1",
+                            phase="p0_dispatch",
+                            src_rank=0,
+                            dst_rank=1,
+                            row_count=4,
+                            release_state="ready",
+                            executable=True,
+                        ),
+                    ),
+                    estimated_duration=4.0,
+                ),
+            ),
+            metadata={"source_layer_id": "0", "target_layer_id": "1"},
+        ),
+    )
+    actual_context = ActualPhaseContext(
+        layer_id="0",
+        phase="P0",
+        world_size=4,
+        rank_space="global",
+        layout_digest=str(contexts[2].canonical_receive_layout_id),
+        metadata={"phase_ready_context": contexts[2].to_dict()},
+    )
+    materialized = CommonPlanMaterializer().materialize(published, actual_context)
+    assert len(materialized.batches) == 1
+    assert materialized.batches[0].collective_required is True
+    assert materialized.batches[0].slices == ()
