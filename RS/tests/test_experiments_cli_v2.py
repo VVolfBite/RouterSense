@@ -188,8 +188,8 @@ def test_official_v2_configs_preserve_model_topology_workload_and_strategy_seman
     for name, run_kind in expected.items():
         loaded = loader.load(config_path=base / name)
         assert loaded.spec.schema_version == 2
-        case = loaded.spec.planning_cases[0]
-        assert case.run_kind.value == run_kind
+        assert loaded.spec.planning_cases
+        assert all(case.run_kind.value == run_kind for case in loaded.spec.planning_cases)
         assert loaded.spec.defaults["model"]["id"]
         assert loaded.spec.defaults["topology"]["world_size"] > 0
         assert loaded.spec.defaults["workload"]["id"]
@@ -258,6 +258,37 @@ def test_initialize_run_artifacts_uses_handoff_manifest_sha_without_git(tmp_path
     assert manifest["source_archive_digest"]
 
 
+def test_initialize_run_artifacts_uses_handoff_manifest_sha_with_bom_without_git(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ROUTERSENSE_COMMIT_SHA", raising=False)
+    repo_root = tmp_path / "archive" / "RS"
+    repo_root.mkdir(parents=True)
+    handoff_dir = repo_root.parent / "handoff"
+    handoff_dir.mkdir(parents=True)
+    (handoff_dir / "manifest.json").write_text(
+        json.dumps({"final_sha": "manifest-bom-sha"}, ensure_ascii=True),
+        encoding="utf-8-sig",
+    )
+    layout = initialize_run_artifacts(
+        repo_root=repo_root,
+        output_dir=tmp_path / "run_bom",
+        run_type="gloo",
+        official_entrypoint="gloo_functional",
+        config_snapshot={
+            "schema_version": 1,
+            "runtime": {"invariant_mode": "diagnostic", "line": "phase_sync"},
+            "traffic": {"bucket_mode": "dynamic_current", "bucket_rows": 0},
+            "policy": {"name": ""},
+            "prediction": {"name": ""},
+            "topology": {"world_size": 1},
+            "model": {"id": "archive"},
+            "workload": {"id": "smoke"},
+        },
+    )
+    manifest = json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["commit_sha"] == "manifest-bom-sha"
+    assert manifest["commit_sha_source"] == "handoff_manifest"
+
+
 def test_gloo_runner_returns_non_placeholder_bundle() -> None:
     registry = RunnerRegistry()
     plan = type(
@@ -266,7 +297,7 @@ def test_gloo_runner_returns_non_placeholder_bundle() -> None:
         {
             "experiment_id": "official-gloo-functional",
             "suite_id": "gloo-functional",
-            "case_id": "gloo-functional-core",
+            "case_id": "gloo-phase-sync",
             "run_kind": RunKind.GLOO_FUNCTIONAL,
             "config_digest": "cfg",
             "commit_sha": "",
@@ -278,7 +309,7 @@ def test_gloo_runner_returns_non_placeholder_bundle() -> None:
                     "prediction_mode": "none",
                     "planner_id": "routersense_joint_phase_sync",
                     "planner_family": "joint",
-                    "execution_backend": "gloo_functional",
+                    "execution_backend": "phase_sync",
                     "instrumentation_mode": "contract",
                     "predictor_id": "none",
                 },

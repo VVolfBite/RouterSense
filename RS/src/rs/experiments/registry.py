@@ -342,7 +342,8 @@ class OfflineEvaluationRunner:
 class GlooFunctionalRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
         commit_sha, git_dirty = _commit_identity(plan)
-        backend = "async_release" if str(getattr(plan.planning_case, "execution_backend", "")) == "async_release" else "phase_sync"
+        raw_backend = str(getattr(plan.planning_case, "execution_backend", "")).strip().lower()
+        backend = "async_release" if raw_backend == "async_release" else "phase_sync"
         run_root = Path(str(getattr(plan, "output_dir", "") or (_repo_root() / "outputs" / "gloo_runner"))).resolve()
         run_id = _plan_run_id(plan).replace(":", "_")
         artifact_dir = run_root / "runs" / run_id / "evidence"
@@ -352,10 +353,11 @@ class GlooFunctionalRunner:
         stderr_log = artifact_dir / f"gloo_gate_{backend}.stderr.log"
         env = dict(os.environ)
         existing = str(env.get("PYTHONPATH", "") or "")
-        env["PYTHONPATH"] = ("src;." + (f";{existing}" if existing else ""))
+        env["PYTHONPATH"] = os.pathsep.join(part for part in ("src", ".", existing) if part)
+        gate_script = _repo_root() / "experiments" / "distributed" / "run_m123_integrated_publication_execution_gloo.py"
         command = [
             sys.executable,
-            ".\\experiments\\distributed\\run_m123_integrated_publication_execution_gloo.py",
+            str(gate_script),
             "--execution-backend",
             backend,
             "--instrumentation-mode",
@@ -363,14 +365,70 @@ class GlooFunctionalRunner:
             "--summary-path",
             str(summary_path),
         ]
-        proc = subprocess.run(
-            command,
-            cwd=str(_repo_root()),
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        timeout_count = 0
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=str(_repo_root()),
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timeout_count = 1
+            stdout_log.write_text(str(exc.stdout or ""), encoding="utf-8")
+            stderr_log.write_text(str(exc.stderr or ""), encoding="utf-8")
+            result = ResultBundle(
+                run_identity=RunIdentity(
+                    run_id=_plan_run_id(plan),
+                    pipeline="online",
+                    claim_scope="formal",
+                    trace_origin="runtime",
+                    future_information_mode=str(getattr(plan.planning_case, "prediction_mode", "none")),
+                ),
+                status="failure",
+                correctness_status="invalid",
+                performance_status="unknown",
+                pipeline="online",
+                commit_sha=commit_sha,
+                git_clean=not git_dirty,
+                instrumentation_mode=_instrumentation_mode(plan),
+                audit_evidence_level="summary_only",
+                measurement_complete=False,
+                eligibility=None,
+                summary={
+                    "all_work_completed": False,
+                    "fallback_count": 0,
+                    "timeout_count": 1,
+                    "check_failure_count": 1,
+                    "measurement_event_count": 0,
+                    "performance_measurement_complete": False,
+                    "measured_repeat_count": 0,
+                    "warmup_excluded": False,
+                    "prediction_evaluation_complete": False,
+                    "prediction_record_count": 0,
+                    "prediction_metric_count": 0,
+                    "prediction_audit_status": "not_run",
+                    "prediction_truth_digest": "",
+                    "truth_leakage_check": True,
+                    "offline_replay_complete": False,
+                    "offline_record_count": 0,
+                    "offline_audit_status": "not_run",
+                    "coverage_status": "not_applicable",
+                },
+                details={
+                    "run_kind": plan.run_kind.value,
+                    "planner_id": plan.planning_case.planner_id,
+                    "execution_backend": plan.planning_case.execution_backend,
+                    "gate_summary_artifact_path": str(summary_path),
+                    "gate_stdout_log_path": str(stdout_log),
+                    "gate_stderr_log_path": str(stderr_log),
+                    "gate_status": "timeout",
+                },
+            )
+            return _finalize_bundle(plan=plan, bundle=result)
         stdout_log.write_text(proc.stdout, encoding="utf-8")
         stderr_log.write_text(proc.stderr, encoding="utf-8")
         if not summary_path.is_file():
@@ -404,7 +462,7 @@ class GlooFunctionalRunner:
             summary={
                 "all_work_completed": status == "success",
                 "fallback_count": 0,
-                "timeout_count": 0,
+                "timeout_count": timeout_count,
                 "check_failure_count": 0 if status == "success" else 1,
                 "measurement_event_count": measurement_event_count,
                 "performance_measurement_complete": False,

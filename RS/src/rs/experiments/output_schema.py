@@ -64,7 +64,7 @@ def _manifest_sha(repo_root: Path) -> tuple[str, str]:
         if not manifest_path.is_file():
             continue
         try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         manifest_sha = str(payload.get("final_sha", "") or payload.get("commit_sha", "")).strip()
