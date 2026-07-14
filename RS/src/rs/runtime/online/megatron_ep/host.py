@@ -25,10 +25,16 @@ import torch
 import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.config import resolve_online_policy_config
+from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
+from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.contracts import OnlineRuntimeConfig, RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution import MegatronPhaseTransportAdapter
+from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
+from rs.runtime.observation.instrumentation import RuntimeInstrumentation
+from rs.runtime.measurement.null_sink import NullMeasurementSink
+from rs.runtime.debug.null_probe import NullDebugProbe
 from rs.runtime.online.megatron_ep.public_types import (
     CombineFailedEvent,
     CombineCompleteEvent,
@@ -818,6 +824,17 @@ def attach_dispatch_facade(
         ep_group_ranks=ep_group_ranks,
         ep_group_root_global_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
         ep_process_group=ep_process_group,
+    )
+    runtime.plan_publisher = CanonicalPlanPublisher(
+        rank_map=RankMap(
+            group_ranks=tuple(int(item) for item in ep_group_ranks),
+            root_rank=get_process_group_root_safe(ep_process_group) if dist.is_initialized() else rank,
+        )
+    )
+    runtime.execution_pipeline = RuntimeExecutionPipeline()
+    runtime.runtime_instrumentation = RuntimeInstrumentation(
+        measurement_sink=NullMeasurementSink(),
+        debug_probe=NullDebugProbe(),
     )
     runtime.target_plan_control_group_handle = _create_control_group_handle(
         ep_process_group=ep_process_group,

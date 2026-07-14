@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "command": "python -c \"import sys; sys.path[:0]=['RS/src','RS','.']; import rs.runtime.online.megatron_ep.host\"",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "python -m compileall RS/src RS/tests",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_m3_measurement_and_evidence.py RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py RS/tests/test_architecture_dependencies.py",
+      "exit_code": 0,
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_attach_control_group_gloo.py",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    },
+    {
+      "command": "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m2_formal_execution_gloo.py",
+      "exit_code": 0,
+      "passed": true,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0
+    }
+  ]
+}

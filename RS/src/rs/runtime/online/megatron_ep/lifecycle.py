@@ -33,6 +33,8 @@ from rs.core.contracts import (
     PredictionIdentity,
     TrafficHistoryContext,
 )
+from rs.core.contracts.execution import ActualPhaseContext
+from rs.core.contracts.measurement import MeasurementEvent
 from rs.core.contracts.observation import RuntimeObservationConfig
 from rs.prediction import PredictionRegistry, resolve_predictor_id
 from rs.planning import (
@@ -581,17 +583,29 @@ class RouterSenseInjectionRuntime:
             self._runtime_state.metrics.selected_transport_execution_count = int(
                 self._runtime_state.metrics.selected_transport_execution_count
             ) + 1
+        prepared_execution = None
+        if self._is_joint_window_async_mode():
+            prepared_execution = self._prepared_execution_cache().get(self.target_plan_store._key(self._target_plan_key(layer_name=layer_name))) if self.target_plan_store is not None else None
         self._active_transport = {
             "layer_name": layer_name,
             "phase": phase,
             "context": context,
             "plan": plan,
+            "prepared_execution": prepared_execution,
         }
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
             if hasattr(adapter, "set_effective_preflight_mode"):
                 adapter.set_effective_preflight_mode(effective_preflight_mode)
-            adapter.activate(layer_name=layer_name, phase=phase, context=context, plan=plan)
+            adapter.activate(
+                layer_name=layer_name,
+                phase=phase,
+                context=context,
+                plan=plan,
+                prepared_execution=prepared_execution,
+                execution_pipeline=getattr(self, "execution_pipeline", None),
+                runtime=self,
+            )
         end_ns = time.monotonic_ns()
         self._record_planning_timing(
             layer_name=layer_name,
@@ -605,6 +619,54 @@ class RouterSenseInjectionRuntime:
 
     def current_transport(self) -> dict[str, Any] | None:
         return self._active_transport
+
+    def _execution_plan_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_published_execution_plans", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_published_execution_plans", cache)
+        return cache
+
+    def _prepared_execution_cache(self) -> dict[tuple[str, int, str, str], Any]:
+        cache = getattr(self, "_prepared_executions", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_prepared_executions", cache)
+        return cache
+
+    def _record_instrumentation_measurement(
+        self,
+        *,
+        event_type: str,
+        layer_id: str | None,
+        phase: str | None,
+        started_at_ns: int,
+        ended_at_ns: int,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        instrumentation = getattr(self, "runtime_instrumentation", None)
+        if instrumentation is None:
+            return
+        instrumentation.record_measurement(
+            MeasurementEvent(
+                event_type=str(event_type),
+                started_at_ns=int(started_at_ns),
+                ended_at_ns=int(ended_at_ns),
+                layer_id=None if layer_id is None else str(layer_id),
+                phase=None if phase is None else str(phase),
+                details=dict(details or {}),
+            )
+        )
+
+    def _actual_phase_context_from_ready_context(self, *, phase_ctx: PhaseReadyContext) -> ActualPhaseContext:
+        return ActualPhaseContext(
+            layer_id=str(phase_ctx.layer_id),
+            phase=str(phase_ctx.phase),
+            world_size=int(len(phase_ctx.ep_group_ranks)),
+            rank_space="global",
+            layout_digest=str(phase_ctx.canonical_receive_layout_id),
+            metadata={"phase_ready_context": phase_ctx.to_dict()},
+        )
 
     def clear_transport(self, *, layer_name: str, phase: str) -> None:
         adapter = getattr(self, "transport_adapter", None)
@@ -680,6 +742,24 @@ class RouterSenseInjectionRuntime:
         **detail: Any,
     ) -> float:
         duration_us = max(0.0, float(end_ns - start_ns) / 1000.0)
+        if str(stage).startswith("materialize"):
+            measurement_event_type = "materialization"
+        elif str(stage).startswith("validate"):
+            measurement_event_type = "validation"
+        elif "publish" in str(stage):
+            measurement_event_type = "publish"
+        elif "executor" in str(stage) or "transport" in str(stage):
+            measurement_event_type = "active_transport"
+        else:
+            measurement_event_type = "planning"
+        self._record_instrumentation_measurement(
+            event_type=measurement_event_type,
+            layer_id=parse_layer_id(layer_name),
+            phase=str(phase),
+            started_at_ns=int(start_ns),
+            ended_at_ns=int(end_ns),
+            details={"stage": str(stage), **detail},
+        )
         if self._is_perf_profile():
             counter = self.perf_counters.setdefault(
                 str(stage),
@@ -1246,6 +1326,8 @@ class RouterSenseInjectionRuntime:
         self._terminal_publication_slots.clear()
         self._published_publication_slots.clear()
         self._poll_attempts.clear()
+        self._execution_plan_cache().clear()
+        self._prepared_execution_cache().clear()
 
     @staticmethod
     def _target_plan_key_from_slot(slot: Any) -> TargetPlanKey:
@@ -1319,6 +1401,12 @@ class RouterSenseInjectionRuntime:
             )
             return
         published = TargetLayerPreparedJointPlan.from_dict(plan_payload)
+        published_plan = None
+        if getattr(self, "plan_publisher", None) is not None and published.window_plan is not None:
+            published_plan = self.plan_publisher.build(
+                publication_slot=slot.semantic_payload(),
+                window_plan=published.window_plan,
+            )
         publish_result = self.target_plan_store.publish_if_current(token=ready.token, plan=published)
         if publish_result.status not in {"PUBLISHED", "ALREADY_PUBLISHED_SAME"}:
             self._timeline(
@@ -1328,6 +1416,8 @@ class RouterSenseInjectionRuntime:
                 logical_plan_digest=str(published.logical_plan_digest),
             )
             return
+        if published_plan is not None:
+            self._execution_plan_cache()[self._target_plan_store._key(ready.key)] = published_plan
         self._ready_target_plan_candidates.pop(slot_digest, None)
         self._published_publication_slots.add(slot_digest)
         self._store_target_planner_predictions(ready=ready)
@@ -2731,6 +2821,28 @@ class RouterSenseInjectionRuntime:
         self.target_plan_store.start_execution(key, execution_origin=execution_origin, claim_owner="prepared_reconcile")
         self._runtime_state.write("execution_origin", execution_origin)
         self._runtime_state.write("prepared_target_logical_plan_digest", str(outcome.logical_plan_digest or ""))
+        published_execution_plan = self._execution_plan_cache().get(self.target_plan_store._key(key))
+        execution_pipeline = getattr(self, "execution_pipeline", None)
+        if published_execution_plan is not None and execution_pipeline is not None:
+            prepare_start_ns = time.monotonic_ns()
+            prepared_execution = execution_pipeline.prepare(
+                published_execution_plan,
+                self._actual_phase_context_from_ready_context(phase_ctx=phase_ctx),
+            )
+            prepare_end_ns = time.monotonic_ns()
+            self._record_instrumentation_measurement(
+                event_type="materialization",
+                layer_id=str(phase_ctx.layer_id),
+                phase=str(phase_ctx.phase),
+                started_at_ns=prepare_start_ns,
+                ended_at_ns=prepare_end_ns,
+                details={"valid": bool(prepared_execution.validation.valid)},
+            )
+            if not prepared_execution.validation.valid:
+                self.target_plan_store.fail(key, execution_origin="materialization_invalid")
+                self._runtime_state.write("execution_origin", "materialization_invalid")
+                return None
+            self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution
         return compiled
 
     def _build_provisional_async_plan(
