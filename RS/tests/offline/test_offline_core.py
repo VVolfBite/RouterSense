@@ -283,6 +283,51 @@ def test_flow_order_invariance_within_wave() -> None:
     assert eval_a.realized_makespan == eval_b.realized_makespan
 
 
+def test_chunked_runtime_plan_is_accepted_when_edge_coverage_completes_across_waves() -> None:
+    truth = build_execution_truth(_window(), _spec(track="execution_window"))
+    chunked_plan = WindowPlan(
+        planner_id="test",
+        planner_family="joint",
+        request_digest="digest",
+        waves=(
+            PlanWave(0, (PlannedFlow("p0_dispatch:0->1:chunk0", "p0_dispatch", 0, 1, 1, "ready", True),), 1.0),
+            PlanWave(1, (PlannedFlow("p0_dispatch:0->1:chunk1", "p0_dispatch", 0, 1, 1, "ready", True),), 1.0),
+            PlanWave(2, (PlannedFlow("p0_dispatch:1->0:chunk0", "p0_dispatch", 1, 0, 1, "ready", True),), 1.0),
+            PlanWave(3, (PlannedFlow("p0_dispatch:1->0:chunk1", "p0_dispatch", 1, 0, 2, "ready", True),), 2.0),
+            PlanWave(4, (PlannedFlow("p1_return:0->1:chunk0", "p1_return", 0, 1, 1, "blocked", False),), 1.0),
+            PlanWave(5, (PlannedFlow("p1_return:0->1:chunk1", "p1_return", 0, 1, 2, "blocked", False),), 2.0),
+            PlanWave(6, (PlannedFlow("p1_return:1->0:chunk0", "p1_return", 1, 0, 1, "blocked", False),), 1.0),
+            PlanWave(7, (PlannedFlow("p1_return:1->0:chunk1", "p1_return", 1, 0, 1, "blocked", False),), 1.0),
+            PlanWave(8, (PlannedFlow("p2_next_dispatch:0->1:chunk0", "p2_next_dispatch", 0, 1, 2, "after_p1", False),), 2.0),
+            PlanWave(9, (PlannedFlow("p2_next_dispatch:0->1:chunk1", "p2_next_dispatch", 0, 1, 2, "after_p1", False),), 2.0),
+            PlanWave(10, (PlannedFlow("p2_next_dispatch:1->0:chunk0", "p2_next_dispatch", 1, 0, 1, "after_p1", False),), 1.0),
+        ),
+        metadata={},
+    )
+    evaluation = OfflineEvaluator().evaluate(chunked_plan, truth, _spec(track="execution_window"))
+    assert evaluation.valid is True
+    assert evaluation.coverage_valid is True
+    assert evaluation.realized_makespan is not None
+    assert len(evaluation.completed_tasks) == 6
+
+
+def test_chunked_runtime_plan_rejects_overcoverage_with_split_edges() -> None:
+    truth = build_execution_truth(_window(), _spec(track="execution_window"))
+    overcovered = WindowPlan(
+        planner_id="test",
+        planner_family="joint",
+        request_digest="digest",
+        waves=(
+            PlanWave(0, (PlannedFlow("p0_dispatch:0->1:chunk0", "p0_dispatch", 0, 1, 1, "ready", True),), 1.0),
+            PlanWave(1, (PlannedFlow("p0_dispatch:0->1:chunk1", "p0_dispatch", 0, 1, 2, "ready", True),), 2.0),
+        ),
+        metadata={},
+    )
+    evaluation = OfflineEvaluator().evaluate(overcovered, truth, _spec(track="execution_window"))
+    assert evaluation.valid is False
+    assert evaluation.reason == "row_count_mismatch:p0_dispatch:0->1"
+
+
 def test_builder_rejects_world_size_mismatch() -> None:
     builder = OfflinePlanningRequestBuilder(bucket_rows=2)
     bad_spec = EvaluationSpec(

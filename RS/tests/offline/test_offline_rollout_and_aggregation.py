@@ -169,6 +169,68 @@ def test_schedule_quality_and_paired_aggregation_work_on_formal_records() -> Non
     assert bundle.schema_version == "offline_bundle_v1"
 
 
+def test_offline_record_validation_rejects_missing_makespan_for_eligible_complete_record() -> None:
+    window = _window()
+    spec = _spec(track="runtime_lookahead")
+    truth = build_execution_truth(window, spec)
+    builder = OfflinePlanningRequestBuilder(bucket_rows=2)
+    prediction = _prediction(rows=((0, 1), (4, 0)), predictor_id="history")
+    request = builder.build(window, prediction, spec)
+    evaluation = OfflineEvaluator().evaluate(_plan(request_digest=request.semantic_digest(), p2_rows=((0, 1), (4, 0))), truth, spec)
+    record = build_offline_record(
+        window=window,
+        spec=spec,
+        task_set_digest=truth.task_set.task_set_digest,
+        request=request,
+        prediction=prediction,
+        plan=_plan(request_digest=request.semantic_digest(), p2_rows=((0, 1), (4, 0))),
+        execution_truth_digest=truth.truth_digest,
+        evaluation=evaluation,
+        planner_reported_makespan=1.0,
+        audit_status="valid",
+        coverage_status="complete",
+        eligibility={"offline_replay_eligible": True},
+    )
+    broken = record.__class__(**{**record.__dict__, "realized_makespan": None})
+    try:
+        broken.validate()
+    except ValueError as exc:
+        assert "realized_makespan" in str(exc)
+    else:
+        raise AssertionError("expected missing makespan validation failure")
+
+
+def test_offline_bundle_rejects_duplicate_record_keys() -> None:
+    window = _window()
+    spec = _spec(track="runtime_lookahead")
+    truth = build_execution_truth(window, spec)
+    builder = OfflinePlanningRequestBuilder(bucket_rows=2)
+    prediction = _prediction(rows=((0, 1), (4, 0)), predictor_id="history")
+    request = builder.build(window, prediction, spec)
+    evaluation = OfflineEvaluator().evaluate(_plan(request_digest=request.semantic_digest(), p2_rows=((0, 1), (4, 0))), truth, spec)
+    record = build_offline_record(
+        window=window,
+        spec=spec,
+        task_set_digest=truth.task_set.task_set_digest,
+        request=request,
+        prediction=prediction,
+        plan=_plan(request_digest=request.semantic_digest(), p2_rows=((0, 1), (4, 0))),
+        execution_truth_digest=truth.truth_digest,
+        evaluation=evaluation,
+        planner_reported_makespan=1.0,
+        audit_status="valid",
+        coverage_status="complete",
+        eligibility={"offline_replay_eligible": True},
+        metrics={"case_id": "same"},
+    )
+    try:
+        build_evaluation_bundle(spec=spec, records=(record, record))
+    except ValueError as exc:
+        assert "duplicate offline evaluation record key" in str(exc)
+    else:
+        raise AssertionError("expected duplicate record rejection")
+
+
 def test_fairness_gate_rejects_spec_and_prediction_mismatch() -> None:
     window = _window()
     truth = build_execution_truth(window, _spec())

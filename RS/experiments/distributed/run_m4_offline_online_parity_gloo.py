@@ -4,7 +4,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate
+from experiments.distributed.run_m123_integrated_publication_execution_gloo import run_gate_with_backend
 from rs.core.contracts import (
     ActualPhaseContext,
     EvaluationSpec,
@@ -20,6 +20,7 @@ from rs.core.contracts import (
     PredictionResult,
     TrafficProvenance,
 )
+from rs.offline import OfflinePlanningRequestBuilder, build_execution_truth
 from rs.planning import PlannerRegistry
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher, _window_plan_from_payload
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
@@ -144,57 +145,85 @@ def _transfer_counter(items: list[dict[str, object]]) -> Counter[str]:
     )
 
 
-def _expected_transfer_counter_from_plan(window_plan) -> Counter[str]:
+def _aggregate_transfer_counter(counter: Counter[str]) -> Counter[str]:
+    grouped: dict[tuple[str, str, int, int], int] = {}
+    for key, multiplicity in counter.items():
+        payload = json.loads(key)
+        group_key = (
+            str(payload["phase"]),
+            str(payload["payload_role"]),
+            int(payload["src_group_rank"]),
+            int(payload["dst_group_rank"]),
+        )
+        grouped[group_key] = int(grouped.get(group_key, 0)) + int(payload["row_count"]) * int(multiplicity)
+    return Counter(
+        json.dumps(
+            {
+                "phase": phase,
+                "payload_role": payload_role,
+                "src_group_rank": src_group_rank,
+                "dst_group_rank": dst_group_rank,
+                "row_count": row_count,
+            },
+            sort_keys=True,
+        )
+        for (phase, payload_role, src_group_rank, dst_group_rank), row_count in grouped.items()
+    )
+
+
+def _expected_transfer_counter_from_truth(truth) -> Counter[str]:
     rows: list[dict[str, object]] = []
-    for wave in window_plan.waves:
-        for flow in wave.flows:
-            if int(flow.row_count) <= 0 or int(flow.src_rank) == int(flow.dst_rank):
-                continue
-            if str(flow.phase) == "p0_dispatch":
-                rows.append(
-                    {
-                        "phase": "P0",
-                        "payload_role": "hidden_states",
-                        "src_group_rank": int(flow.src_rank),
-                        "dst_group_rank": int(flow.dst_rank),
-                        "row_count": int(flow.row_count),
-                    }
-                )
-                rows.append(
-                    {
-                        "phase": "P0",
-                        "payload_role": "routing_probs",
-                        "src_group_rank": int(flow.src_rank),
-                        "dst_group_rank": int(flow.dst_rank),
-                        "row_count": int(flow.row_count),
-                    }
-                )
-            elif str(flow.phase) == "p1_return":
-                rows.append(
-                    {
-                        "phase": "P1",
-                        "payload_role": "hidden_states",
-                        "src_group_rank": int(flow.src_rank),
-                        "dst_group_rank": int(flow.dst_rank),
-                        "row_count": int(flow.row_count),
-                    }
-                )
+    for task in truth.task_set.tasks:
+        if str(task.phase) == "p0_dispatch":
+            rows.append(
+                {
+                    "phase": "P0",
+                    "payload_role": "hidden_states",
+                    "src_group_rank": int(task.src_rank),
+                    "dst_group_rank": int(task.dst_rank),
+                    "row_count": int(task.row_count),
+                }
+            )
+            rows.append(
+                {
+                    "phase": "P0",
+                    "payload_role": "routing_probs",
+                    "src_group_rank": int(task.src_rank),
+                    "dst_group_rank": int(task.dst_rank),
+                    "row_count": int(task.row_count),
+                }
+            )
+        elif str(task.phase) == "p1_return":
+            rows.append(
+                {
+                    "phase": "P1",
+                    "payload_role": "hidden_states",
+                    "src_group_rank": int(task.src_rank),
+                    "dst_group_rank": int(task.dst_rank),
+                    "row_count": int(task.row_count),
+                }
+            )
     return _transfer_counter(rows)
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    runtime_summary = run_gate(instrumentation_mode="perf_light")
+def _evaluate_backend(*, execution_backend: str) -> dict[str, object]:
+    runtime_summary = run_gate_with_backend(instrumentation_mode="perf_light", execution_backend=execution_backend)
     window = _offline_window(runtime_summary)
     rank0 = dict(runtime_summary["ranks"][0])
     runtime_request = _planning_request_from_payload(dict(rank0["publication_candidate_planning_request"]))
     prediction = _prediction(window)
     spec = _spec(len(window.p0_actual))
+    offline_request = OfflinePlanningRequestBuilder(
+        bucket_rows=int(runtime_request.constraints.bucket_rows),
+        max_waves=int(runtime_request.constraints.max_waves),
+        information_mode=str(runtime_request.information_mode),
+    ).build(window, prediction, spec)
     runtime_window_plan = _window_plan_from_payload(dict(rank0["window_plan"]))
     planner = PlannerRegistry.create(str(runtime_window_plan.planner_id), None)
-    offline_plan = planner.plan(runtime_request)
+    offline_plan = planner.plan(offline_request)
+    truth = build_execution_truth(window, spec)
 
-    input_parity_ok = str(runtime_request.semantic_digest()) == str(rank0["planning_request_digest"])
+    input_parity_ok = str(offline_request.semantic_digest()) == str(rank0["planning_request_digest"])
     plan_parity_ok = str(offline_plan.semantic_digest()) == str(rank0["window_plan_digest"])
 
     publisher = CanonicalPlanPublisher(
@@ -223,20 +252,22 @@ def main() -> None:
         materialized_runtime[f"rank{rank}:P1"] = str(item["p1_materialized_plan_digest"])
     materialization_ok = materialized_offline == materialized_runtime
 
-    expected_transfers = _expected_transfer_counter_from_plan(offline_plan)
+    expected_transfers = _expected_transfer_counter_from_truth(truth)
     actual_rows: list[dict[str, object]] = []
     for item in runtime_summary["ranks"]:
         actual_rows.extend(list(item["p0_completed_transfer_keys"]))
         actual_rows.extend(list(item["p1_completed_transfer_keys"]))
-    actual_transfers = _transfer_counter(actual_rows)
+    actual_transfers = _aggregate_transfer_counter(_transfer_counter(actual_rows))
     execution_ok = actual_transfers == expected_transfers
 
-    summary = {
+    return {
         "status": "passed" if all((input_parity_ok, plan_parity_ok, materialization_ok, execution_ok)) else "failed",
+        "execution_backend": str(execution_backend),
         "input_parity": {
             "status": "PASS" if input_parity_ok else "FAIL",
-            "offline_planning_request_digest": str(runtime_request.semantic_digest()),
+            "offline_planning_request_digest": str(offline_request.semantic_digest()),
             "runtime_planning_request_digest": str(rank0["planning_request_digest"]),
+            "identity_parity": "PASS" if runtime_request.identity_digest() == offline_request.identity_digest() else "DIFFERENT_IDENTITY_OK",
         },
         "plan_parity": {
             "status": "PASS" if plan_parity_ok else "FAIL",
@@ -253,6 +284,17 @@ def main() -> None:
             "expected_transfers": dict(expected_transfers),
             "runtime_completed_transfers": dict(actual_transfers),
         },
+    }
+
+
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    phase_sync = _evaluate_backend(execution_backend="phase_sync")
+    async_release = _evaluate_backend(execution_backend="async_release")
+    summary = {
+        "status": "passed" if phase_sync["status"] == "passed" and async_release["status"] == "passed" else "failed",
+        "phase_sync": phase_sync,
+        "async_release": async_release,
     }
     (OUT_DIR / "m4_offline_online_parity_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))

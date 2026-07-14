@@ -50,7 +50,7 @@ def evaluate_window_plan_against_task_set(
         expected_by_edge[edge_key] = int(task.row_count)
         dependencies_by_edge[edge_key] = tuple(task.release_dependencies)
         release_by_edge[edge_key] = float(task.release_time)
-    seen_by_edge = {key: 0 for key in expected_by_edge}
+    served_by_edge = {key: 0 for key in expected_by_edge}
     completed_edges: dict[tuple[str, int, int], float] = {}
     completed_tasks: list[str] = []
     dependency_violations: list[str] = []
@@ -64,9 +64,10 @@ def evaluate_window_plan_against_task_set(
         used_src: set[int] = set()
         used_dst: set[int] = set()
         completed_snapshot = dict(completed_edges)
-        seen_snapshot = dict(seen_by_edge)
-        validated_tasks: list[tuple[tuple[str, int, int], EvaluationTask]] = []
+        served_snapshot = dict(served_by_edge)
+        validated_tasks: list[tuple[tuple[str, int, int], EvaluationTask, int]] = []
         ready_times: list[float] = []
+        wave_served_delta: dict[tuple[str, int, int], int] = {}
         for flow in wave_flows:
             phase = _normalize_phase(flow.phase)
             edge_key = (phase, int(flow.src_rank), int(flow.dst_rank))
@@ -75,7 +76,7 @@ def evaluate_window_plan_against_task_set(
                 return _invalid_evaluation(
                     reason=f"unexpected_task:{phase}:{int(flow.src_rank)}->{int(flow.dst_rank)}",
                     completed_tasks=completed_tasks,
-                    seen_by_edge=seen_by_edge,
+                    served_by_edge=served_by_edge,
                     expected_by_edge=expected_by_edge,
                     dependency_violations=dependency_violations,
                     port_valid=False,
@@ -84,31 +85,43 @@ def evaluate_window_plan_against_task_set(
                 return _invalid_evaluation(
                     reason=f"port_conflict:wave_{wave.wave_id}",
                     completed_tasks=completed_tasks,
-                    seen_by_edge=seen_by_edge,
+                    served_by_edge=served_by_edge,
                     expected_by_edge=expected_by_edge,
                     dependency_violations=dependency_violations,
                     port_valid=False,
                 )
             used_src.add(int(flow.src_rank))
             used_dst.add(int(flow.dst_rank))
-            if int(flow.row_count) != int(task.row_count):
+            if int(flow.row_count) <= 0:
                 return _invalid_evaluation(
-                    reason=f"row_count_mismatch:{phase}:{int(flow.src_rank)}->{int(flow.dst_rank)}",
+                    reason=f"non_positive_row_count:{phase}:{int(flow.src_rank)}->{int(flow.dst_rank)}",
                     completed_tasks=completed_tasks,
-                    seen_by_edge=seen_by_edge,
+                    served_by_edge=served_by_edge,
                     expected_by_edge=expected_by_edge,
                     dependency_violations=dependency_violations,
                     port_valid=True,
                 )
-            if int(seen_snapshot.get(edge_key, 0)) != 0:
+            already_served = int(served_snapshot.get(edge_key, 0))
+            if edge_key in completed_snapshot:
                 return _invalid_evaluation(
                     reason=f"duplicate_task:{phase}:{int(flow.src_rank)}->{int(flow.dst_rank)}",
                     completed_tasks=completed_tasks,
-                    seen_by_edge=seen_by_edge,
+                    served_by_edge=served_by_edge,
                     expected_by_edge=expected_by_edge,
                     dependency_violations=dependency_violations,
                     port_valid=True,
                 )
+            wave_delta = int(wave_served_delta.get(edge_key, 0))
+            if already_served + wave_delta + int(flow.row_count) > int(expected_by_edge[edge_key]):
+                return _invalid_evaluation(
+                    reason=f"row_count_mismatch:{phase}:{int(flow.src_rank)}->{int(flow.dst_rank)}",
+                    completed_tasks=completed_tasks,
+                    served_by_edge=served_by_edge,
+                    expected_by_edge=expected_by_edge,
+                    dependency_violations=dependency_violations,
+                    port_valid=True,
+                )
+            wave_served_delta[edge_key] = wave_delta + int(flow.row_count)
             dep_completion_times: list[float] = []
             for dependency in dependencies_by_edge.get(edge_key, ()):
                 dependency_edge = _edge_from_task_id(dependency)
@@ -123,20 +136,28 @@ def evaluate_window_plan_against_task_set(
                 return _invalid_evaluation(
                     reason="dependency_violation",
                     completed_tasks=completed_tasks,
-                    seen_by_edge=seen_by_edge,
+                    served_by_edge=served_by_edge,
                     expected_by_edge=expected_by_edge,
                     dependency_violations=dependency_violations,
                     port_valid=True,
                 )
             ready_times.append(_task_ready_time(task=task, dependency_completion_times=tuple(dep_completion_times), spec=spec))
-            validated_tasks.append((edge_key, task))
+            validated_tasks.append((edge_key, task, int(flow.row_count)))
         wave_start = max([current_time, *ready_times])
-        wave_duration = EvaluationCostModel.wave_duration(tuple(task for _, task in validated_tasks), spec)
+        wave_duration = float(spec.launch_cost) + max(
+            EvaluationCostModel.flow_duration(
+                row_count=row_count,
+                bytes_per_row=max(int(task.byte_count) // max(int(task.row_count), 1), int(spec.bytes_per_row)),
+                spec=spec,
+            )
+            for _, task, row_count in validated_tasks
+        )
         wave_end = wave_start + wave_duration
-        for edge_key, task in validated_tasks:
-            seen_by_edge[edge_key] = int(task.row_count)
-            completed_edges[edge_key] = wave_end
-            completed_tasks.append(str(task.task_id))
+        for edge_key, task, row_count in validated_tasks:
+            served_by_edge[edge_key] = int(served_by_edge.get(edge_key, 0)) + int(row_count)
+            if int(served_by_edge[edge_key]) == int(expected_by_edge[edge_key]):
+                completed_edges[edge_key] = wave_end
+                completed_tasks.append(str(task.task_id))
         wave_metrics.append(
             {
                 "wave_id": int(wave.wave_id),
@@ -147,7 +168,7 @@ def evaluate_window_plan_against_task_set(
         )
         current_time = wave_end
 
-    unresolved = tuple(sorted(_edge_name(item) for item, value in seen_by_edge.items() if value != expected_by_edge[item]))
+    unresolved = tuple(sorted(_edge_name(item) for item, value in served_by_edge.items() if value != expected_by_edge[item]))
     return PlanEvaluation(
         valid=len(unresolved) == 0 and len(dependency_violations) == 0,
         reason=None if len(unresolved) == 0 and len(dependency_violations) == 0 else "incomplete_coverage",
@@ -160,6 +181,8 @@ def evaluate_window_plan_against_task_set(
         metrics={
             "completed_task_count": len(completed_tasks),
             "expected_task_count": len(expected_by_edge),
+            "served_row_count": int(sum(served_by_edge.values())),
+            "expected_row_count": int(sum(expected_by_edge.values())),
             "wave_metrics": tuple(wave_metrics),
             "tail_completion": float(current_time),
         },
@@ -180,7 +203,7 @@ def _invalid_evaluation(
     *,
     reason: str,
     completed_tasks: list[str],
-    seen_by_edge: dict[tuple[str, int, int], int],
+    served_by_edge: dict[tuple[str, int, int], int],
     expected_by_edge: dict[tuple[str, int, int], int],
     dependency_violations: list[str],
     port_valid: bool,
@@ -190,7 +213,7 @@ def _invalid_evaluation(
         reason=reason,
         realized_makespan=None,
         completed_tasks=tuple(completed_tasks),
-        unresolved_tasks=tuple(sorted(_edge_name(item) for item, value in seen_by_edge.items() if value != expected_by_edge[item])),
+        unresolved_tasks=tuple(sorted(_edge_name(item) for item, value in served_by_edge.items() if value != expected_by_edge[item])),
         dependency_violations=tuple(dependency_violations),
         coverage_valid=False,
         port_valid=bool(port_valid),
