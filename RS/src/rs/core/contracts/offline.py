@@ -406,6 +406,44 @@ class OfflineEvaluationRecord:
     eligibility: Mapping[str, object]
     metrics: Mapping[str, object]
 
+    def validate(self) -> None:
+        required = {
+            "window_identity": self.window_identity,
+            "evaluation_spec_digest": self.evaluation_spec_digest,
+            "task_set_digest": self.task_set_digest,
+            "planning_request_digest": self.planning_request_digest,
+            "prediction_digest": self.prediction_digest,
+            "logical_plan_digest": self.logical_plan_digest,
+            "execution_truth_digest": self.execution_truth_digest,
+            "planner_id": self.planner_id,
+            "planner_family": self.planner_family,
+            "predictor_id": self.predictor_id,
+            "track": self.track,
+            "audit_status": self.audit_status,
+            "coverage_status": self.coverage_status,
+            "fallback_status": self.fallback_status,
+            "oracle_status": self.oracle_status,
+        }
+        for field_name, value in required.items():
+            if not str(value).strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if str(self.audit_status) not in {"valid", "invalid", "environment_not_run"}:
+            raise ValueError("audit_status is invalid")
+        if str(self.coverage_status) not in {"complete", "incomplete", "not_applicable"}:
+            raise ValueError("coverage_status is invalid")
+        if str(self.fallback_status) not in {"none", "used", "timeout", "error"}:
+            raise ValueError("fallback_status is invalid")
+        if str(self.oracle_status) not in {"not_run", "valid", "invalid", "environment_not_run", "unsupported", "not_comparable_granularity"}:
+            raise ValueError("oracle_status is invalid")
+        if (
+            str(self.audit_status) == "valid"
+            and str(self.coverage_status) == "complete"
+            and str(self.fallback_status) == "none"
+            and bool(dict(self.eligibility).get("offline_replay_eligible", False))
+            and self.realized_makespan is None
+        ):
+            raise ValueError("eligible complete valid record must have realized_makespan")
+
 
 @dataclass(frozen=True)
 class OfflineEvaluationBundle:
@@ -422,6 +460,22 @@ class OfflineEvaluationBundle:
         if not str(self.schema_version):
             raise ValueError("schema_version must be non-empty")
         self.evaluation_spec.validate()
+        seen_keys: set[tuple[str, str, str, str, str, str, str, str]] = set()
+        for record in self.records:
+            record.validate()
+            key = (
+                str(record.window_identity),
+                str(record.evaluation_spec_digest),
+                str(record.task_set_digest),
+                str(record.execution_truth_digest),
+                str(record.planner_id),
+                str(record.predictor_id),
+                str(record.track),
+                str(dict(record.metrics).get("case_id", "")),
+            )
+            if key in seen_keys:
+                raise ValueError("duplicate offline evaluation record key")
+            seen_keys.add(key)
 
 
 __all__ = [
