@@ -12,24 +12,30 @@
     "planning-visible truth leakage removed from replay metadata",
     "rollout group isolation and training-history scoping",
     "paired aggregation fail-closed filtering and comparison separation",
-    "tiny exact fallback no longer claims certified optimum when OR-Tools is unavailable"
+    "tiny exact fallback no longer claims certified optimum when OR-Tools is unavailable",
+    "offline/online PlanningRequest digest parity",
+    "offline/online WindowPlan digest parity",
+    "offline/online MaterializedPlan digest parity",
+    "offline expected completed tasks vs Gloo functional completed tasks parity"
   ],
   "implemented_not_verified": [
     "CP-SAT exact parity on environments with OR-Tools installed"
   ],
   "hard_blockers": [
-    "MaterializedPlan and completed-task parity require latest M2/M123 integration",
-    "simulator still remains partial and cannot be claimed READY"
+    "simulator still remains partial and cannot be claimed READY",
+    "offline replay smoke remains blocked on experiment-config runner semantics outside the M4 core parity path"
   ],
   "environment_not_run": [
     "OR-Tools-backed CP-SAT exact coverage"
   ],
   "deferred_cleanup": [
     "legacy runtime/offline replay entrypoints still remain in tree",
-    "reporting and parity evidence files need regeneration after M123 integration"
+    "legacy replay smoke entrypoint still depends on the experiment config/runner convergence track"
   ],
   "test_commands": [
     "python -m compileall RS/src RS/tests",
-    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py"
+    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/offline/test_online_materialization_parity.py",
+    "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m4_offline_online_parity_gloo.py",
+    "PYTHONPATH=RS/src;RS;. python RS/experiments/run_offline_replay.py --config RS/tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m4_phase_b_smoke"
   ]
 }

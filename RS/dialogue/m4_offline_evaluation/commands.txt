@@ -1,3 +1,4 @@
-﻿python -m compileall RS/src RS/tests
-PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/offline/test_prediction_planning_parity.py
-PYTHONPATH=RS/src;RS;. python RS/experiments/run_offline_replay.py --config RS/tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m4_phase_a_smoke
+python -m compileall RS/src RS/tests
+PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/offline/test_online_materialization_parity.py
+PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m4_offline_online_parity_gloo.py
+PYTHONPATH=RS/src;RS;. python RS/experiments/run_offline_replay.py --config RS/tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m4_phase_b_smoke

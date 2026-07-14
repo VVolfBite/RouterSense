@@ -1,3 +1,9 @@
-{
-  "status": "pending_phase_b"
+﻿{
+    "status":  "PASS",
+    "per_rank_materialized_plan_digests":  [
+                                               "afd48a2c88b245c77235f16802583bc75907be641dd8eadb3b46a68d730c97ba",
+                                               "23292cc82a26834c63d26d97562f4d323c3c7fc0b175bedc79951a15e76fef97",
+                                               "01103086958c6645a9996a113493c67dd336e4564dc1073172744b435456cdc5",
+                                               "5d615fc54ecf0d339cb0ebb52d5af5d2d031a703b46afc3f3b081068ab085ca8"
+                                           ]
 }

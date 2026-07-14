@@ -1,3 +1,399 @@
-{
-  "status": "pending_phase_b"
+﻿{
+    "status":  "PASS",
+    "per_rank_roles":  {
+                           "0":  {
+                                     "hidden_states":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:0-\u003e1:hidden_states",
+                                                                                               "p0_dispatch:1-\u003e0:hidden_states",
+                                                                                               "p0_dispatch:0-\u003e3:hidden_states",
+                                                                                               "p0_dispatch:3-\u003e0:hidden_states"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:0-\u003e1:hidden_states",
+                                                                                      "p0_dispatch:1-\u003e0:hidden_states",
+                                                                                      "p0_dispatch:0-\u003e3:hidden_states",
+                                                                                      "p0_dispatch:3-\u003e0:hidden_states"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0
+                                                                                 ]
+                                                                             ]
+                                                       },
+                                     "routing_probs":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:0-\u003e1:routing_probs",
+                                                                                               "p0_dispatch:1-\u003e0:routing_probs",
+                                                                                               "p0_dispatch:0-\u003e3:routing_probs",
+                                                                                               "p0_dispatch:3-\u003e0:routing_probs"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:0-\u003e1:routing_probs",
+                                                                                      "p0_dispatch:1-\u003e0:routing_probs",
+                                                                                      "p0_dispatch:0-\u003e3:routing_probs",
+                                                                                      "p0_dispatch:3-\u003e0:routing_probs"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0
+                                                                                 ]
+                                                                             ]
+                                                       }
+                                 },
+                           "1":  {
+                                     "hidden_states":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:0-\u003e1:hidden_states",
+                                                                                               "p0_dispatch:1-\u003e0:hidden_states",
+                                                                                               "p0_dispatch:1-\u003e2:hidden_states",
+                                                                                               "p0_dispatch:2-\u003e1:hidden_states"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:1-\u003e0:hidden_states",
+                                                                                      "p0_dispatch:0-\u003e1:hidden_states",
+                                                                                      "p0_dispatch:1-\u003e2:hidden_states",
+                                                                                      "p0_dispatch:2-\u003e1:hidden_states"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       0.0,
+                                                                                       0.0,
+                                                                                       0.0,
+                                                                                       0.0
+                                                                                   ],
+                                                                                   [
+                                                                                       1.0,
+                                                                                       1.0,
+                                                                                       1.0,
+                                                                                       1.0
+                                                                                   ],
+                                                                                   [
+                                                                                       2.0,
+                                                                                       2.0,
+                                                                                       2.0,
+                                                                                       2.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     0.0,
+                                                                                     0.0,
+                                                                                     0.0,
+                                                                                     0.0
+                                                                                 ],
+                                                                                 [
+                                                                                     1.0,
+                                                                                     1.0,
+                                                                                     1.0,
+                                                                                     1.0
+                                                                                 ],
+                                                                                 [
+                                                                                     2.0,
+                                                                                     2.0,
+                                                                                     2.0,
+                                                                                     2.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0
+                                                                                 ]
+                                                                             ]
+                                                       },
+                                     "routing_probs":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:0-\u003e1:routing_probs",
+                                                                                               "p0_dispatch:1-\u003e0:routing_probs",
+                                                                                               "p0_dispatch:1-\u003e2:routing_probs",
+                                                                                               "p0_dispatch:2-\u003e1:routing_probs"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:1-\u003e0:routing_probs",
+                                                                                      "p0_dispatch:0-\u003e1:routing_probs",
+                                                                                      "p0_dispatch:1-\u003e2:routing_probs",
+                                                                                      "p0_dispatch:2-\u003e1:routing_probs"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       0.0
+                                                                                   ],
+                                                                                   [
+                                                                                       1.0
+                                                                                   ],
+                                                                                   [
+                                                                                       2.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     0.0
+                                                                                 ],
+                                                                                 [
+                                                                                     1.0
+                                                                                 ],
+                                                                                 [
+                                                                                     2.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0
+                                                                                 ]
+                                                                             ]
+                                                       }
+                                 },
+                           "2":  {
+                                     "hidden_states":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:2-\u003e3:hidden_states",
+                                                                                               "p0_dispatch:3-\u003e2:hidden_states",
+                                                                                               "p0_dispatch:1-\u003e2:hidden_states",
+                                                                                               "p0_dispatch:2-\u003e1:hidden_states"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:2-\u003e3:hidden_states",
+                                                                                      "p0_dispatch:3-\u003e2:hidden_states",
+                                                                                      "p0_dispatch:2-\u003e1:hidden_states",
+                                                                                      "p0_dispatch:1-\u003e2:hidden_states"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0,
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0,
+                                                                                       30000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0,
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0,
+                                                                                     30000.0
+                                                                                 ]
+                                                                             ]
+                                                       },
+                                     "routing_probs":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:2-\u003e3:routing_probs",
+                                                                                               "p0_dispatch:3-\u003e2:routing_probs",
+                                                                                               "p0_dispatch:1-\u003e2:routing_probs",
+                                                                                               "p0_dispatch:2-\u003e1:routing_probs"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:2-\u003e3:routing_probs",
+                                                                                      "p0_dispatch:3-\u003e2:routing_probs",
+                                                                                      "p0_dispatch:2-\u003e1:routing_probs",
+                                                                                      "p0_dispatch:1-\u003e2:routing_probs"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       10000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       30000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     10000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     30000.0
+                                                                                 ]
+                                                                             ]
+                                                       }
+                                 },
+                           "3":  {
+                                     "hidden_states":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:2-\u003e3:hidden_states",
+                                                                                               "p0_dispatch:3-\u003e2:hidden_states",
+                                                                                               "p0_dispatch:0-\u003e3:hidden_states",
+                                                                                               "p0_dispatch:3-\u003e0:hidden_states"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:3-\u003e2:hidden_states",
+                                                                                      "p0_dispatch:2-\u003e3:hidden_states",
+                                                                                      "p0_dispatch:3-\u003e0:hidden_states",
+                                                                                      "p0_dispatch:0-\u003e3:hidden_states"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       3.0,
+                                                                                       3.0,
+                                                                                       3.0,
+                                                                                       3.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0,
+                                                                                       20000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     3.0,
+                                                                                     3.0,
+                                                                                     3.0,
+                                                                                     3.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0,
+                                                                                     20000.0
+                                                                                 ]
+                                                                             ]
+                                                       },
+                                     "routing_probs":  {
+                                                           "expected_completed_task_ids":  [
+                                                                                               "p0_dispatch:2-\u003e3:routing_probs",
+                                                                                               "p0_dispatch:3-\u003e2:routing_probs",
+                                                                                               "p0_dispatch:0-\u003e3:routing_probs",
+                                                                                               "p0_dispatch:3-\u003e0:routing_probs"
+                                                                                           ],
+                                                           "completed_task_ids":  [
+                                                                                      "p0_dispatch:3-\u003e2:routing_probs",
+                                                                                      "p0_dispatch:2-\u003e3:routing_probs",
+                                                                                      "p0_dispatch:3-\u003e0:routing_probs",
+                                                                                      "p0_dispatch:0-\u003e3:routing_probs"
+                                                                                  ],
+                                                           "distributed_operation_count":  2,
+                                                           "expected_output":  [
+                                                                                   [
+                                                                                       3.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0
+                                                                                   ],
+                                                                                   [
+                                                                                       20000.0
+                                                                                   ]
+                                                                               ],
+                                                           "actual_output":  [
+                                                                                 [
+                                                                                     3.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0
+                                                                                 ],
+                                                                                 [
+                                                                                     20000.0
+                                                                                 ]
+                                                                             ]
+                                                       }
+                                 }
+                       }
 }

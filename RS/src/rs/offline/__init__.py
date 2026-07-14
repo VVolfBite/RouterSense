@@ -9,13 +9,23 @@ from .builder import OfflinePlanningRequestBuilder, build_evaluation_task_set, b
 from .evaluation import OfflineEvaluator
 from .fairness import PlannerComparisonEligibility, evaluate_comparison_eligibility
 from .oracle import OracleResult, solve_cp_sat
+from .parity import (
+    MaterializationParityCase,
+    PlanningParityCase,
+    build_materialization_parity_case,
+    build_online_sync_request,
+    build_planning_parity_case,
+    expected_completed_task_ids,
+)
 from .rollout import PredictionRolloutRecord, PredictionRolloutSample, PredictionRolloutSpec, run_prediction_rollout
 
 __all__ = [
+    "MaterializationParityCase",
     "OfflineEvaluator",
     "OfflinePlanningRequestBuilder",
     "OracleResult",
     "PlannerComparisonEligibility",
+    "PlanningParityCase",
     "PredictionRolloutRecord",
     "PredictionRolloutSample",
     "PredictionRolloutSpec",
@@ -23,7 +33,11 @@ __all__ = [
     "build_offline_record",
     "build_evaluation_task_set",
     "build_execution_truth",
+    "build_materialization_parity_case",
+    "build_online_sync_request",
+    "build_planning_parity_case",
     "evaluate_comparison_eligibility",
+    "expected_completed_task_ids",
     "paired_aggregate",
     "prediction_digest",
     "run_prediction_rollout",

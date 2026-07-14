@@ -1,3 +1,5 @@
-{
-  "status": "pending_phase_b"
+﻿{
+    "status":  "PASS",
+    "offline_window_plan_digest":  "ee47b9c7efdd6e9d49cbb50e0c71b242408b29fd35b681039083f328123ce7e2",
+    "online_window_plan_digest":  "ee47b9c7efdd6e9d49cbb50e0c71b242408b29fd35b681039083f328123ce7e2"
 }
