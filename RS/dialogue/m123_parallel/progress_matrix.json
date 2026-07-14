@@ -1,70 +1,105 @@
 {
-  "starting_branch": "convergence/m1-runtime-lifecycle",
-  "starting_sha": "452f9c62f49cf6e571321f62da58a32480f7c8eb",
   "modules": {
     "M0": {
       "status": "READY",
       "completed_with_evidence": [
         "formal prediction/planning contracts",
-        "cpu regression suite at 452f9c6"
+        "established CPU regression baseline"
       ],
       "implemented_unverified": [],
       "blockers": [],
       "dependencies": [],
-      "next_entry": "preserve regression during M1/M2/M3"
+      "next_entry": "preserve regressions"
     },
     "M1": {
-      "status": "BLOCKED",
+      "status": "READY",
       "completed_with_evidence": [
-        "submit status handling",
-        "keyed queue",
-        "worker-only prediction path",
-        "harder target plan transitions",
-        "attach and runtime handle invariants"
+        "formal publication lane",
+        "generation floor",
+        "attach/bootstrap rollback gates",
+        "dynamic no-late-suffix counters"
       ],
-      "implemented_unverified": [
-        "partial stale publish rejection"
-      ],
-      "blockers": [
-        "deterministic ControlCommunicationLane",
-        "4-rank delayed/failed/cancelled proof",
-        "formal no-late-suffix dynamic proof"
-      ],
-      "dependencies": [
-        "M2 published plan contracts",
-        "M3 passive sink contracts"
-      ],
-      "next_entry": "freeze PublicationSlot and poll result contracts"
+      "implemented_unverified": [],
+      "blockers": [],
+      "dependencies": [],
+      "next_entry": "consume from integration"
     },
     "M2": {
-      "status": "PLANNED",
+      "status": "READY",
       "completed_with_evidence": [
-        "ownership identified"
+        "published/materialized execution contracts",
+        "real distributed execution gates",
+        "validator negative coverage"
       ],
-      "implemented_unverified": [],
-      "blockers": [
-        "no unified publisher/materializer/validator/executor path"
+      "implemented_unverified": [
+        "integration-only lifecycle call-chain coverage"
       ],
+      "blockers": [],
       "dependencies": [
-        "M1 publication slot and lane",
-        "M3 evidence sink attachment boundaries"
+        "M1 lifecycle publication outputs",
+        "M3 passive instrumentation sinks"
       ],
-      "next_entry": "freeze execution contracts"
+      "next_entry": "integration runtime wiring"
     },
     "M3": {
-      "status": "PLANNED",
+      "status": "BLOCKED",
       "completed_with_evidence": [
-        "ownership identified"
+        "typed result and trace contracts",
+        "fail-closed eligibility core",
+        "bounded measurement/debug",
+        "artifact writer confinement"
       ],
-      "implemented_unverified": [],
+      "implemented_unverified": [
+        "RuntimeInstrumentation adapter"
+      ],
       "blockers": [
-        "observation, checks, measurement, debug, evidence still coupled"
+        "latest runtime/M2 pipeline is not yet wired to passive sinks on integration baseline"
       ],
       "dependencies": [
-        "M1 runtime events",
-        "M2 execution outcomes"
+        "M2 execution outcomes",
+        "M123 integration host/runtime wiring"
       ],
-      "next_entry": "freeze checks/measurement/result/trace contracts"
+      "next_entry": "integration sink wiring and cross-module tests"
+    },
+    "M4": {
+      "status": "BLOCKED",
+      "completed_with_evidence": [
+        "two-phase wave evaluator",
+        "compute-delay semantics",
+        "digest recomputation",
+        "builder validation",
+        "tiny exact fallback"
+      ],
+      "implemented_unverified": [
+        "OR-Tools-backed CP-SAT parity"
+      ],
+      "blockers": [
+        "rollout/aggregation parity incomplete",
+        "simulator still partial",
+        "M123 materialization parity pending"
+      ],
+      "dependencies": [
+        "M2 materialization",
+        "M123 integration parity"
+      ],
+      "next_entry": "finish parity after integration"
+    },
+    "M5": {
+      "status": "READY",
+      "completed_with_evidence": [
+        "schema v2 loader",
+        "CLI",
+        "runner registry",
+        "migration artifacts"
+      ],
+      "implemented_unverified": [
+        "service-backed runners"
+      ],
+      "blockers": [],
+      "dependencies": [
+        "formal M2/M4 services for future run execution"
+      ],
+      "next_entry": "review or later merge"
     }
   }
 }
