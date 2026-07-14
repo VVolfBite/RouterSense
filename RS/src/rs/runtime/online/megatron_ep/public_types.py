@@ -40,6 +40,8 @@ class ControlGroupHandle:
         if self._closed:
             return
         self._closed = True
+        if hasattr(self, "_registry_key"):
+            return
         if not self.owned or self.process_group is None:
             return
         try:

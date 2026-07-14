@@ -367,54 +367,59 @@ class TargetPlanStore:
 
     def cleanup_epoch(self, *, run_id: str, forward_epoch: int, microbatch_id: str) -> None:
         with self._lock:
-            doomed = [
-                skey
-                for skey in tuple(self._plans) + tuple(self._claimed)
-                if skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id)
-            ]
-            token_doomed = [
-                skey
-                for skey in tuple(self._publish_tokens)
-                if skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id)
-            ]
-            for skey in token_doomed:
-                self._publish_tokens.pop(skey, None)
-        for skey in doomed:
-            self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+            self._cleanup_matching_locked(
+                lambda skey: skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id),
+                execution_origin="forward_cleanup",
+            )
 
     def cleanup_before_generation(self, *, run_id: str, microbatch_id: str, current_generation: int) -> None:
         with self._lock:
-            doomed = [
-                skey
-                for skey in tuple(self._plans) + tuple(self._claimed)
-                if skey[0] == str(run_id)
-                and skey[2] == str(microbatch_id)
-                and int(skey[1]) < int(current_generation)
-            ]
-            token_doomed = [
-                skey
-                for skey in tuple(self._publish_tokens)
-                if skey[0] == str(run_id)
-                and skey[2] == str(microbatch_id)
-                and int(skey[1]) < int(current_generation)
-            ]
-            for skey in token_doomed:
-                self._publish_tokens.pop(skey, None)
+            self._cleanup_matching_locked(
+                lambda skey: (
+                    skey[0] == str(run_id)
+                    and skey[2] == str(microbatch_id)
+                    and int(skey[1]) < int(current_generation)
+                ),
+                execution_origin="generation_cleanup",
+            )
+
+    def _cleanup_matching_locked(
+        self,
+        predicate,
+        *,
+        execution_origin: str,
+    ) -> None:
+        doomed = [
+            skey
+            for skey in tuple(self._plans) + tuple(self._claimed)
+            if predicate(skey)
+        ]
+        token_doomed = [skey for skey in tuple(self._publish_tokens) if predicate(skey)]
+        for skey in token_doomed:
+            self._publish_tokens.pop(skey, None)
         for skey in doomed:
-            self.cancel(
-                TargetPlanKey(
+            item = self._plans.pop(skey, None)
+            if item is None:
+                item = self._claimed.pop(skey, None)
+            if item is None or skey in self._terminal:
+                continue
+            final_status = "FAILED" if str(item.state) == "EXECUTING" else "CANCELLED"
+            self._terminal[skey] = TargetPlanTerminalRecord(
+                key=TargetPlanKey(
                     run_id=skey[0],
                     forward_epoch=skey[1],
                     microbatch_id=skey[2],
                     target_layer_id=skey[3],
-                )
+                ),
+                plan_digest=str(item.plan.logical_plan_digest),
+                final_status=final_status,
+                execution_origin=f"{execution_origin}:{str(item.state).lower()}",
+                terminal_at_ns=int(time.perf_counter_ns()),
             )
 
     def shutdown(self) -> None:
         with self._lock:
-            doomed = list(self._plans) + [key for key in self._claimed if key not in self._plans]
-        for skey in doomed:
-            self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+            self._cleanup_matching_locked(lambda _skey: True, execution_origin="shutdown")
 
     def close_key_if_unclaimed(
         self,

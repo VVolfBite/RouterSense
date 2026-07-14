@@ -1,15 +1,14 @@
 {
   "branch": "convergence/m1-final-publication",
-  "starting_sha": "d1a6f61",
+  "starting_sha": "1ff916f2ad317eb21d92a0e25290af89f0fddce1",
   "status": "M1_RUNTIME_LIFECYCLE_READY",
   "completed": [
-    "ControlGroupHandle owns deterministic control-process-group lifecycle outside lifecycle hooks",
-    "Lifecycle publication uses expected PublicationSlot registry and safe-point retry semantics",
-    "Terminal lane outcomes clean TargetLayerPlannerService and TargetPlanStore on every rank",
-    "Older generations are cancelled and cleaned across service, store, and lane",
-    "Formal target publication payload carries WindowPlan and validates against semantic digest",
-    "Formal 4-rank CPU/Gloo lifecycle gate implemented and passing",
-    "Formal path proved no late suffix publication"
+    "ControlGroupRegistry bootstraps all EP control groups in deterministic world-rank order outside lifecycle hooks",
+    "Lifecycle publication uses expected PublicationSlot registry, per-safe-point retry semantics, and event-driven safe points",
+    "Terminal lane outcomes clean TargetLayerPlannerService and TargetPlanStore on every rank, including remote failure and mismatch paths",
+    "Older generations are cleaned in store/service/lane and executing leftovers fail closed during forward cleanup",
+    "Formal 4-rank CPU/Gloo lifecycle gate runs through runtime.handle event flow and verifies delayed, failed, cancelled, mismatch, subgroup, and stale-replacement cases",
+    "Late-suffix evidence is collected from dynamic spies rather than hardcoded summary fields"
   ],
   "remaining_blockers": [],
   "test_commands": [

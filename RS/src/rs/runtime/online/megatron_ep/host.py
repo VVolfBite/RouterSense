@@ -66,6 +66,7 @@ class DedicatedP2PGroupRegistry:
 
 
 _DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}
+_CONTROL_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], "ControlGroupRegistry"] = {}
 
 
 # Basic runtime/bootstrap helpers
@@ -92,6 +93,64 @@ def _discover_all_ep_group_tuples(local_group_ranks: tuple[int, ...]) -> tuple[t
     dist.all_gather_object(gathered, normalized_local)
     unique = sorted({tuple(int(rank) for rank in (item or ())) for item in gathered if item is not None})
     return tuple(group for group in unique if group)
+
+
+@dataclass
+class ControlGroupRegistry:
+    ordered_group_ranks: tuple[tuple[int, ...], ...]
+    groups: dict[tuple[int, ...], dist.ProcessGroup]
+    ref_counts: dict[tuple[int, ...], int]
+    new_group_call_order: tuple[tuple[int, ...], ...]
+
+    @classmethod
+    def initialize(
+        cls,
+        *,
+        local_ep_group_ranks: tuple[int, ...],
+        world_group: dist.ProcessGroup | None = None,
+    ) -> tuple["ControlGroupRegistry", ControlGroupHandle]:
+        normalized_local = tuple(int(rank) for rank in local_ep_group_ranks)
+        ordered = _discover_all_ep_group_tuples(normalized_local)
+        cached = _CONTROL_GROUP_REGISTRY.get(ordered)
+        if cached is None:
+            groups: dict[tuple[int, ...], dist.ProcessGroup] = {}
+            call_order: list[tuple[int, ...]] = []
+            for group_ranks in ordered:
+                group = dist.new_group(ranks=list(group_ranks), backend="gloo")
+                groups[group_ranks] = group
+                call_order.append(tuple(int(rank) for rank in group_ranks))
+            cached = cls(
+                ordered_group_ranks=ordered,
+                groups=groups,
+                ref_counts={tuple(int(rank) for rank in item): 0 for item in ordered},
+                new_group_call_order=tuple(call_order),
+            )
+            _CONTROL_GROUP_REGISTRY[ordered] = cached
+        cached.ref_counts[normalized_local] = int(cached.ref_counts.get(normalized_local, 0)) + 1
+        root_global_rank = int(normalized_local[0]) if normalized_local else 0
+        root_group_rank = 0
+        return cached, ControlGroupHandle(
+            process_group=cached.groups.get(normalized_local),
+            group_ranks=normalized_local,
+            root_global_rank=root_global_rank,
+            root_group_rank=root_group_rank,
+            owned=True,
+        )
+
+    def close(self, *, local_ep_group_ranks: tuple[int, ...]) -> None:
+        normalized_local = tuple(int(rank) for rank in local_ep_group_ranks)
+        if normalized_local not in self.ref_counts:
+            return
+        self.ref_counts[normalized_local] = max(0, int(self.ref_counts[normalized_local]) - 1)
+        if any(int(value) > 0 for value in self.ref_counts.values()):
+            return
+        for group in self.groups.values():
+            try:
+                if dist.is_available() and dist.is_initialized():
+                    dist.destroy_process_group(group)
+            except Exception:
+                pass
+        _CONTROL_GROUP_REGISTRY.pop(self.ordered_group_ranks, None)
 
 
 def _get_or_create_dedicated_p2p_group_registry(
@@ -183,30 +242,14 @@ def _create_control_group_handle(
             root_group_rank=0,
             owned=False,
         )
-    group_ranks = tuple(int(rank) for rank in ep_group_ranks)
-    root_global = int(root_global_rank)
-    root_group = int(group_ranks.index(root_global)) if root_global in group_ranks else 0
-    backend = ""
-    try:
-        backend = str(dist.get_backend(ep_process_group)) if ep_process_group is not None else str(dist.get_backend())
-    except Exception:
-        backend = ""
-    if backend == "gloo":
-        return ControlGroupHandle(
-            process_group=ep_process_group,
-            group_ranks=group_ranks,
-            root_global_rank=root_global,
-            root_group_rank=root_group,
-            owned=False,
-        )
-    process_group = dist.new_group(ranks=list(group_ranks), backend="gloo")
-    return ControlGroupHandle(
-        process_group=process_group,
-        group_ranks=group_ranks,
-        root_global_rank=root_global,
-        root_group_rank=root_group,
-        owned=True,
+    registry, handle = ControlGroupRegistry.initialize(
+        local_ep_group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+        world_group=None,
     )
+    handle.root_global_rank = int(root_global_rank)
+    handle.root_group_rank = int(handle.group_ranks.index(int(root_global_rank))) if int(root_global_rank) in handle.group_ranks else 0
+    setattr(handle, "_registry_key", registry.ordered_group_ranks)
+    return handle
 
 
 def model_is_local_path(model: str) -> bool:
@@ -963,7 +1006,14 @@ def attach_dispatch_facade(
                 delattr(_dispatcher, "_routersense_facade_wrapped")
         handle.add_restore_callback(_restore_dispatcher)
     handle.add_close_callback(runtime._cleanup_target_plan_runtime)
-    handle.add_close_callback(runtime.target_plan_control_group_handle.close)
+    handle.add_close_callback(
+        lambda _runtime=runtime: (
+            _CONTROL_GROUP_REGISTRY.get(getattr(_runtime.target_plan_control_group_handle, "_registry_key", ()))
+            and _CONTROL_GROUP_REGISTRY[getattr(_runtime.target_plan_control_group_handle, "_registry_key", ())].close(
+                local_ep_group_ranks=tuple(int(rank) for rank in _runtime.ep_group_ranks)
+            )
+        )
+    )
     return handle
 
 
