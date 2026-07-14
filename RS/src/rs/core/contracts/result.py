@@ -136,6 +136,18 @@ class ResultBundle:
             raise ValueError("summary must include timeout_count")
         if "check_failure_count" not in self.summary:
             raise ValueError("summary must include check_failure_count")
+        if "status" in self.summary and str(self.summary["status"]) != str(self.status):
+            raise ValueError("summary status conflicts with result bundle status")
+        if "correctness_status" in self.summary and str(self.summary["correctness_status"]) != str(self.correctness_status):
+            raise ValueError("summary correctness_status conflicts with result bundle correctness_status")
+        if "performance_status" in self.summary and str(self.summary["performance_status"]) != str(self.performance_status):
+            raise ValueError("summary performance_status conflicts with result bundle performance_status")
+        if "status" in self.details and str(self.details["status"]) != str(self.status):
+            raise ValueError("details status conflicts with result bundle status")
+        if "correctness_status" in self.details and str(self.details["correctness_status"]) != str(self.correctness_status):
+            raise ValueError("details correctness_status conflicts with result bundle correctness_status")
+        if "performance_status" in self.details and str(self.details["performance_status"]) != str(self.performance_status):
+            raise ValueError("details performance_status conflicts with result bundle performance_status")
         for key in self.extensions:
             if str(key) in RESERVED_RESULT_EXTENSION_KEYS:
                 raise ValueError(f"extensions key conflicts with reserved field: {key}")
