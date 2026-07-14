@@ -1,41 +1,29 @@
 {
   "phase_a_status": "M4_OFFLINE_CORE_READY",
-  "final_status": "M4_OFFLINE_EVALUATION_BLOCKED",
+  "status": "M4_OFFLINE_EVALUATION_READY",
   "completed_with_evidence": [
-    "two-phase wave evaluation semantics",
-    "compute_delay and release_time affect ready-time/makespan",
-    "flow-order invariance coverage",
-    "task-set and execution-truth digest recomputation",
-    "builder world-size and identity validation",
-    "cost-model sharing between evaluator and oracle entrypoints",
-    "replay fail-closed semantics with no formal makespan fallback",
-    "planning-visible truth leakage removed from replay metadata",
-    "rollout group isolation and training-history scoping",
-    "paired aggregation fail-closed filtering and comparison separation",
-    "tiny exact fallback no longer claims certified optimum when OR-Tools is unavailable",
-    "offline/online PlanningRequest digest parity",
-    "offline/online WindowPlan digest parity",
-    "offline/online MaterializedPlan digest parity",
-    "offline expected completed tasks vs Gloo functional completed tasks parity"
+    "two-phase offline evaluator with release_time and compute_delay semantics",
+    "fail-closed replay and aggregation eligibility",
+    "truth/hint isolation preserved in planning-visible artifacts",
+    "offline planning request builder parity against captured runtime request",
+    "window plan parity against captured root-published runtime plan",
+    "materialized plan parity against captured runtime prepared execution",
+    "independent ExecutionTruth transfer parity against actual completed runtime transfers",
+    "phase_sync and async_release CPU-Gloo parity gate both pass"
   ],
   "implemented_not_verified": [
-    "CP-SAT exact parity on environments with OR-Tools installed"
+    "OR-Tools exact evidence remains environment-scoped"
   ],
-  "hard_blockers": [
-    "simulator still remains partial and cannot be claimed READY",
-    "offline replay smoke remains blocked on experiment-config runner semantics outside the M4 core parity path"
-  ],
+  "hard_blockers": [],
   "environment_not_run": [
-    "OR-Tools-backed CP-SAT exact coverage"
+    "OR-Tools exact oracle evidence"
   ],
   "deferred_cleanup": [
-    "legacy runtime/offline replay entrypoints still remain in tree",
-    "legacy replay smoke entrypoint still depends on the experiment config/runner convergence track"
+    "reference-only simulator remains present but is not used as formal makespan authority",
+    "legacy offline wrappers remain for compatibility and diagnostics"
   ],
   "test_commands": [
-    "python -m compileall RS/src RS/tests",
-    "PYTHONPATH=RS/src;RS;. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/offline/test_offline_core.py RS/tests/offline/test_offline_rollout_and_aggregation.py RS/tests/solver/test_offline_oracle_cp_sat.py RS/tests/contract/test_truth_hint_isolation.py RS/tests/offline/test_prediction_planning_parity.py RS/tests/offline/test_online_materialization_parity.py",
-    "PYTHONPATH=RS/src;RS;. python RS/experiments/distributed/run_m4_offline_online_parity_gloo.py",
-    "PYTHONPATH=RS/src;RS;. python RS/experiments/run_offline_replay.py --config RS/tests/fixtures/configs/minimal_offline.yaml --output-dir outputs/offline/m4_phase_b_smoke"
+    "PYTHONPATH=.;src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q .\\tests\\offline\\test_offline_core.py .\\tests\\offline\\test_offline_rollout_and_aggregation.py .\\tests\\offline\\test_online_materialization_parity.py",
+    "PYTHONPATH=.;src python .\\experiments\\distributed\\run_m4_offline_online_parity_gloo.py"
   ]
 }

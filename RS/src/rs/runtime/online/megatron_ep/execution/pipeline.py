@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rs.core.contracts.execution import ActualPhaseContext, ExecutionContext, ExecutionOutcome, MaterializedPlan, PublishedPlan, ValidationResult
-from rs.runtime.online.megatron_ep.execution.api import CommonExecutionGuard, PayloadInvocation, PhaseSyncExecutor
+from rs.runtime.online.megatron_ep.execution.api import (
+    CommonExecutionGuard,
+    GlooFunctionalExecutor,
+    P2PReleaseExecutor,
+    PayloadInvocation,
+    PhaseSyncExecutor,
+)
 from rs.runtime.online.megatron_ep.materialization import CommonPlanMaterializer, CommonPlanValidator
 
 
@@ -61,3 +67,16 @@ class RuntimeExecutionPipeline:
             raise
         self._guard.commit(str(invocation.invocation_id))
         return outcome
+
+
+def build_runtime_execution_pipeline(*, execution_mode: str) -> RuntimeExecutionPipeline:
+    normalized = str(execution_mode or "").strip().lower()
+    if normalized in {"phase_sync_wave", "multiphase_pending_window", "phase_sync"}:
+        executor = PhaseSyncExecutor()
+    elif normalized in {"joint_window_async_p2p", "async_release"}:
+        executor = P2PReleaseExecutor()
+    elif normalized == "gloo_functional":
+        executor = GlooFunctionalExecutor()
+    else:
+        raise ValueError(f"unsupported execution_mode {execution_mode!r}")
+    return RuntimeExecutionPipeline(executor=executor)

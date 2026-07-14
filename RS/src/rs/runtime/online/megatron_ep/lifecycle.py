@@ -719,15 +719,8 @@ class RouterSenseInjectionRuntime:
         )
         if not releases:
             return ()
-        propagated: list[str] = []
-        if str(phase) == "P0":
-            propagated = [f"release:p0_inbound_complete:{group_rank}" for group_rank in range(len(self.ep_group_ranks))]
-        elif str(phase) == "P1":
-            propagated = [f"release:p1_inbound_complete:{group_rank}" for group_rank in range(len(self.ep_group_ranks))]
-        else:
-            propagated = list(releases)
-        self.release_state_ledger.satisfied_release_ids.update(str(item) for item in propagated)
-        return tuple(str(item) for item in propagated)
+        self.release_state_ledger.satisfied_release_ids.update(str(item) for item in releases)
+        return tuple(str(item) for item in releases)
 
     def satisfied_release_dependency_ids_for(
         self,
