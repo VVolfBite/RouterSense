@@ -21,6 +21,12 @@ class _StoredTargetPlan:
     updated_at_ns: int = field(default_factory=time.perf_counter_ns)
 
 
+@dataclass(frozen=True)
+class PublishCurrentResult:
+    status: str
+    published_plan_digest: str = ""
+
+
 class TargetPlanStore:
     def __init__(self) -> None:
         self._plans: dict[tuple[str, int, str, str], _StoredTargetPlan] = {}
@@ -75,14 +81,49 @@ class TargetPlanStore:
         *,
         token: PreparationToken,
         plan: TargetLayerPreparedJointPlan,
-    ) -> bool:
+    ) -> PublishCurrentResult:
         with self._lock:
+            try:
+                plan.validate()
+            except Exception:
+                return PublishCurrentResult(status="INVALID_PLAN")
             skey = self._key(token.target_key)
+            if (
+                str(plan.run_id) != str(token.target_key.run_id)
+                or int(plan.forward_epoch) != int(token.target_key.forward_epoch)
+                or str(plan.microbatch_id) != str(token.target_key.microbatch_id)
+                or str(plan.target_layer_id) != str(token.target_key.target_layer_id)
+            ):
+                return PublishCurrentResult(status="SLOT_MISMATCH")
             current = self._publish_tokens.get(skey)
-            if current != token:
-                return False
-        self.publish_logical(token.target_key, plan)
-        return True
+            if current is None:
+                terminal = self._terminal.get(skey)
+                if terminal is not None:
+                    return PublishCurrentResult(status="TERMINAL", published_plan_digest=str(terminal.plan_digest))
+                return PublishCurrentResult(status="STALE_TOKEN")
+            if int(current.service_session_id) != int(token.service_session_id):
+                return PublishCurrentResult(status="STALE_SESSION")
+            if int(current.forward_generation) != int(token.forward_generation):
+                return PublishCurrentResult(status="CANCELLED_GENERATION")
+            if int(current.publish_sequence) != int(token.publish_sequence):
+                return PublishCurrentResult(status="SLOT_MISMATCH")
+            if int(current.task_version) != int(token.task_version):
+                return PublishCurrentResult(status="STALE_TOKEN")
+            existing = self._plans.get(skey)
+            if existing is not None:
+                if str(existing.plan.logical_plan_digest) == str(plan.logical_plan_digest):
+                    self._publish_tokens.pop(skey, None)
+                    return PublishCurrentResult(status="ALREADY_PUBLISHED_SAME", published_plan_digest=str(plan.logical_plan_digest))
+                return PublishCurrentResult(status="CONFLICTING_PLAN", published_plan_digest=str(existing.plan.logical_plan_digest))
+            claimed = self._claimed.get(skey)
+            if claimed is not None:
+                if str(claimed.plan.logical_plan_digest) == str(plan.logical_plan_digest):
+                    self._publish_tokens.pop(skey, None)
+                    return PublishCurrentResult(status="ALREADY_PUBLISHED_SAME", published_plan_digest=str(plan.logical_plan_digest))
+                return PublishCurrentResult(status="CONFLICTING_PLAN", published_plan_digest=str(claimed.plan.logical_plan_digest))
+            self._plans[skey] = _StoredTargetPlan(plan=plan, state="LOGICAL_READY")
+            self._publish_tokens.pop(skey, None)
+            return PublishCurrentResult(status="PUBLISHED", published_plan_digest=str(plan.logical_plan_digest))
 
     def publish_logical(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         skey = self._key(key)

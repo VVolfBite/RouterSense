@@ -1,0 +1,14 @@
+{
+  "branch": "convergence/m1-final-publication",
+  "status": "M1_RUNTIME_LIFECYCLE_BLOCKED",
+  "completed": [
+    "interface lock fast-forwarded from b2ec885",
+    "ControlCommunicationLane implementation skeleton added"
+  ],
+  "blockers": [
+    "lane not yet wired into lifecycle publication path",
+    "root canonical publish/decode not yet complete",
+    "4-rank formal Gloo proof missing",
+    "formal no-late-suffix proof missing"
+  ]
+}

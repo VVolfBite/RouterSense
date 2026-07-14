@@ -178,6 +178,7 @@ class PublicationPollStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    SLOT_MISMATCH = "slot_mismatch"
 
 
 @dataclass(frozen=True)

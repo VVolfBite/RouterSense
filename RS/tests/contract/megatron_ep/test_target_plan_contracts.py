@@ -7,6 +7,7 @@ from rs.runtime.online.megatron_ep.target_planning import (
     TargetLayerPreparedJointPlan,
 )
 from rs.scheduling.contracts import LogicalSchedulePlan
+from rs.scheduling.validation import stable_hash
 
 
 def _plan(name: str = "policy") -> LogicalSchedulePlan:
@@ -31,6 +32,7 @@ def test_current_window_joint_plan_contract() -> None:
 
 
 def test_target_prepared_plan_contract() -> None:
+    logical_plan = _plan("u")
     plan = TargetLayerPreparedJointPlan(
         source_layer_id="0",
         target_layer_id="1",
@@ -40,8 +42,8 @@ def test_target_prepared_plan_contract() -> None:
         h1_prediction_digest="h1",
         h2_prediction_digest="h2",
         target_problem_digest="tp",
-        logical_plan=_plan("u"),
-        logical_plan_digest="ld",
+        logical_plan=logical_plan,
+        logical_plan_digest=stable_hash(logical_plan.to_dict()),
         policy="u_pred",
         weights={"prediction_weight": 0.3},
         bucket_contract_digest="bucket",
