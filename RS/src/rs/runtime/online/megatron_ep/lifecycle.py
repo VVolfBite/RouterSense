@@ -194,9 +194,9 @@ class ReleaseStateLedger:
         if not required.issubset(completed):
             return ()
         if str(phase) == "P0":
-            release_id = f"release:p0_inbound_complete:{int(local_group_rank)}"
+            release_id = f"release:{str(layer_id)}:p0_inbound_complete:{int(local_group_rank)}"
         elif str(phase) == "P1":
-            release_id = f"release:p1_inbound_complete:{int(local_group_rank)}"
+            release_id = f"release:{str(layer_id)}:p1_inbound_complete:{int(local_group_rank)}"
         else:
             return ()
         if release_id in self.satisfied_release_ids:
@@ -731,8 +731,20 @@ class RouterSenseInjectionRuntime:
     ) -> tuple[str, ...]:
         layer_id = str(layer_id)
         phase = str(phase)
-        local_group_rank
-        return tuple(sorted(str(item) for item in self.release_state_ledger.satisfied_release_ids))
+        rank = self._local_group_rank() if local_group_rank is None else int(local_group_rank)
+        if phase == "P1":
+            prefix = f"release:{layer_id}:p0_inbound_complete:{rank}"
+        elif phase == "P2":
+            prefix = f"release:{layer_id}:p1_inbound_complete:{rank}"
+        else:
+            return ()
+        return tuple(
+            sorted(
+                str(item)
+                for item in self.release_state_ledger.satisfied_release_ids
+                if str(item) == prefix
+            )
+        )
 
     def record_execution_outcome(
         self,

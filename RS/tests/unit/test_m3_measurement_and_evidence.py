@@ -296,3 +296,42 @@ def test_result_bundle_performance_status_must_match_eligibility() -> None:
     eligibility = evaluate_result_bundle_eligibility(bundle)
     assert eligibility.performance_eligible is False
     assert "performance_status_inconsistent" in eligibility.reasons
+
+
+def test_correctness_eligibility_fails_closed_for_incomplete_or_timed_out_runs() -> None:
+    bundle = _valid_result_bundle()
+    bundle = replace(
+        bundle,
+        summary={
+            **bundle.summary,
+            "all_work_completed": False,
+            "timeout_count": 1,
+            "check_failure_count": 1,
+            "fallback_count": 1,
+        },
+        audit_evidence_level="unavailable",
+    )
+    eligibility = evaluate_result_bundle_eligibility(bundle)
+    assert eligibility.correctness_eligible is False
+    assert "all_work_incomplete" in eligibility.reasons
+    assert "timeout_present" in eligibility.reasons
+    assert "check_failures_present" in eligibility.reasons
+    assert "fallback_present" in eligibility.reasons
+    assert "audit_unavailable" in eligibility.reasons
+    assert "correctness_status_inconsistent" in eligibility.reasons
+
+
+def test_result_bundle_validate_rejects_summary_conflicts() -> None:
+    bundle = replace(
+        _valid_result_bundle(),
+        summary={
+            **_valid_result_bundle().summary,
+            "status": "failure",
+        },
+    )
+    try:
+        bundle.validate()
+    except ValueError as exc:
+        assert "summary status conflicts" in str(exc)
+    else:
+        raise AssertionError("expected summary conflict validation failure")
