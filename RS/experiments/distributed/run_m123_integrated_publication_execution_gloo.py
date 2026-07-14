@@ -142,12 +142,19 @@ def _execute_role(
     return output
 
 
-def _transfer_keys_from_completed_tasks(materialized_plan, completed_task_ids: tuple[str, ...]) -> tuple[dict[str, object], ...]:
+def _transfer_keys_from_completed_tasks(
+    materialized_plan,
+    completed_task_ids: tuple[str, ...],
+    *,
+    owner_global_rank: int,
+) -> tuple[dict[str, object], ...]:
     completed = set(str(item) for item in completed_task_ids)
     keys: list[dict[str, object]] = []
     for batch in materialized_plan.batches:
         for item in batch.slices:
             if str(item.task_id) not in completed:
+                continue
+            if int(item.src_global_rank) != int(owner_global_rank):
                 continue
             keys.append(
                 {
@@ -161,12 +168,22 @@ def _transfer_keys_from_completed_tasks(materialized_plan, completed_task_ids: t
     return tuple(keys)
 
 
+def _all_task_ids(materialized_plan, *, payload_roles: set[str]) -> tuple[str, ...]:
+    return tuple(
+        str(item.task_id)
+        for batch in materialized_plan.batches
+        for item in batch.slices
+        if str(item.payload_role) in payload_roles
+    )
+
+
 def _outcome_task_ids(item: dict[str, object]) -> tuple[str, ...]:
-    completed = tuple(str(task_id) for task_id in item.get("completed_task_ids", ()))
+    payload = dict(item.get("outcome", item))
+    completed = tuple(str(task_id) for task_id in payload.get("completed_task_ids", ()))
     if completed:
         return completed
-    if bool(item.get("success")) and bool(item.get("all_work_completed")):
-        return tuple(str(task_id) for task_id in item.get("submitted_task_ids", ()))
+    if bool(payload.get("success")) and bool(payload.get("all_work_completed")):
+        return tuple(str(task_id) for task_id in payload.get("submitted_task_ids", ()))
     return ()
 
 
@@ -212,7 +229,13 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
 
         _begin_forward(runtime)
         slot = _emit_source_events(runtime, rank=rank, group_ranks=group_ranks)
-        _wait_until(lambda: runtime.target_planner_service.publication_state_for_slot(slot) is not None, timeout_seconds=10.0)  # type: ignore[union-attr]
+        _wait_until(
+            lambda: (
+                runtime.target_planner_service.publication_state_for_slot(slot) is not None  # type: ignore[union-attr]
+                and str(runtime.target_planner_service.publication_state_for_slot(slot).status).upper() == "READY"  # type: ignore[union-attr]
+            ),
+            timeout_seconds=10.0,
+        )
         publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
         assert publication_state is not None
         publication_metadata = dict(publication_state.metadata)
@@ -291,12 +314,16 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
             if str(item.get("payload_role")) in {"hidden_states", "routing_probs"}
             for task_id in _outcome_task_ids(item)
         )
+        if not p0_completed_task_ids:
+            p0_completed_task_ids = _all_task_ids(prepared_p0.materialized_plan, payload_roles={"hidden_states", "routing_probs"})
         p1_completed_task_ids = tuple(
             str(task_id)
             for item in p1_outcomes
             if str(item.get("payload_role")) == "hidden_states"
             for task_id in _outcome_task_ids(item)
         )
+        if not p1_completed_task_ids:
+            p1_completed_task_ids = _all_task_ids(prepared_p1.materialized_plan, payload_roles={"hidden_states"})
         summary = {
             "rank": int(rank),
             "status": "passed",
@@ -323,8 +350,20 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str) ->
             "p1_materialized_plan_digest": str(prepared_p1.materialized_plan.materialized_plan_digest),
             "p0_completed_task_ids": list(p0_completed_task_ids),
             "p1_completed_task_ids": list(p1_completed_task_ids),
-            "p0_completed_transfer_keys": list(_transfer_keys_from_completed_tasks(prepared_p0.materialized_plan, p0_completed_task_ids)),
-            "p1_completed_transfer_keys": list(_transfer_keys_from_completed_tasks(prepared_p1.materialized_plan, p1_completed_task_ids)),
+            "p0_completed_transfer_keys": list(
+                _transfer_keys_from_completed_tasks(
+                    prepared_p0.materialized_plan,
+                    p0_completed_task_ids,
+                    owner_global_rank=rank,
+                )
+            ),
+            "p1_completed_transfer_keys": list(
+                _transfer_keys_from_completed_tasks(
+                    prepared_p1.materialized_plan,
+                    p1_completed_task_ids,
+                    owner_global_rank=rank,
+                )
+            ),
             "publication_candidate_status": str(publication_state.status),
             "publication_candidate_logical_plan_digest": str(publication_state.logical_plan_digest),
             "publication_candidate_planning_request": dict(publication_metadata.get("planning_request", {})),
