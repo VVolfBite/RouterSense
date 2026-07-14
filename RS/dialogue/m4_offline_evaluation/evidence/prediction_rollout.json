@@ -1,0 +1,47 @@
+[
+  {
+    "sample_index": 0,
+    "split": "train",
+    "predictor_id": "copy_current",
+    "fit_sample_count": 0,
+    "history_window": 1,
+    "cold_start_used": true,
+    "training_digest": "234272fe301f9fbc857e52c8629c59e6c65a2baa8126131d25b503a7d9915055",
+    "predictor_artifact_digest": "05f1cb4e55d7daf6020d175982ba1195de67d47eb6555f3c3dc5d215990f237d",
+    "metrics": {
+      "relative_l1": 0.6666666666666666,
+      "cosine_similarity": 0.7999999999999998,
+      "row_matrix_error": 2.0
+    }
+  },
+  {
+    "sample_index": 1,
+    "split": "validation",
+    "predictor_id": "linear",
+    "fit_sample_count": 1,
+    "history_window": 1,
+    "cold_start_used": false,
+    "training_digest": "99130f2246b484a35c98c0c3000ccd1ce652bc4a09b87a0044dec30aae296ee7",
+    "predictor_artifact_digest": "34632e506a89e85d0d55777588e2ed24d24983266b970612527dac7901616723",
+    "metrics": {
+      "relative_l1": 0.25,
+      "cosine_similarity": 0.9899494936611664,
+      "row_matrix_error": 1.0
+    }
+  },
+  {
+    "sample_index": 2,
+    "split": "test",
+    "predictor_id": "linear",
+    "fit_sample_count": 1,
+    "history_window": 1,
+    "cold_start_used": false,
+    "training_digest": "dcf7f2d5472b1ba1658c8dedc7da383f150b69cb0a4449b3056b77637e7a440c",
+    "predictor_artifact_digest": "880268d06e6d84659a2fc1796c7f2b1b79966c0052939b5d940a95dc5c31eab2",
+    "metrics": {
+      "relative_l1": 0.4,
+      "cosine_similarity": 0.9761870601839528,
+      "row_matrix_error": 2.0
+    }
+  }
+]

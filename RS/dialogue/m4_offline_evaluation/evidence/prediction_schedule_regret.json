@@ -1,0 +1,7 @@
+{
+  "valid": true,
+  "gain_vs_zero": 0.0,
+  "regret_vs_perfect": 0.0,
+  "plan_digest_difference_vs_zero": true,
+  "plan_digest_difference_vs_perfect": true
+}

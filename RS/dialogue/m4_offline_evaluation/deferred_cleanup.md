@@ -1,0 +1,2 @@
+- Remove legacy `runtime/offline/replay_unified.py` and old scheduling replay adapters after M123 parity lands.
+- Regenerate parity/evidence manifests only after latest M2 materialization and M123 integration are merged.

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from rs.core.contracts import (
+    PlanEvaluation,
     PlanningConstraints,
     PlanningIdentity,
     PlanningRequest,
@@ -8,12 +11,15 @@ from rs.core.contracts import (
     PlanningTraffic,
     PlanningWeights,
     PredictionHint,
+    TrafficProvenance,
 )
 from rs.planning import CommonCorePlanEstimator, PlannerRegistry, PlanningCostModel
 from rs.runtime.offline.replay_unified import (
     PlanningHint as ReplayPlanningHint,
     ReplayEngine,
     ReplayWindow,
+    build_multiphase_problem,
+    build_planning_problem,
     build_execution_truth,
     execution_truth_digest,
 )
@@ -53,6 +59,10 @@ def _window(*, p2_truth_rows: tuple[tuple[int, ...], ...]) -> ReplayWindow:
         group_size=2,
         payload_row_bytes_by_phase={"P0": 1, "P1": 1, "P2": 1},
         metadata={},
+        traffic_provenance=TrafficProvenance.ROUTE_RECONSTRUCTED,
+        return_model="transpose_dispatch",
+        raw_token_count=5,
+        used_token_count=5,
     )
 
 
@@ -71,6 +81,8 @@ def test_truth_change_keeps_planner_semantics_but_changes_execution_truth_digest
     assert result_a["planning_task_digest"] == result_b["planning_task_digest"]
     assert result_a["logical_plan_digest"] == result_b["logical_plan_digest"]
     assert result_a["execution_truth_digest"] != result_b["execution_truth_digest"]
+    assert result_a["planning_request_digest"] == result_b["planning_request_digest"]
+    assert result_a["logical_plan_digest"] == result_b["logical_plan_digest"]
     assert score.to_dict() == estimator.estimate(planner.plan(request), request, PlanningCostModel()).to_dict()
 
 
@@ -132,3 +144,42 @@ def test_four_hints_share_one_truth_digest_but_change_request_digest() -> None:
     }
     assert len(digests) == 4
     assert execution_truth_digest(truth) == execution_truth_digest(build_execution_truth(truth_window))
+
+
+def test_replay_planning_metadata_does_not_expose_execution_truth_digest() -> None:
+    truth_window = _window(p2_truth_rows=((0, 6), (2, 0)))
+    hint = ReplayPlanningHint("history_ema", ((0, 1), (4, 0)), 0.75, 1, 2)
+    planning_problem = build_planning_problem(replay_window=truth_window, planning_hint=hint)
+    problem = build_multiphase_problem(
+        planning_problem=planning_problem,
+        execution_truth=build_execution_truth(truth_window),
+        scheduling_mode="execution_window",
+        expert_compute_delay=0.0,
+    )
+    metadata = problem.forecast.metadata
+    assert "execution_truth_digest" not in metadata
+
+
+def test_invalid_replay_fails_closed_with_no_formal_makespan(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rs.runtime.offline import replay_unified
+
+    truth_window = _window(p2_truth_rows=((0, 6), (2, 0)))
+    engine = ReplayEngine(scheduling_mode="execution_window", expert_compute_delay=0.0, bucket_rows=2)
+    hint = ReplayPlanningHint("history_ema", ((0, 1), (4, 0)), 0.75, 1, 2)
+
+    class _InvalidEvaluator:
+        def evaluate(self, *args, **kwargs) -> PlanEvaluation:
+            return PlanEvaluation(
+                valid=False,
+                reason="forced_invalid",
+                realized_makespan=None,
+                coverage_valid=False,
+                port_valid=False,
+                metrics={},
+            )
+
+    monkeypatch.setattr(replay_unified, "OfflineEvaluator", lambda: _InvalidEvaluator())
+    result = engine.execute(replay_window=truth_window, planning_hint=hint, policy_name="fifo_bucket")
+    assert result["audit_valid"] is False
+    assert result["makespan"] is None
+    assert result["legacy_diagnostic_makespan"] is not None
