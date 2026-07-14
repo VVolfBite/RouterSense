@@ -86,6 +86,39 @@ def test_registry_lists_expected_run_kinds() -> None:
     assert RunKind.GLOO_FUNCTIONAL.value in kinds
 
 
+def test_diagnostic_runner_returns_typed_success_bundle() -> None:
+    registry = RunnerRegistry()
+    plan = registry.resolve(RunKind.DIAGNOSTIC).run(
+        type(
+            "Plan",
+            (),
+            {
+                "suite_id": "cpu-core",
+                "case_id": "diag-case",
+                "run_kind": RunKind.DIAGNOSTIC,
+                "config_digest": "cfg",
+                "planning_case": type(
+                    "Case",
+                    (),
+                    {
+                        "prediction_mode": "none",
+                        "planner_id": "diag",
+                        "planner_family": "diagnostic",
+                        "execution_backend": "diagnostic",
+                        "instrumentation_mode": "off",
+                    },
+                )(),
+            },
+        )()
+    )
+    assert plan.status == "success"
+    assert plan.run_identity.pipeline == "online"
+    assert plan.summary["all_work_completed"] is True
+    assert plan.eligibility.correctness_eligible is True
+    assert plan.eligibility.performance_eligible is False
+    assert "diagnostic_mode" in plan.eligibility.reasons
+
+
 def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     config_path = _write_config(tmp_path / "experiment.yaml")
     assert main(["inspect-config", "--config", str(config_path)]) == 0
@@ -107,7 +140,9 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert main(["run", "--config", str(config_path), "--suite-id", "cpu-core"]) == 0
     run_payload = json.loads(capsys.readouterr().out)
     assert len(run_payload) == 2
-    assert {item["status"] for item in run_payload} == {"invalid"}
+    by_kind = {item["details"]["run_kind"]: item for item in run_payload}
+    assert by_kind["DIAGNOSTIC"]["status"] == "success"
+    assert by_kind["OFFLINE_EVALUATION"]["status"] == "invalid"
 
 
 def test_loader_rejects_legacy_v1_config_without_lossy_migration(tmp_path: Path) -> None:

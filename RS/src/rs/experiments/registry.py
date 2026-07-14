@@ -34,6 +34,37 @@ def _base_result(plan: RunPlan, *, pipeline: str) -> ResultBundle:
     )
 
 
+def _diagnostic_success_result(plan: RunPlan) -> ResultBundle:
+    return ResultBundle(
+        run_identity=RunIdentity(
+            run_id=f"{plan.suite_id}:{plan.case_id}",
+            pipeline="online",
+            claim_scope="formal",
+            trace_origin="planned",
+            future_information_mode=plan.planning_case.prediction_mode,
+        ),
+        status="success",
+        eligibility=EligibilityResult(
+            correctness_eligible=True,
+            performance_eligible=False,
+            prediction_evaluation_eligible=False,
+            offline_replay_eligible=False,
+            reasons=("diagnostic_mode",),
+        ),
+        summary={
+            "all_work_completed": True,
+            "runner_kind": "diagnostic",
+        },
+        details={
+            "run_kind": plan.run_kind.value,
+            "planner_id": plan.planning_case.planner_id,
+            "planner_family": plan.planning_case.planner_family,
+            "execution_backend": plan.planning_case.execution_backend,
+            "instrumentation_mode": plan.planning_case.instrumentation_mode,
+        },
+    )
+
+
 @dataclass
 class OfflineEvaluationRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
@@ -73,7 +104,7 @@ class TraceCollectionRunner:
 @dataclass
 class DiagnosticRunner:
     def run(self, plan: RunPlan) -> ResultBundle:
-        return _base_result(plan, pipeline="online")
+        return _diagnostic_success_result(plan)
 
 
 class RunnerRegistry:

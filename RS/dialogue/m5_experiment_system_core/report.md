@@ -9,6 +9,7 @@ Closed in this branch:
 - default `pytest --collect-only` succeeds on this branch.
 
 Deliberately deferred:
-- service-backed execution inside the non-diagnostic runners;
+- service-backed execution inside the offline and gloo runners;
+- `DiagnosticRunner` is now a typed success-path runner and no longer returns a placeholder invalid bundle;
 - reporting/plotting/reproduce flows;
 - retirement of legacy `rs.core.experiment_config` after downstream migration.

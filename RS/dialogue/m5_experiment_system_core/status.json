@@ -11,17 +11,17 @@
     "default pytest collect-only succeeds without OR-Tools import-time failure"
   ],
   "implemented_not_verified": [
-    "real service-backed runner execution beyond Phase A stubs"
+    "real service-backed OfflineEvaluationRunner and GlooFunctionalRunner execution beyond Phase A stubs"
   ],
   "hard_blockers": [
-    "OfflineEvaluationRunner, GlooFunctionalRunner, and DiagnosticRunner still return explicit placeholder ResultBundle states instead of invoking formal M4/M123 services"
+    "OfflineEvaluationRunner and GlooFunctionalRunner still return explicit placeholder ResultBundle states instead of invoking formal M4/M123 services"
   ],
   "environment_not_run": [
     "GPU, multinode, and OR-Tools-backed suites"
   ],
   "deferred_cleanup": [
     "legacy core.experiment_config remains in tree for compatibility and should be retired after migration",
-    "Phase A runners currently return explicit non-claiming ResultBundle placeholders until M2/M4 services are wired"
+    "Phase A offline/gloo runners currently return explicit non-claiming ResultBundle placeholders until M2/M4 services are wired"
   ],
   "test_commands": [
     "python -m compileall RS/src RS/tests",

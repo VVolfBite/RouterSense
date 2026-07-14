@@ -19,7 +19,7 @@
     {
       "command": "PYTHONPATH=RS/src;RS;. python -m pytest -q RS/tests/test_experiments_cli_v2.py",
       "exit_code": 0,
-      "passed": 6,
+      "passed": 7,
       "failed": 0,
       "skipped": 0,
       "not_run": 0
