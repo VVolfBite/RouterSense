@@ -1,0 +1,88 @@
+schema_version: 2
+experiment_id: official-offline-core-matrix
+suites:
+  - suite_id: offline-core
+    markers: [offline, integration_cpu]
+    case_ids:
+      [
+        fifo-zero,
+        fifo-perfect,
+        greedy-zero,
+        greedy-perfect,
+        joint-zero,
+        joint-perfect,
+      ]
+    run_kinds: [OFFLINE_EVALUATION]
+planning_cases:
+  - case_id: fifo-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: fifo-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: greedy-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: greedy
+    planner_family: heuristic
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: greedy-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: greedy
+    planner_family: heuristic
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: joint-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: joint-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+defaults:
+  model: {id: offline-trace}
+  topology: {world_size: 4, topology_id: local-4gpu}
+  workload:
+    id: offline-replay-smoke
+    fixture_dir: tests/fixtures/offline_replay_smoke
+    max_windows: 1
+    bucket_rows: 4
+  runtime: {selected_layers: [0, 1], line: offline_replay}
+  evaluation: {repeats: 1, warmup: 0}
+  seed: 7
+  strategies: [fifo, greedy, joint]

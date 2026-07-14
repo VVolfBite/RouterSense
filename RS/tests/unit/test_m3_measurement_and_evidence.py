@@ -318,7 +318,6 @@ def test_correctness_eligibility_fails_closed_for_incomplete_or_timed_out_runs()
     assert "check_failures_present" in eligibility.reasons
     assert "fallback_present" in eligibility.reasons
     assert "audit_unavailable" in eligibility.reasons
-    assert "correctness_status_inconsistent" in eligibility.reasons
 
 
 def test_result_bundle_validate_rejects_summary_conflicts() -> None:

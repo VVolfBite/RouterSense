@@ -130,6 +130,7 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert main(["plan", "--config", str(config_path)]) == 0
     plan_payload = json.loads(capsys.readouterr().out)
     assert len(plan_payload) == 2
+    assert all("repeat_index" in item and "seed" in item for item in plan_payload)
 
     assert main(["list-suites", "--config", str(config_path)]) == 0
     suites_payload = json.loads(capsys.readouterr().out)
@@ -145,6 +146,19 @@ def test_cli_inspect_plan_run_and_list(tmp_path: Path, capsys) -> None:
     assert run_payload["status"] == "success"
     assert len(run_payload["runs"]) == 2
     assert all(Path(item["result_bundle_path"]).is_file() for item in run_payload["runs"])
+    report_dir = tmp_path / "report"
+    assert main(["report", "--input-dir", str(output_dir), "--output-dir", str(report_dir)]) == 0
+    report_payload = json.loads(capsys.readouterr().out)
+    assert Path(report_payload["artifacts"]["summary_json"]).is_file()
+    assert Path(report_payload["artifacts"]["summary_csv"]).is_file()
+    assert Path(report_payload["artifacts"]["claim_evidence_matrix_json"]).is_file()
+    assert Path(report_payload["artifacts"]["report_md"]).is_file()
+    plot_dir = tmp_path / "plot"
+    assert main(["plot", "--input-dir", str(output_dir), "--output-dir", str(plot_dir)]) == 0
+    plot_payload = json.loads(capsys.readouterr().out)
+    assert Path(plot_payload["artifacts"]["communication_makespan_comparison_svg"]).is_file()
+    assert Path(plot_payload["artifacts"]["prediction_gain_regret_svg"]).is_file()
+    assert Path(plot_payload["artifacts"]["oracle_gap_svg"]).is_file()
 
 
 def test_loader_rejects_legacy_v1_config_without_lossy_migration(tmp_path: Path) -> None:
@@ -179,6 +193,7 @@ def test_official_v2_configs_preserve_model_topology_workload_and_strategy_seman
     base = Path(__file__).resolve().parents[1] / "configs" / "official"
     expected = {
         "offline_evaluation.yaml": "OFFLINE_EVALUATION",
+        "offline_core_matrix.yaml": "OFFLINE_EVALUATION",
         "gloo_functional.yaml": "GLOO_FUNCTIONAL",
         "gpu_correctness.yaml": "GPU_CORRECTNESS",
         "gpu_performance.yaml": "GPU_PERFORMANCE",

@@ -47,7 +47,9 @@ def _plan_run_id(plan: RunPlan) -> str:
     experiment_id = str(getattr(plan, "experiment_id", "adhoc"))
     suite_id = str(getattr(plan, "suite_id", "suite"))
     case_id = str(getattr(plan, "case_id", "case"))
-    return f"{experiment_id}:{suite_id}:{case_id}"
+    repeat_index = int(getattr(plan, "repeat_index", 0) or 0)
+    seed = int(getattr(plan, "seed", 0) or 0)
+    return f"{experiment_id}:{suite_id}:{case_id}:r{repeat_index}:s{seed}"
 
 
 def _instrumentation_mode(plan: RunPlan) -> str:

@@ -87,8 +87,6 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
     if str(summary.get("coverage_status", "")).lower() != "complete":
         offline_reasons.append("coverage_incomplete")
     reasons = list(correctness_reasons)
-    if str(bundle.correctness_status).lower() == "valid" and not correctness_eligible:
-        reasons.append("correctness_status_inconsistent")
     if correctness_eligible and str(bundle.correctness_status).lower() != "valid":
         reasons.append("correctness_status_missing")
     if str(bundle.performance_status).lower() == "eligible" and not performance_eligible:

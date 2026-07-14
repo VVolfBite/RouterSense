@@ -137,6 +137,10 @@ class RunPlan:
     defaults: Mapping[str, Any] = field(default_factory=dict)
     config_path: str = ""
     output_dir: str = ""
+    repeat_index: int = 0
+    seed: int = 0
+    warmup: int = 0
+    max_windows: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,5 +153,9 @@ class RunPlan:
             "defaults": dict(self.defaults),
             "config_path": str(self.config_path),
             "output_dir": str(self.output_dir),
+            "repeat_index": int(self.repeat_index),
+            "seed": int(self.seed),
+            "warmup": int(self.warmup),
+            "max_windows": int(self.max_windows),
             "planning_case": self.planning_case.to_dict(),
         }
