@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from rs.core.contracts import PlanWave, PlannedFlow, WindowPlan
+from rs.planning.api import to_logical_plan
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave
 from rs.scheduling.validation import stable_hash
 
@@ -67,6 +69,7 @@ class TargetLayerPreparedJointPlan:
     h1_prediction_digest: str
     h2_prediction_digest: str
     target_problem_digest: str
+    window_plan: WindowPlan | None
     logical_plan: LogicalSchedulePlan
     logical_plan_digest: str
     policy: str
@@ -78,6 +81,7 @@ class TargetLayerPreparedJointPlan:
     h2_rows: MatrixRows
     created_at_ns: int
     ready_at_ns: int
+    legacy_logical_plan_digest: str = ""
     safe_projection_mode: str = "disabled"
     selected_variant: str = "raw_u"
     raw_logical_plan_digest: str = ""
@@ -112,7 +116,18 @@ class TargetLayerPreparedJointPlan:
         if str(self.plan_origin) not in {"current_window", "prepared_priority_hint", "target_prepared", "provisional", "late_spliced"}:
             raise ValueError(f"unsupported plan_origin {self.plan_origin!r}")
         recomputed_digest = str(stable_hash(self.logical_plan.to_dict()))
-        if recomputed_digest != str(self.logical_plan_digest):
+        if self.window_plan is not None:
+            self.window_plan.validate()
+            recomputed_window_digest = str(self.window_plan.semantic_digest())
+            if recomputed_window_digest != str(self.logical_plan_digest):
+                raise ValueError("logical_plan_digest must match window_plan.semantic_digest()")
+            canonical_legacy = to_logical_plan(self.window_plan)
+            canonical_legacy_digest = str(stable_hash(canonical_legacy.to_dict()))
+            if recomputed_digest != canonical_legacy_digest:
+                raise ValueError("logical_plan payload must match compatibility projection of window_plan")
+            if str(self.legacy_logical_plan_digest) and str(self.legacy_logical_plan_digest) != canonical_legacy_digest:
+                raise ValueError("legacy_logical_plan_digest does not match logical_plan payload")
+        elif recomputed_digest != str(self.logical_plan_digest):
             raise ValueError("logical_plan_digest does not match logical_plan payload")
         if str(self.selected_logical_plan_digest) and str(self.selected_logical_plan_digest) != str(self.logical_plan_digest):
             raise ValueError("selected_logical_plan_digest must match logical_plan_digest")
@@ -132,6 +147,8 @@ class TargetLayerPreparedJointPlan:
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         payload = asdict(self)
+        if self.window_plan is not None:
+            payload["window_plan"] = self.window_plan.to_dict()
         payload["h1_rows"] = [list(row) for row in self.h1_rows]
         payload["derived_p1_rows"] = [list(row) for row in self.derived_p1_rows]
         payload["h2_rows"] = [list(row) for row in self.h2_rows]
@@ -139,6 +156,34 @@ class TargetLayerPreparedJointPlan:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TargetLayerPreparedJointPlan":
+        window_plan_payload = payload.get("window_plan")
+        window_plan = None
+        if isinstance(window_plan_payload, dict):
+            window_plan = WindowPlan(
+                planner_id=str(window_plan_payload["planner_id"]),
+                planner_family=str(window_plan_payload["planner_family"]),
+                request_digest=str(window_plan_payload["request_digest"]),
+                waves=tuple(
+                    PlanWave(
+                        wave_id=int(wave["wave_id"]),
+                        flows=tuple(
+                            PlannedFlow(
+                                flow_id=str(flow["flow_id"]),
+                                phase=str(flow["phase"]),
+                                src_rank=int(flow["src_rank"]),
+                                dst_rank=int(flow["dst_rank"]),
+                                row_count=int(flow["row_count"]),
+                                release_state=str(flow["release_state"]),
+                                executable=bool(flow["executable"]),
+                            )
+                            for flow in wave.get("flows", ())
+                        ),
+                        estimated_duration=float(wave.get("estimated_duration", 0.0)),
+                    )
+                    for wave in window_plan_payload.get("waves", ())
+                ),
+                metadata=dict(window_plan_payload.get("metadata", {})),
+            )
         logical_plan_payload = dict(payload["logical_plan"])
         logical_plan = LogicalSchedulePlan(
             policy_name=str(logical_plan_payload["policy_name"]),
@@ -173,8 +218,10 @@ class TargetLayerPreparedJointPlan:
             h1_prediction_digest=str(payload["h1_prediction_digest"]),
             h2_prediction_digest=str(payload["h2_prediction_digest"]),
             target_problem_digest=str(payload["target_problem_digest"]),
+            window_plan=window_plan,
             logical_plan=logical_plan,
             logical_plan_digest=str(payload["logical_plan_digest"]),
+            legacy_logical_plan_digest=str(payload.get("legacy_logical_plan_digest", "")),
             policy=str(payload["policy"]),
             weights={str(key): float(value) for key, value in dict(payload.get("weights", {})).items()},
             bucket_contract_digest=str(payload["bucket_contract_digest"]),

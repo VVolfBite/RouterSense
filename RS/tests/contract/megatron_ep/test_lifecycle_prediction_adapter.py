@@ -95,3 +95,49 @@ def test_publication_slot_retries_after_not_ready() -> None:
     runtime._poll_target_plan_slot(target_layer_id="2", safe_point="source_combine_complete")  # noqa: SLF001
     runtime._poll_target_plan_slot(target_layer_id="2", safe_point="target_dispatch_ready")  # noqa: SLF001
     assert calls["count"] == 2
+
+
+def test_terminal_publication_cleans_store_without_local_ready_candidate() -> None:
+    runtime = RouterSenseInjectionRuntime(
+        config=RouterSenseInjectionConfig(scheduler_mode="disabled", online_p2_predictor="copy_current_dispatch"),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        step_id="step",
+        microbatch_id="mb",
+        model_revision_hash="model",
+        request_table_hash="req",
+        hostname="host",
+    )
+    slot = SimpleNamespace(
+        semantic_digest=lambda: "slot-digest",
+        run_id="run",
+        forward_generation=1,
+        microbatch_id="mb",
+        source_layer_id="1",
+        target_layer_id="2",
+    )
+    runtime._forward_epoch = 1  # noqa: SLF001
+    runtime._expected_publication_slots[("run", 1, "mb", "2")] = slot  # noqa: SLF001
+    cleared: list[tuple[str, str]] = []
+
+    class _Lane:
+        def poll(self, _slot, _candidate):
+            return PublicationPollResult(slot=_slot, status=PublicationPollStatus.FAILED, root_rank=0, canonical_payload={}, details={})
+
+        def cancel_before_generation(self, **_kwargs):
+            return None
+
+    runtime.control_communication_lane = _Lane()  # noqa: SLF001
+    runtime.target_planner_service = SimpleNamespace(  # noqa: SLF001
+        cancel_slot=lambda _slot, final_status: cleared.append(("service", final_status)),
+        publication_state_for_slot=lambda _slot: None,
+    )
+    runtime.target_plan_store = SimpleNamespace(  # noqa: SLF001
+        clear_expected_publication=lambda key: cleared.append(("clear", key.target_layer_id)),
+        close_key_if_unclaimed=lambda key, **_kwargs: cleared.append(("close", key.target_layer_id)),
+    )
+    runtime._poll_target_plan_slot(target_layer_id="2", safe_point="source_combine_complete")  # noqa: SLF001
+    assert ("service", "FAILED") in cleared
+    assert ("clear", "2") in cleared
+    assert ("close", "2") in cleared

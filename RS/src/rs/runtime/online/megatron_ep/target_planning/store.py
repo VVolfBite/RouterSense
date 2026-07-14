@@ -33,11 +33,20 @@ class TargetPlanStore:
         self._claimed: dict[tuple[str, int, str, str], _StoredTargetPlan] = {}
         self._terminal: dict[tuple[str, int, str, str], TargetPlanTerminalRecord] = {}
         self._publish_tokens: dict[tuple[str, int, str, str], PreparationToken] = {}
+        self._generation_floor_by_stream: dict[tuple[str, str], int] = {}
         self._lock = threading.RLock()
 
     @staticmethod
     def _key(key: TargetPlanKey) -> tuple[str, int, str, str]:
         return (str(key.run_id), int(key.forward_epoch), str(key.microbatch_id), str(key.target_layer_id))
+
+    @staticmethod
+    def _stream_key(run_id: str, microbatch_id: str) -> tuple[str, str]:
+        return (str(run_id), str(microbatch_id))
+
+    def _generation_expired(self, key: TargetPlanKey) -> bool:
+        floor = int(self._generation_floor_by_stream.get(self._stream_key(key.run_id, key.microbatch_id), 0))
+        return int(key.forward_epoch) < floor
 
     @staticmethod
     def _transition_table() -> dict[str, set[str]]:
@@ -72,9 +81,16 @@ class TargetPlanStore:
     def put(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         self.publish_logical(key, plan)
 
-    def register_expected_publication(self, token: PreparationToken) -> None:
+    def register_expected_publication(self, token: PreparationToken) -> bool:
         with self._lock:
+            if self._generation_expired(token.target_key):
+                return False
             self._publish_tokens[self._key(token.target_key)] = token
+            return True
+
+    def clear_expected_publication(self, key: TargetPlanKey) -> None:
+        with self._lock:
+            self._publish_tokens.pop(self._key(key), None)
 
     def publish_if_current(
         self,
@@ -88,6 +104,8 @@ class TargetPlanStore:
             except Exception:
                 return PublishCurrentResult(status="INVALID_PLAN")
             skey = self._key(token.target_key)
+            if self._generation_expired(token.target_key):
+                return PublishCurrentResult(status="EXPIRED_GENERATION")
             if (
                 str(plan.run_id) != str(token.target_key.run_id)
                 or int(plan.forward_epoch) != int(token.target_key.forward_epoch)
@@ -128,6 +146,15 @@ class TargetPlanStore:
     def publish_logical(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         skey = self._key(key)
         with self._lock:
+            if self._generation_expired(key):
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-EXPIRED",
+                        stage="target_plan_store",
+                        message="target plan publish rejected for expired generation",
+                        actual={"key": key.to_dict()},
+                    )
+                )
             terminal = self._terminal.get(skey)
             if terminal is not None:
                 raise RouterSenseInvariantError(
@@ -188,6 +215,15 @@ class TargetPlanStore:
     def claim(self, key: TargetPlanKey, *, claim_owner: str) -> TargetLayerPreparedJointPlan:
         skey = self._key(key)
         with self._lock:
+            if self._generation_expired(key):
+                raise RouterSenseInvariantError(
+                    InvariantFailure(
+                        error_code="RS-PLANNING-TP-EXPIRED",
+                        stage="target_plan_store",
+                        message="target plan claim rejected for expired generation",
+                        actual={"key": key.to_dict()},
+                    )
+                )
             item = self._plans.pop(skey, None)
             if item is None:
                 if skey in self._claimed:
@@ -363,26 +399,64 @@ class TargetPlanStore:
 
     def cleanup_epoch(self, *, run_id: str, forward_epoch: int, microbatch_id: str) -> None:
         with self._lock:
-            doomed = [
-                skey
-                for skey in tuple(self._plans) + tuple(self._claimed)
-                if skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id)
-            ]
-            token_doomed = [
-                skey
-                for skey in tuple(self._publish_tokens)
-                if skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id)
-            ]
-            for skey in token_doomed:
-                self._publish_tokens.pop(skey, None)
+            self._cleanup_matching_locked(
+                lambda skey: skey[0] == str(run_id) and int(skey[1]) == int(forward_epoch) and skey[2] == str(microbatch_id),
+                execution_origin="forward_cleanup",
+            )
+
+    def cleanup_before_generation(self, *, run_id: str, microbatch_id: str, current_generation: int) -> None:
+        with self._lock:
+            stream_key = self._stream_key(run_id, microbatch_id)
+            self._generation_floor_by_stream[stream_key] = max(
+                int(current_generation),
+                int(self._generation_floor_by_stream.get(stream_key, 0)),
+            )
+            self._cleanup_matching_locked(
+                lambda skey: (
+                    skey[0] == str(run_id)
+                    and skey[2] == str(microbatch_id)
+                    and int(skey[1]) < int(self._generation_floor_by_stream[stream_key])
+                ),
+                execution_origin="generation_cleanup",
+            )
+
+    def _cleanup_matching_locked(
+        self,
+        predicate,
+        *,
+        execution_origin: str,
+    ) -> None:
+        doomed = [
+            skey
+            for skey in tuple(self._plans) + tuple(self._claimed)
+            if predicate(skey)
+        ]
+        token_doomed = [skey for skey in tuple(self._publish_tokens) if predicate(skey)]
+        for skey in token_doomed:
+            self._publish_tokens.pop(skey, None)
         for skey in doomed:
-            self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+            item = self._plans.pop(skey, None)
+            if item is None:
+                item = self._claimed.pop(skey, None)
+            if item is None or skey in self._terminal:
+                continue
+            final_status = "FAILED" if str(item.state) == "EXECUTING" else "CANCELLED"
+            self._terminal[skey] = TargetPlanTerminalRecord(
+                key=TargetPlanKey(
+                    run_id=skey[0],
+                    forward_epoch=skey[1],
+                    microbatch_id=skey[2],
+                    target_layer_id=skey[3],
+                ),
+                plan_digest=str(item.plan.logical_plan_digest),
+                final_status=final_status,
+                execution_origin=f"{execution_origin}:{str(item.state).lower()}",
+                terminal_at_ns=int(time.perf_counter_ns()),
+            )
 
     def shutdown(self) -> None:
         with self._lock:
-            doomed = list(self._plans) + [key for key in self._claimed if key not in self._plans]
-        for skey in doomed:
-            self.cancel(TargetPlanKey(run_id=skey[0], forward_epoch=skey[1], microbatch_id=skey[2], target_layer_id=skey[3]))
+            self._cleanup_matching_locked(lambda _skey: True, execution_origin="shutdown")
 
     def close_key_if_unclaimed(
         self,

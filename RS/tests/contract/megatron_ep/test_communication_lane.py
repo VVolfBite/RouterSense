@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rs.core.contracts import WindowPlan
+from rs.planning.api import to_logical_plan
 from rs.runtime.online.megatron_ep.control.communication_lane import GlooControlCommunicationLane, slot_from_request
 from rs.runtime.online.megatron_ep.public_types import (
     LocalPreparationToken,
@@ -7,7 +9,6 @@ from rs.runtime.online.megatron_ep.public_types import (
     PublicationPollStatus,
 )
 from rs.runtime.online.megatron_ep.target_planning.contracts import TargetLayerPreparedJointPlan
-from rs.scheduling.contracts import LogicalSchedulePlan
 import rs.runtime.online.megatron_ep.control.communication_lane as lane_mod
 from rs.scheduling.validation import stable_hash
 
@@ -20,8 +21,15 @@ def _candidate(*, slot_digest: str, logical_plan_digest: str = "ld") -> LocalPub
         source_layer_id="0",
         target_layer_id="1",
     )
-    logical_plan = LogicalSchedulePlan(policy_name="u", waves=(), diagnostics={})
-    effective_digest = stable_hash(logical_plan.to_dict()) if logical_plan_digest == "ld" else logical_plan_digest
+    window_plan = WindowPlan(
+        planner_id="u",
+        planner_family="joint",
+        request_digest="req",
+        waves=(),
+        metadata={"legacy_policy_name": "u"},
+    )
+    logical_plan = to_logical_plan(window_plan)
+    effective_digest = window_plan.semantic_digest() if logical_plan_digest == "ld" else logical_plan_digest
     plan = TargetLayerPreparedJointPlan(
         source_layer_id="0",
         target_layer_id="1",
@@ -31,8 +39,10 @@ def _candidate(*, slot_digest: str, logical_plan_digest: str = "ld") -> LocalPub
         h1_prediction_digest="h1",
         h2_prediction_digest="h2",
         target_problem_digest="tp",
+        window_plan=window_plan,
         logical_plan=logical_plan,
         logical_plan_digest=effective_digest,
+        legacy_logical_plan_digest=stable_hash(logical_plan.to_dict()),
         policy="u",
         weights={},
         bucket_contract_digest="bucket",
@@ -182,3 +192,17 @@ def test_lane_uses_global_root_rank_for_broadcast(monkeypatch) -> None:
     result = lane.poll(slot, local)
     assert result.status is PublicationPollStatus.READY
     assert seen["src"] == 2
+
+
+def test_lane_generation_floor_marks_old_slot_expired() -> None:
+    slot = slot_from_request(
+        run_id="run",
+        forward_generation=1,
+        microbatch_id="mb",
+        source_layer_id="0",
+        target_layer_id="1",
+    )
+    lane = GlooControlCommunicationLane(rank=0, world_size=1, root_rank=0, process_group=None, group_ranks=(0,))
+    lane.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
+    result = lane.poll(slot, None)
+    assert result.status is PublicationPollStatus.EXPIRED

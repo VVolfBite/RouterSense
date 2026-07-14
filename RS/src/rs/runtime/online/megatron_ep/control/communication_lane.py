@@ -63,6 +63,7 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
             raise ValueError(f"root rank {self.root_rank} is not in group_ranks {self.group_ranks!r}")
         self.group_rank = int(self.group_ranks.index(self.global_rank))
         self.root_group_rank = int(self.group_ranks.index(self.root_rank))
+        self._generation_floor_by_stream: dict[tuple[str, str], int] = {}
 
     def poll(self, slot: PublicationSlot, local_candidate: LocalPublicationCandidate | None) -> PublicationPollResult:
         local_payload = self._local_status_payload(slot=slot, local_candidate=local_candidate)
@@ -141,12 +142,34 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
             details={"gathered_statuses": tuple(str(item.get("status")) for item in gathered)},
         )
 
+    def cancel_before_generation(
+        self,
+        *,
+        run_id: str,
+        microbatch_id: str,
+        current_generation: int,
+    ) -> None:
+        stream_key = (str(run_id), str(microbatch_id))
+        self._generation_floor_by_stream[stream_key] = max(
+            int(current_generation),
+            int(self._generation_floor_by_stream.get(stream_key, 0)),
+        )
+
     def _local_status_payload(
         self,
         *,
         slot: PublicationSlot,
         local_candidate: LocalPublicationCandidate | None,
     ) -> dict[str, object]:
+        floor = int(self._generation_floor_by_stream.get((str(slot.run_id), str(slot.microbatch_id)), 0))
+        if int(slot.forward_generation) < floor:
+            return {
+                "slot_digest": str(slot.semantic_digest()),
+                "group_rank": int(self.group_rank),
+                "global_rank": int(self.global_rank),
+                "status": "EXPIRED",
+                "candidate": {},
+            }
         if local_candidate is None:
             status = "NOT_SUBMITTED"
             candidate = {}
