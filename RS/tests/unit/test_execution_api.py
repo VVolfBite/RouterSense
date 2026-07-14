@@ -10,11 +10,26 @@ from tests.unit.test_plan_materialization import _build_materialized_plan
 def test_execution_guard_rejects_layer_mismatch() -> None:
     _, _, materialized = _build_materialized_plan()
     guard = CommonExecutionGuard().validate(
-        materialized,
-        ExecutionContext(
+        plan=materialized,
+        invocation=PayloadInvocation(
             run_id="run",
             forward_generation=0,
             layer_id="99",
+            phase="P0",
+            payload_role=materialized.payload_specs[0].payload_role,
+            shape=(materialized.payload_specs[0].row_count, materialized.payload_specs[0].shape_suffix[0]),
+            dtype=materialized.payload_specs[0].dtype,
+            layout_digest=materialized.layout_digest,
+            invocation_id="inv-0",
+            input_tensor=torch.zeros(
+                (materialized.payload_specs[0].row_count, materialized.payload_specs[0].shape_suffix[0]),
+                dtype=torch.float16,
+            ),
+        ),
+        context=ExecutionContext(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
             phase="P0",
             rank_space="global",
         ),
@@ -23,40 +38,27 @@ def test_execution_guard_rejects_layer_mismatch() -> None:
     assert guard.reason == "layer_id_mismatch"
 
 
-def test_phase_sync_executor_returns_execution_outcome(monkeypatch) -> None:
+def test_phase_sync_executor_returns_execution_outcome() -> None:
     _, _, materialized = _build_materialized_plan()
-    payload_role = materialized.payload_specs[0].payload_role
-    rows = materialized.payload_specs[0].row_count
-    hidden_dim = materialized.payload_specs[0].shape_suffix[0] if materialized.payload_specs[0].shape_suffix else 1
+    spec = materialized.payload_specs[0]
+    rows = spec.row_count
+    hidden_dim = spec.shape_suffix[0] if spec.shape_suffix else 1
     tensor = torch.arange(max(rows, 1) * max(hidden_dim, 1), dtype=torch.float16).reshape(max(rows, 1), max(hidden_dim, 1))[:rows]
-    from rs.runtime.online.megatron_ep.execution.executor_facade import ExecutionResult
-
-    monkeypatch.setattr(
-        "rs.runtime.online.megatron_ep.execution.api.execute_transport",
-        lambda request, backend: ExecutionResult(
-            output_tensor=request.input_tensor.clone(),
-            execution_plan_digest="plan-digest",
-            send_op_count=1,
-            recv_op_count=1,
-            local_copy_task_count=0,
-            local_copy_row_count=0,
-            enqueue_us=1.0,
-            wait_us=2.0,
-            total_us=3.0,
-            fallback_used=False,
-            timeout=False,
-            raw_summary={},
-            execution_entries=(),
-            requested_backend_id=backend,
-            backend_id=backend,
-            executed_backend_id=backend,
-            all_work_completed=True,
-        ),
-    )
     outcome = PhaseSyncExecutor().execute(
-        materialized,
-        PayloadInvocation(payload_role=payload_role, input_tensor=tensor),
-        ExecutionContext(
+        plan=materialized,
+        invocation=PayloadInvocation(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            payload_role=spec.payload_role,
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=spec.dtype,
+            layout_digest=materialized.layout_digest,
+            invocation_id="inv-1",
+            input_tensor=tensor,
+        ),
+        context=ExecutionContext(
             run_id="run",
             forward_generation=0,
             layer_id="0",
@@ -64,5 +66,37 @@ def test_phase_sync_executor_returns_execution_outcome(monkeypatch) -> None:
             rank_space="global",
         ),
     )
-    assert outcome.execution_digest
+    assert outcome.success is True
     assert outcome.executed_batch_count == len(materialized.batches)
+    assert outcome.completed_task_ids
+
+
+def test_execution_guard_rejects_duplicate_invocation() -> None:
+    _, _, materialized = _build_materialized_plan()
+    spec = materialized.payload_specs[0]
+    tensor = torch.zeros((spec.row_count, spec.shape_suffix[0]), dtype=torch.float16)
+    guard = CommonExecutionGuard()
+    invocation = PayloadInvocation(
+        run_id="run",
+        forward_generation=0,
+        layer_id="0",
+        phase="P0",
+        payload_role=spec.payload_role,
+        shape=tuple(int(dim) for dim in tensor.shape),
+        dtype=spec.dtype,
+        layout_digest=materialized.layout_digest,
+        invocation_id="dup-invocation",
+        input_tensor=tensor,
+    )
+    context = ExecutionContext(
+        run_id="run",
+        forward_generation=0,
+        layer_id="0",
+        phase="P0",
+        rank_space="global",
+    )
+    first = guard.validate(plan=materialized, invocation=invocation, context=context)
+    second = guard.validate(plan=materialized, invocation=invocation, context=context)
+    assert first.valid is True
+    assert second.valid is False
+    assert second.reason == "duplicate_invocation"

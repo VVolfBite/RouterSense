@@ -1,0 +1,28 @@
+{
+  "branch": "convergence/m2-control-execution",
+  "starting_sha": "93d7725",
+  "status": "M2_CONTROL_MATERIALIZATION_EXECUTION_BLOCKED",
+  "completed": [
+    "execution contracts now carry typed PublishedPlan, MaterializedPlan, and ExecutionOutcome",
+    "CanonicalPlanPublisher binds a WindowPlan and recomputes published digests",
+    "CommonPlanMaterializer materializes directly from PublishedPlan(WindowPlan)",
+    "CommonPlanValidator checks materialized digest and row coverage",
+    "CommonExecutionGuard validates invocation identity and rejects duplicate invocation IDs",
+    "RuntimeExecutionPipeline added as the formal prepare/execute entry",
+    "focused M2 unit suite passed"
+  ],
+  "remaining_blockers": [
+    "formal runtime path not yet integrated",
+    "4-rank Gloo execution gate missing",
+    "legacy phase_execution and transport bridge still coexist",
+    "P2P inflight and subgroup negative coverage incomplete"
+  ],
+  "test_commands": [
+    "python -m compileall RS/src/rs/core/contracts RS/src/rs/runtime/online/megatron_ep/control RS/src/rs/runtime/online/megatron_ep/materialization RS/src/rs/runtime/online/megatron_ep/execution RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py",
+    "PYTHONPATH='RS/src;RS;.' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q RS/tests/unit/test_rank_map.py RS/tests/unit/test_plan_materialization.py RS/tests/unit/test_execution_api.py"
+  ],
+  "test_results": {
+    "compileall": "passed",
+    "focused_pytest": "10 passed"
+  }
+}

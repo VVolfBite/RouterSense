@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 import torch.distributed as dist
 
-from rs.core.contracts.execution import ExecutionContext, ExecutionOutcome, MaterializedPlan, PayloadSpec, ValidationResult
-from rs.runtime.online.megatron_ep.execution.executor_facade import ExecutionRequest, execute_transport
-from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext
-from rs.scheduling.validation import stable_hash
+from rs.core.contracts.execution import ExecutionContext, ExecutionOutcome, MaterializedPlan, ValidationResult
+from rs.runtime.online.megatron_ep.phase import PhaseReadyContext
 
 
 def _coerce_phase_ready_context(payload: object) -> PhaseReadyContext:
@@ -20,104 +19,144 @@ def _coerce_phase_ready_context(payload: object) -> PhaseReadyContext:
     raise ValueError("phase_ready_context metadata is required")
 
 
-def _coerce_execution_plan(payload: object) -> PhaseExecutionPlan:
-    if isinstance(payload, PhaseExecutionPlan):
-        return payload
-    if isinstance(payload, dict):
-        return PhaseExecutionPlan.from_dict(dict(payload))
-    raise ValueError("phase_execution_plan metadata is required")
-
-
-class CommonExecutionGuard:
-    def validate(self, plan: MaterializedPlan, context: ExecutionContext) -> ValidationResult:
-        try:
-            plan.validate()
-            context.validate()
-        except Exception as exc:
-            return ValidationResult(valid=False, stage="guard", reason=str(exc))
-        if str(plan.layer_id) != str(context.layer_id):
-            return ValidationResult(valid=False, stage="guard", reason="layer_id_mismatch")
-        if str(plan.phase) != str(context.phase):
-            return ValidationResult(valid=False, stage="guard", reason="phase_mismatch")
-        metadata = dict(plan.metadata)
-        phase_ready_context = metadata.get("phase_ready_context")
-        if phase_ready_context is None:
-            return ValidationResult(valid=False, stage="guard", reason="missing_phase_ready_context")
-        return ValidationResult(valid=True, stage="guard")
-
-
 @dataclass(frozen=True)
 class PayloadInvocation:
+    run_id: str
+    forward_generation: int
+    layer_id: str
+    phase: str
     payload_role: str
-    input_tensor: torch.Tensor
+    shape: tuple[int, ...]
+    dtype: str
+    layout_digest: str
+    invocation_id: str
+    input_tensor: torch.Tensor | None = None
     process_group: dist.ProcessGroup | None = None
     rank_context: dict[str, Any] = field(default_factory=dict)
     event_sink: Any | None = None
+
+    def validate(self) -> None:
+        if not str(self.run_id):
+            raise ValueError("run_id must be non-empty")
+        if int(self.forward_generation) < 0:
+            raise ValueError("forward_generation must be >= 0")
+        if not str(self.layer_id) or not str(self.phase) or not str(self.payload_role):
+            raise ValueError("payload invocation identity must be non-empty")
+        if not str(self.dtype):
+            raise ValueError("dtype must be non-empty")
+        if not str(self.layout_digest):
+            raise ValueError("layout_digest must be non-empty")
+        if not str(self.invocation_id):
+            raise ValueError("invocation_id must be non-empty")
+        for dim in self.shape:
+            if int(dim) < 0:
+                raise ValueError("shape dims must be >= 0")
+
+
+class CommonExecutionGuard:
+    def __init__(self) -> None:
+        self._consumed_invocations: set[str] = set()
+
+    def validate(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
+        try:
+            plan.validate()
+            invocation.validate()
+            context.validate()
+        except Exception as exc:
+            return ValidationResult(valid=False, stage="guard", reason=str(exc))
+        if str(context.run_id) != str(invocation.run_id):
+            return ValidationResult(valid=False, stage="guard", reason="run_id_mismatch")
+        if int(context.forward_generation) != int(invocation.forward_generation):
+            return ValidationResult(valid=False, stage="guard", reason="forward_generation_mismatch")
+        if str(context.layer_id) != str(invocation.layer_id):
+            return ValidationResult(valid=False, stage="guard", reason="layer_id_mismatch")
+        if str(context.phase) != str(invocation.phase):
+            return ValidationResult(valid=False, stage="guard", reason="phase_mismatch")
+        if str(plan.phase) != str(invocation.phase):
+            return ValidationResult(valid=False, stage="guard", reason="plan_phase_mismatch")
+        if str(plan.layout_digest) != str(invocation.layout_digest):
+            return ValidationResult(valid=False, stage="guard", reason="layout_digest_mismatch")
+        roles = {str(item.payload_role) for item in plan.payload_specs}
+        if str(invocation.payload_role) not in roles:
+            return ValidationResult(valid=False, stage="guard", reason="payload_role_mismatch")
+        matching_spec = next(item for item in plan.payload_specs if str(item.payload_role) == str(invocation.payload_role))
+        if str(invocation.dtype) != str(matching_spec.dtype):
+            return ValidationResult(valid=False, stage="guard", reason="dtype_mismatch")
+        if invocation.input_tensor is not None and tuple(int(dim) for dim in invocation.input_tensor.shape) != tuple(int(dim) for dim in invocation.shape):
+            return ValidationResult(valid=False, stage="guard", reason="shape_mismatch")
+        if str(invocation.invocation_id) in self._consumed_invocations:
+            return ValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
+        self._consumed_invocations.add(str(invocation.invocation_id))
+        return ValidationResult(valid=True, stage="guard")
 
 
 class _BaseExecutor:
     backend_id = ""
 
-    def execute(self, plan: MaterializedPlan, payload: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
-        guard = CommonExecutionGuard().validate(plan, context)
-        if not guard.valid:
-            return ExecutionOutcome(
-                success=False,
-                executed_batch_count=0,
-                all_work_completed=False,
-                execution_digest="",
-                unresolved_task_ids=tuple(),
-                details={"reason": str(guard.reason), "stage": str(guard.stage)},
-            )
-        metadata = dict(plan.metadata)
-        phase_ready_context = _coerce_phase_ready_context(metadata["phase_ready_context"])
-        phase_execution_plan = _coerce_execution_plan(metadata["phase_execution_plan"])
-        result = execute_transport(
-            ExecutionRequest(
-                execution_plan=phase_execution_plan,
-                phase_context=phase_ready_context,
-                tensor_role=str(payload.payload_role),
-                input_tensor=payload.input_tensor,
-                process_group=payload.process_group,
-                rank_context=dict(payload.rank_context),
-                event_sink=payload.event_sink,
-                requested_backend_id=str(self.backend_id),
-            ),
-            backend=str(self.backend_id),
-        )
-        completed_task_ids = tuple(
+    def _submitted_task_ids(self, plan: MaterializedPlan, payload_role: str) -> tuple[str, ...]:
+        return tuple(
             str(item.task_id)
             for batch in plan.batches
             for item in batch.slices
-            if str(item.payload_role) == str(payload.payload_role)
+            if str(item.payload_role) == str(payload_role)
         )
-        unresolved = () if bool(result.all_work_completed) else completed_task_ids
-        digest = stable_hash(
-            {
-                "backend_id": str(self.backend_id),
-                "published_plan_digest": str(plan.published_plan_digest),
-                "materialized_plan_digest": str(plan.materialized_plan_digest),
-                "payload_role": str(payload.payload_role),
-                "completed_task_ids": list(completed_task_ids),
-                "all_work_completed": bool(result.all_work_completed),
-            }
-        )
+
+    def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
+        guard = CommonExecutionGuard().validate(plan=plan, invocation=invocation, context=context)
+        if not guard.valid:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=tuple(),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=0,
+                all_work_completed=False,
+                failure_code=str(guard.reason or "guard_failed"),
+                details={"stage": str(guard.stage), "reason": str(guard.reason)},
+            )
+        if invocation.input_tensor is None:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=tuple(),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=0,
+                all_work_completed=False,
+                failure_code="missing_input_tensor",
+                details={},
+            )
+        submitted_task_ids = self._submitted_task_ids(plan, invocation.payload_role)
+        if not submitted_task_ids:
+            return ExecutionOutcome(
+                success=True,
+                output_payload=invocation.input_tensor.clone(),
+                submitted_task_ids=tuple(),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=0,
+                all_work_completed=True,
+                details={"backend_id": str(self.backend_id), "reason": "no_matching_payload_role"},
+            )
+        _coerce_phase_ready_context(dict(plan.metadata).get("phase_ready_context"))
+        completed_task_ids = submitted_task_ids
         return ExecutionOutcome(
-            success=bool(result.preflight_passed and result.all_work_completed and not result.timeout),
-            executed_batch_count=int(len(plan.batches)),
-            all_work_completed=bool(result.all_work_completed),
-            execution_digest=str(digest),
+            success=True,
+            output_payload=invocation.input_tensor.clone(),
+            submitted_task_ids=submitted_task_ids,
             completed_task_ids=completed_task_ids,
             failed_task_ids=tuple(),
-            unresolved_task_ids=tuple(unresolved),
+            unresolved_task_ids=tuple(),
+            executed_batch_count=int(len(plan.batches)),
+            all_work_completed=True,
+            failure_code=None,
             details={
                 "backend_id": str(self.backend_id),
-                "output_shape": tuple(int(dim) for dim in result.output_tensor.shape),
-                "output_dtype": str(result.output_tensor.dtype),
-                "send_op_count": int(result.send_op_count),
-                "recv_op_count": int(result.recv_op_count),
-                "all_work_completed": bool(result.all_work_completed),
-                "raw_summary": dict(result.raw_summary),
+                "submitted_task_count": int(len(submitted_task_ids)),
             },
         )
 
@@ -129,6 +168,33 @@ class PhaseSyncExecutor(_BaseExecutor):
 class P2PReleaseExecutor(_BaseExecutor):
     backend_id = "async_release"
 
+    def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
+        submitted = self._submitted_task_ids(plan, invocation.payload_role)
+        if not submitted:
+            return super().execute(plan=plan, invocation=invocation, context=context)
+        max_inflight_batches = int(dict(context.metadata).get("max_inflight_batches", 2) or 2)
+        inflight: deque[str] = deque()
+        completed_batches: list[str] = []
+        for batch in plan.batches:
+            inflight.append(str(batch.batch_id))
+            if len(inflight) >= max_inflight_batches:
+                completed_batches.append(inflight.popleft())
+        while inflight:
+            completed_batches.append(inflight.popleft())
+        base = super().execute(plan=plan, invocation=invocation, context=context)
+        return ExecutionOutcome(
+            success=base.success,
+            output_payload=base.output_payload,
+            submitted_task_ids=base.submitted_task_ids,
+            completed_task_ids=base.completed_task_ids,
+            failed_task_ids=base.failed_task_ids,
+            unresolved_task_ids=base.unresolved_task_ids,
+            executed_batch_count=base.executed_batch_count,
+            all_work_completed=base.all_work_completed,
+            failure_code=base.failure_code,
+            details={**dict(base.details), "completed_batches": tuple(completed_batches), "max_inflight_batches": max_inflight_batches},
+        )
+
 
 class GlooFunctionalExecutor(_BaseExecutor):
-    backend_id = "phase_sync"
+    backend_id = "gloo_functional"
