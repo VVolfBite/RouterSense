@@ -85,6 +85,28 @@ def test_unknown_or_conflicting_values_raise() -> None:
         raise AssertionError("expected ValueError for mixed v1/legacy config")
 
 
+def test_normalize_rejects_string_schema_version() -> None:
+    try:
+        normalize_run_config({"schema_version": "1"})
+    except ValueError as exc:
+        assert "schema_version must be an integer" in str(exc)
+    else:
+        raise AssertionError("expected strict schema_version rejection")
+
+
+def test_normalize_rejects_bool_bucket_rows() -> None:
+    bad = {
+        "fixture_dir": "tests/fixtures/offline_replay_smoke",
+        "bucket_rows": [True],
+    }
+    try:
+        normalize_run_config(bad)
+    except ValueError as exc:
+        assert "bucket_rows[0] must be an integer" in str(exc)
+    else:
+        raise AssertionError("expected strict bucket_rows rejection")
+
+
 def test_v1_component_references_are_resolved_recursively(tmp_path: Path) -> None:
     topology_component = tmp_path / "topology.yaml"
     topology_component.write_text(

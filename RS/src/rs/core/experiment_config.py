@@ -189,6 +189,68 @@ class RunConfig:
         return asdict(self)
 
 
+def _strict_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a mapping, got {type(value).__name__}")
+    return dict(value)
+
+
+def _strict_str(value: Any, *, field_name: str, default: str | None = None) -> str:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a string")
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string, got {type(value).__name__}")
+    return value
+
+
+def _strict_bool(value: Any, *, field_name: str, default: bool | None = None) -> bool:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a boolean")
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean, got {type(value).__name__}")
+
+
+def _strict_int(value: Any, *, field_name: str, default: int | None = None, minimum: int | None = None) -> int:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be an integer")
+        value = default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer, got {type(value).__name__}")
+    parsed = int(value)
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}")
+    return parsed
+
+
+def _strict_optional_int(value: Any, *, field_name: str, minimum: int | None = None) -> int | None:
+    if value is None:
+        return None
+    return _strict_int(value, field_name=field_name, minimum=minimum)
+
+
+def _strict_float(value: Any, *, field_name: str, default: float | None = None, minimum: float | None = None) -> float:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a finite number")
+        value = default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number, got {type(value).__name__}")
+    parsed = float(value)
+    if not parsed == parsed or parsed in {float("inf"), float("-inf")}:
+        raise ValueError(f"{field_name} must be finite")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}")
+    return parsed
+
+
 def load_run_config(
     *,
     config_path: str | Path,
@@ -474,140 +536,201 @@ def _apply_override(payload: dict[str, Any], override: str) -> None:
 
 
 def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> RunConfig:
-    run = payload.get("run", {})
-    model = payload.get("model", {})
-    topology = payload.get("topology", {})
-    workload = payload.get("workload", {})
-    tokenization = workload.get("tokenization", {}) or {}
-    runtime = payload.get("runtime", {})
-    online_policy = payload.get("online_policy", {})
-    offline_study = payload.get("offline_study", {})
-    execution = payload.get("execution", {})
-    observation = payload.get("observation", {})
-    validation = payload.get("validation", {})
-    artifact = payload.get("artifact", {})
-    topology_launcher = topology.get("launcher", {})
-    preflight_mode = str(execution.get("preflight_mode", "full"))
+    run = _strict_mapping(payload.get("run"), field_name="run")
+    model = _strict_mapping(payload.get("model"), field_name="model")
+    topology = _strict_mapping(payload.get("topology"), field_name="topology")
+    workload = _strict_mapping(payload.get("workload"), field_name="workload")
+    tokenization = _strict_mapping(workload.get("tokenization"), field_name="workload.tokenization")
+    runtime = _strict_mapping(payload.get("runtime"), field_name="runtime")
+    online_policy = _strict_mapping(payload.get("online_policy"), field_name="online_policy")
+    online_policy_parameters = _strict_mapping(online_policy.get("parameters"), field_name="online_policy.parameters")
+    online_policy_p2 = _strict_mapping(online_policy.get("p2"), field_name="online_policy.p2")
+    offline_study = _strict_mapping(payload.get("offline_study"), field_name="offline_study")
+    offline_window = _strict_mapping(offline_study.get("window"), field_name="offline_study.window")
+    execution = _strict_mapping(payload.get("execution"), field_name="execution")
+    execution_schedule = _strict_mapping(execution.get("schedule"), field_name="execution.schedule")
+    observation = _strict_mapping(payload.get("observation"), field_name="observation")
+    validation = _strict_mapping(payload.get("validation"), field_name="validation")
+    artifact = _strict_mapping(payload.get("artifact"), field_name="artifact")
+    topology_launcher = _strict_mapping(topology.get("launcher"), field_name="topology.launcher")
+    topology_ep = _strict_mapping(topology.get("ep"), field_name="topology.ep")
+    topology_network = _strict_mapping(topology.get("network"), field_name="topology.network")
+    evaluation = _strict_mapping(payload.get("evaluation"), field_name="evaluation")
+    preflight_mode = _strict_str(execution.get("preflight_mode"), field_name="execution.preflight_mode", default="full")
     if preflight_mode not in {"full", "compact"}:
         raise ValueError(f"unsupported execution.preflight_mode: {preflight_mode!r}")
     return RunConfig(
-        run=RunConfigSection(kind=str(run.get("kind", "")), name=str(run.get("name", ""))),
+        run=RunConfigSection(
+            kind=_strict_str(run.get("kind"), field_name="run.kind", default=""),
+            name=_strict_str(run.get("name"), field_name="run.name", default=""),
+        ),
         model=ModelConfig(
-            model_id=str(model.get("model_id", "")),
-            local_path=str(model.get("local_path", "")),
-            precision=str(model.get("precision", runtime.get("precision", "bf16"))),
-            device_index=int(model.get("device_index", 0)),
-            max_new_tokens=int(model.get("max_new_tokens", 32)),
-            default_prompt=str(model.get("default_prompt", "")),
-            trace_layer_path=str(model.get("trace_layer_path", "auto")),
-            trust_remote_code=bool(model.get("trust_remote_code", False)),
+            model_id=_strict_str(model.get("model_id"), field_name="model.model_id", default=""),
+            local_path=_strict_str(model.get("local_path"), field_name="model.local_path", default=""),
+            precision=_strict_str(model.get("precision", runtime.get("precision", "bf16")), field_name="model.precision"),
+            device_index=_strict_int(model.get("device_index"), field_name="model.device_index", default=0, minimum=0),
+            max_new_tokens=_strict_int(model.get("max_new_tokens"), field_name="model.max_new_tokens", default=32, minimum=0),
+            default_prompt=_strict_str(model.get("default_prompt"), field_name="model.default_prompt", default=""),
+            trace_layer_path=_strict_str(model.get("trace_layer_path"), field_name="model.trace_layer_path", default="auto"),
+            trust_remote_code=_strict_bool(model.get("trust_remote_code"), field_name="model.trust_remote_code", default=False),
         ),
         topology=TopologyConfig(
             launcher=TopologyLauncherConfig(
-                kind=str(topology_launcher.get("kind", "python")),
-                nnodes=int(topology_launcher.get("nnodes", 1)),
-                nproc_per_node=int(topology_launcher.get("nproc_per_node", 1)),
-                standalone=bool(topology_launcher.get("standalone", False)),
-                master_port=int(topology_launcher.get("master_port", 29500)),
+                kind=_strict_str(topology_launcher.get("kind"), field_name="topology.launcher.kind", default="python"),
+                nnodes=_strict_int(topology_launcher.get("nnodes"), field_name="topology.launcher.nnodes", default=1, minimum=1),
+                nproc_per_node=_strict_int(
+                    topology_launcher.get("nproc_per_node"),
+                    field_name="topology.launcher.nproc_per_node",
+                    default=1,
+                    minimum=1,
+                ),
+                standalone=_strict_bool(topology_launcher.get("standalone"), field_name="topology.launcher.standalone", default=False),
+                master_port=_strict_int(topology_launcher.get("master_port"), field_name="topology.launcher.master_port", default=29500, minimum=1),
             ),
-            ep_size=int(topology.get("ep_size", topology.get("ep", {}).get("size", 1))),
-            network_scope=str(topology.get("network_scope", topology.get("network", {}).get("scope", "single_node"))),
-            interface_hint=str(topology.get("interface_hint", topology.get("network", {}).get("interface_hint", ""))),
+            ep_size=_strict_int(topology.get("ep_size", topology_ep.get("size", 1)), field_name="topology.ep_size", minimum=1),
+            network_scope=_strict_str(
+                topology.get("network_scope", topology_network.get("scope", "single_node")),
+                field_name="topology.network_scope",
+            ),
+            interface_hint=_strict_str(
+                topology.get("interface_hint", topology_network.get("interface_hint", "")),
+                field_name="topology.interface_hint",
+            ),
         ),
         workload=WorkloadConfig(
-            prompts=str(workload.get("prompts", "")),
-            trace_artifact_dir=str(workload.get("trace_artifact_dir", "")),
-            num_prompts=None if workload.get("num_prompts") is None else int(workload.get("num_prompts")),
+            prompts=_strict_str(workload.get("prompts"), field_name="workload.prompts", default=""),
+            trace_artifact_dir=_strict_str(workload.get("trace_artifact_dir"), field_name="workload.trace_artifact_dir", default=""),
+            num_prompts=_strict_optional_int(workload.get("num_prompts"), field_name="workload.num_prompts", minimum=0),
             tokenization=TokenizationConfig(
-                padding=str(tokenization.get("padding", "longest")),
-                truncation=bool(tokenization.get("truncation", False)),
-                max_length=None if tokenization.get("max_length") is None else int(tokenization.get("max_length")),
-                expected_prompt_count=(
-                    None
-                    if tokenization.get("expected_prompt_count") is None
-                    else int(tokenization.get("expected_prompt_count"))
+                padding=_strict_str(tokenization.get("padding"), field_name="workload.tokenization.padding", default="longest"),
+                truncation=_strict_bool(tokenization.get("truncation"), field_name="workload.tokenization.truncation", default=False),
+                max_length=_strict_optional_int(tokenization.get("max_length"), field_name="workload.tokenization.max_length", minimum=0),
+                expected_prompt_count=_strict_optional_int(
+                    tokenization.get("expected_prompt_count"),
+                    field_name="workload.tokenization.expected_prompt_count",
+                    minimum=0,
                 ),
-                expected_batch_rows=(
-                    None
-                    if tokenization.get("expected_batch_rows") is None
-                    else int(tokenization.get("expected_batch_rows"))
+                expected_batch_rows=_strict_optional_int(
+                    tokenization.get("expected_batch_rows"),
+                    field_name="workload.tokenization.expected_batch_rows",
+                    minimum=0,
                 ),
-                expected_seq_len=(
-                    None if tokenization.get("expected_seq_len") is None else int(tokenization.get("expected_seq_len"))
+                expected_seq_len=_strict_optional_int(
+                    tokenization.get("expected_seq_len"),
+                    field_name="workload.tokenization.expected_seq_len",
+                    minimum=0,
                 ),
             ),
         ),
         runtime=RuntimeConfig(
-            line=str(runtime.get("line", "")),
-            precision=str(runtime.get("precision", model.get("precision", "bf16"))),
-            invariant_mode=str(runtime.get("invariant_mode", "diagnostic")),
-            dispatcher=str(runtime.get("dispatcher", "alltoall")),
-            control_mode=str(runtime.get("control_mode", "none")),
-            expert_compute_delay=float(runtime.get("expert_compute_delay", 0.0)),
-            scheduling_mode=str(runtime.get("scheduling_mode", "runtime_lookahead")),
+            line=_strict_str(runtime.get("line"), field_name="runtime.line", default=""),
+            precision=_strict_str(runtime.get("precision", model.get("precision", "bf16")), field_name="runtime.precision"),
+            invariant_mode=_strict_str(runtime.get("invariant_mode"), field_name="runtime.invariant_mode", default="diagnostic"),
+            dispatcher=_strict_str(runtime.get("dispatcher"), field_name="runtime.dispatcher", default="alltoall"),
+            control_mode=_strict_str(runtime.get("control_mode"), field_name="runtime.control_mode", default="none"),
+            expert_compute_delay=_strict_float(runtime.get("expert_compute_delay"), field_name="runtime.expert_compute_delay", default=0.0, minimum=0.0),
+            scheduling_mode=_strict_str(runtime.get("scheduling_mode"), field_name="runtime.scheduling_mode", default="runtime_lookahead"),
         ),
         online_policy=OnlinePolicyConfig(
-            name=str(online_policy.get("name", "disabled")),
+            name=_strict_str(online_policy.get("name"), field_name="online_policy.name", default="disabled"),
             parameters=OnlinePolicyParameters(
-                p0_weight=float(online_policy.get("parameters", {}).get("p0_weight", 1.0)),
-                p1_reservation_weight=float(online_policy.get("parameters", {}).get("p1_reservation_weight", 1.0)),
-                p2_hint_weight=float(online_policy.get("parameters", {}).get("p2_hint_weight", 0.0)),
-                residual_weight=float(online_policy.get("parameters", {}).get("residual_weight", 0.75)),
-                barrier_weight=float(online_policy.get("parameters", {}).get("barrier_weight", 1.75)),
-                age_weight=float(online_policy.get("parameters", {}).get("age_weight", 0.15)),
-                prediction_weight=float(online_policy.get("parameters", {}).get("prediction_weight", 0.35)),
-                online_p2_predictor=str(online_policy.get("parameters", {}).get("online_p2_predictor", "copy_current_dispatch")),
+                p0_weight=_strict_float(online_policy_parameters.get("p0_weight"), field_name="online_policy.parameters.p0_weight", default=1.0),
+                p1_reservation_weight=_strict_float(
+                    online_policy_parameters.get("p1_reservation_weight"),
+                    field_name="online_policy.parameters.p1_reservation_weight",
+                    default=1.0,
+                ),
+                p2_hint_weight=_strict_float(online_policy_parameters.get("p2_hint_weight"), field_name="online_policy.parameters.p2_hint_weight", default=0.0),
+                residual_weight=_strict_float(online_policy_parameters.get("residual_weight"), field_name="online_policy.parameters.residual_weight", default=0.75),
+                barrier_weight=_strict_float(online_policy_parameters.get("barrier_weight"), field_name="online_policy.parameters.barrier_weight", default=1.75),
+                age_weight=_strict_float(online_policy_parameters.get("age_weight"), field_name="online_policy.parameters.age_weight", default=0.15),
+                prediction_weight=_strict_float(
+                    online_policy_parameters.get("prediction_weight"),
+                    field_name="online_policy.parameters.prediction_weight",
+                    default=0.35,
+                ),
+                online_p2_predictor=_strict_str(
+                    online_policy_parameters.get("online_p2_predictor"),
+                    field_name="online_policy.parameters.online_p2_predictor",
+                    default="copy_current_dispatch",
+                ),
             ),
             p2=OnlinePolicyP2Config(
-                mode=str(online_policy.get("p2", {}).get("mode", "none")),
-                artifact=str(online_policy.get("p2", {}).get("artifact", "")),
+                mode=_strict_str(online_policy_p2.get("mode"), field_name="online_policy.p2.mode", default="none"),
+                artifact=_strict_str(online_policy_p2.get("artifact"), field_name="online_policy.p2.artifact", default=""),
             ),
         ),
         offline_study=OfflineStudyConfig(
             policies=tuple(str(item) for item in offline_study.get("policies", []) or ()),
             reference_policies=tuple(str(item) for item in offline_study.get("reference_policies", []) or ()),
-            p2_source=str(offline_study.get("p2_source", "zero_hint")),
+            p2_source=_strict_str(offline_study.get("p2_source"), field_name="offline_study.p2_source", default="zero_hint"),
             window=OfflineStudyWindowConfig(
-                sample_selector=str(offline_study.get("window", {}).get("sample_selector", "first")),
-                start_layer_selector=str(offline_study.get("window", {}).get("start_layer_selector", "first")),
+                sample_selector=_strict_str(offline_window.get("sample_selector"), field_name="offline_study.window.sample_selector", default="first"),
+                start_layer_selector=_strict_str(
+                    offline_window.get("start_layer_selector"),
+                    field_name="offline_study.window.start_layer_selector",
+                    default="first",
+                ),
             ),
         ),
         execution=ExecutionConfig(
-            mode=str(execution.get("mode", "native_passthrough")),
-            bucket_mode=str(execution.get("bucket_mode", "dynamic_current")),
-            bucket_rows=int(execution.get("bucket_rows", 0)),
-            safe_projection_mode=str(execution.get("safe_projection_mode", "host_select")),
+            mode=_strict_str(execution.get("mode"), field_name="execution.mode", default="native_passthrough"),
+            bucket_mode=_strict_str(execution.get("bucket_mode"), field_name="execution.bucket_mode", default="dynamic_current"),
+            bucket_rows=_strict_int(execution.get("bucket_rows"), field_name="execution.bucket_rows", default=0, minimum=0),
+            safe_projection_mode=_strict_str(execution.get("safe_projection_mode"), field_name="execution.safe_projection_mode", default="host_select"),
             preflight_mode=preflight_mode,
             schedule=ExecutionScheduleConfig(
-                layer_selector=str(execution.get("schedule", {}).get("layer_selector", "all")),
-                phase_selector=str(execution.get("schedule", {}).get("phase_selector", "both")),
+                layer_selector=_strict_str(execution_schedule.get("layer_selector"), field_name="execution.schedule.layer_selector", default="all"),
+                phase_selector=_strict_str(execution_schedule.get("phase_selector"), field_name="execution.schedule.phase_selector", default="both"),
                 selected_layer_ids=tuple(
                     str(item)
                     for item in (
-                        execution.get("schedule", {}).get("selected_layer_ids")
-                        or payload.get("evaluation", {}).get("selected_layer_ids")
+                        execution_schedule.get("selected_layer_ids")
+                        or evaluation.get("selected_layer_ids")
                         or ()
                     )
                 ),
             ),
         ),
         observation=RuntimeObservationConfig(
-            profile=str(observation.get("profile", "minimal")),
-            invariant_mode=str(observation.get("invariant_mode", runtime.get("invariant_mode", "diagnostic"))),
-            capture_enabled=bool(observation.get("capture_enabled", False)),
-            capture_expert_trace=bool(observation.get("capture_expert_trace", False)),
-            capture_layer_selector=str(observation.get("capture_layer_selector", "")),
-            capture_phase_selector=str(observation.get("capture_phase_selector", "")),
-            heartbeat_enabled=bool(observation.get("heartbeat_enabled", False)),
-            per_wave_timing_enabled=bool(observation.get("per_wave_timing_enabled", False)),
-            replay_trace_enabled=bool(observation.get("replay_trace_enabled", False)),
+            profile=_strict_str(observation.get("profile"), field_name="observation.profile", default="minimal"),
+            invariant_mode=_strict_str(observation.get("invariant_mode", runtime.get("invariant_mode", "diagnostic")), field_name="observation.invariant_mode"),
+            capture_enabled=_strict_bool(observation.get("capture_enabled"), field_name="observation.capture_enabled", default=False),
+            capture_expert_trace=_strict_bool(
+                observation.get("capture_expert_trace"),
+                field_name="observation.capture_expert_trace",
+                default=False,
+            ),
+            capture_layer_selector=_strict_str(observation.get("capture_layer_selector"), field_name="observation.capture_layer_selector", default=""),
+            capture_phase_selector=_strict_str(observation.get("capture_phase_selector"), field_name="observation.capture_phase_selector", default=""),
+            heartbeat_enabled=_strict_bool(observation.get("heartbeat_enabled"), field_name="observation.heartbeat_enabled", default=False),
+            per_wave_timing_enabled=_strict_bool(
+                observation.get("per_wave_timing_enabled"),
+                field_name="observation.per_wave_timing_enabled",
+                default=False,
+            ),
+            replay_trace_enabled=_strict_bool(observation.get("replay_trace_enabled"), field_name="observation.replay_trace_enabled", default=False),
         ),
         validation=ValidationConfig(
-            save_logits=bool(validation.get("save_logits", False)),
-            stop_after_selected_layer=bool(validation.get("stop_after_selected_layer", False)),
-            allow_debug_capture=bool(validation.get("allow_debug_capture", False)),
+            save_logits=_strict_bool(validation.get("save_logits"), field_name="validation.save_logits", default=False),
+            stop_after_selected_layer=_strict_bool(
+                validation.get("stop_after_selected_layer"),
+                field_name="validation.stop_after_selected_layer",
+                default=False,
+            ),
+            allow_debug_capture=_strict_bool(
+                validation.get("allow_debug_capture"),
+                field_name="validation.allow_debug_capture",
+                default=False,
+            ),
         ),
-        artifact=ArtifactConfig(output_root=str(artifact.get("output_root", artifact.get("artifact_root", "")))),
+        artifact=ArtifactConfig(
+            output_root=_strict_str(
+                artifact.get("output_root", artifact.get("artifact_root", "")),
+                field_name="artifact.output_root",
+                default="",
+            )
+        ),
         source_config_path=source_config_path,
     )
 

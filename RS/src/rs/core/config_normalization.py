@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+import math
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,44 @@ def _ensure_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected mapping for {field_name}, got {type(value).__name__}")
     return dict(value)
+
+
+def _strict_str(value: Any, *, field_name: str, default: str | None = None) -> str:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a string")
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string, got {type(value).__name__}")
+    return value
+
+
+def _strict_int(value: Any, *, field_name: str, default: int | None = None, minimum: int | None = None) -> int:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be an integer")
+        value = default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer, got {type(value).__name__}")
+    parsed = int(value)
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}")
+    return parsed
+
+
+def _strict_float(value: Any, *, field_name: str, default: float | None = None, minimum: float | None = None) -> float:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a finite number")
+        value = default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number, got {type(value).__name__}")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field_name} must be finite")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}")
+    return parsed
 
 
 def _canonical_list(value: Any) -> tuple[Any, ...]:
@@ -164,7 +203,7 @@ def resolve_config_components(
 
 def normalize_run_config(raw_config: dict[str, Any], *, source_path: str | Path | None = None) -> CanonicalRunConfig:
     payload = resolve_config_components(dict(raw_config), source_path=source_path)
-    schema_version = int(payload.get("schema_version", 0) or 0)
+    schema_version = _strict_int(payload.get("schema_version", 0), field_name="schema_version", minimum=0)
     if schema_version >= 1:
         return _normalize_v1(payload, schema_version=schema_version)
     return _normalize_v0(payload)
@@ -231,19 +270,34 @@ def _normalize_v0(payload: dict[str, Any]) -> CanonicalRunConfig:
         }
         traffic = {
             "matrix_unit": "rows",
-            "bucket_rows": [int(value) for value in _canonical_list(payload.get("bucket_rows", [1024]))],
+            "bucket_rows": [
+                _strict_int(value, field_name=f"bucket_rows[{index}]", minimum=0)
+                for index, value in enumerate(_canonical_list(payload.get("bucket_rows", [1024])))
+            ],
         }
         policy = {"names": [str(item) for item in _canonical_list(payload.get("policies"))]}
         prediction = {"names": [str(item) for item in _canonical_list(payload.get("hints"))]}
         evaluation = {
-            "max_windows": int(payload.get("max_windows", 4)),
+            "max_windows": _strict_int(payload.get("max_windows", 4), field_name="max_windows", minimum=0),
             "metrics": ["makespan", "plan_digest"],
         }
         replay = {
-            "fixture_dir": str(payload.get("fixture_dir", "")),
-            "output_dir": str(payload.get("output_dir", "outputs/offline/offline_replay_smoke")),
-            "scheduling_mode": str(payload.get("scheduling_mode", "execution_window")),
-            "expert_compute_delay": float(payload.get("expert_compute_delay", 0.0)),
+            "fixture_dir": _strict_str(payload.get("fixture_dir"), field_name="fixture_dir", default=""),
+            "output_dir": _strict_str(
+                payload.get("output_dir"),
+                field_name="output_dir",
+                default="outputs/offline/offline_replay_smoke",
+            ),
+            "scheduling_mode": _strict_str(
+                payload.get("scheduling_mode"),
+                field_name="scheduling_mode",
+                default="execution_window",
+            ),
+            "expert_compute_delay": _strict_float(
+                payload.get("expert_compute_delay", 0.0),
+                field_name="expert_compute_delay",
+                minimum=0.0,
+            ),
         }
         migrations.extend(
             (
@@ -255,7 +309,7 @@ def _normalize_v0(payload: dict[str, Any]) -> CanonicalRunConfig:
         )
         return CanonicalRunConfig(
             schema_version=1,
-            run={"kind": "offline_replay", "name": str(payload.get("run_name", "offline_replay"))},
+        run={"kind": "offline_replay", "name": str(payload.get("run_name", "offline_replay"))},
             model=model,
             topology=topology,
             workload=workload,
@@ -301,19 +355,22 @@ def _normalize_v0(payload: dict[str, Any]) -> CanonicalRunConfig:
         },
         traffic={
             "matrix_unit": "rows",
-            "bucket_rows": int(execution.get("bucket_rows", 0)),
+            "bucket_rows": _strict_int(execution.get("bucket_rows", 0), field_name="execution.bucket_rows", minimum=0),
         },
         policy={
             "options": {
-                "p0_weight": float(execution.get("p0_weight", 1.0)),
-                "p1_reservation_weight": float(execution.get("p1_reservation_weight", 1.0)),
-                "p2_hint_weight": float(execution.get("p2_hint_weight", 1.0)),
+                "p0_weight": _strict_float(execution.get("p0_weight", 1.0), field_name="execution.p0_weight"),
+                "p1_reservation_weight": _strict_float(
+                    execution.get("p1_reservation_weight", 1.0),
+                    field_name="execution.p1_reservation_weight",
+                ),
+                "p2_hint_weight": _strict_float(execution.get("p2_hint_weight", 1.0), field_name="execution.p2_hint_weight"),
             }
         },
         prediction={},
         evaluation={
-            "repeats": int(execution.get("repetitions", 1)),
-            "warmup": int(execution.get("warmup", 0)),
+            "repeats": _strict_int(execution.get("repetitions", 1), field_name="execution.repetitions", minimum=0),
+            "warmup": _strict_int(execution.get("warmup", 0), field_name="execution.warmup", minimum=0),
             "metrics": tuple(str(item) for item in _canonical_list(comparison.get("metrics"))),
             "baseline_strategy": str(comparison.get("baseline_strategy", "")),
             "phase_selector": str(execution.get("schedule_phase_selector", "both")),

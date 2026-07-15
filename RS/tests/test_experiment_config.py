@@ -134,6 +134,74 @@ artifact:
         load_run_config(config_path=path)
 
 
+def test_string_bool_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "bad-bool.yaml"
+    path.write_text(
+        """
+run:
+  kind: online_observe
+  name: bad-bool
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: torchrun
+    nproc_per_node: 2
+  ep_size: 2
+runtime:
+  precision: bf16
+online_policy:
+  name: disabled
+execution:
+  mode: native_passthrough
+observation:
+  profile: debug
+  capture_expert_trace: "false"
+validation:
+  save_logits: false
+artifact:
+  artifact_root: artifacts/test
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="capture_expert_trace must be a boolean"):
+        load_run_config(config_path=path)
+
+
+def test_string_int_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "bad-int.yaml"
+    path.write_text(
+        """
+run:
+  kind: online_policy_correctness
+  name: bad-int
+model:
+  model_id: fixture/model
+topology:
+  launcher:
+    kind: torchrun
+    nproc_per_node: "2"
+  ep_size: 2
+runtime:
+  precision: bf16
+  control_mode: sync_before_phase
+online_policy:
+  name: bucketed_fifo
+execution:
+  mode: phase_sync_wave
+observation:
+  profile: execution
+validation:
+  save_logits: false
+artifact:
+  artifact_root: artifacts/test
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="nproc_per_node must be an integer"):
+        load_run_config(config_path=path)
+
+
 def test_execution_schedule_selected_layer_ids_are_loaded(tmp_path: Path) -> None:
     path = tmp_path / "selected-layer-config.yaml"
     path.write_text(
