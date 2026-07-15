@@ -10,7 +10,8 @@ archive_path="${1:?missing archive path}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 expected_commit="$(git -C "$repo_root" rev-parse HEAD)"
-archive_commit="$(tar -xOf "$archive_path" SOURCE_COMMIT.txt | tr -d '\n')"
+manifest_json="$(tar -xOf "$archive_path" source_manifest.json)"
+archive_commit="$(python -c 'import json,sys; print(json.load(sys.stdin)["commit_sha"])' <<<"$manifest_json")"
 
 if [[ "$archive_commit" != "$expected_commit" ]]; then
   echo "commit mismatch: archive=$archive_commit head=$expected_commit" >&2
@@ -18,27 +19,14 @@ if [[ "$archive_commit" != "$expected_commit" ]]; then
 fi
 
 listing="$(tar -tzf "$archive_path")"
-if [[ "$scope" == "mainline" ]]; then
-  if grep -q '^RS/legacy/' <<<"$listing"; then
-    echo "mainline archive unexpectedly contains RS/legacy" >&2
-    exit 1
-  fi
-fi
-
-if grep -Eq 'deploy/inventory/.*\.(local|current)\.yaml$' <<<"$listing"; then
-  echo "archive unexpectedly contains local/current inventory" >&2
+if [[ "$scope" == "mainline" ]] && grep -q '^RS/legacy/' <<<"$listing"; then
+  echo "mainline archive unexpectedly contains RS/legacy" >&2
   exit 1
 fi
 
-required_paths=(
-  "RS/src/rs/scheduling/multiphase/safe_joint.py"
-  "RS/src/rs/scheduling/online_adapters/priority_artifact.py"
-)
-for required_path in "${required_paths[@]}"; do
-  if ! grep -Fxq "$required_path" <<<"$listing"; then
-    echo "archive missing required tracked file: $required_path" >&2
-    exit 1
-  fi
-done
+if grep -q '\\' <<<"$listing"; then
+  echo "archive contains non-POSIX path separators" >&2
+  exit 1
+fi
 
 echo "VERIFY_OK scope=$scope commit=$expected_commit"

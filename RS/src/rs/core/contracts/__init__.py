@@ -1,6 +1,6 @@
-"""Stable core contract exports for the formal RouteSense package layout."""
+"""Stable core contract exports for the formal RouterSense package layout."""
 
-from .artifact import ArtifactWriter
+from .artifact import ArtifactRecord, ArtifactWriter
 from .debug import DebugEvent, DebugProbe
 from .checks import CheckCode, CheckResult, CheckSeverity, CheckStage
 from .execution import (
@@ -20,7 +20,14 @@ from .execution import (
     ValidationResult as ExecutionValidationResult,
 )
 from .flow import FlowEdge
-from .measurement import MeasurementEvent, MeasurementSink, MeasurementSnapshot
+from .measurement import (
+    MeasurementCapability,
+    MeasurementCompleteness,
+    MeasurementEvent,
+    MeasurementRequirement,
+    MeasurementSink,
+    MeasurementSnapshot,
+)
 from .planning import (
     PlanScore,
     PlanWave,
@@ -52,9 +59,10 @@ from .result import (
     OFFLINE_PIPELINE,
     ONLINE_PIPELINE,
     LEGACY_TRACE_REPLAY_PIPELINE,
+    RESERVED_RESULT_EXTENSION_KEYS,
+    RESULT_BUNDLE_SCHEMA_VERSION,
     ResultBundle,
     RunIdentity,
-    build_result_envelope,
 )
 from .topology import PlacementSnapshot, TopologySnapshot
 from .trace import (
@@ -69,6 +77,7 @@ from .trace import (
 )
 
 __all__ = [
+    "ArtifactRecord",
     "ArtifactWriter",
     "ActualPhaseContext",
     "ArtifactManifest",
@@ -94,7 +103,10 @@ __all__ = [
     "LEGACY_TRACE_REPLAY_PIPELINE",
     "MatrixRows",
     "MaterializedPlan",
+    "MeasurementCapability",
+    "MeasurementCompleteness",
     "MeasurementEvent",
+    "MeasurementRequirement",
     "MeasurementSink",
     "MeasurementSnapshot",
     "OFFLINE_PIPELINE",
@@ -123,6 +135,8 @@ __all__ = [
     "RouteRecord",
     "PublishedPlan",
     "ReferenceTraceBundle",
+    "RESERVED_RESULT_EXTENSION_KEYS",
+    "RESULT_BUNDLE_SCHEMA_VERSION",
     "ResultBundle",
     "RunIdentity",
     "SourceProvenance",
@@ -135,5 +149,4 @@ __all__ = [
     "ExpertRouteContext",
     "ExpertRoutePrediction",
     "WindowPlan",
-    "build_result_envelope",
 ]

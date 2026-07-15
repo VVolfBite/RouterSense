@@ -54,6 +54,10 @@ class _RecordingRuntime:
     ) -> None:
         self.runtime_instrumentation.record_measurement(
             MeasurementEvent(
+                run_id=str(self.run_id),
+                rank=0,
+                forward_generation=int(self._forward_epoch),
+                microbatch_id="mb",
                 event_type=str(event_type),
                 started_at_ns=int(started_at_ns),
                 ended_at_ns=int(ended_at_ns),

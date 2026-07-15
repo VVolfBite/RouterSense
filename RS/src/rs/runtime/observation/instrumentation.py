@@ -11,7 +11,7 @@ from rs.core.contracts.trace import ReferenceTraceBundle
 from rs.runtime.debug.buffered_probe import BufferedDebugProbe, TensorCapture
 from rs.runtime.debug.null_probe import NullDebugProbe
 from rs.runtime.measurement.null_sink import NullMeasurementSink
-from rs.runtime.measurement.perf_light import PerfLightMeasurementSink
+from rs.runtime.measurement.perf_light import ContractMeasurementSink, PerfLightMeasurementSink
 
 
 class EvidenceSink(Protocol):
@@ -86,6 +86,9 @@ class RuntimeInstrumentation:
     def record_result(self, bundle: ResultBundle) -> None:
         self.evidence_sink.record_result(bundle)
 
+    def close(self) -> None:
+        return None
+
 
 def _normalize_instrumentation_mode(mode: str) -> str:
     normalized = str(mode or "off").strip().lower()
@@ -116,7 +119,7 @@ def build_runtime_instrumentation(
         )
     if mode == "contract":
         return RuntimeInstrumentation(
-            measurement_sink=PerfLightMeasurementSink(max_events=int(measurement_capacity)),
+            measurement_sink=ContractMeasurementSink(max_events=int(measurement_capacity)),
             debug_probe=NullDebugProbe(),
             evidence_sink=resolved_evidence_sink,
         )

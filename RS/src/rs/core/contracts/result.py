@@ -1,4 +1,4 @@
-"""Result-envelope contracts for RouteSense experiments and runtime outputs."""
+"""Canonical result contracts for RouterSense runtime and experiment outputs."""
 
 from __future__ import annotations
 
@@ -74,27 +74,95 @@ class EligibilityResult:
     performance_eligible: bool
     prediction_evaluation_eligible: bool
     offline_replay_eligible: bool
-    reasons: tuple[str, ...] = ()
+    preparation_claim_eligible: bool = False
+    correctness_reasons: tuple[str, ...] = ()
+    performance_reasons: tuple[str, ...] = ()
+    prediction_reasons: tuple[str, ...] = ()
+    offline_replay_reasons: tuple[str, ...] = ()
+    preparation_claim_reasons: tuple[str, ...] = ()
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return tuple(
+            list(self.correctness_reasons)
+            + [f"performance:{item}" for item in self.performance_reasons]
+            + [f"prediction:{item}" for item in self.prediction_reasons]
+            + [f"offline:{item}" for item in self.offline_replay_reasons]
+            + [f"preparation:{item}" for item in self.preparation_claim_reasons]
+        )
+
+    def validate(self) -> None:
+        checks = (
+            (self.correctness_eligible, self.correctness_reasons, "correctness"),
+            (self.performance_eligible, self.performance_reasons, "performance"),
+            (self.prediction_evaluation_eligible, self.prediction_reasons, "prediction"),
+            (self.offline_replay_eligible, self.offline_replay_reasons, "offline_replay"),
+            (self.preparation_claim_eligible, self.preparation_claim_reasons, "preparation_claim"),
+        )
+        for eligible, reasons, label in checks:
+            normalized = tuple(str(item) for item in reasons)
+            if bool(eligible) and normalized:
+                raise ValueError(f"{label} eligible cannot carry rejection reasons")
+            if any(not item.strip() for item in normalized):
+                raise ValueError(f"{label} reasons must be non-empty strings")
 
     def to_dict(self) -> dict[str, object]:
+        self.validate()
         return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "EligibilityResult":
-        return cls(
+        legacy_reasons = tuple(str(item) for item in payload.get("reasons", ()))
+        result = cls(
             correctness_eligible=bool(payload.get("correctness_eligible", False)),
             performance_eligible=bool(payload.get("performance_eligible", False)),
             prediction_evaluation_eligible=bool(payload.get("prediction_evaluation_eligible", False)),
             offline_replay_eligible=bool(payload.get("offline_replay_eligible", False)),
-            reasons=tuple(str(item) for item in payload.get("reasons", ())),
+            preparation_claim_eligible=bool(payload.get("preparation_claim_eligible", False)),
+            correctness_reasons=tuple(str(item) for item in payload.get("correctness_reasons", ())),
+            performance_reasons=tuple(str(item) for item in payload.get("performance_reasons", ())),
+            prediction_reasons=tuple(str(item) for item in payload.get("prediction_reasons", ())),
+            offline_replay_reasons=tuple(str(item) for item in payload.get("offline_replay_reasons", ())),
+            preparation_claim_reasons=tuple(str(item) for item in payload.get("preparation_claim_reasons", ())),
         )
+        if legacy_reasons and not result.reasons:
+            correctness: list[str] = []
+            performance: list[str] = []
+            prediction: list[str] = []
+            offline: list[str] = []
+            preparation: list[str] = []
+            for item in legacy_reasons:
+                if item.startswith("performance:"):
+                    performance.append(item.split(":", 1)[1])
+                elif item.startswith("prediction:"):
+                    prediction.append(item.split(":", 1)[1])
+                elif item.startswith("offline:"):
+                    offline.append(item.split(":", 1)[1])
+                elif item.startswith("preparation:"):
+                    preparation.append(item.split(":", 1)[1])
+                else:
+                    correctness.append(item)
+            result = cls(
+                correctness_eligible=result.correctness_eligible,
+                performance_eligible=result.performance_eligible,
+                prediction_evaluation_eligible=result.prediction_evaluation_eligible,
+                offline_replay_eligible=result.offline_replay_eligible,
+                preparation_claim_eligible=result.preparation_claim_eligible,
+                correctness_reasons=tuple(correctness),
+                performance_reasons=tuple(performance),
+                prediction_reasons=tuple(prediction),
+                offline_replay_reasons=tuple(offline),
+                preparation_claim_reasons=tuple(preparation),
+            )
+        result.validate()
+        return result
 
 
 @dataclass(frozen=True)
 class ResultBundle:
     run_identity: RunIdentity
     status: str
-    eligibility: EligibilityResult | None
+    eligibility: EligibilityResult
     schema_version: str = RESULT_BUNDLE_SCHEMA_VERSION
     correctness_status: str = "unknown"
     performance_status: str = "unknown"
@@ -110,6 +178,7 @@ class ResultBundle:
 
     def validate(self) -> None:
         self.run_identity.validate()
+        self.eligibility.validate()
         if str(self.schema_version) != RESULT_BUNDLE_SCHEMA_VERSION:
             raise ValueError("unsupported result bundle schema_version")
         if str(self.status) not in ALLOWED_RESULT_STATUSES:
@@ -118,24 +187,31 @@ class ResultBundle:
             raise ValueError("correctness_status is invalid")
         if str(self.performance_status) not in ALLOWED_PERFORMANCE_STATUSES:
             raise ValueError("performance_status is invalid")
-        if not str(self.pipeline or self.run_identity.pipeline).strip():
-            raise ValueError("pipeline must be non-empty")
-        if not str(self.commit_sha).strip():
+        if str(self.pipeline or self.run_identity.pipeline).strip() != str(self.run_identity.pipeline):
+            raise ValueError("pipeline must exactly match run_identity.pipeline")
+        commit_sha = str(self.commit_sha).strip()
+        if not commit_sha:
             raise ValueError("commit_sha must be non-empty")
+        if commit_sha.lower() == "unknown":
+            raise ValueError("commit_sha must not be unknown")
         if self.git_clean is None:
             raise ValueError("git_clean must be explicit")
         if str(self.instrumentation_mode) not in ALLOWED_INSTRUMENTATION_MODES:
             raise ValueError("instrumentation_mode is invalid")
         if str(self.audit_evidence_level) not in ALLOWED_AUDIT_LEVELS:
             raise ValueError("audit_evidence_level is invalid")
-        if "all_work_completed" not in self.summary:
-            raise ValueError("summary must include all_work_completed")
-        if "fallback_count" not in self.summary:
-            raise ValueError("summary must include fallback_count")
-        if "timeout_count" not in self.summary:
-            raise ValueError("summary must include timeout_count")
-        if "check_failure_count" not in self.summary:
-            raise ValueError("summary must include check_failure_count")
+        if self.measurement_complete is None:
+            raise ValueError("measurement_complete must be explicit")
+        required_summary = {
+            "all_work_completed",
+            "fallback_count",
+            "timeout_count",
+            "check_failure_count",
+            "execution_outcome_count",
+        }
+        missing_summary = sorted(item for item in required_summary if item not in self.summary)
+        if missing_summary:
+            raise ValueError(f"summary missing required keys: {missing_summary}")
         if "status" in self.summary and str(self.summary["status"]) != str(self.status):
             raise ValueError("summary status conflicts with result bundle status")
         if "correctness_status" in self.summary and str(self.summary["correctness_status"]) != str(self.correctness_status):
@@ -151,6 +227,8 @@ class ResultBundle:
         for key in self.extensions:
             if str(key) in RESERVED_RESULT_EXTENSION_KEYS:
                 raise ValueError(f"extensions key conflicts with reserved field: {key}")
+        if str(self.performance_status) == "eligible" and not bool(self.eligibility.performance_eligible):
+            raise ValueError("performance_status conflicts with eligibility")
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "ResultBundle":
@@ -159,7 +237,20 @@ class ResultBundle:
         bundle = cls(
             run_identity=run_identity,
             status=str(payload.get("status", "")),
-            eligibility=EligibilityResult.from_dict(eligibility_payload) if isinstance(eligibility_payload, Mapping) else None,
+            eligibility=EligibilityResult.from_dict(eligibility_payload)
+            if isinstance(eligibility_payload, Mapping)
+            else EligibilityResult(
+                correctness_eligible=False,
+                performance_eligible=False,
+                prediction_evaluation_eligible=False,
+                offline_replay_eligible=False,
+                preparation_claim_eligible=False,
+                correctness_reasons=("missing_eligibility",),
+                performance_reasons=("missing_eligibility",),
+                prediction_reasons=("missing_eligibility",),
+                offline_replay_reasons=("missing_eligibility",),
+                preparation_claim_reasons=("missing_eligibility",),
+            ),
             schema_version=str(payload.get("schema_version", "")),
             correctness_status=str(payload.get("correctness_status", "unknown")),
             performance_status=str(payload.get("performance_status", "unknown")),
@@ -184,13 +275,13 @@ class ResultBundle:
             "status": str(self.status),
             "correctness_status": str(self.correctness_status),
             "performance_status": str(self.performance_status),
-            "pipeline": str(self.pipeline or self.run_identity.pipeline),
+            "pipeline": str(self.run_identity.pipeline),
             "commit_sha": str(self.commit_sha),
-            "git_clean": bool(self.git_clean),
+            "git_clean": self.git_clean,
             "instrumentation_mode": str(self.instrumentation_mode),
             "audit_evidence_level": str(self.audit_evidence_level),
-            "measurement_complete": bool(self.measurement_complete),
-            "eligibility": None if self.eligibility is None else self.eligibility.to_dict(),
+            "measurement_complete": self.measurement_complete,
+            "eligibility": self.eligibility.to_dict(),
             "summary": dict(self.summary),
             "details": dict(self.details),
             "extensions": dict(self.extensions),
@@ -207,59 +298,14 @@ class ArtifactManifest:
         return asdict(self)
 
 
-def build_result_envelope(
-    *,
-    run_id: str,
-    pipeline: str,
-    claim_scope: str,
-    trace_origin: str,
-    future_information_mode: str,
-    is_real_ep_runtime: bool,
-    source_ownership_mode: str,
-    expert_residency_mode: str,
-    transport_backend: str,
-    correctness_status: str,
-    performance_claim_eligible: bool,
-    execution_mode: str | None = None,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if extra:
-        conflicting = RESERVED_RESULT_EXTENSION_KEYS.intersection(str(key) for key in extra)
-        if conflicting:
-            raise ValueError(f"extra keys conflict with reserved result fields: {sorted(conflicting)}")
-    payload = {
-        "run_identity": RunIdentity(
-            run_id=run_id,
-            pipeline=pipeline,
-            claim_scope=claim_scope,
-            trace_origin=trace_origin,
-            future_information_mode=future_information_mode,
-        ).to_dict(),
-        "pipeline": pipeline,
-        "claim_scope": claim_scope,
-        "trace_origin": trace_origin,
-        "future_information_mode": future_information_mode,
-        "is_real_ep_runtime": is_real_ep_runtime,
-        "source_ownership_mode": source_ownership_mode,
-        "expert_residency_mode": expert_residency_mode,
-        "transport_backend": transport_backend,
-        "correctness_status": correctness_status,
-        "performance_claim_eligible": performance_claim_eligible,
-    }
-    if execution_mode is not None:
-        payload["execution_mode"] = execution_mode
-    if extra:
-        payload["extensions"] = dict(extra)
-    return payload
-
-
 __all__ = [
     "ArtifactManifest",
     "EligibilityResult",
     "LEGACY_TRACE_REPLAY_PIPELINE",
     "OFFLINE_PIPELINE",
     "ONLINE_PIPELINE",
+    "RESERVED_RESULT_EXTENSION_KEYS",
+    "RESULT_BUNDLE_SCHEMA_VERSION",
     "ResultBundle",
     "RunIdentity",
-    "build_result_envelope",
 ]

@@ -36,7 +36,8 @@ from rs.core.contracts import (
 from rs.core.contracts.execution import ActualPhaseContext
 from rs.core.contracts.measurement import MeasurementEvent
 from rs.core.contracts.observation import RuntimeObservationConfig
-from rs.core.contracts.result import EligibilityResult, ResultBundle, RunIdentity
+from rs.core.contracts.result import ResultBundle, RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.prediction import PredictionRegistry, resolve_predictor_id
 from rs.planning import (
     CommonCorePlanEstimator,
@@ -804,8 +805,8 @@ class RouterSenseInjectionRuntime:
         if instrumentation is None:
             return None
         measurement_sink = getattr(instrumentation, "measurement_sink", None)
-        measurement_complete = hasattr(measurement_sink, "snapshot")
-        measurement_snapshot = measurement_sink.snapshot() if measurement_complete else None
+        measurement_snapshot = measurement_sink.snapshot() if measurement_sink is not None and hasattr(measurement_sink, "snapshot") else None
+        measurement_complete = bool(getattr(measurement_snapshot, "completeness", None) and measurement_snapshot.completeness.complete)
         mode = str(getattr(self, "_instrumentation_mode", "off") or "off")
         commit_sha = str(getattr(self, "_commit_sha", "") or "")
         git_clean = bool(getattr(self, "_git_clean", False))
@@ -843,22 +844,6 @@ class RouterSenseInjectionRuntime:
             correctness_status = "valid"
             status = "success"
             failure_reason = ""
-        missing_commit_identity = (not commit_sha) or str(commit_sha).lower() == "unknown"
-        correctness_reasons: list[str] = []
-        if status != "success":
-            correctness_reasons.append(str(failure_reason or "runtime_failure"))
-        if correctness_status != "valid":
-            correctness_reasons.append("correctness_invalid")
-        if not bool(all_work_completed):
-            correctness_reasons.append("missing_execution_completion")
-        if int(self.evidence_counters.timeout_count) > 0:
-            correctness_reasons.append("timeout_present")
-        if int(self.evidence_counters.check_failure_count) > 0:
-            correctness_reasons.append("check_failure_present")
-        if int(self.evidence_counters.fallback_count) > 0:
-            correctness_reasons.append("fallback_present")
-        if missing_commit_identity:
-            correctness_reasons.append("missing_commit_identity")
         summary = {
             "formal_execution_expected": bool(formal_execution_expected),
             "all_work_completed": bool(all_work_completed),
@@ -874,38 +859,39 @@ class RouterSenseInjectionRuntime:
             "missing_execution_outcome_count": int(1 if formal_execution_expected and not outcomes else 0),
             "release_id_count": int(len(self.release_state_ledger.satisfied_release_ids)),
             "measurement_event_count": int(getattr(measurement_snapshot, "event_count", 0) or 0) if measurement_snapshot is not None else 0,
+            "measurement_unknown_event_count": int(getattr(measurement_snapshot, "unknown_event_count", 0) or 0) if measurement_snapshot is not None else 0,
+            "measurement_malformed_event_count": int(getattr(measurement_snapshot, "malformed_event_count", 0) or 0) if measurement_snapshot is not None else 0,
+            "measurement_dropped_event_count": int(getattr(measurement_snapshot, "dropped_event_count", 0) or 0) if measurement_snapshot is not None else 0,
         }
-        bundle = ResultBundle(
-            run_identity=RunIdentity(
-                run_id=str(self.run_id),
-                pipeline="online",
-                claim_scope="formal",
-                trace_origin="runtime",
-                future_information_mode=str(getattr(self.config, "future_hint_mode", "runtime")),
-            ),
-            status=status,
-            correctness_status=correctness_status,
-            performance_status="unknown",
-            pipeline="online",
-            commit_sha=commit_sha or "",
-            git_clean=bool(git_clean),
-            instrumentation_mode=mode,
-            audit_evidence_level="summary_only",
-            measurement_complete=bool(measurement_complete),
-            eligibility=EligibilityResult(
-                correctness_eligible=not correctness_reasons,
-                performance_eligible=False,
-                prediction_evaluation_eligible=False,
-                offline_replay_eligible=False,
-                reasons=tuple(dict.fromkeys(correctness_reasons)),
-            ),
-            summary=summary,
-            details={
-                "latest_execution_outcomes": outcomes,
-                "measurement_summary": {} if measurement_snapshot is None else dict(measurement_snapshot.summary),
-                "failure_reason": str(failure_reason),
-                "commit_sha_source": str(getattr(self, "_commit_sha_source", "") or ""),
-            },
+        bundle = build_result_bundle(
+            ResultBundleDraft(
+                run_identity=RunIdentity(
+                    run_id=str(self.run_id),
+                    pipeline="online",
+                    claim_scope="formal",
+                    trace_origin="runtime",
+                    future_information_mode=str(getattr(self.config, "future_hint_mode", "runtime")),
+                ),
+                status=status,
+                correctness_status=correctness_status,
+                performance_status="unknown",
+                commit_sha=commit_sha or "unknown",
+                git_clean=bool(git_clean),
+                instrumentation_mode=mode,
+                audit_evidence_level="summary_only",
+                measurement_complete=bool(measurement_complete),
+                summary=summary,
+                details={
+                    "run_kind": "GLOO_FUNCTIONAL",
+                    "latest_execution_outcomes": outcomes,
+                    "measurement_summary": {} if measurement_snapshot is None else dict(measurement_snapshot.summary),
+                    "measurement_capability": None if measurement_snapshot is None else measurement_snapshot.capability.to_dict(),
+                    "measurement_completeness": None if measurement_snapshot is None else measurement_snapshot.completeness.to_dict(),
+                    "failure_reason": str(failure_reason),
+                    "commit_sha_source": str(getattr(self, "_commit_sha_source", "") or ""),
+                },
+                extensions={},
+            )
         )
         self._latest_result_bundle = bundle
         instrumentation.record_result(bundle)
@@ -926,6 +912,10 @@ class RouterSenseInjectionRuntime:
             return
         instrumentation.record_measurement(
             MeasurementEvent(
+                run_id=str(self.run_id),
+                rank=int(getattr(self, "rank", 0)),
+                forward_generation=int(getattr(self, "_current_forward_epoch", 0) or 0),
+                microbatch_id=str(getattr(self, "microbatch_id", "global")),
                 event_type=str(event_type),
                 started_at_ns=int(started_at_ns),
                 ended_at_ns=int(ended_at_ns),

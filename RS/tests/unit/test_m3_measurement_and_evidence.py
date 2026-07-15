@@ -18,6 +18,18 @@ from rs.runtime.measurement.api import NullMeasurementSink, PerfLightMeasurement
 from rs.runtime.observation.instrumentation import RuntimeInstrumentation
 
 
+def _event(event_type: str, started_at_ns: int, ended_at_ns: int) -> MeasurementEvent:
+    return MeasurementEvent(
+        run_id="run",
+        rank=0,
+        forward_generation=0,
+        microbatch_id="mb",
+        event_type=event_type,
+        started_at_ns=started_at_ns,
+        ended_at_ns=ended_at_ns,
+    )
+
+
 def _base_run_identity() -> RunIdentity:
     return RunIdentity(
         run_id="run",
@@ -45,13 +57,19 @@ def _valid_result_bundle(*, instrumentation_mode: str = "off") -> ResultBundle:
             performance_eligible=True,
             prediction_evaluation_eligible=True,
             offline_replay_eligible=True,
-            reasons=(),
+            preparation_claim_eligible=True,
+            correctness_reasons=(),
+            performance_reasons=(),
+            prediction_reasons=(),
+            offline_replay_reasons=(),
+            preparation_claim_reasons=(),
         ),
         summary={
             "all_work_completed": True,
             "fallback_count": 0,
             "timeout_count": 0,
             "check_failure_count": 0,
+            "execution_outcome_count": 1,
         },
         details={"backend": "cpu"},
         extensions={"lane": "formal"},
@@ -62,22 +80,23 @@ def _valid_result_bundle(*, instrumentation_mode: str = "off") -> ResultBundle:
 
 def test_null_measurement_sink_has_zero_events() -> None:
     sink = NullMeasurementSink()
-    sink.record(MeasurementEvent(event_type="prediction", started_at_ns=1, ended_at_ns=2))
+    sink.record(_event("prediction", 1, 2))
     snapshot = sink.snapshot()
     assert snapshot.event_count == 0
     assert snapshot.dropped_event_count == 0
     assert snapshot.instrumentation_mode == "off"
+    assert snapshot.completeness.complete is False
 
 
 def test_perf_light_sink_is_bounded_and_filters_event_types() -> None:
     sink = PerfLightMeasurementSink(max_events=2)
-    sink.record(MeasurementEvent(event_type="prediction", started_at_ns=1, ended_at_ns=2))
-    sink.record(MeasurementEvent(event_type="planning", started_at_ns=2, ended_at_ns=3))
-    sink.record(MeasurementEvent(event_type="unknown", started_at_ns=3, ended_at_ns=4))
-    sink.record(MeasurementEvent(event_type="publish", started_at_ns=4, ended_at_ns=5))
+    sink.record(_event("prediction", 1, 2))
+    sink.record(_event("planning", 2, 3))
+    sink.record(_event("unknown", 3, 4))
+    sink.record(_event("publish", 4, 5))
     snapshot = sink.snapshot()
     assert snapshot.event_count == 2
-    assert snapshot.dropped_event_count == 1
+    assert snapshot.unknown_event_count == 1
     assert tuple(event.event_type for event in snapshot.events) == ("planning", "publish")
 
 
@@ -104,12 +123,24 @@ def test_result_bundle_rejects_reserved_extension_override() -> None:
         instrumentation_mode="off",
         audit_evidence_level="summary_only",
         measurement_complete=True,
-        eligibility=None,
+        eligibility=EligibilityResult(
+            correctness_eligible=False,
+            performance_eligible=False,
+            prediction_evaluation_eligible=False,
+            offline_replay_eligible=False,
+            preparation_claim_eligible=False,
+            correctness_reasons=("pending",),
+            performance_reasons=("pending",),
+            prediction_reasons=("pending",),
+            offline_replay_reasons=("pending",),
+            preparation_claim_reasons=("pending",),
+        ),
         summary={
             "all_work_completed": True,
             "fallback_count": 0,
             "timeout_count": 0,
             "check_failure_count": 0,
+            "execution_outcome_count": 1,
         },
         extensions={"pipeline": "bad"},
     )
@@ -133,14 +164,30 @@ def test_eligibility_fails_closed_for_empty_summary_and_debug() -> None:
         instrumentation_mode="debug",
         audit_evidence_level="unavailable",
         measurement_complete=False,
-        eligibility=None,
-        summary={},
+        eligibility=EligibilityResult(
+            correctness_eligible=False,
+            performance_eligible=False,
+            prediction_evaluation_eligible=False,
+            offline_replay_eligible=False,
+            preparation_claim_eligible=False,
+            correctness_reasons=("pending",),
+            performance_reasons=("pending",),
+            prediction_reasons=("pending",),
+            offline_replay_reasons=("pending",),
+            preparation_claim_reasons=("pending",),
+        ),
+        summary={
+            "all_work_completed": False,
+            "fallback_count": 0,
+            "timeout_count": 0,
+            "check_failure_count": 0,
+            "execution_outcome_count": 0,
+        },
     )
     eligibility = evaluate_result_bundle_eligibility(bundle)
     assert eligibility.performance_eligible is False
-    assert "empty_summary" in eligibility.reasons
-    assert "debug_mode" in eligibility.reasons
-    assert "measurement_incomplete" in eligibility.reasons
+    assert "debug_mode" in eligibility.correctness_reasons
+    assert "measurement_incomplete" in eligibility.correctness_reasons
 
 
 def test_result_bundle_roundtrip_returns_typed_bundle() -> None:
@@ -178,8 +225,8 @@ def test_artifact_writer_roundtrip_and_path_guard(tmp_path: Path) -> None:
     writer = FilesystemArtifactWriter(root_dir=tmp_path, serializer=serializer)
     output = writer.write_text(relative_path="trace.json", payload="hello")
     assert Path(output).read_text(encoding="utf-8") == "hello"
-    manifest = json.loads((tmp_path / "trace.json.manifest.json").read_text(encoding="utf-8"))
-    assert manifest["artifact_path"] == "trace.json"
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifacts"][0]["relative_path"] == "trace.json"
     try:
         writer.write_text(relative_path="../escape.txt", payload="bad")
     except ValueError as exc:
@@ -196,7 +243,7 @@ def test_measurement_and_debug_do_not_force_tensor_d2h(monkeypatch) -> None:
     monkeypatch.setattr(torch.Tensor, "tolist", lambda self, *a, **k: calls.__setitem__("tolist", calls["tolist"] + 1) or [])
 
     sink = PerfLightMeasurementSink(max_events=4)
-    sink.record(MeasurementEvent(event_type="prediction", started_at_ns=1, ended_at_ns=2))
+    sink.record(_event("prediction", 1, 2))
     probe = BufferedDebugProbe(max_events=2)
     probe.record(DebugEvent(event_type="dbg", ts_ns=1, performance_eligible=False))
     sink.snapshot()
@@ -229,14 +276,14 @@ def test_runtime_instrumentation_off_and_perf_light_have_no_side_effects(monkeyp
     monkeypatch.setattr(torch.Tensor, "tolist", lambda self, *a, **k: calls.__setitem__("tolist", calls["tolist"] + 1) or [])
 
     off = RuntimeInstrumentation(measurement_sink=NullMeasurementSink(), debug_probe=NullDebugProbe())
-    off.record_measurement(MeasurementEvent(event_type="prediction", started_at_ns=1, ended_at_ns=2))
+    off.record_measurement(_event("prediction", 1, 2))
     off.record_debug(DebugEvent(event_type="dbg", ts_ns=1, performance_eligible=False))
 
     perf = RuntimeInstrumentation(
         measurement_sink=PerfLightMeasurementSink(max_events=4),
         debug_probe=NullDebugProbe(),
     )
-    perf.record_measurement(MeasurementEvent(event_type="prediction", started_at_ns=2, ended_at_ns=3))
+    perf.record_measurement(_event("prediction", 2, 3))
     perf.measurement_sink.snapshot()
 
     assert calls["cpu"] == 0
@@ -251,19 +298,19 @@ def test_runtime_instrumentation_off_and_perf_light_have_no_side_effects(monkeyp
 def test_debug_mode_is_not_performance_eligible() -> None:
     eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle(instrumentation_mode="debug"))
     assert eligibility.performance_eligible is False
-    assert "debug_mode" in eligibility.reasons
+    assert "debug_mode" in eligibility.correctness_reasons
 
 
 def test_prediction_and_offline_eligibility_require_domain_specific_fields() -> None:
     eligibility = evaluate_result_bundle_eligibility(_valid_result_bundle())
     assert eligibility.prediction_evaluation_eligible is False
     assert eligibility.offline_replay_eligible is False
-    assert "prediction:prediction_evaluation_incomplete" in eligibility.reasons
-    assert "offline:offline_replay_incomplete" in eligibility.reasons
+    assert "prediction_evaluation_incomplete" in eligibility.prediction_reasons
+    assert "offline_replay_incomplete" in eligibility.offline_replay_reasons
 
 
 def test_prediction_and_offline_eligibility_pass_with_complete_summary() -> None:
-    bundle = _valid_result_bundle()
+    bundle = _valid_result_bundle(instrumentation_mode="perf_light")
     bundle.summary.update(
         {
             "run_kind": "OFFLINE_EVALUATION_FORMAL",
@@ -295,7 +342,7 @@ def test_result_bundle_performance_status_must_match_eligibility() -> None:
     bundle = replace(_valid_result_bundle(), measurement_complete=False)
     eligibility = evaluate_result_bundle_eligibility(bundle)
     assert eligibility.performance_eligible is False
-    assert "performance_status_inconsistent" in eligibility.reasons
+    assert "performance_status_inconsistent" in eligibility.performance_reasons
 
 
 def test_correctness_eligibility_fails_closed_for_incomplete_or_timed_out_runs() -> None:
@@ -313,11 +360,10 @@ def test_correctness_eligibility_fails_closed_for_incomplete_or_timed_out_runs()
     )
     eligibility = evaluate_result_bundle_eligibility(bundle)
     assert eligibility.correctness_eligible is False
-    assert "all_work_incomplete" in eligibility.reasons
-    assert "timeout_present" in eligibility.reasons
-    assert "check_failures_present" in eligibility.reasons
-    assert "fallback_present" in eligibility.reasons
-    assert "audit_unavailable" in eligibility.reasons
+    assert "all_work_incomplete" in eligibility.correctness_reasons
+    assert "timeout_present" in eligibility.correctness_reasons
+    assert "check_failures_present" in eligibility.correctness_reasons
+    assert "audit_unavailable" in eligibility.correctness_reasons
     assert "correctness_status_inconsistent" in eligibility.reasons
 
 

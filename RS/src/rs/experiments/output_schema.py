@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from rs.core.contracts.provenance import resolve_commit_identity
 from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_dirty_git, normalize_invariant_mode, require_invariant
 from rs.scheduling.catalog import resolve_algorithm_id
 from rs.scheduling.bucketizer import BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS
@@ -51,8 +52,11 @@ def _git_output(repo_root: Path, *args: str) -> str:
 
 
 def detect_git_state(repo_root: Path) -> tuple[str, bool]:
-    sha = _git_output(repo_root, "rev-parse", "HEAD")
-    dirty = bool(_git_output(repo_root, "status", "--short"))
+    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
+    if env_sha:
+        env_dirty = str(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")).strip().lower()
+        return env_sha, env_dirty in {"1", "true", "yes"}
+    sha, dirty, _source = resolve_commit_identity(repo_root)
     return sha, dirty
 
 

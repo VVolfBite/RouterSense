@@ -51,6 +51,7 @@ from rs.runtime.online.megatron_ep.public_types import (
     RuntimeHandle,
 )
 from rs.runtime.online.megatron_ep.runtime import RouterSenseDispatcherFacade
+from rs.core.contracts.provenance import resolve_commit_identity
 
 
 @dataclass
@@ -74,31 +75,11 @@ class DedicatedP2PGroupRegistry:
 def _detect_runtime_commit() -> tuple[str, bool]:
     env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
     if env_sha:
-        return env_sha, False
+        env_dirty = str(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")).strip().lower()
+        return env_sha, env_dirty in {"1", "true", "yes"}
     repo_root = Path(__file__).resolve().parents[5]
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_root),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode == 0:
-            sha = proc.stdout.strip()
-            dirty = bool(
-                subprocess.run(
-                    ["git", "status", "--short"],
-                    cwd=str(repo_root),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).stdout.strip()
-            )
-            return sha, dirty
-    except Exception:
-        pass
-    return "unknown", False
+    sha, dirty, _source = resolve_commit_identity(repo_root)
+    return sha, dirty
 
 
 _DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}

@@ -20,7 +20,12 @@ class EvidenceEligibility:
             performance_eligible=bool(self.performance_eligible),
             prediction_evaluation_eligible=bool(self.prediction_evaluation_eligible),
             offline_replay_eligible=bool(self.offline_replay_eligible),
-            reasons=tuple(str(item) for item in self.reasons),
+            preparation_claim_eligible=False,
+            correctness_reasons=tuple(str(item) for item in self.reasons),
+            performance_reasons=(),
+            prediction_reasons=(),
+            offline_replay_reasons=(),
+            preparation_claim_reasons=(),
         )
 
 

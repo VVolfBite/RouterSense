@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from rs.experiments.output_schema import validate_official_entrypoint_config
+from rs.core.contracts.result import ResultBundle, RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.reporting.schema import validate_report_eligibility
 from rs.runtime.guards.errors import RuntimeStateFieldError
 from rs.runtime.online.megatron_ep.state.runtime_state import PreparedWindowRuntimeState
@@ -14,6 +16,32 @@ from rs.runtime.online.megatron_ep.state.runtime_state import PreparedWindowRunt
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _write_result_bundle(path: Path, summary: dict, *, status: str = "success") -> None:
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id="run",
+                pipeline="offline",
+                claim_scope="formal",
+                trace_origin="fixture",
+                future_information_mode="predicted",
+            ),
+            status=status,
+            correctness_status="valid" if status == "success" else "invalid",
+            performance_status="ineligible",
+            commit_sha="abc",
+            git_clean=True,
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=True,
+            summary=summary,
+            details={},
+            extensions={},
+        )
+    )
+    path.write_text(json.dumps(bundle.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def test_runtime_state_unknown_field_hard_fails_in_strict_mode() -> None:
@@ -75,19 +103,16 @@ def test_report_eligibility_rejects_invalid_run(tmp_path: Path) -> None:
             "status": "completed",
             "git_dirty": False,
             "commit_sha": "abc",
-            "runtime_commit_sha": "abc",
-            "valid_for_evaluation": True,
         },
     )
-    _write_json(run_dir / "status.json", {"status": "completed"})
-    _write_json(
-        run_dir / "metrics" / "summary.json",
+    _write_result_bundle(
+        run_dir / "result_bundle.json",
         {
             "fallback_count": 1,
             "timeout_count": 0,
-            "audit_invalid_count": 0,
-            "legacy_secondary_policy_call_count": 0,
-            "compiler_shadow_compare_count": 0,
+            "check_failure_count": 0,
+            "execution_outcome_count": 1,
+            "all_work_completed": True,
         },
     )
 
@@ -107,24 +132,19 @@ def test_report_eligibility_rejects_a2_without_c2() -> None:
                 "status": "completed",
                 "git_dirty": False,
                 "commit_sha": "abc",
-                "runtime_commit_sha": "abc",
-                "valid_for_evaluation": True,
             },
         )
-        _write_json(run_dir / "status.json", {"status": "completed"})
-        _write_json(
-            run_dir / "metrics" / "summary.json",
+        _write_result_bundle(
+            run_dir / "result_bundle.json",
             {
                 "fallback_count": 0,
                 "timeout_count": 0,
-                "audit_invalid_count": 0,
-                "legacy_secondary_policy_call_count": 0,
-                "compiler_shadow_compare_count": 0,
-                "valid_for_a2": False,
-                "c2_pass": False,
+                "check_failure_count": 0,
+                "execution_outcome_count": 1,
+                "all_work_completed": True,
             },
         )
 
         eligibility = validate_report_eligibility(run_dir, report_type="a2")
         assert not eligibility.eligible
-        assert "a2_missing_c2_eligibility" in eligibility.failures
+        assert "performance_eligibility_false" in eligibility.failures

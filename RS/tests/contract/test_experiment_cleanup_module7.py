@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import yaml
 
 from rs.core.config_normalization import normalize_run_config
+from rs.core.contracts.result import RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -120,10 +122,41 @@ def test_unified_report_builder_reads_structured_metrics(tmp_path: Path) -> None
                 "run_type": "offline",
                 "status": "completed",
                 "artifact_schema_version": 1,
+                "commit_sha": "abc123",
+                "git_dirty": False,
             }
         ),
         encoding="utf-8",
     )
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id="offline_run",
+                pipeline="offline",
+                claim_scope="formal",
+                trace_origin="fixture",
+                future_information_mode="predicted",
+            ),
+            status="success",
+            correctness_status="valid",
+            performance_status="ineligible",
+            commit_sha="abc123",
+            git_clean=True,
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=True,
+            summary={
+                "all_work_completed": True,
+                "fallback_count": 0,
+                "timeout_count": 0,
+                "check_failure_count": 0,
+                "execution_outcome_count": 1,
+            },
+            details={"run_kind": "OFFLINE_EVALUATION_FORMAL"},
+            extensions={},
+        )
+    )
+    (run_dir / "result_bundle.json").write_text(json.dumps(bundle.to_dict()), encoding="utf-8")
     (run_dir / "metrics" / "summary.json").write_text(
         json.dumps(
             {
