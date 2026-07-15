@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -39,7 +40,19 @@ def _repo_root() -> Path:
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
-    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True, text=True)
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True, text=True)
+        return
+    try:
+        os.killpg(int(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(int(proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
 
 
 def _run_gate_subprocess(*, execution_backend: str, timeout_seconds: float = 180.0) -> dict[str, object]:
@@ -60,9 +73,21 @@ def _run_gate_subprocess(*, execution_backend: str, timeout_seconds: float = 180
         "perf_light",
         "--summary-path",
         str(summary_path),
+        "--quiet",
     ]
     started = time.monotonic()
-    proc = subprocess.Popen(command, cwd=str(_repo_root()), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    popen_kwargs: dict[str, object] = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        command,
+        cwd=str(_repo_root()),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **popen_kwargs,
+    )
     timed_out = False
     try:
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
