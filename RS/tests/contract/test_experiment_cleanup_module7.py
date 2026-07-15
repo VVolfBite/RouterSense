@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {"PYTHONPATH": str(REPO_ROOT / "src")}
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
     return subprocess.run(
         [sys.executable, script, *args],
         cwd=str(REPO_ROOT),

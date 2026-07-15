@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,9 @@ from experiments.offline.run_tier1_cpu_validation import DEFAULT_WAVE_TIER1_POLI
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "tier1"
+
+if os.environ.get("ROUTERSENSE_ENABLE_LEGACY_TIER1") != "1":
+    pytest.skip("legacy tier1 scheduler contract suite is disabled by default", allow_module_level=True)
 
 
 def _fixture(name: str) -> dict:

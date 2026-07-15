@@ -283,7 +283,10 @@ class TargetLayerPlannerService:
                     publication_slot_digest=str(slot.semantic_digest()),
                 ),
                 status="BUILDING",
-                metadata={"task_key": task_key},
+                metadata={
+                    "task_key": task_key,
+                    "publish_sequence": int(queued.publish_sequence),
+                },
             )
         return PreparationSubmitResult(
             status=PreparationSubmitStatus.REPLACED_STALE if replaced else PreparationSubmitStatus.ACCEPTED,
@@ -491,10 +494,12 @@ class TargetLayerPlannerService:
                         status="READY",
                         metadata={
                             "target_key": key.to_dict(),
-                            "planning_request": planning_request.to_dict(),
+                            "planning_request_digest": str(planning_request.semantic_digest()),
                             "plan": plan.to_dict(),
-                            "h1_digest": str(bundle.h1.matrix_digest),
-                            "h2_digest": str(bundle.h2.matrix_digest),
+                            "h1_prediction_digest": str(bundle.h1.matrix_digest),
+                            "h2_prediction_digest": str(bundle.h2.matrix_digest),
+                            "target_problem_digest": str(plan.target_problem_digest),
+                            "publish_sequence": int(token.publish_sequence),
                             "planner_wall_us": float(metrics.planner_wall_us),
                         },
                     )
@@ -622,10 +627,12 @@ class TargetLayerPlannerService:
             status="READY",
             metadata={
                 "target_key": ready.key.to_dict(),
-                "planning_request": ready.planning_request.to_dict(),
+                "planning_request_digest": str(ready.planning_request.semantic_digest()),
                 "plan": ready.plan.to_dict(),
-                "h1_digest": str(ready.bundle.h1.matrix_digest),
-                "h2_digest": str(ready.bundle.h2.matrix_digest),
+                "h1_prediction_digest": str(ready.bundle.h1.matrix_digest),
+                "h2_prediction_digest": str(ready.bundle.h2.matrix_digest),
+                "target_problem_digest": str(ready.plan.target_problem_digest),
+                "publish_sequence": int(ready.token.publish_sequence),
                 "planner_wall_us": float(ready.metrics.planner_wall_us),
             },
             )

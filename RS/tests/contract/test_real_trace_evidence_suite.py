@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -95,7 +96,7 @@ def test_real_trace_evidence_suite_cli(tmp_path: Path) -> None:
         ],
         check=True,
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
     phase_sync = json.loads((output_dir / "phase_sync_compatible_summary.json").read_text(encoding="utf-8"))
     execution_window = json.loads((output_dir / "execution_window_joint_summary.json").read_text(encoding="utf-8"))

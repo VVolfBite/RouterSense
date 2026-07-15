@@ -14,6 +14,7 @@ import torch.multiprocessing as mp
 import torch
 
 from rs.planning import PlannerPolicyConfig
+from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.host import ControlGroupRegistry
 from rs.runtime.online.megatron_ep.control.communication_lane import GlooControlCommunicationLane, slot_from_request
@@ -87,6 +88,22 @@ class _DelayedPredictor:
             time.sleep(self.delay_seconds)
         current = tuple(tuple(int(value) for value in row) for row in current_dispatch_matrix)
         next_layer_id = str(int(source_layer_id) + 1)
+        h1_digest = stable_hash(
+            {
+                "horizon": 1,
+                "source_layer_id": str(source_layer_id),
+                "target_layer_id": str(next_layer_id),
+                "matrix_rows": [list(row) for row in current],
+            }
+        )
+        h2_digest = stable_hash(
+            {
+                "horizon": 2,
+                "source_layer_id": str(next_layer_id),
+                "target_layer_id": str(int(next_layer_id) + 1),
+                "matrix_rows": [list(row) for row in current],
+            }
+        )
         return TwoHorizonPredictionBundle(
             h1=TwoHorizonPrediction(
                 forecast_horizon=1,
@@ -94,7 +111,7 @@ class _DelayedPredictor:
                 target_layer_id=str(next_layer_id),
                 matrix_unit="rows",
                 matrix_rows=current,
-                matrix_digest=f"h1:{self.rank}:{source_layer_id}",
+                matrix_digest=str(h1_digest),
                 predictor="copy_current",
                 confidence=1.0,
                 created_at_ns=1,
@@ -106,7 +123,7 @@ class _DelayedPredictor:
                 target_layer_id=str(int(next_layer_id) + 1),
                 matrix_unit="rows",
                 matrix_rows=current,
-                matrix_digest=f"h2:{self.rank}:{source_layer_id}",
+                matrix_digest=str(h2_digest),
                 predictor="copy_current",
                 confidence=1.0,
                 created_at_ns=2,

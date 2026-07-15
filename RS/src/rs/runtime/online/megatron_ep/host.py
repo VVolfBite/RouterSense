@@ -67,6 +67,8 @@ class DedicatedP2PGroupRegistry:
     groups: dict[tuple[int, ...], dist.ProcessGroup]
     local_group_ranks: tuple[int, ...]
     local_group: dist.ProcessGroup | None
+    warmup_passed: bool
+    new_group_call_order: tuple[tuple[int, ...], ...]
 
 
 def _detect_runtime_commit() -> tuple[str, bool]:
@@ -97,8 +99,6 @@ def _detect_runtime_commit() -> tuple[str, bool]:
     except Exception:
         pass
     return "unknown", False
-    warmup_passed: bool
-    new_group_call_order: tuple[tuple[int, ...], ...]
 
 
 _DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}

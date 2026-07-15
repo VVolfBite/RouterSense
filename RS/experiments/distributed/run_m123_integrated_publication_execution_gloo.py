@@ -292,7 +292,6 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             layer_name=str(runtime.current_transport().get("layer_name") if runtime.current_transport() else "unknown"),
             **detail,
         )
-
         _begin_forward(runtime)
         slot = _emit_source_events(runtime, rank=rank, group_ranks=group_ranks)
         _wait_until(
@@ -318,7 +317,21 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         )
         target_key = runtime._target_plan_key(layer_name="model.layers.1.mlp")  # noqa: SLF001
         store_key = runtime.target_plan_store._key(target_key)  # type: ignore[union-attr]  # noqa: SLF001
-        published_plan = runtime._execution_plan_cache()[store_key]  # noqa: SLF001
+        published_plan = runtime._execution_plan_cache().get(store_key)  # noqa: SLF001
+        if published_plan is None:
+            publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
+            raise KeyError(
+                {
+                    "store_key": store_key,
+                    "publish_tokens_present": bool(getattr(runtime.target_plan_store, "_publish_tokens", {})),  # noqa: SLF001
+                    "plans_present": bool(getattr(runtime.target_plan_store, "_plans", {})),  # noqa: SLF001
+                    "expected_slots": list(getattr(runtime, "_expected_publication_slots", {}).keys()),  # noqa: SLF001
+                    "published_slots": list(getattr(runtime, "_published_publication_slots", set())),  # noqa: SLF001
+                    "publication_state_status": None if publication_state is None else str(publication_state.status),
+                    "publication_state_metadata": {} if publication_state is None else dict(publication_state.metadata),
+                    "control_timeline_tail": list(getattr(runtime, "control_timeline", [])[-10:]),
+                }
+            )
         prepared_p0 = runtime._prepared_execution_cache()[store_key]  # noqa: SLF001
         local_payload_specs = {
             str(spec.payload_role): {

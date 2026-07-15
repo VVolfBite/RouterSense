@@ -38,6 +38,10 @@ def test_dedicated_group_registry_uses_global_creation_order(monkeypatch) -> Non
         def all_reduce(tensor, group=None):
             return None
 
+        @staticmethod
+        def get_backend(group=None):
+            return "gloo"
+
     monkeypatch.setattr(host_mod, "_DEDICATED_P2P_GROUP_REGISTRY", {})
     monkeypatch.setattr(host_mod, "dist", FakeDist)
     monkeypatch.setattr(host_mod.torch.cuda, "is_available", lambda: False)
@@ -50,4 +54,6 @@ def test_dedicated_group_registry_uses_global_creation_order(monkeypatch) -> Non
     assert calls == [(0, 1), (2, 3)]
     assert status["dedicated_p2p_groups_created"] == [[0, 1], [2, 3]]
     assert status["local_dedicated_group_ranks"] == [2, 3]
+    assert status["p2p_group_warmup_passed"] is True
+    assert status["new_group_call_order"] == [[0, 1], [2, 3]]
     assert status["hotpath_new_group_count"] == 0

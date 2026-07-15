@@ -55,9 +55,9 @@ def test_lifecycle_prediction_adapter_records_worker_prediction_without_attribut
     predicted_dispatch_by_layer = runtime._runtime_state.read("predicted_dispatch_by_layer")  # noqa: SLF001
     latest_digest = runtime._runtime_state.read("latest_prediction_digest")  # noqa: SLF001
     target_layer_id = str(active_prediction["target_layer_id"])
-    assert active_prediction["predictor_name"] == "copy_current"
+    assert active_prediction["predictor_name"] == "copy_current_dispatch"
     assert active_prediction["forecast_matrix"] == [[0, 3], [2, 0]]
-    assert predicted_dispatch_by_layer[target_layer_id]["predictor_name"] == "copy_current"
+    assert predicted_dispatch_by_layer[target_layer_id]["predictor_name"] == "copy_current_dispatch"
     assert latest_digest == active_prediction["matrix_digest"]
     runtime._cleanup_target_plan_runtime()  # noqa: SLF001
 

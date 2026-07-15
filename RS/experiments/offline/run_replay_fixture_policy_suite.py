@@ -634,6 +634,11 @@ def run_bridge_suite(
 
 
 def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
+    def _fmt(value: Any, digits: int = 0) -> str:
+        if value is None:
+            return "-"
+        return f"{float(value):.{digits}f}"
+
     lines = ["# Real Trace Replay Summary", "", "## Data source and fixture audit", ""]
     lines.extend(
         [
@@ -658,8 +663,8 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
         rel = row["relative_to_birkhoff_phase_local"]
         rel_text = "-" if rel is None else f"{rel * 100:.2f}%"
         lines.append(
-            f"| {row['policy_name']} | {row['valid_layer_count']} | {row['mean_makespan']:.0f} | "
-            f"{row['median_makespan']:.0f} | {rel_text} | {row['future_information_mode']} |"
+            f"| {row['policy_name']} | {row['valid_layer_count']} | {_fmt(row['mean_makespan'])} | "
+            f"{_fmt(row['median_makespan'])} | {rel_text} | {row['future_information_mode']} |"
         )
     lines.extend(
         [
@@ -685,8 +690,8 @@ def _render_md(payload: dict[str, Any], audit_summary: dict[str, Any]) -> str:
         rel = row["relative_to_B_birkhoff_wave"]
         rel_text = "-" if rel is None else f"{rel * 100:.2f}%"
         lines.append(
-            f"| {row['policy_name']} | {row['valid_layer_count']} | {row['mean_makespan']:.0f} | "
-            f"{row['median_makespan']:.0f} | {rel_text} | {row['future_information_mode']} |"
+            f"| {row['policy_name']} | {row['valid_layer_count']} | {_fmt(row['mean_makespan'])} | "
+            f"{_fmt(row['median_makespan'])} | {rel_text} | {row['future_information_mode']} |"
         )
     lines.extend(
         [

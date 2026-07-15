@@ -30,6 +30,45 @@ from rs.scheduling.validation import stable_hash
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
 
 
+def _seed_prediction(runtime: RouterSenseInjectionRuntime, *, source_layer_id: str, target_layer_id: str, matrix: tuple[tuple[int, ...], ...]) -> None:
+    payload = {
+        "predictor_name": "copy_current_dispatch",
+        "predictor_version": "v1",
+        "source_layer_id": str(source_layer_id),
+        "predicted_layer_id": str(target_layer_id),
+        "matrix": [list(row) for row in matrix],
+        "matrix_digest": stable_hash([list(row) for row in matrix]),
+        "total_bytes": int(sum(sum(int(value) for value in row) for row in matrix)),
+        "nonzero_edge_count": int(sum(1 for row in matrix for value in row if int(value) > 0)),
+        "confidence": 1.0,
+        "is_oracle": False,
+        "evaluation_eligible": True,
+        "created_at_phase": "P0",
+    }
+    predicted_dispatch_by_layer = dict(runtime._runtime_state.read("predicted_dispatch_by_layer", {}) or {})
+    predicted_dispatch_by_layer[str(target_layer_id)] = payload
+    runtime._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
+    runtime._runtime_state.write(
+        "active_next_dispatch_prediction",
+        {
+            "source_layer_id": str(source_layer_id),
+            "target_layer_id": str(target_layer_id),
+            "forecast_matrix": [list(row) for row in matrix],
+            "matrix_digest": payload["matrix_digest"],
+            "predictor_name": "copy_current_dispatch",
+            "predictor_version": "v1",
+            "confidence": 1.0,
+            "evaluation_eligible": True,
+            "is_oracle": False,
+            "created_at_phase": "P0",
+            "created_at_stage": "test_seed",
+            "prediction_time_us": 0.0,
+            "valid": True,
+            "error": "",
+        },
+    )
+
+
 def _request(*, rank: int = 0, layer_id: str = "1") -> P2HintRequest:
     return P2HintRequest(
         plan_key={"layer_id": layer_id, "phase": "P0"},
@@ -284,6 +323,7 @@ def test_prediction_audit_exports_after_next_dispatch_arrives() -> None:
         actual_p0_full_row_matrix=((0, 1), (0, 0)),
         device=torch.device("cpu"),
     )
+    _seed_prediction(runtime, source_layer_id="0", target_layer_id="1", matrix=((0, 1), (0, 0)))
     contexts1 = make_contexts_from_matrix(phase="P0", matrix=((0, 1), (0, 0)), p2_hint_mode="none")
     pre1 = runtime._capture_pretransport_traffic_observation(phase_ctx=contexts1[0])  # noqa: SLF001
     runtime._record_prediction_for_dispatch(
@@ -310,6 +350,7 @@ def test_joint_window_async_p0_stores_joint_plan_and_compiles_local_plan() -> No
         actual_p0_full_row_matrix=((0, 16), (8, 0)),
         device=torch.device("cpu"),
     )
+    _seed_prediction(runtime, source_layer_id="0", target_layer_id="1", matrix=((0, 16), (8, 0)))
     runtime._store_runtime_joint_plan_from_p0(  # noqa: SLF001
         layer_name="model.layers.0.mlp",
         phase_ctx=contexts[0],
@@ -517,6 +558,7 @@ def test_store_prepared_plan_prefers_predicted_next_dispatch(monkeypatch) -> Non
         actual_p0_full_row_matrix=((0, 16), (8, 0)),
         device=torch.device("cpu"),
     )
+    _seed_prediction(runtime, source_layer_id="0", target_layer_id="1", matrix=((0, 16), (8, 0)))
     runtime._store_prepared_plan(layer_name=layer0, observation_p1=_observation(layer_name=layer0, phase="P1", per_peer_bytes=(0, 24)))
     summary = runtime.export_prepared_plan_summary()
     assert summary["p2_matrix_source"] == "active_next_dispatch_prediction"

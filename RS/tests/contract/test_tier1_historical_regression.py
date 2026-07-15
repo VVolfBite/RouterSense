@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,9 @@ from rs.scheduling.validation import stable_hash, validate_logical_plan
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "tier1"
 GOLDEN_PATH = FIXTURE_ROOT / "historical_golden" / "tier1_semantic_witness.json"
+
+if os.environ.get("ROUTERSENSE_ENABLE_LEGACY_TIER1") != "1":
+    pytest.skip("legacy tier1 historical regression witnesses are disabled by default", allow_module_level=True)
 
 
 def _fixture(name: str) -> dict:

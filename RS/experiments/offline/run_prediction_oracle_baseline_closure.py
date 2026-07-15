@@ -30,8 +30,6 @@ try:
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("PyYAML is required for prediction/oracle/baseline closure") from exc
 
-from ortools.sat.python import cp_model
-
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.runtime.offline.prediction import rolling_predictor_records
 from rs.runtime.online.megatron_ep.async_release.runtime_projection import host_project_safe_selection
@@ -58,6 +56,20 @@ from rs.scheduling.traffic_matrix import (
 Matrix = tuple[tuple[int, ...], ...]
 
 TIE_THRESHOLD = 0.001
+
+
+class OptionalSolverUnavailableError(RuntimeError):
+    pass
+
+
+def _require_cp_model():
+    try:
+        from ortools.sat.python import cp_model as ortools_cp_model
+    except Exception as exc:  # pragma: no cover
+        raise OptionalSolverUnavailableError(
+            "OR-Tools CP-SAT is not available; install the solver extra to run exact oracle paths"
+        ) from exc
+    return ortools_cp_model
 
 
 @dataclass(frozen=True)
@@ -590,6 +602,7 @@ def _build_exact_tasks(matrix: Matrix, *, phase: int) -> list[dict[str, int]]:
 
 
 def _solve_exact_oracle(instance: ExactInstance, *, mode: str, compute_delay: int = 0, time_limit_s: float = 30.0) -> dict[str, Any]:
+    cp_model = _require_cp_model()
     tasks = _build_exact_tasks(instance.p0, phase=0) + _build_exact_tasks(instance.p1, phase=1) + _build_exact_tasks(instance.p2, phase=2)
     if not tasks:
         return {

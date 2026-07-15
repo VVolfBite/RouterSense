@@ -36,6 +36,12 @@ def _validated_plan_payload(candidate: dict[str, Any], slot: PublicationSlot) ->
         normalized = dict(candidate)
         normalized["plan"] = plan.to_dict()
         normalized["logical_plan_digest"] = str(plan.logical_plan_digest)
+        normalized["planning_request_digest"] = str(
+            candidate.get("planning_request_digest", plan.window_plan.request_digest if plan.window_plan is not None else "")
+        )
+        normalized["h1_prediction_digest"] = str(candidate.get("h1_prediction_digest", plan.h1_prediction_digest))
+        normalized["h2_prediction_digest"] = str(candidate.get("h2_prediction_digest", plan.h2_prediction_digest))
+        normalized["target_problem_digest"] = str(candidate.get("target_problem_digest", plan.target_problem_digest))
         return normalized, str(plan.logical_plan_digest)
     except Exception:
         return None
@@ -89,38 +95,104 @@ class GlooControlCommunicationLane(ControlCommunicationLane):
                 root_rank=int(self.root_rank),
                 details={"gathered_statuses": tuple(str(item.get("status")) for item in gathered)},
             )
-        root_payload = next((item for item in gathered if int(item.get("group_rank", -1)) == int(self.root_group_rank)), None)
-        if root_payload is None:
+        root_status_payload = next((item for item in gathered if int(item.get("group_rank", -1)) == int(self.root_group_rank)), None)
+        if root_status_payload is None:
+            return PublicationPollResult(
+                slot=slot,
+                status=PublicationPollStatus.FAILED,
+                root_rank=int(self.root_rank),
+                details={"reason": "missing_root_status"},
+            )
+        expected_globals = {
+            index: int(rank)
+            for index, rank in enumerate(self.group_ranks)
+        }
+        actual_globals = {
+            int(item.get("group_rank", -1)): int(item.get("global_rank", -1))
+            for item in gathered
+        }
+        if actual_globals != expected_globals:
+            return PublicationPollResult(
+                slot=slot,
+                status=PublicationPollStatus.FAILED,
+                root_rank=int(self.root_rank),
+                details={
+                    "reason": "rank_map_mismatch",
+                    "expected_globals": expected_globals,
+                    "actual_globals": actual_globals,
+                },
+            )
+        root_candidate_payload = {}
+        if self.group_rank == self.root_group_rank:
+            if local_candidate is None or str(local_candidate.status).upper() != "READY":
+                return PublicationPollResult(
+                    slot=slot,
+                    status=PublicationPollStatus.FAILED,
+                    root_rank=int(self.root_rank),
+                    details={"reason": "missing_root_payload"},
+                )
+            root_candidate_payload = {
+                **local_candidate.to_dict(),
+                "plan": dict(local_candidate.metadata).get("plan"),
+                "planning_request_digest": str(dict(local_candidate.metadata).get("planning_request_digest", "")),
+                "h1_prediction_digest": str(dict(local_candidate.metadata).get("h1_prediction_digest", "")),
+                "h2_prediction_digest": str(dict(local_candidate.metadata).get("h2_prediction_digest", "")),
+                "target_problem_digest": str(dict(local_candidate.metadata).get("target_problem_digest", "")),
+            }
+        if self.group_rank == self.root_group_rank and not root_candidate_payload:
             return PublicationPollResult(
                 slot=slot,
                 status=PublicationPollStatus.FAILED,
                 root_rank=int(self.root_rank),
                 details={"reason": "missing_root_payload"},
             )
-        normalized_root = _validated_plan_payload(dict(root_payload.get("candidate") or {}), slot)
+        normalized_root = (
+            None
+            if self.group_rank != self.root_group_rank
+            else _validated_plan_payload(dict(root_candidate_payload), slot)
+        )
         if normalized_root is None:
-            return PublicationPollResult(
-                slot=slot,
-                status=PublicationPollStatus.FAILED,
-                root_rank=int(self.root_rank),
-                details={"reason": "invalid_root_candidate"},
-            )
-        root_candidate, published_digest = normalized_root
-        for item in gathered:
-            normalized = _validated_plan_payload(dict(item.get("candidate") or {}), slot)
-            if normalized is None:
+            if self.group_rank == self.root_group_rank:
                 return PublicationPollResult(
                     slot=slot,
                     status=PublicationPollStatus.FAILED,
                     root_rank=int(self.root_rank),
-                    details={"reason": "invalid_candidate_payload"},
+                    details={"reason": "invalid_root_candidate"},
                 )
-            if str(normalized[1]) != published_digest:
+            root_candidate = {}
+            published_digest = str(dict((root_status_payload or {}).get("candidate") or {}).get("logical_plan_digest", ""))
+        else:
+            root_candidate, published_digest = normalized_root
+        for item in gathered:
+            candidate_payload = dict(item.get("candidate") or {})
+            candidate_digests = {
+                "logical_plan_digest": str(candidate_payload.get("logical_plan_digest", "")),
+                "planning_request_digest": str(dict(candidate_payload.get("metadata", {})).get("planning_request_digest", "")),
+                "h1_prediction_digest": str(dict(candidate_payload.get("metadata", {})).get("h1_prediction_digest", "")),
+                "h2_prediction_digest": str(dict(candidate_payload.get("metadata", {})).get("h2_prediction_digest", "")),
+                "target_problem_digest": str(dict(candidate_payload.get("metadata", {})).get("target_problem_digest", "")),
+                "service_session_id": int(dict(candidate_payload.get("token", {})).get("service_session_id", -1)),
+                "task_version": int(dict(candidate_payload.get("token", {})).get("task_version", -1)),
+            }
+            root_digests = {
+                "logical_plan_digest": str(dict((root_status_payload or {}).get("candidate") or {}).get("logical_plan_digest", "")),
+                "planning_request_digest": str(dict(dict((root_status_payload or {}).get("candidate") or {}).get("metadata", {})).get("planning_request_digest", "")),
+                "h1_prediction_digest": str(dict(dict((root_status_payload or {}).get("candidate") or {}).get("metadata", {})).get("h1_prediction_digest", "")),
+                "h2_prediction_digest": str(dict(dict((root_status_payload or {}).get("candidate") or {}).get("metadata", {})).get("h2_prediction_digest", "")),
+                "target_problem_digest": str(dict(dict((root_status_payload or {}).get("candidate") or {}).get("metadata", {})).get("target_problem_digest", "")),
+                "service_session_id": int(dict(dict((root_status_payload or {}).get("candidate") or {}).get("token", {})).get("service_session_id", -1)),
+                "task_version": int(dict(dict((root_status_payload or {}).get("candidate") or {}).get("token", {})).get("task_version", -1)),
+            }
+            if candidate_digests != root_digests:
                 return PublicationPollResult(
                     slot=slot,
                     status=PublicationPollStatus.FAILED,
                     root_rank=int(self.root_rank),
-                    details={"reason": "plan_digest_mismatch"},
+                    details={
+                        "reason": "candidate_digest_mismatch",
+                        "root_digests": root_digests,
+                        "candidate_digests": candidate_digests,
+                    },
                 )
         canonical_payload = self._broadcast_root_plan(
             slot=slot,

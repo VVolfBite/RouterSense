@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ def _run_dry(config_path: Path, output_dir: Path) -> None:
         ],
         check=True,
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
 
 
@@ -238,7 +239,7 @@ def test_async_release_public_runtime_line_dry_run_passes(tmp_path: Path) -> Non
             "--dry-run",
         ],
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
         capture_output=True,
         text=True,
         check=False,

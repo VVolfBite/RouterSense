@@ -131,7 +131,11 @@ def test_lane_requires_matching_plan_digests(monkeypatch) -> None:
     )
     result = lane.poll(slot, local)
     assert result.status is PublicationPollStatus.FAILED
-    assert result.details["reason"] in {"plan_digest_mismatch", "invalid_candidate_payload"}
+    assert result.details["reason"] in {
+        "plan_digest_mismatch",
+        "candidate_digest_mismatch",
+        "invalid_candidate_payload",
+    }
 
 
 def test_lane_rejects_candidate_slot_identity_mismatch() -> None:

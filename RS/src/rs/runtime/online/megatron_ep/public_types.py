@@ -192,13 +192,22 @@ class LocalPublicationCandidate:
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
+        planning_request_digest = str(dict(self.metadata).get("planning_request_digest", ""))
+        h1_prediction_digest = str(dict(self.metadata).get("h1_prediction_digest", ""))
+        h2_prediction_digest = str(dict(self.metadata).get("h2_prediction_digest", ""))
+        target_problem_digest = str(dict(self.metadata).get("target_problem_digest", ""))
         return {
             "slot": self.slot.semantic_payload(),
             "planner_id": str(self.planner_id),
             "logical_plan_digest": str(self.logical_plan_digest),
             "token": self.token.to_dict(),
             "status": str(self.status),
-            "metadata": dict(self.metadata),
+            "metadata": {
+                "planning_request_digest": planning_request_digest,
+                "h1_prediction_digest": h1_prediction_digest,
+                "h2_prediction_digest": h2_prediction_digest,
+                "target_problem_digest": target_problem_digest,
+            },
         }
 
 

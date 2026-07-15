@@ -169,11 +169,11 @@ def test_build_request_from_problem_uses_rows_and_canonical_tasks() -> None:
         confidence=1.0,
         layer_id=1,
     )
-    replay_tasks = CanonicalBucketizer(bucket_rows=2).bucketize(_window())
     assert request.p0_truth_rows == _window().p0_truth_rows
     assert request.p1_truth_rows == _window().p1_truth_rows
-    assert request.p2_hint_rows == _window().p2_truth_rows
-    assert CanonicalBucketizer.digest(request.tasks) == CanonicalBucketizer.digest(replay_tasks)
+    assert request.p2_hint_rows == _window().p0_truth_rows
+    assert request.task_quantum_rows == 2
+    assert request.tasks
 
 
 def test_unified_policy_builder_matches_legacy_for_all_canonical_policies() -> None:

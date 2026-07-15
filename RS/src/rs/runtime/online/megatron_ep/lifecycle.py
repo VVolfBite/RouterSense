@@ -143,6 +143,7 @@ from rs.runtime.online.megatron_ep.target_planning import (
     TargetPlanStore,
     reconcile_once,
 )
+from rs.runtime.online.megatron_ep.target_planning.contracts import PreparationToken
 from rs.runtime.online.megatron_ep.target_planning.planner_service import PreparationSubmitStatus
 from rs.scheduling.contracts import PreparedWindowPlan
 from rs.scheduling.bucketizer import (
@@ -203,6 +204,18 @@ class ReleaseStateLedger:
             return ()
         self.satisfied_release_ids.add(release_id)
         return (release_id,)
+
+
+@dataclass
+class RuntimeEvidenceCounters:
+    fallback_count: int = 0
+    preparation_miss_count: int = 0
+    provisional_execution_count: int = 0
+    timeout_count: int = 0
+    check_failure_count: int = 0
+    materialization_failure_count: int = 0
+    execution_failure_count: int = 0
+    cleanup_failure_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -328,6 +341,8 @@ class RouterSenseInjectionRuntime:
     )
     _latest_execution_outcomes: list[dict[str, Any]] = field(default_factory=list)
     _latest_result_bundle: ResultBundle | None = None
+    evidence_counters: RuntimeEvidenceCounters = field(default_factory=RuntimeEvidenceCounters)
+    _runtime_failure_reason: str = ""
 
     # Configuration and policy selection
 
@@ -692,6 +707,26 @@ class RouterSenseInjectionRuntime:
             setattr(self, "_prepared_executions", cache)
         return cache
 
+    def _cleanup_execution_caches_for_generation(
+        self,
+        *,
+        before_generation: int | None = None,
+        exact_generation: int | None = None,
+    ) -> None:
+        def _filter(cache: dict[tuple[str, int, str, str], Any]) -> None:
+            doomed: list[tuple[str, int, str, str]] = []
+            for key in list(cache.keys()):
+                generation = int(key[1])
+                if before_generation is not None and generation < int(before_generation):
+                    doomed.append(key)
+                elif exact_generation is not None and generation == int(exact_generation):
+                    doomed.append(key)
+            for key in doomed:
+                cache.pop(key, None)
+
+        _filter(self._execution_plan_cache())
+        _filter(self._prepared_execution_cache())
+
     def _local_group_rank(self) -> int:
         ranks = tuple(int(value) for value in self.ep_group_ranks)
         return int(ranks.index(int(self.rank))) if int(self.rank) in ranks else 0
@@ -782,7 +817,13 @@ class RouterSenseInjectionRuntime:
             )
             or bool(getattr(self, "_prepared_executions", {}))
         )
-        if formal_execution_expected and not outcomes:
+        runtime_failure_reason = str(getattr(self, "_runtime_failure_reason", "") or "")
+        if runtime_failure_reason:
+            all_work_completed = False
+            correctness_status = "invalid"
+            status = "failure"
+            failure_reason = runtime_failure_reason
+        elif formal_execution_expected and not outcomes:
             all_work_completed = False
             correctness_status = "invalid"
             status = "failure"
@@ -802,12 +843,33 @@ class RouterSenseInjectionRuntime:
             correctness_status = "valid"
             status = "success"
             failure_reason = ""
+        missing_commit_identity = (not commit_sha) or str(commit_sha).lower() == "unknown"
+        correctness_reasons: list[str] = []
+        if status != "success":
+            correctness_reasons.append(str(failure_reason or "runtime_failure"))
+        if correctness_status != "valid":
+            correctness_reasons.append("correctness_invalid")
+        if not bool(all_work_completed):
+            correctness_reasons.append("missing_execution_completion")
+        if int(self.evidence_counters.timeout_count) > 0:
+            correctness_reasons.append("timeout_present")
+        if int(self.evidence_counters.check_failure_count) > 0:
+            correctness_reasons.append("check_failure_present")
+        if int(self.evidence_counters.fallback_count) > 0:
+            correctness_reasons.append("fallback_present")
+        if missing_commit_identity:
+            correctness_reasons.append("missing_commit_identity")
         summary = {
             "formal_execution_expected": bool(formal_execution_expected),
             "all_work_completed": bool(all_work_completed),
-            "fallback_count": 0,
-            "timeout_count": 0,
-            "check_failure_count": 0,
+            "fallback_count": int(self.evidence_counters.fallback_count),
+            "timeout_count": int(self.evidence_counters.timeout_count),
+            "check_failure_count": int(self.evidence_counters.check_failure_count),
+            "preparation_miss_count": int(self.evidence_counters.preparation_miss_count),
+            "provisional_execution_count": int(self.evidence_counters.provisional_execution_count),
+            "materialization_failure_count": int(self.evidence_counters.materialization_failure_count),
+            "execution_failure_count": int(self.evidence_counters.execution_failure_count),
+            "cleanup_failure_count": int(self.evidence_counters.cleanup_failure_count),
             "execution_outcome_count": int(len(outcomes)),
             "missing_execution_outcome_count": int(1 if formal_execution_expected and not outcomes else 0),
             "release_id_count": int(len(self.release_state_ledger.satisfied_release_ids)),
@@ -825,23 +887,24 @@ class RouterSenseInjectionRuntime:
             correctness_status=correctness_status,
             performance_status="unknown",
             pipeline="online",
-            commit_sha=commit_sha or "unknown",
+            commit_sha=commit_sha or "",
             git_clean=bool(git_clean),
             instrumentation_mode=mode,
             audit_evidence_level="summary_only",
             measurement_complete=bool(measurement_complete),
             eligibility=EligibilityResult(
-                correctness_eligible=bool(all_work_completed),
+                correctness_eligible=not correctness_reasons,
                 performance_eligible=False,
                 prediction_evaluation_eligible=False,
                 offline_replay_eligible=False,
-                reasons=() if all_work_completed else (failure_reason or "execution_incomplete",),
+                reasons=tuple(dict.fromkeys(correctness_reasons)),
             ),
             summary=summary,
             details={
                 "latest_execution_outcomes": outcomes,
                 "measurement_summary": {} if measurement_snapshot is None else dict(measurement_snapshot.summary),
                 "failure_reason": str(failure_reason),
+                "commit_sha_source": str(getattr(self, "_commit_sha_source", "") or ""),
             },
         )
         self._latest_result_bundle = bundle
@@ -1601,15 +1664,22 @@ class RouterSenseInjectionRuntime:
             self._ready_target_plan_candidates.pop(slot_digest, None)
             self._published_publication_slots.discard(slot_digest)
             return
-        if ready_pair is None:
+        if local_candidate is None:
             return
-        ready = ready_pair[0]
+        ready = None if ready_pair is None else ready_pair[0]
+        publish_token = PreparationToken(
+            service_session_id=int(local_candidate.token.service_session_id),
+            forward_generation=int(local_candidate.token.forward_generation),
+            target_key=self._target_plan_key_from_slot(slot),
+            task_version=int(local_candidate.token.task_version),
+            publish_sequence=int(dict(local_candidate.metadata).get("publish_sequence", 0)),
+        )
         canonical_payload = dict(poll_result.canonical_payload)
         metadata_payload = dict(canonical_payload.get("metadata") or {})
         plan_payload = dict(canonical_payload.get("plan") or metadata_payload.get("plan") or {})
         if not plan_payload:
             self.target_plan_store.close_key_if_unclaimed(
-                ready.key,
+                publish_token.target_key,
                 final_status="FAILED",
                 execution_origin="lane:missing_plan_payload",
             )
@@ -1621,48 +1691,56 @@ class RouterSenseInjectionRuntime:
                 publication_slot=slot.semantic_payload(),
                 window_plan=published.window_plan,
             )
-        publish_result = self.target_plan_store.publish_if_current(token=ready.token, plan=published)
+        publish_result = self.target_plan_store.publish_if_current(token=publish_token, plan=published)
         if publish_result.status not in {"PUBLISHED", "ALREADY_PUBLISHED_SAME"}:
             self._timeline(
                 "target_plan_publish_rejected",
-                target_layer_id=str(ready.key.target_layer_id),
+                target_layer_id=str(publish_token.target_key.target_layer_id),
                 status=str(publish_result.status),
                 logical_plan_digest=str(published.logical_plan_digest),
             )
             return
         if published_plan is not None:
-            self._execution_plan_cache()[self.target_plan_store._key(ready.key)] = published_plan
+            self._execution_plan_cache()[self.target_plan_store._key(publish_token.target_key)] = published_plan
         self._ready_target_plan_candidates.pop(slot_digest, None)
         self._published_publication_slots.add(slot_digest)
-        self._store_target_planner_predictions(ready=ready)
+        self._store_target_planner_predictions_from_canonical(plan=published)
         self._timeline(
             "target_plan_ready",
-            layer_name=str(ready.request.target_layer_id),
-            target_layer_id=str(ready.request.target_layer_id),
+            layer_name=str(publish_token.target_key.target_layer_id),
+            target_layer_id=str(publish_token.target_key.target_layer_id),
             logical_plan_digest=str(published.logical_plan_digest),
-            h1_digest=str(ready.bundle.h1.matrix_digest),
-            h2_digest=str(ready.bundle.h2.matrix_digest),
-            planner_wall_us=float(ready.metrics.planner_wall_us),
+            h1_digest=str(published.h1_prediction_digest),
+            h2_digest=str(published.h2_prediction_digest),
+            planner_wall_us=float(dict(local_candidate.metadata).get("planner_wall_us", 0.0) or 0.0),
             publish_status=str(publish_result.status),
         )
 
-    def _store_target_planner_predictions(self, *, ready) -> None:
+    def _store_target_planner_predictions_from_canonical(self, *, plan: TargetLayerPreparedJointPlan) -> None:
         from rs.runtime.online.megatron_ep.prediction.contracts import ActiveNextDispatchPrediction, PredictedTrafficMatrix
 
         predicted_dispatch_by_layer = dict(self._runtime_state.read("predicted_dispatch_by_layer", {}) or {})
 
-        def _to_predicted(prediction) -> PredictedTrafficMatrix:
-            matrix = tuple(tuple(int(value) for value in row) for row in prediction.matrix_rows)
+        def _to_predicted(
+            *,
+            predictor_name: str,
+            source_layer_id: str,
+            target_layer_id: str,
+            matrix_rows: tuple[tuple[int, ...], ...],
+            matrix_digest: str,
+            confidence: float,
+        ) -> PredictedTrafficMatrix:
+            matrix = tuple(tuple(int(value) for value in row) for row in matrix_rows)
             return PredictedTrafficMatrix(
-                predictor_name=str(prediction.predictor),
+                predictor_name=str(predictor_name),
                 predictor_version="v1",
-                source_layer_id=str(prediction.source_layer_id),
-                predicted_layer_id=str(prediction.target_layer_id),
+                source_layer_id=str(source_layer_id),
+                predicted_layer_id=str(target_layer_id),
                 matrix=matrix,
-                matrix_digest=str(prediction.matrix_digest),
+                matrix_digest=str(matrix_digest),
                 total_bytes=int(matrix_remote_bytes(matrix)),
                 nonzero_edge_count=int(matrix_nonzero_remote_edge_count(matrix)),
-                confidence=float(prediction.confidence),
+                confidence=float(confidence),
                 is_oracle=False,
                 evaluation_eligible=True,
                 created_at_phase="P0",
@@ -1670,16 +1748,35 @@ class RouterSenseInjectionRuntime:
                 error="",
             )
 
-        h1_prediction = _to_predicted(ready.bundle.h1)
-        predicted_dispatch_by_layer[str(ready.bundle.h1.target_layer_id)] = h1_prediction.to_dict()
-        h2_prediction = _to_predicted(ready.bundle.h2)
-        predicted_dispatch_by_layer[str(ready.bundle.h2.target_layer_id)] = h2_prediction.to_dict()
+        h1_prediction = _to_predicted(
+            predictor_name=str(self._online_p2_predictor_name()),
+            source_layer_id=str(plan.source_layer_id),
+            target_layer_id=str(plan.target_layer_id),
+            matrix_rows=plan.h1_rows,
+            matrix_digest=str(plan.h1_prediction_digest),
+            confidence=1.0,
+        )
+        predicted_dispatch_by_layer[str(plan.target_layer_id)] = h1_prediction.to_dict()
+        next_target_layer_id = (
+            str(int(plan.target_layer_id) + 1)
+            if str(plan.target_layer_id).isdigit()
+            else str(plan.target_layer_id)
+        )
+        h2_prediction = _to_predicted(
+            predictor_name=str(self._online_p2_predictor_name()),
+            source_layer_id=str(plan.target_layer_id),
+            target_layer_id=next_target_layer_id,
+            matrix_rows=plan.h2_rows,
+            matrix_digest=str(plan.h2_prediction_digest),
+            confidence=1.0,
+        )
+        predicted_dispatch_by_layer[str(next_target_layer_id)] = h2_prediction.to_dict()
         self._runtime_state.write("predicted_dispatch_by_layer", predicted_dispatch_by_layer)
-        self._increment_state_counter_map("predict_count_by_layer", str(ready.request.source_layer_id))
+        self._increment_state_counter_map("predict_count_by_layer", str(plan.source_layer_id))
 
         active_prediction = ActiveNextDispatchPrediction(
-            source_layer_id=str(ready.bundle.h1.source_layer_id),
-            target_layer_id=str(ready.bundle.h1.target_layer_id),
+            source_layer_id=str(plan.source_layer_id),
+            target_layer_id=str(plan.target_layer_id),
             forecast_matrix=h1_prediction.matrix,
             matrix_digest=str(h1_prediction.matrix_digest),
             predictor_name=str(h1_prediction.predictor_name),
@@ -1689,14 +1786,14 @@ class RouterSenseInjectionRuntime:
             is_oracle=bool(h1_prediction.is_oracle),
             created_at_phase="P0",
             created_at_stage="target_planner_worker",
-            prediction_time_us=max(0.0, float(ready.bundle.h1.prediction_us)),
+            prediction_time_us=0.0,
             valid=True,
             error="",
         )
         self._runtime_state.write("active_next_dispatch_prediction", active_prediction.to_dict())
         self._runtime_state.write("latest_predictor_name", str(h1_prediction.predictor_name))
         self._runtime_state.write("latest_prediction_digest", str(h1_prediction.matrix_digest))
-        self._runtime_state.write("latest_prediction_target_layer_id", str(ready.bundle.h1.target_layer_id))
+        self._runtime_state.write("latest_prediction_target_layer_id", str(plan.target_layer_id))
         self._runtime_state.write("latest_prediction_matrix_source", "target_planner_worker_h1")
         self._runtime_state.write("latest_prediction_row_sums", [int(sum(row)) for row in h1_prediction.matrix])
         self._runtime_state.write(
@@ -1835,6 +1932,8 @@ class RouterSenseInjectionRuntime:
             return RuntimeDecision(action="dispatch_complete", details={"layer_role": event.layer_role})
         if isinstance(event, DispatchFailedEvent):
             self._active_transport = None
+            self.evidence_counters.execution_failure_count += 1
+            self._runtime_failure_reason = f"dispatch_failed:{type(event.error).__name__}"
             self.release_state_ledger.reset(
                 run_id=str(self.run_id),
                 forward_generation=int(self._forward_epoch),
@@ -1859,6 +1958,8 @@ class RouterSenseInjectionRuntime:
             return RuntimeDecision(action="combine_complete")
         if isinstance(event, CombineFailedEvent):
             self._active_transport = None
+            self.evidence_counters.execution_failure_count += 1
+            self._runtime_failure_reason = f"combine_failed:{type(event.error).__name__}"
             self.release_state_ledger.reset(
                 run_id=str(self.run_id),
                 forward_generation=int(self._forward_epoch),
@@ -1870,6 +1971,8 @@ class RouterSenseInjectionRuntime:
             self.end_forward()
             return RuntimeDecision(action="forward_end")
         if isinstance(event, ForwardFailedEvent):
+            self.evidence_counters.execution_failure_count += 1
+            self._runtime_failure_reason = f"forward_failed:{type(event.error).__name__}"
             self._finalize_result_bundle()
             self.end_forward()
             return RuntimeDecision(action="forward_failed", details={"error": type(event.error).__name__})
@@ -3018,6 +3121,8 @@ class RouterSenseInjectionRuntime:
         )
         if outcome.status == "rejected" or outcome.logical_plan is None:
             self.target_plan_store.fail(key, execution_origin="prepared_rejected")
+            self.evidence_counters.preparation_miss_count += 1
+            self.evidence_counters.fallback_count += 1
             self._runtime_state.write("execution_origin", "prepared_rejected")
             return None
         target_matrix = (
@@ -3081,6 +3186,8 @@ class RouterSenseInjectionRuntime:
             )
             if not prepared_execution.validation.valid:
                 self.target_plan_store.fail(key, execution_origin="materialization_invalid")
+                self.evidence_counters.materialization_failure_count += 1
+                self.evidence_counters.fallback_count += 1
                 self._runtime_state.write("execution_origin", "materialization_invalid")
                 return None
             self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution
@@ -3114,6 +3221,8 @@ class RouterSenseInjectionRuntime:
             plan_version=0,
         )
         self._runtime_state.write("execution_origin", "provisional_only")
+        self.evidence_counters.provisional_execution_count += 1
+        self.evidence_counters.fallback_count += 1
         self._runtime_state.write("provisional_plan_digest", str(compiled.plan_hash))
         return compiled
 
@@ -3704,6 +3813,9 @@ class RouterSenseInjectionRuntime:
         self._target_plan_reconciled_keys.clear()
         self._latest_execution_outcomes.clear()
         self._latest_result_bundle = None
+        self.evidence_counters = RuntimeEvidenceCounters()
+        self._runtime_failure_reason = ""
+        self._cleanup_execution_caches_for_generation(before_generation=int(self._forward_epoch))
         self.release_state_ledger.reset(
             run_id=str(self.run_id),
             forward_generation=int(self._forward_epoch),
@@ -3734,6 +3846,7 @@ class RouterSenseInjectionRuntime:
             )
 
     def end_forward(self) -> dict[str, Any]:
+        exact_generation = int(self._forward_epoch)
         active_transport = self._active_transport is not None
         has_active_prediction = bool(self._runtime_state.read("active_next_dispatch_prediction"))
         self._runtime_state.write("forward_end_ns", int(time.monotonic_ns()))
@@ -3766,11 +3879,12 @@ class RouterSenseInjectionRuntime:
             )
         self.release_state_ledger.reset(
             run_id=str(self.run_id),
-            forward_generation=int(self._forward_epoch),
+            forward_generation=exact_generation,
             microbatch_id=str(self.microbatch_id),
         )
+        self._cleanup_execution_caches_for_generation(exact_generation=exact_generation)
         return {
-            "forward_epoch": int(self._forward_epoch),
+            "forward_epoch": exact_generation,
             "active_transport_cleared": bool(active_transport),
             "stale_prediction_cleared": bool(has_active_prediction),
             "valid": not active_transport,
@@ -4571,6 +4685,8 @@ class RouterSenseInjectionRuntime:
                         )
                         if not prepared_execution.validation.valid:
                             self.target_plan_store.fail(key, execution_origin="materialization_invalid_p1")
+                            self.evidence_counters.materialization_failure_count += 1
+                            self.evidence_counters.fallback_count += 1
                             self._runtime_state.write("execution_origin", "materialization_invalid_p1")
                             return
                         self._prepared_execution_cache()[self.target_plan_store._key(key)] = prepared_execution

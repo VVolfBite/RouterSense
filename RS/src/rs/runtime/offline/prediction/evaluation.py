@@ -94,7 +94,7 @@ def rolling_predictor_records(*, fixture_dir, predictor_name: str) -> list[Predi
             identity=PredictionIdentity(
                 request_id=f"{sample.layer_id}:{sample.next_layer_id}:{predictor_name}",
                 source_layer_id=str(sample.layer_id),
-                target_layer_id=str(sample.next_layer_id),
+                target_layer_id=(str(sample.next_layer_id) if str(sample.next_layer_id) else None),
             ),
             current_dispatch_rows=sample.current_dispatch_matrix,
             current_return_rows=sample.current_return_matrix,

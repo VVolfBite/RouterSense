@@ -142,7 +142,13 @@ class PredictionHint:
             if normalized_predictor in {"copy_current", "copy_current_dispatch"}:
                 return "copy_current_dispatch"
             return "learned_prediction"
-        if normalized_kind in {"different_hint", "history_ema", "history_linear_trend", "ridge_linear_trace_predictor"}:
+        if normalized_kind in {
+            "different_hint",
+            "history_ema",
+            "history_linear_trend",
+            "ridge_linear_trace_predictor",
+            "shuffled_control",
+        }:
             return "learned_prediction"
         return normalized_kind
 
@@ -161,6 +167,7 @@ class PredictionHint:
             "copy_current_dispatch",
             "learned_prediction",
             "perfect_trace_hint",
+            "expert_route",
         }:
             raise ValueError(f"unsupported prediction kind {canonical_kind!r}")
         _validate_matrix("target_dispatch_rows", self.target_dispatch_rows, world_size=world_size)

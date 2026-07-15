@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from experiments.offline.run_prediction_oracle_baseline_closure import (
+    OptionalSolverUnavailableError,
     _build_problem_with_hint_and_truth,
     _generate_exact_instances,
     _solve_exact_oracle,
@@ -33,12 +34,25 @@ def test_build_problem_separates_planning_hint_from_execution_truth() -> None:
 
 
 def test_exact_oracle_joint_not_worse_than_local_on_generated_instance() -> None:
+    pytest.importorskip("ortools.sat.python.cp_model")
     instance = _generate_exact_instances(1)[0]
     local = _solve_exact_oracle(instance, mode="local")
     joint = _solve_exact_oracle(instance, mode="joint")
     assert local["solver_status"] == "OPTIMAL"
     assert joint["solver_status"] == "OPTIMAL"
     assert int(joint["objective"]) <= int(local["objective"])
+
+
+def test_exact_oracle_raises_explicit_error_when_solver_missing(monkeypatch) -> None:
+    import experiments.offline.run_prediction_oracle_baseline_closure as closure_mod
+
+    def _missing():
+        raise OptionalSolverUnavailableError("solver unavailable")
+
+    monkeypatch.setattr(closure_mod, "_require_cp_model", _missing)
+    instance = _generate_exact_instances(1)[0]
+    with pytest.raises(OptionalSolverUnavailableError, match="solver unavailable"):
+        _solve_exact_oracle(instance, mode="local")
 
 
 def test_runtime_predictor_name_validation_is_explicit() -> None:

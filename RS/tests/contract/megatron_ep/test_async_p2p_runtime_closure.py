@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -175,7 +176,7 @@ def test_gpu_runners_support_help_and_dry_run(tmp_path: Path) -> None:
         help_proc = subprocess.run(
             [sys.executable, script, "--help"],
             cwd=str(REPO_ROOT),
-            env={"PYTHONPATH": str(REPO_ROOT / "src")},
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
             capture_output=True,
             text=True,
             check=False,
@@ -185,7 +186,7 @@ def test_gpu_runners_support_help_and_dry_run(tmp_path: Path) -> None:
         dry_proc = subprocess.run(
             [sys.executable, script, "--config", "configs/comparison/natural_256x128_4gpu.yaml", "--output-dir", str(out_dir), "--dry-run"],
             cwd=str(REPO_ROOT),
-            env={"PYTHONPATH": str(REPO_ROOT / "src")},
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
             capture_output=True,
             text=True,
             check=False,

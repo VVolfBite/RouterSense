@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -72,7 +73,7 @@ def test_transport_stress_replay_cli(tmp_path: Path) -> None:
         ],
         check=True,
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
     summary = json.loads((output_dir / "transport_stress_replay_summary.json").read_text(encoding="utf-8"))
     assert "phase_sync_transport" in summary

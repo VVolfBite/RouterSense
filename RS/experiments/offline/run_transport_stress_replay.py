@@ -79,6 +79,11 @@ def _augment_transport_summary(summary_rows: list[dict[str, Any]], *, total_byte
 
 
 def _render_md(payload: dict[str, Any]) -> str:
+    def _fmt(value: Any, digits: int) -> str:
+        if value is None:
+            return "-"
+        return f"{float(value):.{digits}f}"
+
     audit = payload["fixture_audit"]
     phase_sync = payload["phase_sync_transport"]["summary"]
     joint = payload["joint_transport"]["summary"]
@@ -127,7 +132,7 @@ def _render_md(payload: dict[str, Any]) -> str:
     for row in phase_sync:
         rel = row["relative_to_birkhoff_phase_local"]
         lines.append(
-            f"| {row['policy_name']} | {row['mean_makespan']:.0f} | {row['mean_wave_count']:.2f} | "
+            f"| {row['policy_name']} | {_fmt(row['mean_makespan'], 0)} | {_fmt(row['mean_wave_count'], 2)} | "
             f"{('-' if rel is None else f'{rel * 100:.2f}%')} | "
             f"{('-' if row['normalized_byte_throughput'] is None else f'{row['normalized_byte_throughput']:.6f}')} |"
         )
@@ -143,7 +148,7 @@ def _render_md(payload: dict[str, Any]) -> str:
     for row in joint:
         rel = row["relative_to_B_birkhoff_wave"]
         lines.append(
-            f"| {row['policy_name']} | {row['mean_makespan']:.0f} | {row['mean_wave_count']:.2f} | "
+            f"| {row['policy_name']} | {_fmt(row['mean_makespan'], 0)} | {_fmt(row['mean_wave_count'], 2)} | "
             f"{('-' if rel is None else f'{rel * 100:.2f}%')} | "
             f"{('-' if row['normalized_byte_throughput'] is None else f'{row['normalized_byte_throughput']:.6f}')} |"
         )

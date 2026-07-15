@@ -93,7 +93,6 @@ def test_removed_duplicate_formal_roots() -> None:
         root / "tools",
         root / "archives",
         root / "integrations",
-        root / "experiments/distributed",
         root / "experiments/poc_line1",
         root / "experiments/legacy",
         root / "experiments/ablation",
@@ -106,3 +105,14 @@ def test_removed_duplicate_formal_roots() -> None:
     ]
     for path in removed_paths:
         assert not path.exists(), path
+
+
+def test_current_distributed_runner_root_remains_formal_until_m5_convergence() -> None:
+    root = Path(__file__).resolve().parents[1]
+    required_distributed_paths = [
+        root / "experiments/distributed",
+        root / "experiments/distributed/run_m123_integrated_publication_execution_gloo.py",
+        root / "experiments/distributed/run_m1_formal_lifecycle_publication_gloo.py",
+    ]
+    for path in required_distributed_paths:
+        assert path.exists(), path
