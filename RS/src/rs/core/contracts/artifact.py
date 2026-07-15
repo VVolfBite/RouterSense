@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class ArtifactWriter(Protocol):
         *,
         category: str,
         name: str,
-        payload: Mapping[str, object] | str,
+        payload: object,
         format: str,
         schema: str,
         producer: str,

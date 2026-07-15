@@ -16,6 +16,8 @@ from rs.evidence.serialization import EvidenceSerializer
 from rs.runtime.debug.api import BufferedDebugProbe, NullDebugProbe, TensorCapture
 from rs.runtime.measurement.api import NullMeasurementSink, PerfLightMeasurementSink
 from rs.runtime.observation.instrumentation import RuntimeInstrumentation
+from rs.runtime.online.megatron_ep.observation.artifact_recorder import RuntimeArtifactRecorder
+from rs.runtime.online.megatron_ep.observation.contracts import RuntimeObservationSnapshot
 
 
 def _event(event_type: str, started_at_ns: int, ended_at_ns: int) -> MeasurementEvent:
@@ -233,6 +235,24 @@ def test_artifact_writer_roundtrip_and_path_guard(tmp_path: Path) -> None:
         assert "escapes root_dir" in str(exc)
     else:
         raise AssertionError("expected path escape validation failure")
+
+
+def test_runtime_artifact_recorder_uses_canonical_manifest(tmp_path: Path) -> None:
+    recorder = RuntimeArtifactRecorder(run_dir=tmp_path)
+    recorder.write_run_manifest({"run_id": "run"})
+    recorder.write_summary({"status": "success"})
+    recorder.flush_snapshot(
+        RuntimeObservationSnapshot(
+            counters={"phase_context_count": 1},
+            phase_contexts=({"layer_id": "1", "phase": "p0"},),
+        )
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    artifact_paths = {item["relative_path"] for item in manifest["artifacts"]}
+    assert "run_manifest.json" in artifact_paths
+    assert "summary.json" in artifact_paths
+    assert "observation_counters.json" in artifact_paths
+    assert "phase_contexts.jsonl" in artifact_paths
 
 
 def test_measurement_and_debug_do_not_force_tensor_d2h(monkeypatch) -> None:

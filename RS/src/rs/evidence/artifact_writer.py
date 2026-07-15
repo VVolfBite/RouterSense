@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
-from typing import Mapping
 
 from rs.core.contracts.artifact import ArtifactRecord
 from rs.core.contracts.result import ResultBundle
@@ -55,12 +54,32 @@ class FilesystemArtifactWriter:
         temp.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
         temp.replace(self._manifest_path)
 
+    @staticmethod
+    def _encode_jsonl(payload: object) -> bytes:
+        if not isinstance(payload, (list, tuple)):
+            raise TypeError("jsonl format requires a list or tuple payload")
+        rows: list[str] = []
+        for row in payload:
+            rows.append(json.dumps(row, ensure_ascii=False, sort_keys=True))
+        text = "\n".join(rows)
+        if rows:
+            text += "\n"
+        return text.encode("utf-8")
+
+    @staticmethod
+    def _relative_path(*, category: str, name: str) -> str:
+        normalized_name = str(PurePosixPath(name))
+        normalized_category = str(PurePosixPath(category))
+        if normalized_category in {"", "."}:
+            return normalized_name
+        return f"{normalized_category}/{normalized_name}"
+
     def write(
         self,
         *,
         category: str,
         name: str,
-        payload: Mapping[str, object] | str,
+        payload: object,
         format: str,
         schema: str,
         producer: str,
@@ -71,14 +90,16 @@ class FilesystemArtifactWriter:
         if format == "text":
             encoded = str(payload).encode("utf-8")
         elif format == "json":
-            encoded = json.dumps(dict(payload) if isinstance(payload, Mapping) else payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+        elif format == "jsonl":
+            encoded = self._encode_jsonl(payload)
         elif format == "result_bundle":
             if not isinstance(payload, ResultBundle):
                 raise TypeError("result_bundle format requires a ResultBundle payload")
             encoded = self.serializer.serialize_result(payload).encode("utf-8")
         else:
             raise ValueError(f"unsupported artifact format: {format}")
-        base_record = self._write_bytes(relative_path=f"{category_name}/{file_name}", payload=encoded)
+        base_record = self._write_bytes(relative_path=self._relative_path(category=category_name, name=file_name), payload=encoded)
         record = ArtifactRecord(
             relative_path=base_record.relative_path,
             schema=str(schema),
