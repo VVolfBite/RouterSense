@@ -172,7 +172,10 @@ def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
             for member in tf.getmembers():
                 if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
                     raise ValueError(f"unsafe archive entry: {member.name}")
-            tf.extractall(unpack_root)
+            try:
+                tf.extractall(unpack_root, filter="data")
+            except TypeError:
+                tf.extractall(unpack_root)
         rs_root = unpack_root / "RS"
         source_manifest = json.loads((unpack_root / "source_manifest.json").read_text(encoding="utf-8"))
         if source_manifest["source_tree_digest"] != _tree_digest(rs_root):

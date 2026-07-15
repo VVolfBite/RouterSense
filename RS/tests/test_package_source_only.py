@@ -73,7 +73,10 @@ def test_archive_unpack_allows_pytest_from_rs_dir(tmp_path):
     unpack_dir = tmp_path / "unpack"
     unpack_dir.mkdir()
     with tarfile.open(archive, "r:gz") as tf:
-        tf.extractall(unpack_dir)
+        try:
+            tf.extractall(unpack_dir, filter="data")
+        except TypeError:
+            tf.extractall(unpack_dir)
     rs_dir = unpack_dir / "RS"
     env = dict(os.environ)
     existing_pythonpath = env.get("PYTHONPATH", "")
