@@ -58,6 +58,19 @@ class CommonExecutionGuard:
         self._active_reservations: set[str] = set()
         self._consumed_invocations: set[str] = set()
 
+    @staticmethod
+    def _reservation_key(*, invocation: PayloadInvocation, context: ExecutionContext) -> str:
+        return "|".join(
+            (
+                str(context.run_id),
+                str(int(context.forward_generation)),
+                str(context.layer_id),
+                str(context.phase),
+                str(invocation.payload_role),
+                str(invocation.invocation_id),
+            )
+        )
+
     def _validate_common(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
         try:
             plan.validate()
@@ -91,29 +104,29 @@ class CommonExecutionGuard:
         result = self._validate_common(plan=plan, invocation=invocation, context=context)
         if not result.valid:
             return result
-        invocation_id = str(invocation.invocation_id)
-        if invocation_id in self._consumed_invocations:
+        invocation_key = self._reservation_key(invocation=invocation, context=context)
+        if invocation_key in self._consumed_invocations:
             return ValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
-        self._consumed_invocations.add(invocation_id)
+        self._consumed_invocations.add(invocation_key)
         return ValidationResult(valid=True, stage="guard")
 
     def reserve(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
         result = self._validate_common(plan=plan, invocation=invocation, context=context)
         if not result.valid:
             return result
-        invocation_id = str(invocation.invocation_id)
-        if invocation_id in self._consumed_invocations or invocation_id in self._active_reservations:
+        invocation_key = self._reservation_key(invocation=invocation, context=context)
+        if invocation_key in self._consumed_invocations or invocation_key in self._active_reservations:
             return ValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
-        self._active_reservations.add(invocation_id)
+        self._active_reservations.add(invocation_key)
         return ValidationResult(valid=True, stage="guard")
 
-    def commit(self, invocation_id: str) -> None:
-        invocation_key = str(invocation_id)
+    def commit(self, *, invocation: PayloadInvocation, context: ExecutionContext) -> None:
+        invocation_key = self._reservation_key(invocation=invocation, context=context)
         self._active_reservations.discard(invocation_key)
         self._consumed_invocations.add(invocation_key)
 
-    def rollback(self, invocation_id: str) -> None:
-        self._active_reservations.discard(str(invocation_id))
+    def rollback(self, *, invocation: PayloadInvocation, context: ExecutionContext) -> None:
+        self._active_reservations.discard(self._reservation_key(invocation=invocation, context=context))
 
 
 def _payload_spec_map(plan: MaterializedPlan) -> dict[str, Any]:

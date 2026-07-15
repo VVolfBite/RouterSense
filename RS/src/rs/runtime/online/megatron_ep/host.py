@@ -94,7 +94,9 @@ def get_process_group_ranks_safe(group: dist.ProcessGroup | None) -> tuple[int, 
         return tuple(range(dist.get_world_size())) if dist.is_initialized() else (0,)
     if hasattr(dist, "get_process_group_ranks"):
         return tuple(int(rank) for rank in dist.get_process_group_ranks(group))
-    return tuple(range(dist.get_world_size(group)))
+    raise RuntimeError(
+        "explicit process-group rank order is required when torch.distributed.get_process_group_ranks is unavailable"
+    )
 
 
 def get_process_group_root_safe(group: dist.ProcessGroup | None) -> int:

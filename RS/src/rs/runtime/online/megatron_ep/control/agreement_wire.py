@@ -97,6 +97,38 @@ def compute_node_index_map(hostname_digests: dict[int, str]) -> dict[int, int]:
     return {rank: index_by_digest[digest] for rank, digest in hostname_digests.items()}
 
 
+def _resolve_group_rank_order(
+    *,
+    process_group: dist.ProcessGroup | None,
+    explicit_group_ranks: tuple[int, ...] | None = None,
+) -> tuple[int, ...]:
+    if explicit_group_ranks is not None:
+        normalized = tuple(int(rank) for rank in explicit_group_ranks)
+        if not normalized:
+            raise ValueError("explicit_group_ranks must be non-empty")
+        return normalized
+    if process_group is None:
+        if not dist.is_available() or not dist.is_initialized():
+            return (0,)
+        return tuple(range(dist.get_world_size()))
+    if hasattr(dist, "get_process_group_ranks"):
+        ranks = tuple(int(rank) for rank in dist.get_process_group_ranks(process_group))
+        if not ranks:
+            raise ValueError("process group rank order is empty")
+        return ranks
+    raise RuntimeError(
+        "explicit process-group rank order is required when torch.distributed.get_process_group_ranks is unavailable"
+    )
+
+
+def _resolve_group_world_size(
+    *,
+    process_group: dist.ProcessGroup | None,
+    explicit_group_ranks: tuple[int, ...] | None = None,
+) -> int:
+    return int(len(_resolve_group_rank_order(process_group=process_group, explicit_group_ranks=explicit_group_ranks)))
+
+
 def encode_runtime_observation(observation: RuntimeObservation) -> list[int]:
     peer_count = int(observation.ep_group_size)
     per_peer_rows = list(observation.per_peer_rows[:peer_count]) + [0] * max(0, peer_count - len(observation.per_peer_rows))
@@ -218,18 +250,23 @@ def decode_runtime_observation(
     )
 
 
-def _all_gather_variable_int64(local_values: list[int], *, device: torch.device) -> list[list[int]]:
+def _all_gather_variable_int64(
+    local_values: list[int],
+    *,
+    device: torch.device,
+    process_group: dist.ProcessGroup | None,
+    group_world_size: int,
+) -> list[list[int]]:
     local_len = torch.tensor([len(local_values)], dtype=torch.int64, device=device)
-    world_size = dist.get_world_size()
-    gathered_lens = [torch.zeros_like(local_len) for _ in range(world_size)]
-    dist.all_gather(gathered_lens, local_len)
+    gathered_lens = [torch.zeros_like(local_len) for _ in range(int(group_world_size))]
+    dist.all_gather(gathered_lens, local_len, group=process_group)
     lens = [int(item.item()) for item in gathered_lens]
     max_len = max(lens)
     padded = torch.zeros(max_len, dtype=torch.int64, device=device)
     if local_values:
         padded[: len(local_values)] = torch.tensor(local_values, dtype=torch.int64, device=device)
-    gathered = [torch.zeros_like(padded) for _ in range(world_size)]
-    dist.all_gather(gathered, padded)
+    gathered = [torch.zeros_like(padded) for _ in range(int(group_world_size))]
+    dist.all_gather(gathered, padded, group=process_group)
     return [tensor[: lens[idx]].detach().cpu().tolist() for idx, tensor in enumerate(gathered)]
 
 
@@ -434,19 +471,26 @@ def run_policy_agreement(
     device: torch.device,
 ) -> tuple[RouterSensePlan, PlanAgreement]:
     world_group = group if group is not None else dist.group.WORLD
+    rank_order = _resolve_group_rank_order(process_group=world_group, explicit_group_ranks=tuple(int(v) for v in context.ep_group_ranks))
+    group_world_size = len(rank_order)
+    root_global_rank = int(rank_order[0]) if rank_order else 0
     local_payload = encode_runtime_observation(local_observation)
     gather_start = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
     gather_end = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
     if gather_start is not None:
         gather_start.record()
-    gathered_payloads = _all_gather_variable_int64(local_payload, device=device)
+    gathered_payloads = _all_gather_variable_int64(
+        local_payload,
+        device=device,
+        process_group=world_group,
+        group_world_size=group_world_size,
+    )
     if gather_end is not None:
         gather_end.record()
         torch.cuda.synchronize(device)
         observation_all_gather_ms = float(gather_start.elapsed_time(gather_end))
     else:
         observation_all_gather_ms = 0.0
-    rank_order = tuple(int(rank) for rank in dist.get_process_group_ranks(world_group))
     hostname_digests = {
         rank_order[index]: _i64_to_hex(int(payload[15]))
         for index, payload in enumerate(gathered_payloads)
@@ -456,9 +500,13 @@ def run_policy_agreement(
         decode_runtime_observation(payload, ep_group_ranks=rank_order, node_index_map=node_index_map)
         for payload in gathered_payloads
     )
-    root_rank = int(rank_order[0]) if rank_order else 0
-    if dist.get_rank(group=world_group) == root_rank:
-        root_context = next(item for item in decoded_observations if int(item.global_rank) == root_rank)
+    local_global_rank = int(getattr(local_observation, "global_rank"))
+    if local_global_rank not in rank_order:
+        raise RuntimeError(f"local global rank {local_global_rank} is not a member of control group {rank_order!r}")
+    local_group_rank = int(rank_order.index(local_global_rank))
+    root_group_rank = 0
+    if local_group_rank == root_group_rank:
+        root_context = next(item for item in decoded_observations if int(item.global_rank) == root_global_rank)
         plan = policy.build_plan(local_context=root_context, global_contexts=decoded_observations)
         semantic_hash = plan.plan_hash
         wire_payload = encode_plan_tensor(plan, len(rank_order))
@@ -468,16 +516,26 @@ def run_policy_agreement(
         semantic_hash = ""
         wire_payload = []
         wire_hash = ""
-    gathered_wire = _all_gather_variable_int64(wire_payload, device=device)
+    gathered_wire = _all_gather_variable_int64(
+        wire_payload,
+        device=device,
+        process_group=world_group,
+        group_world_size=group_world_size,
+    )
     root_payload = gathered_wire[0]
     decoded_plan = decode_plan_tensor(root_payload, len(rank_order))
     decoded_hash = decoded_plan.plan_hash
     local_hash_tensor = [_hash_to_i64(decoded_hash)]
-    gathered_hashes = _all_gather_variable_int64(local_hash_tensor, device=device)
+    gathered_hashes = _all_gather_variable_int64(
+        local_hash_tensor,
+        device=device,
+        process_group=world_group,
+        group_world_size=group_world_size,
+    )
     rank_hashes = tuple(_i64_to_hex(int(item[0])) for item in gathered_hashes if item)
     validate_rank_hashes(rank_hashes)
     agreement = PlanAgreement(
-        root_rank=root_rank,
+        root_rank=root_global_rank,
         rank_count=len(rank_order),
         root_wire_hash=wire_hash or stable_hash(root_payload),
         root_semantic_hash=semantic_hash or decoded_hash,

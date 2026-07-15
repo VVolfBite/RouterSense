@@ -310,7 +310,7 @@ def _get_process_group_root_safe(group: dist.ProcessGroup | None) -> int:
     if hasattr(dist, "get_process_group_ranks"):
         ranks = tuple(int(rank) for rank in dist.get_process_group_ranks(group))
         return int(ranks[0]) if ranks else 0
-    return 0
+    raise RuntimeError("explicit process-group rank order is required when torch.distributed.get_process_group_ranks is unavailable")
 
 
 def run_phase_plan_agreement(
@@ -320,10 +320,20 @@ def run_phase_plan_agreement(
     group: dist.ProcessGroup | None,
 ) -> PhaseExecutionPlan:
     world_group = group if group is not None else dist.group.WORLD
-    world_size = dist.get_world_size(group=world_group)
-    root_rank = int(_get_process_group_root_safe(world_group))
+    group_ranks = (
+        tuple(int(rank) for rank in dist.get_process_group_ranks(world_group))
+        if group is not None and hasattr(dist, "get_process_group_ranks")
+        else tuple(int(rank) for rank in local_context.ep_group_ranks)
+    )
+    if not group_ranks:
+        raise RuntimeError("control group rank order is empty")
+    world_size = len(group_ranks)
+    root_rank = int(group_ranks[0])
     device = _wire_device(world_group)
-    rank = dist.get_rank(group=world_group)
+    if int(local_context.global_rank) not in set(group_ranks):
+        raise RuntimeError(f"local global rank {local_context.global_rank} is not a member of control group {group_ranks!r}")
+    local_group_rank = int(group_ranks.index(int(local_context.global_rank)))
+    root_group_rank = 0
     summary_build_start_ns = time.monotonic_ns()
     local_summary = local_context.to_planning_summary()
     summary_build_end_ns = time.monotonic_ns()
@@ -341,7 +351,7 @@ def run_phase_plan_agreement(
     summary_stack_time_us = 0.0
     summary_tensor_to_cpu_time_us = 0.0
     summary_object_decode_time_us = 0.0
-    if rank == root_rank:
+    if local_group_rank == root_group_rank:
         rebuilt_contexts: list[PhaseReadyContext] = []
         summary_stack_start_ns = time.monotonic_ns()
         gathered_matrix = torch.stack(gathered, dim=0)

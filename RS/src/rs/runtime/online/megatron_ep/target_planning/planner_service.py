@@ -244,23 +244,37 @@ class TargetLayerPlannerService:
                     return PreparationSubmitResult(status=PreparationSubmitStatus.DROPPED_OVERLOAD, task_key=task_key)
                 self._queued_keys.add(task_key)
             self._pending_by_key[task_key] = queued
-            registered = self.store.register_expected_publication(
-                PreparationToken(
-                    service_session_id=int(queued.service_session_id),
-                    forward_generation=int(request.forward_epoch),
-                    target_key=TargetPlanKey(
-                        run_id=request.run_id,
-                        forward_epoch=int(request.forward_epoch),
-                        microbatch_id=request.microbatch_id,
-                        target_layer_id=request.target_layer_id,
-                    ),
-                    task_version=int(queued.task_version),
-                    publish_sequence=int(queued.publish_sequence),
-                )
+            token = PreparationToken(
+                service_session_id=int(queued.service_session_id),
+                forward_generation=int(request.forward_epoch),
+                target_key=TargetPlanKey(
+                    run_id=request.run_id,
+                    forward_epoch=int(request.forward_epoch),
+                    microbatch_id=request.microbatch_id,
+                    target_layer_id=request.target_layer_id,
+                ),
+                task_version=int(queued.task_version),
+                publish_sequence=int(queued.publish_sequence),
             )
-            if not bool(registered):
+            try:
+                registered = self.store.register_expected_publication(token)
+            except Exception:
+                self._pending_by_key.pop(task_key, None)
                 if needs_queue_slot:
-                    self._pending_by_key.pop(task_key, None)
+                    self._queued_keys.discard(task_key)
+                slot = PublicationSlot(
+                    run_id=str(request.run_id),
+                    forward_generation=int(request.forward_epoch),
+                    microbatch_id=str(request.microbatch_id),
+                    source_layer_id=str(request.source_layer_id),
+                    target_layer_id=str(request.target_layer_id),
+                    planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+                )
+                self._publication_state_by_slot.pop(str(slot.semantic_digest()), None)
+                raise
+            if not bool(registered):
+                self._pending_by_key.pop(task_key, None)
+                if needs_queue_slot:
                     self._queued_keys.discard(task_key)
                 return PreparationSubmitResult(status=PreparationSubmitStatus.REJECTED_EXPIRED, task_key=task_key)
             slot = PublicationSlot(

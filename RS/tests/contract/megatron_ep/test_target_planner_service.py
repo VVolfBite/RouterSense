@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 
+import pytest
+
 from rs.core.contracts import PlanWave, PlannedFlow, PlanningRequest, WindowPlan
 from rs.planning import PlannerPolicyConfig, PlannerSelectionMode
 from rs.runtime.online.megatron_ep.target_planning import TargetPlanKey
@@ -12,6 +14,7 @@ from rs.runtime.online.megatron_ep.target_planning.planner_service import (
     TargetLayerPlannerService,
     TargetLayerPlanningRequest,
 )
+from rs.runtime.online.megatron_ep.public_types import PublicationSlot
 from rs.runtime.online.megatron_ep.target_planning.predictor import TwoHorizonPredictionBundle
 from rs.runtime.online.megatron_ep.target_planning.contracts import TwoHorizonPrediction
 from rs.runtime.online.megatron_ep.target_planning.store import TargetPlanStore
@@ -537,3 +540,27 @@ def test_target_planner_generation_floor_rejects_old_generation_without_prior_su
         PreparationSubmitStatus.REPLACED_STALE,
     }
     service.shutdown()
+
+
+def test_target_planner_submit_rolls_back_if_store_register_raises() -> None:
+    class _ExplodingStore(TargetPlanStore):
+        def register_expected_publication(self, token):  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    store = _ExplodingStore()
+    service = TargetLayerPlannerService(store=store, max_queue_size=4)
+    request = _request(safe_projection_mode="disabled")
+    task_key = service._task_key(request)  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="boom"):
+        service.submit(request)
+    assert task_key not in service._pending_by_key  # noqa: SLF001
+    assert task_key not in service._queued_keys  # noqa: SLF001
+    slot = PublicationSlot(
+        run_id=str(request.run_id),
+        forward_generation=int(request.forward_epoch),
+        microbatch_id=str(request.microbatch_id),
+        source_layer_id=str(request.source_layer_id),
+        target_layer_id=str(request.target_layer_id),
+        planning_slot=f"{request.source_layer_id}->{request.target_layer_id}",
+    )
+    assert str(slot.semantic_digest()) not in service._publication_state_by_slot  # noqa: SLF001

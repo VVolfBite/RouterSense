@@ -210,3 +210,44 @@ def test_lane_generation_floor_marks_old_slot_expired() -> None:
     lane.cancel_before_generation(run_id="run", microbatch_id="mb", current_generation=3)
     result = lane.poll(slot, None)
     assert result.status is PublicationPollStatus.EXPIRED
+
+
+def test_lane_root_validation_failure_still_broadcasts_terminal_failure(monkeypatch) -> None:
+    slot = slot_from_request(
+        run_id="run",
+        forward_generation=1,
+        microbatch_id="mb",
+        source_layer_id="0",
+        target_layer_id="1",
+    )
+    lane = GlooControlCommunicationLane(rank=2, world_size=2, root_rank=2, process_group=object(), group_ranks=(2, 3))
+    local = _candidate(slot_digest=slot.semantic_digest())
+    broken = LocalPublicationCandidate(
+        slot=local.slot,
+        planner_id=local.planner_id,
+        logical_plan_digest=local.logical_plan_digest,
+        token=local.token,
+        status=local.status,
+        metadata={"plan": {"broken": True}},
+    )
+    monkeypatch.setattr(lane_mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(lane_mod.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        lane,
+        "_all_gather_status",
+        lambda payload: [
+            {"slot_digest": slot.semantic_digest(), "group_rank": 0, "global_rank": 2, "status": "READY", "candidate": broken.to_dict()},
+            {"slot_digest": slot.semantic_digest(), "group_rank": 1, "global_rank": 3, "status": "READY", "candidate": broken.to_dict()},
+        ],
+    )
+    seen = {"broadcast": 0}
+
+    def _broadcast(object_list, *, src, group):
+        seen["broadcast"] += 1
+        object_list[0] = {"status": "FAILED", "reason": "invalid_root_candidate"}
+
+    monkeypatch.setattr(lane_mod.dist, "broadcast_object_list", _broadcast)
+    result = lane.poll(slot, broken)
+    assert seen["broadcast"] == 1
+    assert result.status is PublicationPollStatus.FAILED
+    assert result.details["reason"] == "invalid_root_candidate"
