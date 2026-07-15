@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from experiments.distributed.run_gpu_a2_strategy_compare import aggregate_hotpath_rank_counts
+from rs.experiments_support.gpu_a2_strategy_compare import aggregate_hotpath_rank_counts
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime
 

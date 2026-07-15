@@ -14,8 +14,7 @@ from rs.scheduling.multiphase.replay import replay_and_audit_schedule
 from rs.scheduling.multiphase.tier1 import FLUID_SERVICE_MODEL, TIER1_ALGORITHM_IDS
 from rs.scheduling.validation import stable_hash, validate_logical_plan
 
-from experiments.offline.run_tier1_cpu_validation import _build_problem
-from experiments.offline.run_tier1_cpu_validation import DEFAULT_WAVE_TIER1_POLICIES
+from rs.runtime.offline.tier1_validation import DEFAULT_WAVE_TIER1_POLICIES, build_tier1_problem
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "tier1"
@@ -50,7 +49,7 @@ def _expected_flows(problem):
 
 @pytest.mark.parametrize("algorithm_id", TIER1_ALGORITHM_IDS)
 def test_tier1_runtime_lookahead_suppresses_real_p2_and_is_deterministic(algorithm_id: str) -> None:
-    problem = _build_problem(
+    problem = build_tier1_problem(
         _fixture("unlock_hotspot_4rank"),
         mode=RUNTIME_LOOKAHEAD_MODE,
         p2_source="perfect_trace",
@@ -80,7 +79,7 @@ def test_tier1_runtime_lookahead_suppresses_real_p2_and_is_deterministic(algorit
 
 @pytest.mark.parametrize("algorithm_id", TIER1_ALGORITHM_IDS)
 def test_tier1_execution_window_schedules_real_p2(algorithm_id: str) -> None:
-    problem = _build_problem(
+    problem = build_tier1_problem(
         _fixture("unlock_hotspot_4rank"),
         mode=EXECUTION_WINDOW_MODE,
         p2_source="perfect_trace",
@@ -95,7 +94,7 @@ def test_tier1_execution_window_schedules_real_p2(algorithm_id: str) -> None:
 
 
 def test_tier1_atomic_and_fluid_service_models_are_isolated() -> None:
-    problem = _build_problem(
+    problem = build_tier1_problem(
         _fixture("fluid_split_4rank"),
         mode=RUNTIME_LOOKAHEAD_MODE,
         p2_source="copy_current_dispatch",

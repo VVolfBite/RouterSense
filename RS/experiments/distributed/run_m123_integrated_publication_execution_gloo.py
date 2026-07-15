@@ -11,10 +11,18 @@ import time
 import traceback
 import uuid
 from pathlib import Path
+import sys
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher

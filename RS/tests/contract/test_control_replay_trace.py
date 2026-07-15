@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from experiments.offline.build_replay_fixture_from_control_trace import (
+from rs.runtime.offline.replay_fixture import (
     build_replay_fixture_audit_summary,
     build_replay_fixture_bundle,
 )
-from experiments.offline.replay_online_control_trace import read_jsonl, summarize_control_replay_trace
+from rs.runtime.offline.control_replay import read_jsonl, summarize_control_replay_trace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

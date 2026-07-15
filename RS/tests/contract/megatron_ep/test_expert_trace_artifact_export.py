@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.online.support.phase_executor_artifacts import write_rank_artifacts
+from rs.runtime.online.megatron_ep.phase_executor_artifacts import write_rank_artifacts
 
 
 class _FakeRuntime:

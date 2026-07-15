@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.offline.run_prediction_replay_suite import run_prediction_replay_suite
+from rs.runtime.offline.prediction_replay_suite import run_prediction_replay_suite
 
 
 def _write_fixture_dir(path: Path) -> Path:

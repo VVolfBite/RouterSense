@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from experiments.distributed._gpu_runner_common import build_policy_correctness_config
+from rs.experiments_support.gpu_runner_common import build_policy_correctness_config
 from rs.core.experiment_config import load_run_config
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime

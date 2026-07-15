@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from experiments.offline.run_oracle_gap_replay import run_oracle_gap_replay
+from rs.runtime.offline.oracle_gap_replay import run_oracle_gap_replay
 
 
 def test_oracle_gap_replay_cli(tmp_path: Path) -> None:

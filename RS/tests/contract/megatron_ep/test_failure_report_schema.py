@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from experiments.online.run_policy_correctness import _failure_report
+from rs.runtime.online.megatron_ep.phase_executor_artifacts import failure_report as _failure_report
 
 
 def test_failure_report_schema() -> None:

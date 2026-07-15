@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.offline.estimate_planning_hiding_window import estimate_planning_hiding_window
+from rs.runtime.offline.planning_hiding import estimate_planning_hiding_window
 
 
 def test_planning_hiding_estimate_cli(tmp_path: Path) -> None:

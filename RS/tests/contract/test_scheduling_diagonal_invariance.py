@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from experiments.offline.replay_fixture_policy_study import _build_problem
+from rs.runtime.offline.policy_study import build_replay_problem
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.scheduling import resolve_policy
 
@@ -31,7 +31,7 @@ def _fixture_with(diagonal: int) -> dict[str, object]:
 
 def _result(policy_name: str, fixture: dict[str, object]) -> tuple[float, int, int]:
     mode = "execution_window" if policy_name.startswith("B_") or policy_name.startswith("U_") else "runtime_lookahead"
-    problem = _build_problem(
+    problem = build_replay_problem(
         fixture,
         mode=mode,
         p2_source="actual_trace" if mode == "execution_window" else "copy_current_dispatch",

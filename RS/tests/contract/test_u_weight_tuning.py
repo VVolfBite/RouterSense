@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.offline.tune_existing_u_weights import run_u_weight_tuning
+from rs.runtime.offline.u_weight_tuning import run_u_weight_tuning
 
 
 def _write_fixture_dir(path: Path) -> Path:

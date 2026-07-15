@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.online.support.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
+from rs.reporting.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
 
 
 def test_analyze_prepared_plan_runtime_extracts_arrival_binding_and_plan_summary(tmp_path: Path) -> None:

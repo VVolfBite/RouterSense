@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from experiments.offline.run_prediction_oracle_baseline_closure import (
+from rs.runtime.offline.prediction_oracle_baseline_closure import (
     OptionalSolverUnavailableError,
     _build_problem_with_hint_and_truth,
     _generate_exact_instances,
@@ -44,7 +44,7 @@ def test_exact_oracle_joint_not_worse_than_local_on_generated_instance() -> None
 
 
 def test_exact_oracle_raises_explicit_error_when_solver_missing(monkeypatch) -> None:
-    import experiments.offline.run_prediction_oracle_baseline_closure as closure_mod
+    import rs.runtime.offline.prediction_oracle_baseline_closure as closure_mod
 
     def _missing():
         raise OptionalSolverUnavailableError("solver unavailable")

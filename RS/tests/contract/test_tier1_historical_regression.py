@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.offline.run_tier1_cpu_validation import _build_problem
+from rs.runtime.offline.tier1_validation import build_tier1_problem
 from rs.scheduling import FlowDemand, resolve_policy
 from rs.scheduling.multiphase.flow_model import EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE
 from rs.scheduling.multiphase.tier1 import TIER1_ALGORITHM_IDS
@@ -70,7 +70,7 @@ def test_tier1_recovered_semantics_match_historical_golden(case: dict) -> None:
     assert case["algorithm_id"] in TIER1_ALGORITHM_IDS
     fixture = _fixture("unlock_hotspot_4rank")
     assert case["fixture_digest"] == stable_hash(fixture)
-    problem = _build_problem(
+    problem = build_tier1_problem(
         fixture,
         mode=case["mode"],
         p2_source=case["p2_source"],

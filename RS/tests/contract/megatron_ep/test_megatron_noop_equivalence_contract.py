@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from experiments.online.run_noop_equivalence import main as compare_main
+from rs.runtime.online.noop_equivalence import main as compare_main
 
 
 def test_noop_equivalence_contract(tmp_path: Path) -> None:

@@ -267,7 +267,7 @@ def test_recommended_config_does_not_expose_legacy_low_level_fields() -> None:
 
 
 def test_child_env_normalizes_invalid_omp_threads(monkeypatch: pytest.MonkeyPatch) -> None:
-    from experiments.online.run_strategy_comparison import _child_env
+    from rs.experiments_support.strategy_comparison import child_env as _child_env
 
     monkeypatch.setenv("OMP_NUM_THREADS", "")
     env = _child_env()

@@ -69,7 +69,7 @@ def test_validation_entry_dry_run_suites() -> None:
 
 
 def test_validation_entry_execute_removes_dry_run(monkeypatch) -> None:
-    from experiments.dev import run_validation
+    from rs.experiments_support import validation_entry as run_validation
 
     captured: dict[str, object] = {}
 
@@ -92,7 +92,7 @@ def test_validation_entry_execute_removes_dry_run(monkeypatch) -> None:
 
 
 def test_validation_entry_execute_after_suite_is_not_swallowed(monkeypatch) -> None:
-    from experiments.dev import run_validation
+    from rs.experiments_support import validation_entry as run_validation
 
     captured: dict[str, object] = {}
 

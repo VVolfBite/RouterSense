@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from experiments.distributed._gpu_runner_common import build_policy_correctness_config
+from rs.experiments_support.gpu_runner_common import build_policy_correctness_config
 from rs.core.experiment_config import load_run_config
 from rs.runtime.online.megatron_ep.observation.runtime_timeline import (
     MEASUREMENT_STATUSES,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.offline.run_expert_to_traffic_reconstruction import (
+from rs.runtime.offline.expert_to_traffic_reconstruction import (
     merge_source_expert_counts_by_layer_and_source_rank,
     run_expert_to_traffic_reconstruction,
 )

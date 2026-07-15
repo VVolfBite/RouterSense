@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from experiments.offline.run_replay_fixture_policy_suite import run_prediction_suite
+from rs.runtime.offline.prediction_policy_suite import run_prediction_suite
 
 
 def _write_fixture(fixture_dir, layer_id: str, p0, p1, p2) -> None:

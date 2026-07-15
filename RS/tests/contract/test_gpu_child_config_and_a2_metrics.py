@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.distributed._gpu_runner_common import build_policy_correctness_config, load_official_config
-from experiments.distributed.run_gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
+from rs.experiments_support.gpu_runner_common import build_policy_correctness_config, load_official_config
+from rs.experiments_support.gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
 from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import resolve_layer_selector
 

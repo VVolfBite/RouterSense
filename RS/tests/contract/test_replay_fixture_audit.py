@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from experiments.offline.build_replay_fixture_from_control_trace import (
+from rs.runtime.offline.replay_fixture import (
     build_replay_fixture_audit_summary,
     build_replay_fixture_bundle,
 )

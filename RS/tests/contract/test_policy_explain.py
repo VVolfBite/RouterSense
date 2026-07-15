@@ -4,7 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from experiments.offline.replay_fixture_policy_study import _build_problem
+from rs.runtime.offline.policy_study import build_replay_problem
 from rs.scheduling.policy_explain import explain_policy_decision
 from rs.scheduling.registry import resolve_policy
 
@@ -24,7 +24,7 @@ def _write_fixture(path: Path) -> dict:
 
 def test_policy_explain_is_deterministic(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
-    problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
+    problem = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="RS_safe_barrier_criticality", bucket_rows=0)
     first = explain_policy_decision(policy, problem, p2_hint=problem.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
     second = explain_policy_decision(policy, problem, p2_hint=problem.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
@@ -33,7 +33,7 @@ def test_policy_explain_is_deterministic(tmp_path: Path) -> None:
 
 def test_explain_selected_order_matches_real_policy_order(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
-    problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
+    problem = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="RS_safe_gated_greedy", bucket_rows=0)
     explain = explain_policy_decision(policy, problem, p2_hint=problem.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
     plan = policy.build_logical_plan(problem)
@@ -44,7 +44,7 @@ def test_explain_selected_order_matches_real_policy_order(tmp_path: Path) -> Non
 
 def test_p2_zero_has_zero_p2_contribution(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
-    problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="zero_hint", expert_compute_delay=0.0)
+    problem = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="zero_hint", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="RS_safe_barrier_criticality", bucket_rows=0)
     zero_matrix = tuple(tuple(0 for _ in row) for row in problem.p2_next_dispatch_forecast_matrix)
     explain = explain_policy_decision(policy, problem, p2_hint=zero_matrix, p2_source="zero_hint")
@@ -55,7 +55,7 @@ def test_safe_explain_order_matches_paired_b_on_fallback(tmp_path: Path) -> None
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
     fixture["p2_next_dispatch_forecast_matrix"] = [[0, 100], [1, 0]]
     fixture["p2_next_dispatch_matrix"] = [[0, 100], [1, 0]]
-    problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
+    problem = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="RS_safe_gated_greedy", bucket_rows=0)
     explain = explain_policy_decision(policy, problem, p2_hint=problem.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
     if explain.fallback_to_b:
@@ -67,7 +67,7 @@ def test_safe_explain_order_matches_paired_b_on_fallback(tmp_path: Path) -> None
 
 def test_top_score_edges_not_labeled_critical_path(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
-    problem = _build_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
+    problem = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="RS_safe_barrier_criticality", bucket_rows=0)
     explain = explain_policy_decision(policy, problem, p2_hint=problem.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
     assert explain.top_score_edges
@@ -77,7 +77,7 @@ def test_top_score_edges_not_labeled_critical_path(tmp_path: Path) -> None:
 
 def test_prediction_confidence_applied_once(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path / "replay_layer_0.json")
-    base = _build_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
+    base = build_replay_problem(fixture, mode="runtime_lookahead", p2_source="actual_trace", expert_compute_delay=0.0)
     policy = resolve_policy(policy_name="U_barrier_criticality_global_matching", bucket_rows=0)
     explain_full = explain_policy_decision(policy, base, p2_hint=base.p2_next_dispatch_forecast_matrix, p2_source="actual_trace_oracle")
     half = replace(base, options=replace(base.options, prediction_confidence=0.5))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from experiments.online.support.comparison_metrics import (
+from rs.reporting.comparison_metrics import (
     add_baseline_deltas,
     build_comparison_report,
     communication_collective_time_from_timeline,
@@ -12,7 +12,7 @@ from experiments.online.support.comparison_metrics import (
     metrics_from_rank_dir,
     native_communication_makespan_from_observer,
 )
-from experiments.online.support.shadow_plan_analysis import build_shadow_plan_alignment
+from rs.reporting.shadow_plan_analysis import build_shadow_plan_alignment
 from rs.runtime.online.megatron_ep.control import plan_agreement as plan_agreement_mod
 from rs.scheduling.phase_execution import FutureDemandHint
 from rs.scheduling.registry import resolve_phase_policy
@@ -543,7 +543,7 @@ def test_shadow_plan_alignment_summary_excludes_compile_failures() -> None:
     considered = [row for row in rows if row["layer_name"] == "model.layers.2.mlp"]
     assert len(considered) == 1
     assert considered[0]["prepared_compile_status"] == "ok"
-    from experiments.online.support.shadow_plan_analysis import summarize_shadow_plan_alignment
+    from rs.reporting.shadow_plan_analysis import summarize_shadow_plan_alignment
 
     summary = summarize_shadow_plan_alignment(rows)
     assert summary["prepared_shadow_phase_count"] == 1.0

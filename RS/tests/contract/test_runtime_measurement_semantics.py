@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from experiments.distributed._gpu_runner_common import build_policy_correctness_config
-from experiments.online.support.runtime_presets import resolve_strategy_runtime
+from rs.experiments_support.gpu_runner_common import build_policy_correctness_config
+from rs.experiments_support.runtime_presets import resolve_strategy_runtime
 from rs.runtime.online.megatron_ep.async_release import runtime_projection as runtime_projection_mod
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime

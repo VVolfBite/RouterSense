@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from experiments.offline.run_p2_sensitivity_replay import run_p2_sensitivity_replay
+from rs.runtime.offline.p2_sensitivity import run_p2_sensitivity_replay
 
 
 def _write_fixture(path, layer_id: str, p0, p1, p2) -> None:

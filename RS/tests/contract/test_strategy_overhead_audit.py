@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.online.analyze_4gpu_strategy_overhead import run_overhead_audit
+from rs.reporting.strategy_overhead import run_overhead_audit
 
 
 def test_overhead_report_does_not_label_hook_time_as_communication_makespan(tmp_path: Path) -> None:
