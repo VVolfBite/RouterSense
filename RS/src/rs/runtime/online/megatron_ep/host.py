@@ -163,13 +163,34 @@ class ControlGroupRegistry:
         self.ref_counts[normalized_local] = max(0, int(self.ref_counts[normalized_local]) - 1)
         if any(int(value) > 0 for value in self.ref_counts.values()):
             return
+        errors: list[BaseException] = []
         for group in self.groups.values():
             try:
                 if dist.is_available() and dist.is_initialized():
                     dist.destroy_process_group(group)
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(exc)
         _CONTROL_GROUP_REGISTRY.pop(self.ordered_group_ranks, None)
+        if errors:
+            raise AggregateRuntimeCloseError(errors)
+
+
+def _destroy_dedicated_group_registry(
+    registry: DedicatedP2PGroupRegistry,
+    *,
+    pop_from_cache: bool,
+) -> None:
+    errors: list[BaseException] = []
+    for group in registry.groups.values():
+        try:
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group(group)
+        except Exception as exc:
+            errors.append(exc)
+    if pop_from_cache:
+        _DEDICATED_P2P_GROUP_REGISTRY.pop(registry.ordered_group_ranks, None)
+    if errors:
+        raise AggregateRuntimeCloseError(errors)
 
 
 def _get_or_create_dedicated_p2p_group_registry(
@@ -204,8 +225,20 @@ def _get_or_create_dedicated_p2p_group_registry(
             tensor = torch.zeros(1, dtype=torch.int64, device=warmup_device)
             dist.all_reduce(tensor, group=group)
         warmup_passed = True
-    except Exception:
+    except Exception as exc:
         warmup_passed = False
+        registry = DedicatedP2PGroupRegistry(
+            ordered_group_ranks=ordered,
+            groups=groups,
+            local_group_ranks=tuple(int(rank) for rank in ep_group_ranks),
+            local_group=local_group,
+            warmup_passed=False,
+            new_group_call_order=tuple(call_order),
+        )
+        _destroy_dedicated_group_registry(registry, pop_from_cache=False)
+        raise FormalRuntimeAttachPreflightError(
+            f"dedicated P2P group warmup failed: {type(exc).__name__}: {exc}"
+        ) from exc
     registry = DedicatedP2PGroupRegistry(
         ordered_group_ranks=ordered,
         groups=groups,
