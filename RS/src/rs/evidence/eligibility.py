@@ -80,6 +80,8 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
     offline_reasons: list[str] = []
     if correctness_reasons:
         offline_reasons.append("base_ineligible")
+    if run_kind != "OFFLINE_EVALUATION_FORMAL":
+        offline_reasons.append("run_kind_not_offline_formal")
     if summary.get("offline_replay_complete") is not True:
         offline_reasons.append("offline_replay_incomplete")
     if not str(summary.get("evaluation_spec_digest", "")).strip():
