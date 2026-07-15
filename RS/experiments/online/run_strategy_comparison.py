@@ -22,13 +22,12 @@ try:
 except Exception:  # pragma: no cover
     yaml = None
 
-from experiments.online.support.comparison_metrics import (
+from rs.reporting.comparison_metrics import (
     aggregate_repetitions,
     build_comparison_report,
     metrics_from_rank_dir,
     render_markdown_report,
 )
-from experiments.online.support.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
 from experiments.online.support.runtime_presets import (
     normalize_strategy_entry,
     public_runtime_defaults,
@@ -37,6 +36,7 @@ from experiments.online.support.runtime_presets import (
     validate_public_runtime_surface,
 )
 from rs.core.contracts.result import ResultBundle
+from rs.reporting.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
 from rs.runtime.online.megatron_ep.observation import write_json
 
 

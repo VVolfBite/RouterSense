@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rs.core.contracts.result import ResultBundle
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -23,6 +25,25 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _sum_stage(rows: list[dict[str, Any]], stage: str) -> float:
     return float(sum(float(row.get("duration_us", 0.0) or 0.0) for row in rows if row.get("stage") == stage))
+
+
+def _load_result_facts(run_dir: Path) -> dict[str, Any]:
+    bundle_path = run_dir / "result_bundle.json"
+    if bundle_path.exists():
+        bundle = ResultBundle.from_dict(_read_json(bundle_path))
+        return {
+            "status": bundle.status,
+            "details": dict(bundle.details),
+            "summary": dict(bundle.summary),
+            "diagnostic_only": not bool(bundle.eligibility.performance_eligible),
+        }
+    summary = _read_json(run_dir / "summary.json")
+    return {
+        "status": summary.get("status"),
+        "details": dict(summary.get("details", {}) or {}),
+        "summary": summary,
+        "diagnostic_only": True,
+    }
 
 
 def _transport_makespan(rows: list[dict[str, Any]]) -> tuple[float | None, str | None, dict[str, float | None]]:
@@ -61,14 +82,15 @@ def _remote_ratio_from_phase_contexts(rows: list[dict[str, Any]]) -> float | Non
 
 
 def _collect_strategy(rep_dir: Path) -> dict[str, Any]:
-    summary = _read_json(rep_dir / "summary.json")
+    result_facts = _load_result_facts(rep_dir)
     planning_rows = _read_jsonl(rep_dir / "rank0_planning_timing.jsonl")
     phase_context_rows = _read_jsonl(rep_dir / "rank0_phase_contexts.jsonl")
     transport_rows = _read_jsonl(rep_dir / "rank0_transport_execution.jsonl")
     watchdog_path = rep_dir / "watchdog_report.json"
     watchdog = _read_json(watchdog_path) if watchdog_path.exists() else {"status": "not_available"}
 
-    details = summary.get("details", {})
+    summary = result_facts["summary"]
+    details = result_facts["details"]
     total_forward_us = summary.get("total_forward_us", details.get("total_forward_us"))
     policy_name = summary.get("policy_name", details.get("policy_name"))
     execution_audit_status = summary.get("execution_audit_status", details.get("execution_audit_status"))
@@ -120,9 +142,10 @@ def _collect_strategy(rep_dir: Path) -> dict[str, Any]:
 
     return {
         "strategy": policy_name,
-        "status": summary.get("status"),
+        "status": result_facts["status"],
         "reason": summary.get("reason"),
-        "success": summary.get("status") == "ready" and execution_audit_status in {None, "passed"},
+        "success": result_facts["status"] in {"ready", "success"} and execution_audit_status in {None, "passed"},
+        "diagnostic_only": bool(result_facts["diagnostic_only"]),
         "watchdog_status": watchdog.get("status"),
         "execution_audit_status": execution_audit_status,
         "total_forward_us": total_forward_us,
@@ -166,7 +189,7 @@ def _collect_run_c(run_c_dir: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {"run_c_dir": str(run_c_dir), "strategies": {}}
     for strategy_dir in sorted(run_c_dir.iterdir()):
         rep_dir = strategy_dir / "rep0"
-        if not rep_dir.is_dir() or not (rep_dir / "summary.json").exists():
+        if not rep_dir.is_dir() or not ((rep_dir / "result_bundle.json").exists() or (rep_dir / "summary.json").exists()):
             continue
         payload["strategies"][strategy_dir.name] = _collect_strategy(rep_dir)
     return payload
@@ -176,7 +199,7 @@ def run_overhead_audit(run_a_dir: Path, run_c_dir: Path | None) -> dict[str, Any
     strategies = {}
     for strategy_dir in sorted(run_a_dir.iterdir()):
         rep_dir = strategy_dir / "rep0"
-        if rep_dir.is_dir() and (rep_dir / "summary.json").exists():
+        if rep_dir.is_dir() and ((rep_dir / "result_bundle.json").exists() or (rep_dir / "summary.json").exists()):
             strategies[strategy_dir.name] = _collect_strategy(rep_dir)
 
     birkhoff = strategies.get("birkhoff_phase_local")

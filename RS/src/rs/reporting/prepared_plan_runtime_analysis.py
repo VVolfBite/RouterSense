@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rs.core.contracts.result import ResultBundle
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -19,6 +21,15 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
+
+
+def _load_result_details(run_dir: Path) -> dict[str, Any]:
+    bundle_path = run_dir / "result_bundle.json"
+    if bundle_path.exists():
+        bundle = ResultBundle.from_dict(_read_json(bundle_path))
+        return dict(bundle.details)
+    summary = _read_json(run_dir / "summary.json")
+    return dict(summary.get("details", {}) or {})
 
 
 def _plan_row_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -53,7 +64,7 @@ def _plan_row_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def analyze_prepared_plan_runtime(run_dir: Path, *, rank: int = 0) -> dict[str, Any]:
-    summary = _read_json(run_dir / "summary.json")
+    details = _load_result_details(run_dir)
     arrivals = _read_jsonl(run_dir / f"rank{rank}_plan_arrival_records.jsonl")
     bindings = _read_jsonl(run_dir / f"rank{rank}_prepared_plan_bindings.jsonl")
     plans = _read_jsonl(run_dir / f"rank{rank}_scheduled_phase_plans.jsonl")
@@ -67,9 +78,9 @@ def analyze_prepared_plan_runtime(run_dir: Path, *, rank: int = 0) -> dict[str, 
     return {
         "run_dir": str(run_dir),
         "rank": int(rank),
-        "policy_name": str(((summary.get("details", {}) or {}).get("policy_name", ""))),
-        "p2_hint_mode": str(((summary.get("details", {}) or {}).get("p2_hint_mode", ""))),
-        "execution_audit_status": str(((summary.get("details", {}) or {}).get("execution_audit_status", ""))),
+        "policy_name": str(details.get("policy_name", "")),
+        "p2_hint_mode": str(details.get("p2_hint_mode", "")),
+        "execution_audit_status": str(details.get("execution_audit_status", "")),
         "plan_arrival_summary": {
             "record_count": len(arrivals),
             "prepared_plan_arrival_count": len(prepared_arrivals),

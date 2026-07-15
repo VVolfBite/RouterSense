@@ -6,6 +6,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from rs.core.contracts.result import ResultBundle
 from rs.reporting.shadow_plan_analysis import analyze_rank_artifacts
 
 
@@ -21,6 +22,21 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
+
+
+def _load_result_facts(run_dir: Path) -> dict[str, Any]:
+    bundle_path = run_dir / "result_bundle.json"
+    if bundle_path.exists():
+        bundle = ResultBundle.from_dict(read_json(bundle_path))
+        return {
+            "summary": dict(bundle.summary),
+            "details": dict(bundle.details),
+        }
+    summary = read_json(run_dir / "summary.json")
+    return {
+        "summary": dict(summary),
+        "details": dict(summary.get("details", {}) or {}),
+    }
 
 
 def summarize_values(values: list[float]) -> dict[str, float]:
@@ -418,7 +434,11 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
     phase_contexts = read_jsonl(rank_dir / f"rank{rank}_phase_contexts.jsonl")
     observer_rows = read_jsonl(rank_dir / f"rank{rank}_observer.jsonl")
     prepared_plan_summary = read_json(rank_dir / f"rank{rank}_prepared_plan_summary.json")
-    summary = read_json(rank_dir / f"rank{rank}_summary.json")
+    result_facts = _load_result_facts(rank_dir)
+    summary = result_facts["summary"]
+    details = result_facts["details"]
+    if not summary:
+        summary = details
     if not summary:
         summary = read_json(rank_dir / f"rank{rank}_native_dispatch.json")
     communication_phase_window_us = communication_phase_window_from_timeline(timeline)
@@ -431,8 +451,20 @@ def metrics_from_rank_dir(rank_dir: Path, *, rank: int = 0) -> dict[str, Any]:
         "communication_makespan_us": communication_phase_window_us,
         "communication_phase_window_us": communication_phase_window_us,
         "communication_collective_active_us": communication_collective_active_us,
-        "remote_dispatch_rows": float(summary.get("remote_dispatch_rows", summary.get("p0_remote_rows", 0)) or 0),
-        "remote_combine_rows": float(summary.get("remote_combine_rows", summary.get("p1_remote_rows", 0)) or 0),
+        "remote_dispatch_rows": float(
+            summary.get(
+                "remote_dispatch_rows",
+                details.get("remote_dispatch_rows", summary.get("p0_remote_rows", details.get("p0_remote_rows", 0))),
+            )
+            or 0
+        ),
+        "remote_combine_rows": float(
+            summary.get(
+                "remote_combine_rows",
+                details.get("remote_combine_rows", summary.get("p1_remote_rows", details.get("p1_remote_rows", 0))),
+            )
+            or 0
+        ),
         "p2_hint_modes_used": p2_hint_modes_from_phase_contexts(phase_contexts),
         "p2_matrix_source": str(prepared_plan_summary.get("p2_matrix_source", "")),
         "p2_matrix_total_bytes": float(prepared_plan_summary.get("p2_matrix_total_bytes", 0) or 0),
