@@ -20,7 +20,7 @@ ROOT = ensure_src_on_path()
 
 import yaml
 
-from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
+from rs.core.formal_config_loader import load_formal_config
 from rs.core.contracts.result import OFFLINE_PIPELINE, RunIdentity
 from rs.experiments.output_schema import (
     RUN_STATUS_COMPLETED,
@@ -28,7 +28,6 @@ from rs.experiments.output_schema import (
     initialize_run_artifacts,
     read_manifest,
     update_status,
-    validate_official_entrypoint_config,
     write_json,
     write_resolved_configs,
     write_layout_result_bundle,
@@ -46,15 +45,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir")
     return parser.parse_args()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"expected mapping config: {path}")
-    return payload
-
-
 def _load_windows(fixture_dir: Path, *, max_windows: int | None = None) -> list[ReplayWindow]:
     windows: list[ReplayWindow] = []
     for path in sorted(fixture_dir.glob("replay_layer_*.json"), key=lambda item: int(item.stem.split("_")[-1])):
@@ -113,14 +103,13 @@ def main() -> None:
     config_path = Path(args.config)
     layout = None
     try:
-        normalized = normalize_run_config(_load_yaml(config_path), source_path=config_path)
-        config = canonical_offline_replay_payload(normalized)
-        validate_official_entrypoint_config(
-            config_snapshot=config,
+        resolved = load_formal_config(
+            config_path=config_path,
             expected_runtime_line="offline_replay",
             official_entrypoint="experiments/run_offline_replay.py",
         )
-        legacy_config = legacy_offline_replay_payload(normalized)
+        config = resolved.normalized_config
+        legacy_config = resolved.legacy_bridge_config or {}
         replay_cfg = dict(config.get("replay", {}) or {})
         default_output_dir = ROOT / str(replay_cfg.get("output_dir", "outputs/offline/offline_replay_smoke"))
         output_dir = (ROOT / str(args.output_dir)).resolve() if args.output_dir else default_output_dir.resolve()

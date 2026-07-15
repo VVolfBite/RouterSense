@@ -67,6 +67,8 @@ class RuntimeHandle:
     _restore_callbacks: list[Callable[[], None]] = field(default_factory=list)
     _close_callbacks: list[Callable[[], None]] = field(default_factory=list)
     _closed: bool = False
+    _cleanup_state: str = "cleanup_pending"
+    _last_close_errors: tuple[str, ...] = ()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.runtime, name)
@@ -75,22 +77,42 @@ class RuntimeHandle:
     def closed(self) -> bool:
         return bool(self._closed)
 
+    @property
+    def cleanup_state(self) -> str:
+        return str(self._cleanup_state)
+
+    @property
+    def last_close_errors(self) -> tuple[str, ...]:
+        return tuple(self._last_close_errors)
+
     def add_restore_callback(self, callback: Callable[[], None]) -> None:
         self._restore_callbacks.append(callback)
 
     def add_close_callback(self, callback: Callable[[], None]) -> None:
         self._close_callbacks.append(callback)
 
-    def detach(self) -> None:
-        if self._closed:
-            return
+    @staticmethod
+    def _run_callbacks(callbacks: list[Callable[[], None]]) -> tuple[list[Callable[[], None]], list[BaseException], bool]:
+        remaining: list[Callable[[], None]] = []
         errors: list[BaseException] = []
-        while self._restore_callbacks:
-            callback = self._restore_callbacks.pop()
+        executed_any = False
+        for callback in reversed(callbacks):
+            executed_any = True
             try:
                 callback()
             except BaseException as exc:  # pragma: no cover - exercised via close tests
                 errors.append(exc)
+                remaining.append(callback)
+        remaining.reverse()
+        return remaining, errors, executed_any
+
+    def detach(self) -> None:
+        if self._closed:
+            return
+        remaining, errors, _executed_any = self._run_callbacks(self._restore_callbacks)
+        self._restore_callbacks = remaining
+        self._last_close_errors = tuple(f"{type(exc).__name__}: {exc}" for exc in errors)
+        self._cleanup_state = "partially_failed" if errors else "closed"
         if errors:
             raise AggregateRuntimeCloseError(errors)
 
@@ -98,23 +120,18 @@ class RuntimeHandle:
         if self._closed:
             return
         errors: list[BaseException] = []
-        try:
-            while self._close_callbacks:
-                callback = self._close_callbacks.pop()
-                try:
-                    callback()
-                except BaseException as exc:  # pragma: no cover - exercised via close tests
-                    errors.append(exc)
-            while self._restore_callbacks:
-                callback = self._restore_callbacks.pop()
-                try:
-                    callback()
-                except BaseException as exc:  # pragma: no cover - exercised via close tests
-                    errors.append(exc)
-        finally:
-            self._closed = True
+        remaining_close, close_errors, close_executed = self._run_callbacks(self._close_callbacks)
+        self._close_callbacks = remaining_close
+        remaining_restore, restore_errors, restore_executed = self._run_callbacks(self._restore_callbacks)
+        self._restore_callbacks = remaining_restore
+        errors.extend(close_errors)
+        errors.extend(restore_errors)
+        self._last_close_errors = tuple(f"{type(exc).__name__}: {exc}" for exc in errors)
         if errors:
+            self._cleanup_state = "partially_failed" if (close_executed or restore_executed) else "cleanup_pending"
             raise AggregateRuntimeCloseError(errors)
+        self._closed = True
+        self._cleanup_state = "closed"
 
 
 @dataclass(frozen=True)

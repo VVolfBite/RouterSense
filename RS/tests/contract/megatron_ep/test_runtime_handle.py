@@ -309,15 +309,41 @@ def test_runtime_handle_close_restores_all_callbacks_even_after_failure() -> Non
 
     def _failing_close() -> None:
         restored["close"] += 1
-        raise RuntimeError("close boom")
+        if restored["close"] == 1:
+            raise RuntimeError("close boom")
 
     handle.add_close_callback(_failing_close)
     with pytest.raises(AggregateRuntimeCloseError):
         handle.close()
     assert restored["close"] == 1
+    assert handle.closed is False
+    assert handle.cleanup_state == "partially_failed"
+    assert handle.last_close_errors
     assert getattr(model, "_routersense_forward_wrapped", False) is False
     assert getattr(model, "_routersense_runtime_owner", None) is None
     handle.close()
+    assert handle.closed is True
+    assert handle.cleanup_state == "closed"
+
+
+def test_runtime_handle_failed_close_retains_callback_for_retry() -> None:
+    handle = RuntimeHandle(runtime=object())
+    attempts = {"count": 0}
+
+    def _eventually_succeeds() -> None:
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            raise RuntimeError("retry me")
+
+    handle.add_close_callback(_eventually_succeeds)
+    with pytest.raises(AggregateRuntimeCloseError):
+        handle.close()
+    assert handle.closed is False
+    assert handle.cleanup_state == "partially_failed"
+    assert attempts["count"] == 1
+    handle.close()
+    assert handle.closed is True
+    assert attempts["count"] == 2
 
 
 class _FailingDispatchModel(torch.nn.Module):

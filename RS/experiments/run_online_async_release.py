@@ -18,13 +18,12 @@ ROOT = ensure_src_on_path()
 
 import yaml
 
-from rs.core.config_normalization import canonical_online_comparison_payload, legacy_online_comparison_payload, normalize_run_config
+from rs.core.formal_config_loader import load_formal_config
 from rs.experiments.output_schema import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     initialize_run_artifacts,
     update_status,
-    validate_official_entrypoint_config,
     write_resolved_configs,
 )
 from rs.runtime.guards.artifact import write_failure_artifact
@@ -39,27 +38,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"expected mapping config: {path}")
-    return payload
-
-
 def main() -> None:
     args = _parse_args()
     layout = None
     try:
         config_path = Path(args.config)
-        normalized = normalize_run_config(_load_yaml(config_path), source_path=config_path)
-        canonical_payload = canonical_online_comparison_payload(normalized)
-        validate_official_entrypoint_config(
-            config_snapshot=canonical_payload,
+        resolved = load_formal_config(
+            config_path=config_path,
             expected_runtime_line="async_release",
             official_entrypoint="experiments/run_online_async_release.py",
         )
+        canonical_payload = resolved.normalized_config
         output_dir = (ROOT / str(args.output_dir)).resolve() if args.output_dir else (ROOT / "outputs/online/async_release" / canonical_payload["run"]["name"]).resolve()
         layout = initialize_run_artifacts(
             repo_root=ROOT,
@@ -68,7 +57,7 @@ def main() -> None:
             official_entrypoint="experiments/run_online_async_release.py",
             config_snapshot=canonical_payload,
         )
-        payload = legacy_online_comparison_payload(normalized)
+        payload = dict(resolved.legacy_bridge_config or {})
         payload.setdefault("runtime", {})
         payload["runtime"]["line"] = "async_release"
         payload["_normalized_public_bridge"] = True
