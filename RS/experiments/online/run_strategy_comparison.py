@@ -36,6 +36,7 @@ from experiments.online.support.runtime_presets import (
     uses_public_runtime_surface,
     validate_public_runtime_surface,
 )
+from rs.core.contracts.result import ResultBundle
 from rs.runtime.online.megatron_ep.observation import write_json
 
 
@@ -274,6 +275,17 @@ def _write_runtime_analysis(run_dir: Path) -> None:
 
 
 def read_summary(run_dir: Path) -> dict[str, Any]:
+    bundle_path = run_dir / "result_bundle.json"
+    if bundle_path.exists():
+        try:
+            payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+            bundle = ResultBundle.from_dict(payload)
+            details = dict(bundle.details)
+            if details:
+                return details
+            return dict(bundle.summary)
+        except Exception:
+            pass
     path = run_dir / "summary.json"
     if not path.exists():
         return {}
