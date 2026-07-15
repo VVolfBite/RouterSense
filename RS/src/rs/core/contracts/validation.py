@@ -7,7 +7,7 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class ValidationResult:
+class NumericalValidationResult:
     correctness_status: str
     numerical_correctness_pass: bool | None
     max_abs_error: float | None = None
@@ -20,4 +20,6 @@ class ValidationResult:
         return asdict(self)
 
 
-__all__ = ["ValidationResult"]
+ValidationResult = NumericalValidationResult
+
+__all__ = ["NumericalValidationResult", "ValidationResult"]

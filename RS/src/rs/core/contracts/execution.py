@@ -416,7 +416,7 @@ class MaterializedPlan:
 
 
 @dataclass(frozen=True)
-class ValidationResult:
+class MaterializationValidationResult:
     valid: bool
     stage: str
     reason: str = ""
@@ -429,6 +429,9 @@ class ValidationResult:
             "reason": str(self.reason),
             "details": dict(self.details),
         }
+
+
+ValidationResult = MaterializationValidationResult
 
 
 @dataclass(frozen=True)
@@ -520,12 +523,12 @@ class PlanMaterializer(Protocol):
 
 
 class PlanValidator(Protocol):
-    def validate(self, plan: MaterializedPlan, context: ActualPhaseContext) -> ValidationResult:
+    def validate(self, plan: MaterializedPlan, context: ActualPhaseContext) -> MaterializationValidationResult:
         ...
 
 
 class ExecutionGuard(Protocol):
-    def validate(self, *, plan: MaterializedPlan, invocation: Any, context: ExecutionContext) -> ValidationResult:
+    def validate(self, *, plan: MaterializedPlan, invocation: Any, context: ExecutionContext) -> MaterializationValidationResult:
         ...
 
 

@@ -10,6 +10,7 @@ from .execution import (
     ExecutionOutcome,
     ExecutionGuard,
     Executor,
+    MaterializationValidationResult,
     MaterializedPlan,
     PayloadSpec,
     PlanMaterializer,
@@ -17,7 +18,6 @@ from .execution import (
     PlanValidator,
     PublishedPlan,
     TransferSlice,
-    ValidationResult as ExecutionValidationResult,
 )
 from .flow import FlowEdge
 from .measurement import (
@@ -75,6 +75,7 @@ from .trace import (
     TraceOrigin,
     TraceSink,
 )
+from .validation import NumericalValidationResult
 
 __all__ = [
     "ArtifactRecord",
@@ -92,7 +93,6 @@ __all__ = [
     "ExecutionContext",
     "ExecutionGuard",
     "ExecutionOutcome",
-    "ExecutionValidationResult",
     "Executor",
     "ExpertBucketRecord",
     "EpExecutionTrace",
@@ -103,12 +103,14 @@ __all__ = [
     "LEGACY_TRACE_REPLAY_PIPELINE",
     "MatrixRows",
     "MaterializedPlan",
+    "MaterializationValidationResult",
     "MeasurementCapability",
     "MeasurementCompleteness",
     "MeasurementEvent",
     "MeasurementRequirement",
     "MeasurementSink",
     "MeasurementSnapshot",
+    "NumericalValidationResult",
     "OFFLINE_PIPELINE",
     "ONLINE_PIPELINE",
     "PayloadSpec",

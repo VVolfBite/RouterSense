@@ -8,7 +8,7 @@ from typing import Any, Mapping, Protocol
 
 from .online_ep import OnlineExpertPlacement, OnlineLayerRouteTrace, RankManifest, TransportOperationRecord
 from .router_trace import ExpertBucketRecord, LayerRouteTrace
-from .validation import ValidationResult
+from .validation import NumericalValidationResult
 
 
 class TraceOrigin:
@@ -58,7 +58,7 @@ class EpExecutionTrace:
     rank_manifests: list[RankManifest] = field(default_factory=list)
     expert_placements: list[OnlineExpertPlacement] = field(default_factory=list)
     transport_operations: list[TransportOperationRecord] = field(default_factory=list)
-    validation_results: list[ValidationResult] = field(default_factory=list)
+    validation_results: list[NumericalValidationResult] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
