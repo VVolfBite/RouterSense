@@ -278,6 +278,7 @@ def build_request_from_replay_window(
     confidence: float,
     bucket_rows: int,
     policy_options: PolicyOptions,
+    max_waves: int = 256,
 ) -> SchedulingRequest:
     tasks = CanonicalBucketizer(bucket_rows=bucket_rows).bucketize(replay_window)
     return SchedulingRequest(
@@ -302,7 +303,7 @@ def build_request_from_replay_window(
         ),
         scheduling_mode="execution_window",
         information_mode="p0_p1_p2",
-        max_waves=256,
+        max_waves=int(max_waves),
         task_quantum_rows=int(bucket_rows),
         fixture_id=str(replay_window.fixture_id),
         window_id=str(replay_window.window_id),

@@ -223,7 +223,7 @@ class RouterSenseMultiphaseLookaheadPolicy:
             expert_compute_delay=float(problem.release_model.expert_compute_delay),
             exact_matching=True,
             wave_quantum=None,
-            max_waves=256,
+            max_waves=int(problem.options.max_waves),
             residual_weight=float(self.p0_weight),
             barrier_weight=float(barrier_weight),
             age_weight=0.1,

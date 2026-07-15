@@ -17,6 +17,7 @@ def schedule_global_ready_set(
     scheduling_mode: str = RUNTIME_LOOKAHEAD_MODE,
     prediction_confidence: float = 0.0,
     expert_compute_delay: float = 0.0,
+    max_waves: int = 256,
 ) -> dict[str, Any]:
     return run_global_matching_scheduler(
         dispatch_matrix,
@@ -29,7 +30,7 @@ def schedule_global_ready_set(
         expert_compute_delay=expert_compute_delay,
         exact_matching=True,
         wave_quantum=None,
-        max_waves=256,
+        max_waves=int(max_waves),
         residual_weight=1.0,
         barrier_weight=1.0,
         age_weight=0.1,
@@ -52,6 +53,7 @@ def schedule_greedy(
     scheduling_mode: str = RUNTIME_LOOKAHEAD_MODE,
     prediction_confidence: float = 0.0,
     expert_compute_delay: float = 0.0,
+    max_waves: int = 256,
 ) -> dict[str, Any]:
     return run_global_matching_scheduler(
         dispatch_matrix,
@@ -64,7 +66,7 @@ def schedule_greedy(
         expert_compute_delay=expert_compute_delay,
         exact_matching=False,
         wave_quantum=None,
-        max_waves=256,
+        max_waves=int(max_waves),
         residual_weight=1.0,
         barrier_weight=1.0,
         age_weight=0.1,

@@ -58,6 +58,7 @@ def build_replay_problem(
     p2_source: str,
     expert_compute_delay: float,
     predicted_p2_matrix: tuple[tuple[int, ...], ...] | None = None,
+    max_waves: int = 256,
 ) -> MultiPhaseSchedulingProblem:
     p0 = _matrix(fixture["p0_dispatch_matrix"])
     p1 = _matrix(fixture["p1_return_matrix"])
@@ -120,7 +121,7 @@ def build_replay_problem(
             scheduling_mode=mode,
             information_mode=information_mode,
             prediction_confidence=0.0 if forecast_source == "zero_hint" else 1.0,
-            max_waves=256,
+            max_waves=int(max_waves),
         ),
         p0_dispatch_matrix=p0,
         p1_return_matrix=p1,
@@ -147,12 +148,14 @@ def run_replay_policy_study(
     mode: str,
     p2_source: str,
     expert_compute_delay: float,
+    max_waves: int = 256,
 ) -> dict[str, Any]:
     problem = build_replay_problem(
         fixture,
         mode=mode,
         p2_source=p2_source,
         expert_compute_delay=expert_compute_delay,
+        max_waves=int(max_waves),
     )
     expected = expected_replay_flows(problem)
     rows: list[dict[str, Any]] = []

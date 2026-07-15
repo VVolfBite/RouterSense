@@ -279,6 +279,7 @@ def _build_problem_with_hint_and_truth(
     hint_type: str,
     scheduling_mode: str,
     expert_compute_delay: float,
+    max_waves: int = 256,
 ) -> MultiPhaseSchedulingProblem:
     planning_hint = canonicalize_remote_matrix(planning_hint)
     execution_truth = canonicalize_remote_matrix(execution_truth)
@@ -318,7 +319,7 @@ def _build_problem_with_hint_and_truth(
             scheduling_mode=str(scheduling_mode),
             information_mode="p0_p1_p2",
             prediction_confidence=float(_predictor_confidence(hint_type)),
-            max_waves=256,
+            max_waves=int(max_waves),
         ),
         p0_dispatch_matrix=p0,
         p1_return_matrix=p1,
