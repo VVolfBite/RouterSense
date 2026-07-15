@@ -16,8 +16,12 @@ import yaml
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from rs.core.contracts.provenance import resolve_commit_identity, resolve_verified_source_manifest
+
 DEFAULT_INCLUDED = (
     "src",
     "experiments",
@@ -63,11 +67,33 @@ def _git_output(*args: str) -> str:
     return proc.stdout.strip()
 
 
-def _detect_git_state() -> tuple[str, str, bool]:
+def _detect_provenance_state() -> dict[str, object]:
     commit_sha = _git_output("rev-parse", "HEAD")
     branch = _git_output("branch", "--show-current")
-    dirty = bool(_git_output("status", "--short"))
-    return commit_sha, branch, dirty
+    if commit_sha:
+        return {
+            "commit_sha": commit_sha,
+            "branch": branch,
+            "git_dirty": bool(_git_output("status", "--short")),
+            "provenance_source": "git",
+            "parent_commit_sha": None,
+            "parent_source_tree_digest": None,
+        }
+    resolved_sha, resolved_dirty, source = resolve_commit_identity(REPO_ROOT)
+    verified_manifest = resolve_verified_source_manifest(REPO_ROOT)
+    parent_commit_sha = None
+    parent_source_tree_digest = None
+    if verified_manifest is not None:
+        parent_commit_sha = str(verified_manifest.get("commit_sha", "") or "")
+        parent_source_tree_digest = str(verified_manifest.get("source_tree_digest", "") or "")
+    return {
+        "commit_sha": resolved_sha,
+        "branch": branch or str((verified_manifest or {}).get("branch", "") or "unknown"),
+        "git_dirty": bool(resolved_dirty),
+        "provenance_source": str(source),
+        "parent_commit_sha": parent_commit_sha or None,
+        "parent_source_tree_digest": parent_source_tree_digest or None,
+    }
 
 
 def _matches_excluded(relative_posix: str, *, scope: str) -> bool:
@@ -135,13 +161,16 @@ def _tree_digest(root: Path) -> str:
 
 
 def _write_source_manifest(staging_root: Path, *, scope: str, included_paths: list[str], excluded_patterns: list[str]) -> dict[str, object]:
-    commit_sha, branch, dirty = _detect_git_state()
+    provenance = _detect_provenance_state()
     manifest = {
         "schema_version": 1,
         "authoritative": True,
-        "commit_sha": commit_sha or os.environ.get("ROUTERSENSE_COMMIT_SHA", "unknown"),
-        "branch": branch or "unknown",
-        "git_dirty": dirty if commit_sha else bool(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")),
+        "commit_sha": str(provenance["commit_sha"] or os.environ.get("ROUTERSENSE_COMMIT_SHA", "unknown")),
+        "branch": str(provenance["branch"] or "unknown"),
+        "git_dirty": bool(provenance["git_dirty"]),
+        "provenance_source": str(provenance["provenance_source"]),
+        "parent_commit_sha": provenance["parent_commit_sha"],
+        "parent_source_tree_digest": provenance["parent_source_tree_digest"],
         "created_at": _utc_now(),
         "archive_format": "unknown",
         "scope": scope,
@@ -216,7 +245,7 @@ def _self_check(archive_path: Path, *, scope: str, archive_format: str) -> dict[
         runtime_section = dict(offline_config.get("runtime", {}) or {})
         runtime_section["invariant_mode"] = "diagnostic"
         offline_config["runtime"] = runtime_section
-        selfcheck_config = rs_root / "configs" / "official" / "offline_replay_selfcheck.yaml"
+        selfcheck_config = unpack_root / "offline_replay_selfcheck.yaml"
         selfcheck_config.write_text(yaml.safe_dump(offline_config, sort_keys=False), encoding="utf-8")
         env = dict(os.environ)
         existing_pythonpath = env.get("PYTHONPATH", "")
@@ -230,7 +259,7 @@ def _self_check(archive_path: Path, *, scope: str, archive_format: str) -> dict[
                 "python",
                 "experiments/run_offline_replay.py",
                 "--config",
-                "configs/official/offline_replay_selfcheck.yaml",
+                str(selfcheck_config),
                 "--output-dir",
                 "outputs/selfcheck_offline",
             ],

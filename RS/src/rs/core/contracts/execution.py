@@ -431,9 +431,6 @@ class MaterializationValidationResult:
         }
 
 
-ValidationResult = MaterializationValidationResult
-
-
 @dataclass(frozen=True)
 class ExecutionContext:
     run_id: str

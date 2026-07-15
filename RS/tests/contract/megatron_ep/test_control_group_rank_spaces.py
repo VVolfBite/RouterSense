@@ -20,6 +20,21 @@ def test_get_process_group_ranks_safe_requires_explicit_rank_api(monkeypatch) ->
         get_process_group_ranks_safe(object())
 
 
+def test_get_process_group_ranks_safe_rejects_implicit_world_rank_guess(monkeypatch) -> None:
+    monkeypatch.setattr("rs.runtime.online.megatron_ep.host.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("rs.runtime.online.megatron_ep.host.dist.get_world_size", lambda: 4)
+    with pytest.raises(RuntimeError, match="explicit process-group rank order is required when no process group is provided"):
+        get_process_group_ranks_safe(None)
+
+
+def test_agreement_wire_rejects_missing_explicit_group_ranks(monkeypatch) -> None:
+    monkeypatch.setattr(agreement_wire_mod.dist, "is_available", lambda: True)
+    monkeypatch.setattr(agreement_wire_mod.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(agreement_wire_mod.dist, "get_world_size", lambda: 4)
+    with pytest.raises(RuntimeError, match="explicit_group_ranks are required"):
+        agreement_wire_mod._resolve_group_rank_order(process_group=None, explicit_group_ranks=None)
+
+
 def test_run_policy_agreement_uses_group_local_root_and_explicit_group(monkeypatch) -> None:
     process_group = object()
     local_observation = make_observation(rank=2, phase="P0", rows=(4, 0), ep_group_ranks=(2, 3), local_rank=0)

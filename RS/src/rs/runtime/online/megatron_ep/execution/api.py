@@ -7,7 +7,12 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from rs.core.contracts.execution import ExecutionContext, ExecutionOutcome, MaterializedPlan, ValidationResult
+from rs.core.contracts.execution import (
+    ExecutionContext,
+    ExecutionOutcome,
+    MaterializationValidationResult,
+    MaterializedPlan,
+)
 from rs.runtime.online.megatron_ep.phase import PhaseReadyContext
 
 
@@ -71,54 +76,54 @@ class CommonExecutionGuard:
             )
         )
 
-    def _validate_common(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
+    def _validate_common(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> MaterializationValidationResult:
         try:
             plan.validate()
             invocation.validate()
             context.validate()
         except Exception as exc:
-            return ValidationResult(valid=False, stage="guard", reason=str(exc))
+            return MaterializationValidationResult(valid=False, stage="guard", reason=str(exc))
         if str(context.run_id) != str(invocation.run_id):
-            return ValidationResult(valid=False, stage="guard", reason="run_id_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="run_id_mismatch")
         if int(context.forward_generation) != int(invocation.forward_generation):
-            return ValidationResult(valid=False, stage="guard", reason="forward_generation_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="forward_generation_mismatch")
         if str(context.layer_id) != str(invocation.layer_id):
-            return ValidationResult(valid=False, stage="guard", reason="layer_id_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="layer_id_mismatch")
         if str(context.phase) != str(invocation.phase):
-            return ValidationResult(valid=False, stage="guard", reason="phase_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="phase_mismatch")
         if str(plan.phase) != str(invocation.phase):
-            return ValidationResult(valid=False, stage="guard", reason="plan_phase_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="plan_phase_mismatch")
         if str(plan.layout_digest) != str(invocation.layout_digest):
-            return ValidationResult(valid=False, stage="guard", reason="layout_digest_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="layout_digest_mismatch")
         roles = {str(item.payload_role) for item in plan.payload_specs}
         if str(invocation.payload_role) not in roles:
-            return ValidationResult(valid=False, stage="guard", reason="payload_role_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="payload_role_mismatch")
         matching_spec = next(item for item in plan.payload_specs if str(item.payload_role) == str(invocation.payload_role))
         if str(invocation.dtype) != str(matching_spec.dtype):
-            return ValidationResult(valid=False, stage="guard", reason="dtype_mismatch")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="dtype_mismatch")
         if invocation.input_tensor is not None and tuple(int(dim) for dim in invocation.input_tensor.shape) != tuple(int(dim) for dim in invocation.shape):
-            return ValidationResult(valid=False, stage="guard", reason="shape_mismatch")
-        return ValidationResult(valid=True, stage="guard")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="shape_mismatch")
+        return MaterializationValidationResult(valid=True, stage="guard")
 
-    def validate(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
+    def validate(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> MaterializationValidationResult:
         result = self._validate_common(plan=plan, invocation=invocation, context=context)
         if not result.valid:
             return result
         invocation_key = self._reservation_key(invocation=invocation, context=context)
         if invocation_key in self._consumed_invocations:
-            return ValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
         self._consumed_invocations.add(invocation_key)
-        return ValidationResult(valid=True, stage="guard")
+        return MaterializationValidationResult(valid=True, stage="guard")
 
-    def reserve(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ValidationResult:
+    def reserve(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> MaterializationValidationResult:
         result = self._validate_common(plan=plan, invocation=invocation, context=context)
         if not result.valid:
             return result
         invocation_key = self._reservation_key(invocation=invocation, context=context)
         if invocation_key in self._consumed_invocations or invocation_key in self._active_reservations:
-            return ValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
+            return MaterializationValidationResult(valid=False, stage="guard", reason="duplicate_invocation")
         self._active_reservations.add(invocation_key)
-        return ValidationResult(valid=True, stage="guard")
+        return MaterializationValidationResult(valid=True, stage="guard")
 
     def commit(self, *, invocation: PayloadInvocation, context: ExecutionContext) -> None:
         invocation_key = self._reservation_key(invocation=invocation, context=context)

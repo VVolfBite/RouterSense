@@ -5,11 +5,11 @@ from typing import Any
 from rs.core.contracts.execution import (
     ActualPhaseContext,
     ExecutionBatch,
+    MaterializationValidationResult,
     MaterializedPlan,
     PayloadSpec,
     PublishedPlan,
     TransferSlice,
-    ValidationResult,
 )
 from rs.core.contracts.planning import WindowPlan
 from rs.runtime.online.megatron_ep.materialization.layout import validate_materialized_layout
@@ -274,19 +274,19 @@ class CommonPlanMaterializer:
 
 
 class CommonPlanValidator:
-    def validate(self, plan: MaterializedPlan, context: ActualPhaseContext) -> ValidationResult:
+    def validate(self, plan: MaterializedPlan, context: ActualPhaseContext) -> MaterializationValidationResult:
         try:
             plan.validate()
             context.validate()
             phase_ready_context = _coerce_phase_ready_context(dict(plan.metadata).get("phase_ready_context"))
         except Exception as exc:
-            return ValidationResult(valid=False, stage="materialized_plan", reason=str(exc))
+            return MaterializationValidationResult(valid=False, stage="materialized_plan", reason=str(exc))
         if str(plan.layout_digest) != str(context.layout_digest):
-            return ValidationResult(valid=False, stage="layout_digest", reason="layout_digest_mismatch")
+            return MaterializationValidationResult(valid=False, stage="layout_digest", reason="layout_digest_mismatch")
         if str(dict(plan.metadata).get("layer_id", "")) != str(context.layer_id):
-            return ValidationResult(valid=False, stage="identity", reason="layer_id_mismatch")
+            return MaterializationValidationResult(valid=False, stage="identity", reason="layer_id_mismatch")
         if str(plan.phase) != str(context.phase):
-            return ValidationResult(valid=False, stage="identity", reason="phase_mismatch")
+            return MaterializationValidationResult(valid=False, stage="identity", reason="phase_mismatch")
         if str(plan.materialized_plan_digest) != str(plan.recompute_materialized_plan_digest()):
-            return ValidationResult(valid=False, stage="materialized_digest", reason="materialized_digest_mismatch")
+            return MaterializationValidationResult(valid=False, stage="materialized_digest", reason="materialized_digest_mismatch")
         return validate_materialized_layout(plan, phase_ready_context)

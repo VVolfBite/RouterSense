@@ -101,6 +101,7 @@ def _resolve_group_rank_order(
     *,
     process_group: dist.ProcessGroup | None,
     explicit_group_ranks: tuple[int, ...] | None = None,
+    allow_world_group: bool = False,
 ) -> tuple[int, ...]:
     if explicit_group_ranks is not None:
         normalized = tuple(int(rank) for rank in explicit_group_ranks)
@@ -110,7 +111,9 @@ def _resolve_group_rank_order(
     if process_group is None:
         if not dist.is_available() or not dist.is_initialized():
             return (0,)
-        return tuple(range(dist.get_world_size()))
+        if allow_world_group:
+            return tuple(int(rank) for rank in range(dist.get_world_size()))
+        raise RuntimeError("explicit_group_ranks are required when no process group is provided")
     if hasattr(dist, "get_process_group_ranks"):
         ranks = tuple(int(rank) for rank in dist.get_process_group_ranks(process_group))
         if not ranks:
@@ -471,7 +474,11 @@ def run_policy_agreement(
     device: torch.device,
 ) -> tuple[RouterSensePlan, PlanAgreement]:
     world_group = group if group is not None else dist.group.WORLD
-    rank_order = _resolve_group_rank_order(process_group=world_group, explicit_group_ranks=tuple(int(v) for v in context.ep_group_ranks))
+    rank_order = _resolve_group_rank_order(
+        process_group=world_group,
+        explicit_group_ranks=tuple(int(v) for v in context.ep_group_ranks),
+        allow_world_group=(group is None),
+    )
     group_world_size = len(rank_order)
     root_global_rank = int(rank_order[0]) if rank_order else 0
     local_payload = encode_runtime_observation(local_observation)

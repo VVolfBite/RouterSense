@@ -92,9 +92,17 @@ _GLOBAL_ALL_TO_ALL_PATCH_OWNER: str | None = None
 # Basic runtime/bootstrap helpers
 
 
-def get_process_group_ranks_safe(group: dist.ProcessGroup | None) -> tuple[int, ...]:
+def get_process_group_ranks_safe(
+    group: dist.ProcessGroup | None,
+    *,
+    allow_world_group: bool = False,
+) -> tuple[int, ...]:
     if group is None:
-        return tuple(range(dist.get_world_size())) if dist.is_initialized() else (0,)
+        if not dist.is_initialized():
+            return (0,)
+        if allow_world_group:
+            return tuple(int(rank) for rank in range(dist.get_world_size()))
+        raise RuntimeError("explicit process-group rank order is required when no process group is provided")
     if hasattr(dist, "get_process_group_ranks"):
         return tuple(int(rank) for rank in dist.get_process_group_ranks(group))
     raise RuntimeError(
@@ -103,7 +111,7 @@ def get_process_group_ranks_safe(group: dist.ProcessGroup | None) -> tuple[int, 
 
 
 def get_process_group_root_safe(group: dist.ProcessGroup | None) -> int:
-    ranks = get_process_group_ranks_safe(group)
+    ranks = get_process_group_ranks_safe(group, allow_world_group=(group is None))
     return int(ranks[0]) if ranks else 0
 
 
@@ -873,7 +881,7 @@ def attach_dispatch_facade(
             sample_dispatcher = dispatcher
             break
     ep_process_group = getattr(sample_dispatcher, "ep_group", None) if sample_dispatcher is not None else None
-    ep_group_ranks = get_process_group_ranks_safe(ep_process_group) if dist.is_initialized() else (rank,)
+    ep_group_ranks = get_process_group_ranks_safe(ep_process_group, allow_world_group=(ep_process_group is None)) if dist.is_initialized() else (rank,)
     model_revision_hash = hashlib.sha256(model_revision.encode("utf-8")).hexdigest()[:16]
     request_table_hash_digest = hashlib.sha256(request_table_hash.encode("utf-8")).hexdigest()[:16]
     runtime = RouterSenseInjectionRuntime(

@@ -19,7 +19,4 @@ class NumericalValidationResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-
-ValidationResult = NumericalValidationResult
-
-__all__ = ["NumericalValidationResult", "ValidationResult"]
+__all__ = ["NumericalValidationResult"]

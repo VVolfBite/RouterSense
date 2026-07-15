@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rs.core.contracts.execution import ActualPhaseContext, ExecutionContext, ExecutionOutcome, MaterializedPlan, PublishedPlan, ValidationResult
+from rs.core.contracts.execution import (
+    ActualPhaseContext,
+    ExecutionContext,
+    ExecutionOutcome,
+    MaterializationValidationResult,
+    MaterializedPlan,
+    PublishedPlan,
+)
 from rs.runtime.online.megatron_ep.execution.api import (
     CommonExecutionGuard,
     GlooFunctionalExecutor,
@@ -20,7 +27,7 @@ class PreparedExecution:
     published_plan: PublishedPlan
     actual_phase_context: ActualPhaseContext
     materialized_plan: MaterializedPlan
-    validation: ValidationResult
+    validation: MaterializationValidationResult
 
 
 class RuntimeExecutionPipeline:
