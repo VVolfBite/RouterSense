@@ -1943,6 +1943,13 @@ class RouterSenseInjectionRuntime:
                 self.after_token_dispatch(layer_name=event.layer_name)
             return RuntimeDecision(action="dispatch_complete", details={"layer_role": event.layer_role})
         if isinstance(event, DispatchFailedEvent):
+            adapter = getattr(self, "transport_adapter", None)
+            if adapter is not None and hasattr(adapter, "abort"):
+                adapter.abort(
+                    layer_name=str(event.layer_name),
+                    phase="P0",
+                    reason=f"dispatch_failed:{type(event.error).__name__}",
+                )
             self._active_transport = None
             self.evidence_counters.execution_failure_count += 1
             self._runtime_failure_reason = f"dispatch_failed:{type(event.error).__name__}"
@@ -1969,6 +1976,13 @@ class RouterSenseInjectionRuntime:
             self.after_token_combine(layer_name=event.layer_name)
             return RuntimeDecision(action="combine_complete")
         if isinstance(event, CombineFailedEvent):
+            adapter = getattr(self, "transport_adapter", None)
+            if adapter is not None and hasattr(adapter, "abort"):
+                adapter.abort(
+                    layer_name=str(event.layer_name),
+                    phase="P1",
+                    reason=f"combine_failed:{type(event.error).__name__}",
+                )
             self._active_transport = None
             self.evidence_counters.execution_failure_count += 1
             self._runtime_failure_reason = f"combine_failed:{type(event.error).__name__}"
@@ -1983,6 +1997,9 @@ class RouterSenseInjectionRuntime:
             self.end_forward()
             return RuntimeDecision(action="forward_end")
         if isinstance(event, ForwardFailedEvent):
+            adapter = getattr(self, "transport_adapter", None)
+            if adapter is not None and hasattr(adapter, "abort"):
+                adapter.abort(reason=f"forward_failed:{type(event.error).__name__}")
             self.evidence_counters.execution_failure_count += 1
             self._runtime_failure_reason = f"forward_failed:{type(event.error).__name__}"
             self._finalize_result_bundle()

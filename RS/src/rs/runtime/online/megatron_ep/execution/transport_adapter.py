@@ -40,6 +40,7 @@ class ActivePhaseTransport:
     call_index: int = 0
     expected_roles: tuple[str, ...] = ()
     shared_session: dict[str, Any] | None = None
+    session_identity: tuple[str, int, str, str, str] | None = None
 
 
 class MegatronPhaseTransportAdapter:
@@ -65,7 +66,7 @@ class MegatronPhaseTransportAdapter:
         self.local_copy_row_count = 0
         self.phase_sync_fallback_count = 0
         self.effective_preflight_mode = "full"
-        self._async_phase_sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        self._async_phase_sessions: dict[tuple[str, int, str, str, str], dict[str, Any]] = {}
 
     def set_effective_preflight_mode(self, mode: str) -> None:
         normalized = str(mode or "full")
@@ -85,18 +86,33 @@ class MegatronPhaseTransportAdapter:
         runtime: Any | None = None,
     ) -> None:
         expected_roles = ("hidden_states", "routing_probs") if phase == "P0" else ("hidden_states",)
+        runtime_run_id = str(getattr(runtime, "run_id", ""))
+        runtime_generation = int(getattr(runtime, "_forward_epoch", getattr(runtime, "_current_forward_epoch", 0)) or 0)
+        runtime_microbatch_id = str(getattr(runtime, "microbatch_id", ""))
+        session_identity = (
+            runtime_run_id,
+            runtime_generation,
+            runtime_microbatch_id,
+            str(layer_name),
+            str(phase),
+        )
         shared_session = None
         if str(plan.execution_mode) == "joint_window_async_p2p":
-            session_key = (str(layer_name), str(phase))
             shared_session = {
-                "session_key": [str(layer_name), str(phase)],
+                "session_key": [
+                    str(runtime_run_id),
+                    int(runtime_generation),
+                    str(runtime_microbatch_id),
+                    str(layer_name),
+                    str(phase),
+                ],
                 "primary_tensor_role": "hidden_states",
                 "suffix_splice_count": 0,
                 "execution_origin": "",
                 "final_task_order": [],
                 "lineage": [],
             }
-            self._async_phase_sessions[session_key] = shared_session
+            self._async_phase_sessions[session_identity] = shared_session
         self._active = ActivePhaseTransport(
             layer_name=layer_name,
             phase=phase,
@@ -108,6 +124,7 @@ class MegatronPhaseTransportAdapter:
             call_index=0,
             expected_roles=expected_roles,
             shared_session=shared_session,
+            session_identity=session_identity,
         )
 
     def deactivate(self, *, layer_name: str, phase: str) -> None:
@@ -119,8 +136,28 @@ class MegatronPhaseTransportAdapter:
                     f"incomplete transport consumption for {layer_name} {phase}: "
                     f"expected {len(self._active.expected_roles)} payloads, saw {self._active.call_index}"
                 )
-            self._async_phase_sessions.pop((layer_name, phase), None)
+            if self._active.session_identity is not None:
+                self._async_phase_sessions.pop(self._active.session_identity, None)
             self._active = None
+
+    def abort(self, *, layer_name: str | None = None, phase: str | None = None, reason: str = "") -> None:
+        state = self._active
+        if state is None:
+            return
+        if layer_name is not None and str(state.layer_name) != str(layer_name):
+            return
+        if phase is not None and str(state.phase) != str(phase):
+            return
+        if state.shared_session is not None:
+            state.shared_session["aborted"] = True
+            state.shared_session["abort_reason"] = str(reason)
+        if state.session_identity is not None:
+            self._async_phase_sessions.pop(state.session_identity, None)
+        self._active = None
+
+    def close(self) -> None:
+        self._async_phase_sessions.clear()
+        self._active = None
 
     def current(self) -> ActivePhaseTransport | None:
         return self._active

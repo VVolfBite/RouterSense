@@ -70,6 +70,12 @@ class _RecordingRuntime:
     def _target_plan_key(self, *, layer_name: str) -> tuple[str, int, str]:
         return (str(self.run_id), int(self._forward_epoch), str(layer_name))
 
+    def record_phase_payload_completion(self, *, layer_id: str, phase: str, payload_role: str) -> tuple[str, ...]:
+        return ()
+
+    def record_execution_outcome(self, *, layer_id: str, phase: str, payload_role: str, outcome: dict[str, object]) -> None:
+        return None
+
 
 class _FailingExecutor:
     def execute(self, *, plan, invocation, context) -> ExecutionOutcome:
@@ -334,6 +340,34 @@ def test_runtime_transport_failure_marks_store_failed_and_records_measurement() 
     assert snapshot.events[0].details["success"] is False
     assert snapshot.events[0].details["all_work_completed"] is False
     assert snapshot.events[0].details["failure_code"] == "unresolved_task"
+
+
+def test_async_transport_sessions_include_generation_identity_and_abort_clears_active_state() -> None:
+    context, pipeline, prepared = _build_prepared_execution()
+    runtime = _RecordingRuntime(
+        instrumentation=RuntimeInstrumentation(
+            measurement_sink=NullMeasurementSink(),
+            debug_probe=NullDebugProbe(),
+        )
+    )
+    runtime._forward_epoch = 7
+    runtime.microbatch_id = "mb7"
+    adapter = MegatronPhaseTransportAdapter(dispatcher_class="FakeDispatcher", dispatcher_module_sha256=None)
+    adapter.activate(
+        layer_name="decoder.layers.0",
+        phase="P0",
+        context=context,
+        plan=_StubExecutionPlan(execution_mode="joint_window_async_p2p"),
+        prepared_execution=prepared,
+        execution_pipeline=pipeline,
+        runtime=runtime,
+    )
+    assert len(adapter._async_phase_sessions) == 1
+    session_key = next(iter(adapter._async_phase_sessions))
+    assert session_key == ("run", 7, "mb7", "decoder.layers.0", "P0")
+    adapter.abort(layer_name="decoder.layers.0", phase="P0", reason="forced_failure")
+    assert adapter.current() is None
+    assert adapter._async_phase_sessions == {}
 
 
 def test_instrumentation_modes_do_not_change_published_or_materialized_digests() -> None:

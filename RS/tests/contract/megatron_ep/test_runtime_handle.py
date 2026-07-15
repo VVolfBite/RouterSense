@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 import torch
 
@@ -77,6 +80,19 @@ def _config() -> OnlineRuntimeConfig:
     return OnlineRuntimeConfig(
         policy_name="routersense_p0p1p2_hint",
         execution_mode="native_passthrough",
+        control_mode="sync_before_phase",
+        execution_selection=ExecutionSelection(layer_selector="selected", selected_layer_ids=("1",)),
+        policy_parameters=OnlinePolicyParameters(
+            online_p2_predictor="copy_current_dispatch",
+            safe_projection_mode="disabled",
+        ),
+    )
+
+
+def _patched_transport_config() -> OnlineRuntimeConfig:
+    return OnlineRuntimeConfig(
+        policy_name="routersense_p0p1p2_hint",
+        execution_mode="phase_sync_wave",
         control_mode="sync_before_phase",
         execution_selection=ExecutionSelection(layer_selector="selected", selected_layer_ids=("1",)),
         policy_parameters=OnlinePolicyParameters(
@@ -224,6 +240,41 @@ def test_duplicate_formal_attach_is_rejected_until_close() -> None:
         hostname="host",
     )
     reopened.close()
+
+
+def test_second_runtime_cannot_claim_process_global_all_to_all_patch(monkeypatch) -> None:
+    token_dispatcher_mod = types.ModuleType("megatron.core.transformer.moe.token_dispatcher")
+    token_dispatcher_mod.all_to_all = lambda *args, **kwargs: ("orig", args, kwargs)
+    monkeypatch.setitem(sys.modules, "megatron", types.ModuleType("megatron"))
+    monkeypatch.setitem(sys.modules, "megatron.core", types.ModuleType("megatron.core"))
+    monkeypatch.setitem(sys.modules, "megatron.core.transformer", types.ModuleType("megatron.core.transformer"))
+    monkeypatch.setitem(sys.modules, "megatron.core.transformer.moe", types.ModuleType("megatron.core.transformer.moe"))
+    monkeypatch.setitem(sys.modules, "megatron.core.transformer.moe.token_dispatcher", token_dispatcher_mod)
+    monkeypatch.setattr(host_mod, "_GLOBAL_ALL_TO_ALL_PATCH_OWNER", None)
+
+    first = attach_formal_online_runtime(
+        model=_ScopeModelStub(),
+        runtime_config=_patched_transport_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run-a",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    with pytest.raises(RuntimeAlreadyAttachedError, match="all_to_all patch already owned"):
+        attach_formal_online_runtime(
+            model=_ScopeModelStub(),
+            runtime_config=_patched_transport_config(),
+            rank=0,
+            local_rank=0,
+            run_id="run-b",
+            model_revision="model",
+            request_table_hash="request",
+            hostname="host",
+        )
+    first.close()
+    assert host_mod._GLOBAL_ALL_TO_ALL_PATCH_OWNER is None
 
 
 def test_legacy_observer_conflicts_with_formal_attach() -> None:

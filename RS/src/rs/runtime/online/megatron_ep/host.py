@@ -16,6 +16,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -84,6 +85,8 @@ def _detect_runtime_commit() -> tuple[str, bool]:
 
 _DEDICATED_P2P_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], DedicatedP2PGroupRegistry] = {}
 _CONTROL_GROUP_REGISTRY: dict[tuple[tuple[int, ...], ...], "ControlGroupRegistry"] = {}
+_GLOBAL_ALL_TO_ALL_PATCH_LOCK = threading.RLock()
+_GLOBAL_ALL_TO_ALL_PATCH_OWNER: str | None = None
 
 
 # Basic runtime/bootstrap helpers
@@ -191,6 +194,24 @@ def _destroy_dedicated_group_registry(
         _DEDICATED_P2P_GROUP_REGISTRY.pop(registry.ordered_group_ranks, None)
     if errors:
         raise AggregateRuntimeCloseError(errors)
+
+
+def _claim_global_all_to_all_patch(*, owner: str) -> None:
+    global _GLOBAL_ALL_TO_ALL_PATCH_OWNER
+    with _GLOBAL_ALL_TO_ALL_PATCH_LOCK:
+        current = _GLOBAL_ALL_TO_ALL_PATCH_OWNER
+        if current is not None and str(current) != str(owner):
+            raise RuntimeAlreadyAttachedError(
+                f"formal runtime all_to_all patch already owned by {current}"
+            )
+        _GLOBAL_ALL_TO_ALL_PATCH_OWNER = str(owner)
+
+
+def _release_global_all_to_all_patch(*, owner: str) -> None:
+    global _GLOBAL_ALL_TO_ALL_PATCH_OWNER
+    with _GLOBAL_ALL_TO_ALL_PATCH_LOCK:
+        if str(_GLOBAL_ALL_TO_ALL_PATCH_OWNER or "") == str(owner):
+            _GLOBAL_ALL_TO_ALL_PATCH_OWNER = None
 
 
 def _get_or_create_dedicated_p2p_group_registry(
@@ -916,8 +937,12 @@ def attach_dispatch_facade(
             token_dispatcher_mod = None
 
         if token_dispatcher_mod is not None:
+            patch_owner = f"{run_id}:{id(handle)}"
+            patch_claimed = False
             try:
                 original_all_to_all = token_dispatcher_mod.all_to_all
+                _claim_global_all_to_all_patch(owner=patch_owner)
+                patch_claimed = True
                 p2p_group = None
                 if config.execution_mode == "joint_window_async_p2p":
                     p2p_group, p2p_status = _maybe_create_dedicated_p2p_group(
@@ -949,8 +974,18 @@ def attach_dispatch_facade(
                 token_dispatcher_mod.all_to_all = wrapped_all_to_all
                 runtime.transport_adapter = transport_adapter
                 runtime.original_all_to_all = original_all_to_all
-                handle.add_restore_callback(lambda _mod=token_dispatcher_mod, _orig=original_all_to_all: setattr(_mod, "all_to_all", _orig))
+                def _restore_all_to_all(
+                    _mod=token_dispatcher_mod,
+                    _orig=original_all_to_all,
+                    _owner=patch_owner,
+                ):
+                    setattr(_mod, "all_to_all", _orig)
+                    _release_global_all_to_all_patch(owner=_owner)
+
+                handle.add_restore_callback(_restore_all_to_all)
             except BaseException:
+                if patch_claimed:
+                    _release_global_all_to_all_patch(owner=patch_owner)
                 try:
                     handle.close()
                 except BaseException:
