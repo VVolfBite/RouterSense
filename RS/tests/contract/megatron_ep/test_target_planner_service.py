@@ -113,16 +113,39 @@ class _CountingPlanner:
 
     def plan(self, request: PlanningRequest) -> WindowPlan:
         self.counter[self.planner_id] = int(self.counter.get(self.planner_id, 0)) + 1
+        flows: list[PlannedFlow] = []
+        flow_ordinal = 0
+        for phase, matrix in (
+            ("p0_dispatch", request.traffic.p0_dispatch_rows),
+            ("p1_return", request.traffic.p1_return_rows),
+        ):
+            for src_rank, row in enumerate(matrix):
+                for dst_rank, row_count in enumerate(row):
+                    if src_rank == dst_rank or int(row_count) <= 0:
+                        continue
+                    flows.append(
+                        PlannedFlow(
+                            flow_id=f"{self.planner_id}:{flow_ordinal}",
+                            phase=phase,
+                            src_rank=int(src_rank),
+                            dst_rank=int(dst_rank),
+                            row_count=int(row_count),
+                            release_state="ready",
+                            executable=True,
+                        )
+                    )
+                    flow_ordinal += 1
         return WindowPlan(
             planner_id=self.planner_id,
             planner_family=self.planner_family,
             request_digest=request.semantic_digest(),
-            waves=(
+            waves=tuple(
                 PlanWave(
-                    wave_id=0,
-                    flows=(PlannedFlow(flow_id=f"{self.planner_id}:0", phase="p0_dispatch", src_rank=0, dst_rank=1, row_count=2, release_state="ready", executable=True),),
+                    wave_id=wave_id,
+                    flows=(flow,),
                     estimated_duration=0.0,
-                ),
+                )
+                for wave_id, flow in enumerate(flows)
             ),
             metadata={"legacy_policy_name": self.planner_id},
         )

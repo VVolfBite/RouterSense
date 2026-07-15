@@ -44,6 +44,7 @@ class MultiphasePendingWindowAdapter:
         shared_state: dict[str, Any],
         phase_policy_name: str,
         bucket_rows: int,
+        max_waves: int = 256,
         p0_weight: float,
         p1_reservation_weight: float,
         p2_hint_weight: float,
@@ -57,6 +58,7 @@ class MultiphasePendingWindowAdapter:
         self._shared_state = shared_state
         self._phase_policy_name = phase_policy_name
         self._bucket_rows = int(bucket_rows)
+        self._max_waves = int(max_waves)
         self._p0_weight = float(p0_weight)
         self._p1_reservation_weight = float(p1_reservation_weight)
         self._p2_hint_weight = float(p2_hint_weight)
@@ -185,6 +187,7 @@ class MultiphasePendingWindowAdapter:
             p0_weight=self._p0_weight,
             p1_reservation_weight=self._p1_reservation_weight,
             p2_hint_weight=self._p2_hint_weight,
+            max_waves=self._max_waves,
         )
         logical_policy = RouterSenseMultiphaseLookaheadPolicy(
             information_mode=problem.options.information_mode,
@@ -254,6 +257,7 @@ def _build_problem_from_contexts(
     p0_weight: float,
     p1_reservation_weight: float,
     p2_hint_weight: float,
+    max_waves: int,
 ) -> MultiPhaseSchedulingProblem:
     num_gpus = len(local_context.ep_group_ranks)
     current_matrix = _matrix_from_contexts(global_contexts, num_gpus=num_gpus)
@@ -296,7 +300,7 @@ def _build_problem_from_contexts(
             p0_weight=float(p0_weight),
             p1_reservation_weight=float(p1_reservation_weight),
             p2_hint_weight=float(p2_hint_weight),
-            max_waves=256,
+            max_waves=int(max_waves),
         ),
         p0_dispatch_matrix=p0_dispatch_matrix,
         p1_return_matrix=p1_return_matrix,

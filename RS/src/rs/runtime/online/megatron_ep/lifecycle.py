@@ -621,6 +621,7 @@ class RouterSenseInjectionRuntime:
                 shared_state=self._runtime_state,
                 phase_policy_name=phase_policy_name,
                 bucket_rows=self.config.bucket_rows,
+                max_waves=int(getattr(self.config, "max_waves", 256)),
                 p0_weight=self.config.p0_weight,
                 p1_reservation_weight=self.config.p1_reservation_weight,
                 p2_hint_weight=self.config.p2_hint_weight,
@@ -2741,10 +2742,11 @@ class RouterSenseInjectionRuntime:
         predictor_name: str,
         prediction_confidence: float,
         information_mode: str = "p0_p1_p2",
-        max_waves: int = 256,
+        max_waves: int | None = None,
         planning_track: str = "runtime_lookahead",
         p2_semantics: str | None = None,
     ) -> PlanningRequest:
+        effective_max_waves = int(max_waves if max_waves is not None else getattr(self.config, "max_waves", 256))
         effective_p2_semantics = (
             str(p2_semantics)
             if p2_semantics is not None
@@ -2773,7 +2775,7 @@ class RouterSenseInjectionRuntime:
             topology=PlanningTopology(world_size=int(len(p0_dispatch_rows)), full_duplex=True),
             constraints=PlanningConstraints(
                 bucket_rows=int(self.config.bucket_rows),
-                max_waves=int(max_waves),
+                max_waves=int(effective_max_waves),
                 expert_compute_delay=float(getattr(self.config, "expert_compute_delay", 0.0) or 0.0),
                 phase_release_model="p1_return",
             ),
@@ -2873,7 +2875,7 @@ class RouterSenseInjectionRuntime:
             predictor_name=str(predictor_name or "zero"),
             prediction_confidence=float(prediction_confidence),
             information_mode="p0_p1_p2",
-            max_waves=256,
+            max_waves=int(getattr(self.config, "max_waves", 256)),
         )
         formal_cost_model = PlanningCostModel(
             expert_compute_delay=float(formal_request.constraints.expert_compute_delay),
@@ -3691,7 +3693,7 @@ class RouterSenseInjectionRuntime:
                 p0_weight=float(self.config.p0_weight),
                 p1_reservation_weight=float(self.config.p1_reservation_weight),
                 p2_hint_weight=float(self.config.p2_hint_weight),
-                max_waves=256,
+                max_waves=int(getattr(self.config, "max_waves", 256)),
             ),
             p0_dispatch_matrix=dispatch_matrix,
             p1_return_matrix=p1_bundle.matrix,

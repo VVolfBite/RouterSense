@@ -1216,6 +1216,7 @@ def attach_formal_online_runtime(
         control_mode=runtime_config.control_mode,
         bucket_mode=str(getattr(runtime_config.execution_selection, "bucket_mode", "dynamic_current")),
         bucket_rows=runtime_config.execution_selection.bucket_rows,
+        max_waves=int(getattr(runtime_config.execution_selection, "max_waves", 256)),
         p0_weight=runtime_config.policy_parameters.p0_weight,
         p1_reservation_weight=runtime_config.policy_parameters.p1_reservation_weight,
         p2_hint_weight=runtime_config.policy_parameters.p2_hint_weight,

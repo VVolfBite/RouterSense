@@ -143,6 +143,7 @@ def main() -> None:
                 scheduling_mode=str(replay_cfg.get("scheduling_mode", "execution_window")),
                 expert_compute_delay=float(replay_cfg.get("expert_compute_delay", 0.0)),
                 bucket_rows=bucket_rows,
+                max_waves=int(replay_cfg.get("max_waves", evaluation.get("max_waves", 256))),
             )
             for window in windows:
                 tasks = bucketizer.bucketize(window)

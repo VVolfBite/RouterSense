@@ -136,6 +136,7 @@ def build_multiphase_problem(
     execution_truth: ExecutionTruth,
     scheduling_mode: str,
     expert_compute_delay: float,
+    max_waves: int = 256,
 ) -> MultiPhaseSchedulingProblem:
     replay_window = planning_problem.replay_window
     hint = planning_problem.planning_hint
@@ -187,7 +188,7 @@ def build_multiphase_problem(
             scheduling_mode=str(scheduling_mode),
             information_mode="p0_p1_p2",
             prediction_confidence=_prediction_confidence(hint.hint_type, hint.confidence),
-            max_waves=256,
+            max_waves=int(max_waves),
         ),
         p0_dispatch_matrix=replay_window.p0_truth_rows,
         p1_return_matrix=replay_window.p1_truth_rows,
@@ -223,10 +224,11 @@ def execution_truth_digest(execution_truth: ExecutionTruth) -> str:
 
 
 class ReplayEngine:
-    def __init__(self, *, scheduling_mode: str, expert_compute_delay: float, bucket_rows: int) -> None:
+    def __init__(self, *, scheduling_mode: str, expert_compute_delay: float, bucket_rows: int, max_waves: int = 256) -> None:
         self.scheduling_mode = str(scheduling_mode)
         self.expert_compute_delay = float(expert_compute_delay)
         self.bucket_rows = int(bucket_rows)
+        self.max_waves = int(max_waves)
 
     def execute(
         self,
@@ -242,6 +244,7 @@ class ReplayEngine:
             execution_truth=execution_truth,
             scheduling_mode=self.scheduling_mode,
             expert_compute_delay=self.expert_compute_delay,
+            max_waves=self.max_waves,
         )
         request = PlanningRequest(
             identity=PlanningIdentity(
@@ -267,7 +270,7 @@ class ReplayEngine:
             topology=PlanningTopology(world_size=int(replay_window.group_size)),
             constraints=PlanningConstraints(
                 bucket_rows=int(self.bucket_rows),
-                max_waves=256,
+                max_waves=int(self.max_waves),
                 expert_compute_delay=float(self.expert_compute_delay),
                 phase_release_model="p1_return",
             ),
@@ -287,6 +290,7 @@ class ReplayEngine:
         return {
             "policy_name": str(policy_name),
             "bucket_rows": int(self.bucket_rows),
+            "max_waves": int(self.max_waves),
             "planning_hint": planning_hint.to_dict(),
             "replay_window": replay_window.to_dict(),
             "planning_task_count": len(planning_tasks),

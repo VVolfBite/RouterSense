@@ -41,6 +41,7 @@ class ExecutionSelection:
     selected_layer_ids: tuple[str, ...] = ()
     bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
+    max_waves: int = 256
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +113,7 @@ class RouterSenseInjectionConfig:
     shadow_command_arrival: str = "none"
     bucket_mode: str = "dynamic_current"
     bucket_rows: int = 0
+    max_waves: int = 256
     p0_weight: float = 1.0
     p1_reservation_weight: float = 1.0
     p2_hint_weight: float = 1.0

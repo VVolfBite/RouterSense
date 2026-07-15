@@ -74,3 +74,63 @@ def test_window_plan_validator_rejects_duplicate_wave_id() -> None:
     )
     with pytest.raises(ValueError, match="duplicate_wave_id"):
         validate_window_plan_for_request(plan, request)
+
+
+def test_window_plan_validator_rejects_missing_executable_coverage() -> None:
+    request = _request()
+    plan = WindowPlan(
+        planner_id="fifo_bucket",
+        planner_family="baseline",
+        request_digest=request.semantic_digest(),
+        waves=(
+            PlanWave(
+                wave_id=0,
+                flows=(
+                    PlannedFlow("f0", "p0_dispatch", 0, 1, 4, "ready", True),
+                    PlannedFlow("f1", "p1_return", 1, 0, 1, "blocked", True),
+                    PlannedFlow("f2", "p2_next_dispatch_forecast", 0, 1, 2, "advisory_only", False),
+                    PlannedFlow("f3", "p2_next_dispatch_forecast", 1, 0, 5, "advisory_only", False),
+                ),
+                estimated_duration=0.0,
+            ),
+        ),
+        metadata={},
+    )
+    with pytest.raises(ValueError, match="missing_executable_coverage"):
+        validate_window_plan_for_request(plan, request)
+
+
+def test_window_plan_validator_rejects_max_waves_exceeded() -> None:
+    request = _request()
+    limited_request = PlanningRequest(
+        identity=request.identity,
+        traffic=request.traffic,
+        prediction_hint=request.prediction_hint,
+        topology=request.topology,
+        constraints=PlanningConstraints(bucket_rows=4, max_waves=1, expert_compute_delay=0.0, phase_release_model="p1_return"),
+        weights=request.weights,
+        information_mode=request.information_mode,
+        planning_track=request.planning_track,
+        p2_semantics=request.p2_semantics,
+    )
+    plan = WindowPlan(
+        planner_id="fifo_bucket",
+        planner_family="baseline",
+        request_digest=limited_request.semantic_digest(),
+        waves=(
+            PlanWave(0, (PlannedFlow("f0", "p0_dispatch", 0, 1, 4, "ready", True),), 0.0),
+            PlanWave(
+                1,
+                (
+                    PlannedFlow("f1", "p1_return", 0, 1, 3, "blocked", True),
+                    PlannedFlow("f2", "p1_return", 1, 0, 4, "blocked", True),
+                    PlannedFlow("f3", "p2_next_dispatch_forecast", 0, 1, 2, "advisory_only", False),
+                    PlannedFlow("f4", "p2_next_dispatch_forecast", 1, 0, 5, "advisory_only", False),
+                ),
+                0.0,
+            ),
+        ),
+        metadata={},
+    )
+    with pytest.raises(ValueError, match="max_waves_exceeded"):
+        validate_window_plan_for_request(plan, limited_request)

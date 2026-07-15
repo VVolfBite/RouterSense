@@ -93,6 +93,7 @@ def build_shadow_problem(
     p0_weight: float,
     p1_reservation_weight: float,
     p2_hint_weight: float,
+    max_waves: int = 256,
 ) -> MultiPhaseSchedulingProblem:
     num_gpus = len(state.ep_group_ranks)
     predicted_p0 = _matrix_from_prepared_plan(state.prepared_plan, phase="p0_dispatch", num_gpus=num_gpus)
@@ -192,7 +193,7 @@ def build_shadow_problem(
             p0_weight=float(p0_weight),
             p1_reservation_weight=float(p1_reservation_weight),
             p2_hint_weight=float(p2_hint_weight),
-            max_waves=256,
+            max_waves=int(max_waves),
         ),
         p0_dispatch_matrix=ready_p0_matrix,
         p1_return_matrix=ready_p1_matrix if p1_materialized else blocked_p1_matrix,
