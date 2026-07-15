@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from rs.reporting.schema import validate_report_eligibility
 
 from rs.runtime.offline.prediction.evaluation import rolling_predictor_records
 from rs.runtime.offline.replay_unified import CanonicalBucketizer, PlanningHint, ReplayEngine, ReplayWindow, build_execution_truth, build_planning_problem
@@ -164,3 +165,37 @@ def test_public_entrypoints_help_and_async_release_config_parse(tmp_path: Path) 
     payload = yaml.safe_load((REPO_ROOT / "configs/online_async_release.yaml").read_text(encoding="utf-8"))
     assert payload["runtime"]["line"] == "async_release"
     assert any("async" in str(item["name"]) for item in payload["strategies"])
+
+
+def test_offline_replay_entrypoint_writes_canonical_result_bundle(tmp_path: Path) -> None:
+    output_dir = tmp_path / "offline-run"
+    config_payload = yaml.safe_load((REPO_ROOT / "configs/official/offline_replay.yaml").read_text(encoding="utf-8"))
+    config_payload["runtime"]["invariant_mode"] = "diagnostic"
+    config_path = tmp_path / "offline_replay.yaml"
+    config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "experiments/run_offline_replay.py",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+    bundle_path = output_dir / "result_bundle.json"
+    assert bundle_path.exists()
+    bundle_payload = yaml.safe_load(bundle_path.read_text(encoding="utf-8"))
+    assert bundle_payload["schema_version"] == "result_bundle.v2"
+    assert bundle_payload["run_identity"]["claim_scope"] == "offline_replay"
+    assert bundle_payload["summary"]["offline_replay_complete"] is True
+    assert bundle_payload["eligibility"]["performance_eligible"] is False
+    eligibility = validate_report_eligibility(output_dir, report_type="offline")
+    assert eligibility.eligible is False
+    assert "offline_replay_eligibility_false" in eligibility.failures

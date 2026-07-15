@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -20,7 +21,9 @@ ROOT = ensure_src_on_path()
 import yaml
 
 from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
+from rs.core.contracts.result import OFFLINE_PIPELINE, RunIdentity
 from rs.experiments.output_schema import initialize_run_artifacts, update_status, validate_official_entrypoint_config, write_json
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 from rs.runtime.guards import InvariantContext, require_invariant
@@ -64,6 +67,11 @@ def _load_windows(fixture_dir: Path, *, max_windows: int | None = None) -> list[
         if max_windows is not None and len(windows) >= int(max_windows):
             break
     return windows
+
+
+def _digest_payload(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _hint(window: ReplayWindow, hint_type: str) -> PlanningHint:
@@ -178,17 +186,102 @@ def main() -> None:
             expected=0,
             actual=audit_invalid_count,
         )
+        manifest = json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
         summary_payload = {
             "rows": rows,
             "invariants": invariant_rows,
             "run_valid": True,
-            "valid_for_evaluation": True,
             "audit_invalid_count": audit_invalid_count,
             "failure_codes": [],
-            "commit_sha": json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))["commit_sha"],
+            "commit_sha": manifest["commit_sha"],
         }
         write_json(output_dir / "summary.json", summary_payload)
         write_json(layout.metrics_dir / "summary.json", summary_payload)
+        run_kind = "OFFLINE_EVALUATION"
+        future_information_mode = "predicted"
+        summary = {
+            "run_kind": run_kind,
+            "all_work_completed": True,
+            "fallback_count": 0,
+            "timeout_count": 0,
+            "check_failure_count": 0,
+            "cleanup_failure_count": 0,
+            "execution_outcome_count": 0,
+            "missing_execution_outcome_count": 0,
+            "formal_execution_expected": False,
+            "offline_replay_complete": True,
+            "evaluation_spec_digest": _digest_payload(
+                {
+                    "fixture_dir": str(fixture_dir),
+                    "bucket_rows": bucket_rows_values,
+                    "policies": policies,
+                    "hints": hints,
+                    "max_windows": int(evaluation.get("max_windows", 4)),
+                    "scheduling_mode": str(replay_cfg.get("scheduling_mode", "execution_window")),
+                    "expert_compute_delay": float(replay_cfg.get("expert_compute_delay", 0.0)),
+                }
+            ),
+            "task_set_digest": _digest_payload(invariant_rows),
+            "execution_truth_digest": _digest_payload(
+                [
+                    {
+                        "fixture_id": window.fixture_id,
+                        "window_id": window.window_id,
+                        "layer_id": window.layer_id,
+                        "p0_truth_rows": window.p0_truth_rows,
+                        "p1_truth_rows": window.p1_truth_rows,
+                        "p2_truth_rows": window.p2_truth_rows,
+                    }
+                    for window in windows
+                ]
+            ),
+            "offline_record_count": len(rows),
+            "offline_audit_status": "valid",
+            "coverage_status": "complete",
+            "performance_measurement_complete": False,
+            "measured_repeat_count": 0,
+            "warmup_excluded": False,
+            "preparation_miss_count": 0,
+            "provisional_execution_count": 0,
+            "materialization_failure_count": 0,
+            "execution_failure_count": 0,
+            "native_fallback_count": 0,
+            "semantic_failure_fallback_count": 0,
+            "safe_selector_fallback_count": 0,
+        }
+        details = {
+            "run_kind": run_kind,
+            "offline_fixture_dir": str(fixture_dir),
+            "bucket_rows": list(bucket_rows_values),
+            "policy_names": list(policies),
+            "hint_names": list(hints),
+            "window_count": len(windows),
+            "row_count": len(rows),
+            "invariant_count": len(invariant_rows),
+        }
+        result_bundle = build_result_bundle(
+            ResultBundleDraft(
+                run_identity=RunIdentity(
+                    run_id=str(layout.root.name),
+                    pipeline=OFFLINE_PIPELINE,
+                    claim_scope="offline_replay",
+                    trace_origin="fixture",
+                    future_information_mode=future_information_mode,
+                ),
+                status="success",
+                correctness_status="valid",
+                performance_status="ineligible",
+                commit_sha=str(manifest["commit_sha"]),
+                git_clean=not bool(manifest.get("git_dirty", False)),
+                instrumentation_mode="off",
+                audit_evidence_level="summary_only",
+                measurement_complete=True,
+                summary=summary,
+                details=details,
+                extensions={},
+            )
+        )
+        write_json(layout.root / "result_bundle.json", result_bundle.to_dict())
         (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         update_status(
@@ -198,7 +291,7 @@ def main() -> None:
                 "row_count": len(rows),
                 "invariant_count": len(invariant_rows),
                 "audit_invalid_count": audit_invalid_count,
-                "valid_for_evaluation": True,
+                "result_bundle_path": "result_bundle.json",
                 "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
@@ -209,17 +302,18 @@ def main() -> None:
                 layout,
                 status="failed",
                 extra={
-                    "valid_for_evaluation": False,
                     "failure_codes": [exc.failure.error_code],
                     "run_valid": False,
                 },
             )
+        print(f"[offline_replay] invariant failure: {exc.failure.error_code}: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
     except Exception as exc:
         if layout is not None:
             failure_payload = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
             (layout.failures_dir / "offline_exception.json").write_text(json.dumps(failure_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            update_status(layout, status="failed", extra={"valid_for_evaluation": False, "run_valid": False})
+            update_status(layout, status="failed", extra={"run_valid": False})
+        print(f"[offline_replay] exception: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise
 
 

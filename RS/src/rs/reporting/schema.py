@@ -90,6 +90,10 @@ def validate_report_eligibility(
         failures.append("check_failure_count_nonzero")
     if str(bundle.instrumentation_mode) == "debug":
         failures.append("debug_mode")
+    if not bool(bundle.eligibility.correctness_eligible):
+        failures.append("correctness_eligibility_false")
+    if report_type == "offline" and not bool(bundle.eligibility.offline_replay_eligible):
+        failures.append("offline_replay_eligibility_false")
     if report_type in {"a2", "c2", "comparison"} and not bool(bundle.eligibility.performance_eligible):
         failures.append("performance_eligibility_false")
     eligible = not failures and bool(bundle.eligibility.correctness_eligible)

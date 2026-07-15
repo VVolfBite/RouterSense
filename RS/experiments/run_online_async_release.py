@@ -82,7 +82,7 @@ def main() -> None:
     except RouterSenseInvariantError as exc:
         if layout is not None:
             write_failure_artifact(layout.failures_dir / "startup_invariant_failure.json", error=exc)
-            update_status(layout, status="failed", extra={"valid_for_evaluation": False, "failure_codes": [exc.failure.error_code]})
+            update_status(layout, status="failed", extra={"failure_codes": [exc.failure.error_code]})
         raise SystemExit(2) from exc
 
 

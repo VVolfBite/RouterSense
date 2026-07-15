@@ -52,10 +52,6 @@ def _git_output(repo_root: Path, *args: str) -> str:
 
 
 def detect_git_state(repo_root: Path) -> tuple[str, bool]:
-    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
-    if env_sha:
-        env_dirty = str(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")).strip().lower()
-        return env_sha, env_dirty in {"1", "true", "yes"}
     sha, dirty, _source = resolve_commit_identity(repo_root)
     return sha, dirty
 
@@ -258,7 +254,6 @@ def initialize_run_artifacts(
         "end_time": "",
         "status": "running",
         "invariant_mode": invariant_mode,
-        "valid_for_evaluation": bool(invariant_mode != "diagnostic"),
         "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
     }
     if manifest_overrides:

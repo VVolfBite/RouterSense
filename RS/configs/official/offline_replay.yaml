@@ -21,7 +21,7 @@ policy:
     - barrier_criticality_runtime_safe
 prediction:
   names:
-    - perfect_trace_hint
+    - zero_hint
 evaluation:
   max_windows: 4
   metrics:

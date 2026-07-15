@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -52,6 +53,10 @@ def resolve_commit_identity(repo_root: Path) -> tuple[str, bool, str]:
     if git_sha:
         git_dirty = bool(_git_output(repo_root, "status", "--short"))
         return git_sha, git_dirty, "git"
+    env_sha = str(os.environ.get("ROUTERSENSE_COMMIT_SHA", "")).strip()
+    if env_sha:
+        env_dirty = str(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")).strip().lower()
+        return env_sha, env_dirty in {"1", "true", "yes"}, "env"
     manifest = resolve_source_manifest(repo_root)
     if manifest is not None:
         return (
