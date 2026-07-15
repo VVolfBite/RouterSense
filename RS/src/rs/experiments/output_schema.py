@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from rs.core.contracts.result import ResultBundle
 from rs.core.contracts.provenance import resolve_commit_identity
 from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_dirty_git, normalize_invariant_mode, require_invariant
 from rs.scheduling.catalog import resolve_algorithm_id
@@ -189,6 +190,11 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def write_result_bundle(path: Path, bundle: ResultBundle) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def capture_environment() -> dict[str, Any]:

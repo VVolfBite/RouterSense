@@ -22,7 +22,7 @@ import yaml
 
 from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
 from rs.core.contracts.result import OFFLINE_PIPELINE, RunIdentity
-from rs.experiments.output_schema import initialize_run_artifacts, update_status, validate_official_entrypoint_config, write_json
+from rs.experiments.output_schema import initialize_run_artifacts, update_status, validate_official_entrypoint_config, write_json, write_result_bundle
 from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
@@ -281,7 +281,7 @@ def main() -> None:
                 extensions={},
             )
         )
-        write_json(layout.root / "result_bundle.json", result_bundle.to_dict())
+        write_result_bundle(layout.root / "result_bundle.json", result_bundle)
         (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         update_status(
