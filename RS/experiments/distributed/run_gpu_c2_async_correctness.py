@@ -107,6 +107,27 @@ def _load_rank_summaries(run_dir: Path) -> list[dict]:
     ]
 
 
+def _maybe_load_environment_block(run_dir: Path, stdout: str) -> dict | None:
+    summary_path = run_dir / "summary.json"
+    if summary_path.exists():
+        try:
+            summary = read_json(summary_path)
+            details = dict(summary.get("details", {}) or {})
+            if str(details.get("status", "")) == "blocked_environment":
+                return details
+        except Exception:
+            pass
+    text = str(stdout or "").strip()
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            payload = dict(__import__("json").loads(text))
+        except Exception:
+            return None
+        if str(payload.get("status", "")) == "blocked_environment":
+            return payload
+    return None
+
+
 def main() -> int:
     args = _parse_args()
     output_dir = Path(args.output_dir)
@@ -175,6 +196,7 @@ def main() -> int:
             profile=resolved_profile,
             selected_layers=resolved_selected_layers,
             save_logits=True,
+            world_size=int(resolved_world_size),
         )
         config_path = generated_dir / f"{run_name}.yaml"
         dump_yaml(config_path, config_payload)
@@ -190,6 +212,23 @@ def main() -> int:
         (output_dir / f"{run_name}_stdout.log").write_text(proc.stdout, encoding="utf-8")
         (output_dir / f"{run_name}_stderr.log").write_text(proc.stderr, encoding="utf-8")
         if proc.returncode != 0:
+            blocked = _maybe_load_environment_block(reference_root / "c2_reference", proc.stdout)
+            if blocked is not None:
+                payload.update(
+                    {
+                        "status": "blocked_environment",
+                        "blocked_stage": run_name,
+                        "blocked_environment": blocked,
+                        "result_eligible_for_performance_comparison": False,
+                        "fallback_used": True,
+                        "failed_command": cmd,
+                        "returncode": int(proc.returncode),
+                    }
+                )
+                write_json(output_dir / "c2_runner_summary.json", payload)
+                write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
+                print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
+                return 0
             payload.update({"status": f"{run_name}_failed", "failed_command": cmd, "returncode": int(proc.returncode)})
             write_json(output_dir / "c2_runner_summary.json", payload)
             write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
@@ -211,6 +250,7 @@ def main() -> int:
             profile=resolved_profile,
             selected_layers=resolved_selected_layers,
             save_logits=True,
+            world_size=int(resolved_world_size),
         )
         config_path = generated_dir / f"{run_name}.yaml"
         dump_yaml(config_path, config_payload)
@@ -226,6 +266,23 @@ def main() -> int:
         (output_dir / f"{run_name}_stdout.log").write_text(proc.stdout, encoding="utf-8")
         (output_dir / f"{run_name}_stderr.log").write_text(proc.stderr, encoding="utf-8")
         if proc.returncode != 0:
+            blocked = _maybe_load_environment_block(candidate_root / run_name, proc.stdout)
+            if blocked is not None:
+                payload.update(
+                    {
+                        "status": "blocked_environment",
+                        "blocked_stage": run_name,
+                        "blocked_environment": blocked,
+                        "result_eligible_for_performance_comparison": False,
+                        "fallback_used": True,
+                        "failed_command": cmd,
+                        "returncode": int(proc.returncode),
+                    }
+                )
+                write_json(output_dir / "c2_runner_summary.json", payload)
+                write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
+                print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
+                return 0
             payload.update({"status": f"{run_name}_failed", "failed_command": cmd, "returncode": int(proc.returncode)})
             write_json(output_dir / "c2_runner_summary.json", payload)
             print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))

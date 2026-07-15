@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover
     yaml = None
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
@@ -49,10 +49,15 @@ def dump_yaml(path: Path, payload: dict[str, Any]) -> None:
 def child_env() -> dict[str, str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = "src:." if not existing else f"src:.:{existing}"
+    pythonpath_entries = ["src", "."]
+    if existing:
+        pythonpath_entries.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     omp = env.get("OMP_NUM_THREADS", "").strip()
     if not omp or not omp.isdigit() or int(omp) <= 0:
         env["OMP_NUM_THREADS"] = "1"
+    if not str(env.get("USE_LIBUV", "")).strip():
+        env["USE_LIBUV"] = "0"
     for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "GROUP_RANK", "ROLE_RANK", "ROLE_WORLD_SIZE"):
         env.pop(key, None)
     return env
@@ -108,6 +113,7 @@ def build_policy_correctness_config(
     selected_layers: str,
     save_logits: bool,
     preflight_mode: str = "full",
+    world_size: int | None = None,
 ) -> dict[str, Any]:
     from rs.core.layer_selection import resolve_layer_selector
 
@@ -124,7 +130,11 @@ def build_policy_correctness_config(
     workload = dict(base_comparison.get("workload", {}) or {})
     tokenization = dict(workload.get("tokenization", {}) or {})
     execution = dict(base_comparison.get("execution", {}) or {})
-    selected_ep_size = int(topology.get("ep_size", topology_ep.get("size", topology.get("world_size", 1))) or 1)
+    selected_ep_size = int(
+        world_size
+        if world_size is not None
+        else topology.get("ep_size", topology_ep.get("size", topology.get("world_size", 1))) or 1
+    )
     from rs.experiments_support.runtime_presets import resolve_strategy_runtime
 
     strategy_runtime = resolve_strategy_runtime(strategy_name=strategy_name, runtime_line=str(runtime.get("line", "phase_sync")))
@@ -286,6 +296,18 @@ def build_strategy_comparison_config(
 
 def torchrun_policy_command(*, config_path: Path, run_id: str, output_dir: Path, world_size: int, native: bool) -> list[str]:
     module = "experiments.online.collect_native_ep_trace" if native else "experiments.online.run_policy_correctness"
+    if int(world_size) <= 1:
+        return [
+            sys.executable,
+            "-m",
+            module,
+            "--config",
+            str(config_path),
+            "--run-id",
+            run_id,
+            "--output-dir",
+            str(output_dir),
+        ]
     return [
         "torchrun",
         "--standalone",

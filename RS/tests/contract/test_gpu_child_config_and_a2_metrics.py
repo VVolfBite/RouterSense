@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rs.experiments_support.gpu_runner_common import build_policy_correctness_config, load_official_config
+from rs.experiments_support.gpu_runner_common import (
+    build_policy_correctness_config,
+    load_official_config,
+    torchrun_policy_command,
+)
 from rs.experiments_support.gpu_a2_strategy_compare import _build_strategy_result, _metric_series, aggregate_hotpath_rank_counts
 from rs.core.layer_ids import stable_layer_ids
 from rs.core.layer_selection import resolve_layer_selector
@@ -417,3 +421,15 @@ def test_child_config_rejects_invalid_preflight_mode() -> None:
         assert "preflight_mode" in str(exc)
     else:
         raise AssertionError("expected invalid preflight mode to fail")
+
+
+def test_single_process_gpu_policy_command_avoids_torchrun(tmp_path: Path) -> None:
+    cmd = torchrun_policy_command(
+        config_path=tmp_path / "cfg.yaml",
+        run_id="single",
+        output_dir=tmp_path / "out",
+        world_size=1,
+        native=True,
+    )
+    assert cmd[0].endswith("python.exe") or cmd[0].endswith("python")
+    assert cmd[1:3] == ["-m", "experiments.online.collect_native_ep_trace"]
