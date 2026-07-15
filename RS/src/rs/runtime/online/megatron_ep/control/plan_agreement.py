@@ -351,6 +351,13 @@ def run_phase_plan_agreement(
     summary_stack_time_us = 0.0
     summary_tensor_to_cpu_time_us = 0.0
     summary_object_decode_time_us = 0.0
+    local_status: dict[str, object] = {
+        "success": False,
+        "failure_stage": "",
+        "failure_code": "",
+        "root_global_rank": int(root_rank),
+        "message_digest": "",
+    }
     if local_group_rank == root_group_rank:
         rebuilt_contexts: list[PhaseReadyContext] = []
         summary_stack_start_ns = time.monotonic_ns()
@@ -383,13 +390,34 @@ def run_phase_plan_agreement(
                 rebuilt_contexts.append(PlanningSummaryContext.from_summary(summary))
         global_contexts = tuple(rebuilt_contexts)
         root_context = next(ctx for ctx in global_contexts if int(ctx.global_rank) == root_rank)
-        build_plan_start_ns = time.monotonic_ns()
-        full_plan = policy.build_plan(local_context=root_context, global_contexts=global_contexts)
-        build_plan_end_ns = time.monotonic_ns()
-        abstract_encode_start_ns = time.monotonic_ns()
-        abstract_plan = full_plan.to_abstract_plan()
-        payload_tensor = _encode_abstract_plan_tensor(abstract_plan, device=device)
-        abstract_encode_end_ns = time.monotonic_ns()
+        try:
+            build_plan_start_ns = time.monotonic_ns()
+            full_plan = policy.build_plan(local_context=root_context, global_contexts=global_contexts)
+            build_plan_end_ns = time.monotonic_ns()
+            abstract_encode_start_ns = time.monotonic_ns()
+            abstract_plan = full_plan.to_abstract_plan()
+            payload_tensor = _encode_abstract_plan_tensor(abstract_plan, device=device)
+            abstract_encode_end_ns = time.monotonic_ns()
+            local_status = {
+                "success": True,
+                "failure_stage": "",
+                "failure_code": "",
+                "root_global_rank": int(root_rank),
+                "message_digest": "",
+            }
+        except Exception as exc:
+            build_plan_end_ns = time.monotonic_ns()
+            abstract_encode_start_ns = build_plan_end_ns
+            abstract_encode_end_ns = abstract_encode_start_ns
+            abstract_plan = None
+            payload_tensor = None
+            local_status = {
+                "success": False,
+                "failure_stage": "root_build_encode_validate",
+                "failure_code": type(exc).__name__,
+                "root_global_rank": int(root_rank),
+                "message_digest": f"{type(exc).__name__}:{exc}",
+            }
     else:
         build_plan_start_ns = time.monotonic_ns()
         build_plan_end_ns = build_plan_start_ns
@@ -397,6 +425,15 @@ def run_phase_plan_agreement(
         abstract_encode_end_ns = abstract_encode_start_ns
         abstract_plan = None
         payload_tensor = None
+    status_payload = [local_status]
+    dist.broadcast_object_list(status_payload, src=root_rank, group=world_group)
+    shared_status = dict(status_payload[0])
+    if not bool(shared_status.get("success", False)):
+        raise RuntimeError(
+            "phase_plan_agreement_failed:"
+            f"{shared_status.get('failure_stage', 'unknown')}:"
+            f"{shared_status.get('failure_code', 'unknown')}"
+        )
     payload_length = torch.tensor(
         [int(payload_tensor.numel()) if payload_tensor is not None else 0],
         dtype=torch.long,

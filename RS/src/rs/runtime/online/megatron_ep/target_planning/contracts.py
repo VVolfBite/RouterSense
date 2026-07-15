@@ -4,9 +4,34 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from rs.core.contracts import PlanWave, PlannedFlow, WindowPlan
-from rs.planning.api import to_logical_plan
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave
 from rs.scheduling.validation import stable_hash
+
+
+def _compat_logical_plan_from_window_plan(plan: WindowPlan) -> LogicalSchedulePlan:
+    return LogicalSchedulePlan(
+        policy_name=str(plan.metadata.get("legacy_policy_name", plan.planner_id)),
+        waves=tuple(
+            LogicalWave(
+                wave_id=int(wave.wave_id),
+                flows=tuple(
+                    FlowDemand(
+                        flow_id=str(flow.flow_id),
+                        phase=str(flow.phase),
+                        src_rank=int(flow.src_rank),
+                        dst_rank=int(flow.dst_rank),
+                        byte_count=int(flow.row_count),
+                        release_state=str(flow.release_state),
+                        is_executable=bool(flow.executable),
+                    )
+                    for flow in wave.flows
+                ),
+                duration=float(wave.estimated_duration),
+            )
+            for wave in plan.waves
+        ),
+        diagnostics=dict(plan.metadata),
+    )
 
 
 MatrixRows = tuple[tuple[int, ...], ...]
@@ -121,7 +146,7 @@ class TargetLayerPreparedJointPlan:
             recomputed_window_digest = str(self.window_plan.semantic_digest())
             if recomputed_window_digest != str(self.logical_plan_digest):
                 raise ValueError("logical_plan_digest must match window_plan.semantic_digest()")
-            canonical_legacy = to_logical_plan(self.window_plan)
+            canonical_legacy = _compat_logical_plan_from_window_plan(self.window_plan)
             canonical_legacy_digest = str(stable_hash(canonical_legacy.to_dict()))
             if recomputed_digest != canonical_legacy_digest:
                 raise ValueError("logical_plan payload must match compatibility projection of window_plan")

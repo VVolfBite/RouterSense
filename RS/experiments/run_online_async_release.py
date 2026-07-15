@@ -17,14 +17,12 @@ from experiments._bootstrap import ensure_src_on_path
 ROOT = ensure_src_on_path()
 
 from rs.core.formal_config_loader import load_formal_config
-from rs.experiments_support.strategy_comparison_runner import dump_yaml, run_strategy_comparison
-from rs.experiments.output_schema import (
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    initialize_run_artifacts,
-    update_status,
-    write_resolved_configs,
+from rs.experiments_support.official_output import (
+    initialize_official_output,
+    update_official_status,
+    write_official_configs,
 )
+from rs.experiments_support.strategy_comparison_runner import run_strategy_comparison
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 
@@ -46,41 +44,33 @@ def main() -> None:
         )
         canonical_payload = resolved.normalized_config
         output_dir = (ROOT / str(args.output_dir)).resolve() if args.output_dir else (ROOT / "outputs/online/async_release" / canonical_payload["run"]["name"]).resolve()
-        layout = initialize_run_artifacts(
+        layout = initialize_official_output(
             repo_root=ROOT,
             output_dir=output_dir,
             run_type="online_async_release",
             official_entrypoint="experiments/run_online_async_release.py",
             config_snapshot=canonical_payload,
         )
-        payload = dict(resolved.legacy_bridge_config or {})
-        payload.setdefault("runtime", {})
-        payload["runtime"]["line"] = "async_release"
-        payload["_normalized_public_bridge"] = True
-        write_resolved_configs(
+        write_official_configs(
             layout,
             normalized_config=canonical_payload,
             consumed_config=canonical_payload,
-            legacy_bridge_config=payload,
         )
-        tmp_config = output_dir / "normalized_async_release_config.yaml"
-        tmp_config.parent.mkdir(parents=True, exist_ok=True)
-        dump_yaml(tmp_config, payload)
         rc = run_strategy_comparison(
-            config_path=tmp_config,
+            config_path=config_path,
             output_dir=output_dir,
             dry_run=bool(args.dry_run),
         )
-        update_status(
+        update_official_status(
             layout,
-            status=RUN_STATUS_COMPLETED if int(rc or 0) == 0 else RUN_STATUS_FAILED,
+            status="completed" if int(rc or 0) == 0 else "failed",
             extra={"completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
         )
         raise SystemExit(int(rc or 0))
     except RouterSenseInvariantError as exc:
         if layout is not None:
             write_failure_artifact(layout.failures_dir / "startup_invariant_failure.json", error=exc)
-            update_status(layout, status=RUN_STATUS_FAILED, extra={"failure_codes": [exc.failure.error_code]})
+            update_official_status(layout, status="failed", extra={"failure_codes": [exc.failure.error_code]})
         raise SystemExit(2) from exc
 
 

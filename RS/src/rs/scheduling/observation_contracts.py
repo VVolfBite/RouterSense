@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -60,6 +62,88 @@ class RuntimeObservation:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ObservationBundle:
+    run_id: str
+    forward_generation: int
+    microbatch_id: str
+    layer_id: str
+    ep_group_ranks: tuple[int, ...]
+    observations_by_phase: dict[str, RuntimeObservation]
+
+    def validate(self) -> None:
+        if not str(self.run_id):
+            raise ValueError("run_id must be non-empty")
+        if int(self.forward_generation) < 0:
+            raise ValueError("forward_generation must be >= 0")
+        if not str(self.microbatch_id):
+            raise ValueError("microbatch_id must be non-empty")
+        if not str(self.layer_id):
+            raise ValueError("layer_id must be non-empty")
+        if not self.ep_group_ranks:
+            raise ValueError("ep_group_ranks must be non-empty")
+        if not self.observations_by_phase:
+            raise ValueError("observations_by_phase must be non-empty")
+        for phase, observation in self.observations_by_phase.items():
+            if str(phase) != str(observation.phase):
+                raise ValueError("bundle phase key must match observation.phase")
+            if str(observation.layer_id) != str(self.layer_id):
+                raise ValueError("bundle layer_id mismatch")
+            if tuple(int(v) for v in observation.ep_group_ranks) != tuple(int(v) for v in self.ep_group_ranks):
+                raise ValueError("bundle ep_group_ranks mismatch")
+
+    def semantic_digest(self) -> str:
+        self.validate()
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "run_id": str(self.run_id),
+                    "forward_generation": int(self.forward_generation),
+                    "microbatch_id": str(self.microbatch_id),
+                    "layer_id": str(self.layer_id),
+                    "ep_group_ranks": [int(v) for v in self.ep_group_ranks],
+                    "observations_by_phase": {
+                        str(phase): observation.to_dict()
+                        for phase, observation in sorted(self.observations_by_phase.items())
+                    },
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": str(self.run_id),
+            "forward_generation": int(self.forward_generation),
+            "microbatch_id": str(self.microbatch_id),
+            "layer_id": str(self.layer_id),
+            "ep_group_ranks": [int(v) for v in self.ep_group_ranks],
+            "observations_by_phase": {
+                str(phase): observation.to_dict()
+                for phase, observation in sorted(self.observations_by_phase.items())
+            },
+            "semantic_digest": self.semantic_digest(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ObservationBundle":
+        bundle = cls(
+            run_id=str(payload.get("run_id", "")),
+            forward_generation=int(payload.get("forward_generation", 0) or 0),
+            microbatch_id=str(payload.get("microbatch_id", "")),
+            layer_id=str(payload.get("layer_id", "")),
+            ep_group_ranks=tuple(int(v) for v in payload.get("ep_group_ranks", ())),
+            observations_by_phase={
+                str(phase): RuntimeObservation(**dict(observation_payload))
+                for phase, observation_payload in dict(payload.get("observations_by_phase", {}) or {}).items()
+            },
+        )
+        bundle.validate()
+        return bundle
 
 
 @dataclass(frozen=True)

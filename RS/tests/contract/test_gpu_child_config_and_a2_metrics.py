@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from rs.experiments_support.gpu_runner_common import (
@@ -431,5 +432,5 @@ def test_single_process_gpu_policy_command_avoids_torchrun(tmp_path: Path) -> No
         world_size=1,
         native=True,
     )
-    assert cmd[0].endswith("python.exe") or cmd[0].endswith("python")
+    assert Path(cmd[0]).resolve() == Path(sys.executable).resolve()
     assert cmd[1:3] == ["-m", "experiments.online.collect_native_ep_trace"]

@@ -29,6 +29,7 @@ DEFAULT_INCLUDED = (
     "tests",
     "scripts",
     "docs",
+    "archive",
     "README.md",
     "pyproject.toml",
 )
@@ -48,6 +49,7 @@ DEFAULT_EXCLUDED = (
     "*.safetensors",
     "*.ckpt",
 )
+CACHE_PATH = Path(tempfile.gettempdir()) / "routersense_packager_cache.json"
 
 
 def _utc_now() -> str:
@@ -154,7 +156,17 @@ def _copy_tree(staging_root: Path, *, scope: str) -> tuple[list[str], list[str]]
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        relative = path.relative_to(root).as_posix().encode("utf-8")
+        relative_posix = path.relative_to(root).as_posix()
+        if (
+            "__pycache__" in path.parts
+            or path.suffix == ".pyc"
+            or ".pytest_cache" in path.parts
+            or relative_posix.startswith("outputs/")
+            or relative_posix.startswith("artifacts/")
+            or relative_posix.startswith("logs/")
+        ):
+            continue
+        relative = relative_posix.encode("utf-8")
         digest.update(relative)
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -191,6 +203,19 @@ def _archive_format(archive_path: Path) -> str:
     if lower_name.endswith(".zip"):
         return "zip"
     raise ValueError(f"unsupported archive format for {archive_path.name!r}; expected .tar.gz, .tgz, or .zip")
+
+
+def _load_cache() -> dict[str, object]:
+    if not CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_cache(payload: dict[str, object]) -> None:
+    CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _make_archive(staging_root: Path, archive_path: Path, *, archive_format: str) -> None:
@@ -279,9 +304,63 @@ def _self_check(archive_path: Path, *, scope: str, archive_format: str) -> dict[
     return {"status": "passed", "commands": commands}
 
 
+def _repack_verify(archive_path: Path, *, scope: str, archive_format: str) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="rs_source_repack_") as tmp:
+        tmp_root = Path(tmp)
+        if archive_format == "tar.gz":
+            with tarfile.open(archive_path, "r:gz") as tf:
+                try:
+                    tf.extractall(tmp_root, filter="data")
+                except TypeError:
+                    tf.extractall(tmp_root)
+        else:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(tmp_root)
+        rs_root = tmp_root / "RS"
+        repacked = tmp_root / f"repacked.{ 'tar.gz' if archive_format == 'tar.gz' else 'zip' }"
+        proc = subprocess.run(
+            [
+                "python",
+                str(rs_root / "scripts" / "maintenance" / "package_source_archive.py"),
+                "--scope",
+                str(scope),
+                "--skip-repack-check",
+                str(repacked),
+            ],
+            cwd=str(rs_root),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return {
+                "status": "failed",
+                "reason": "repack_command_failed",
+                "stdout_tail": proc.stdout[-800:],
+                "stderr_tail": proc.stderr[-800:],
+            }
+        opener = tarfile.open if archive_format == "tar.gz" else zipfile.ZipFile
+        if archive_format == "tar.gz":
+            with tarfile.open(archive_path, "r:gz") as first_tf, tarfile.open(repacked, "r:gz") as second_tf:
+                first_manifest = json.loads(first_tf.extractfile("source_manifest.json").read().decode("utf-8"))
+                second_manifest = json.loads(second_tf.extractfile("source_manifest.json").read().decode("utf-8"))
+        else:
+            with zipfile.ZipFile(archive_path, "r") as first_zf, zipfile.ZipFile(repacked, "r") as second_zf:
+                first_manifest = json.loads(first_zf.read("source_manifest.json").decode("utf-8"))
+                second_manifest = json.loads(second_zf.read("source_manifest.json").decode("utf-8"))
+        if str(first_manifest.get("source_tree_digest", "")) != str(second_manifest.get("source_tree_digest", "")):
+            return {"status": "failed", "reason": "repack_source_tree_digest_mismatch"}
+        return {
+            "status": "passed",
+            "parent_commit_sha": str(second_manifest.get("parent_commit_sha", "")),
+            "parent_source_tree_digest": str(second_manifest.get("parent_source_tree_digest", "")),
+        }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scope", choices=("mainline", "full"), default="mainline")
+    parser.add_argument("--skip-repack-check", action="store_true")
     parser.add_argument("archive_path")
     args = parser.parse_args()
 
@@ -299,13 +378,47 @@ def main() -> int:
         manifest["archive_format"] = archive_format
         (staging_root / "source_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
         _make_archive(staging_root, archive_path, archive_format=archive_format)
-        self_check = _self_check(archive_path, scope=str(args.scope), archive_format=archive_format)
-        manifest["self_check_status"] = str(self_check["status"])
-        manifest["self_check_commands"] = list(self_check["commands"])
+        cache_key = f"{args.scope}:{archive_format}:{manifest['source_tree_digest']}:{manifest['commit_sha']}:{int(bool(manifest['git_dirty']))}"
+        cache = _load_cache()
+        cached_entry = cache.get(cache_key)
+        if isinstance(cached_entry, dict):
+            initial_self_check = dict(cached_entry.get("archive_self_check", {}))
+            repack_check = dict(cached_entry.get("repack_self_check", {}))
+        else:
+            initial_self_check = _self_check(archive_path, scope=str(args.scope), archive_format=archive_format)
+            repack_check = (
+                {"status": "skipped", "reason": "skip_repack_check"}
+                if bool(args.skip_repack_check)
+                else _repack_verify(archive_path, scope=str(args.scope), archive_format=archive_format)
+            )
+        manifest["self_check_status"] = str(initial_self_check["status"])
+        manifest["self_check_commands"] = list(initial_self_check["commands"])
         (staging_root / "source_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
         _make_archive(staging_root, archive_path, archive_format=archive_format)
-        if str(self_check["status"]) != "passed":
-            print(json.dumps({"status": "failed", "archive_path": str(archive_path), "self_check": self_check}, ensure_ascii=False, indent=2))
+        if isinstance(cached_entry, dict):
+            final_self_check = dict(cached_entry.get("archive_self_check", {}))
+        else:
+            final_self_check = _self_check(archive_path, scope=str(args.scope), archive_format=archive_format)
+        manifest["self_check_status"] = str(final_self_check["status"])
+        manifest["self_check_commands"] = list(final_self_check["commands"])
+        manifest["archive_self_check"] = final_self_check
+        manifest["repack_self_check"] = repack_check
+        (staging_root / "source_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        _make_archive(staging_root, archive_path, archive_format=archive_format)
+        if (
+            not isinstance(cached_entry, dict)
+            and not bool(args.skip_repack_check)
+            and str(final_self_check["status"]) == "passed"
+            and str(repack_check["status"]) == "passed"
+        ):
+            cache[cache_key] = {
+                "archive_self_check": final_self_check,
+                "repack_self_check": repack_check,
+            }
+            _write_cache(cache)
+        repack_failed = (not bool(args.skip_repack_check)) and str(repack_check["status"]) != "passed"
+        if str(final_self_check["status"]) != "passed" or repack_failed:
+            print(json.dumps({"status": "failed", "archive_path": str(archive_path), "self_check": final_self_check, "repack": repack_check}, ensure_ascii=False, indent=2))
             return 1
     print(json.dumps({"status": "passed", "archive_path": str(archive_path)}, ensure_ascii=False, indent=2))
     return 0

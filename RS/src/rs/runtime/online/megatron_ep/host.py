@@ -941,7 +941,7 @@ def attach_dispatch_facade(
     if phase_policy_name and config.execution_mode in {"phase_sync_wave", "multiphase_pending_window", "joint_window_async_p2p"} and sample_dispatcher is not None:
         try:
             import megatron.core.transformer.moe.token_dispatcher as token_dispatcher_mod
-        except ModuleNotFoundError:
+        except Exception:
             token_dispatcher_mod = None
 
         if token_dispatcher_mod is not None:

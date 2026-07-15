@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import time
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
 
 from rs.runtime.online.megatron_ep.execution.release_frontier import ReleaseBatchFrontier, ReleaseBatchTask
 from rs.runtime.online.megatron_ep.target_planning import (
@@ -58,7 +62,7 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     store = TargetPlanStore()
-    planner = TargetLayerPlannerService(store=store, agreement_fn=None)
+    planner = TargetLayerPlannerService(store=store)
     planner.start()
     request = TargetLayerPlanningRequest(
         run_id="gloo-target-plan",
@@ -84,7 +88,12 @@ def _worker(rank: int, world_size: int, master_port: int, out_dir: str) -> None:
     deadline = time.time() + 10.0
     while store.peek(key) is None and time.time() < deadline:
         for ready in planner.drain_ready_publications():
-            planner.publish_ready_plan(ready)
+            publish_result = store.publish_if_current(
+                token=ready.token,
+                plan=ready.plan,
+            )
+            if publish_result.status not in {"PUBLISHED", "ALREADY_PUBLISHED_SAME"}:
+                raise RuntimeError(f"publish_if_current failed: {publish_result.status}")
         time.sleep(0.01)
     plan = store.peek(key)
     if plan is None:

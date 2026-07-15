@@ -6,6 +6,8 @@ from typing import Protocol
 
 from rs.core.contracts import PlanScore, PlanningRequest, WindowPlan
 
+from .validation import validate_window_plan_for_request
+
 
 @dataclass(frozen=True)
 class PlanningCostModel:
@@ -63,7 +65,8 @@ class CommonCorePlanEstimator:
             request.validate()
             plan.validate()
             cost_model.validate()
-        except ValueError as exc:
+            validate_window_plan_for_request(plan, request)
+        except Exception as exc:
             return PlanScore(
                 estimated_makespan=float("inf"),
                 estimator_id=self.estimator_id,

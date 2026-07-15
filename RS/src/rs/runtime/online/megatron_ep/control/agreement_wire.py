@@ -18,6 +18,7 @@ import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.contracts import PlanAgreement
 from rs.scheduling.observation_contracts import (
+    ObservationBundle,
     PhaseDemand,
     PlanWave,
     PeerFlow,
@@ -465,9 +466,57 @@ def validate_rank_hashes(hashes: Iterable[str]) -> None:
         raise RuntimeError(f"plan hash mismatch across ranks: {sorted(unique)}")
 
 
+def _all_gather_objects(
+    local_value: object,
+    *,
+    process_group: dist.ProcessGroup | None,
+    group_world_size: int,
+) -> list[object]:
+    gathered: list[object] = [None for _ in range(int(group_world_size))]
+    dist.all_gather_object(gathered, local_value, group=process_group)
+    return gathered
+
+
+def _normalize_local_bundle(local_observation: RuntimeObservation | ObservationBundle) -> ObservationBundle:
+    if isinstance(local_observation, ObservationBundle):
+        local_observation.validate()
+        return local_observation
+    return ObservationBundle(
+        run_id=str(local_observation.run_id),
+        forward_generation=0,
+        microbatch_id=str(local_observation.microbatch_id),
+        layer_id=str(local_observation.layer_id),
+        ep_group_ranks=tuple(int(v) for v in local_observation.ep_group_ranks),
+        observations_by_phase={str(local_observation.phase): local_observation},
+    )
+
+
+def _flatten_observation_bundles(
+    bundles: list[ObservationBundle],
+    *,
+    rank_order: tuple[int, ...],
+) -> tuple[RuntimeObservation, ...]:
+    per_rank: dict[int, ObservationBundle] = {}
+    for bundle in bundles:
+        first = next(iter(bundle.observations_by_phase.values()), None)
+        if first is None:
+            raise RuntimeError("empty observation bundle")
+        per_rank[int(first.global_rank)] = bundle
+    ordered: list[RuntimeObservation] = []
+    for global_rank in rank_order:
+        bundle = per_rank.get(int(global_rank))
+        if bundle is None:
+            raise RuntimeError(f"missing observation bundle for rank {global_rank}")
+        for phase in ("P0", "P1"):
+            observation = bundle.observations_by_phase.get(phase)
+            if observation is not None:
+                ordered.append(observation)
+    return tuple(ordered)
+
+
 def run_policy_agreement(
     *,
-    local_observation: RuntimeObservation,
+    local_observation: RuntimeObservation | ObservationBundle,
     policy,
     context,
     group: dist.ProcessGroup | None,
@@ -481,71 +530,121 @@ def run_policy_agreement(
     )
     group_world_size = len(rank_order)
     root_global_rank = int(rank_order[0]) if rank_order else 0
-    local_payload = encode_runtime_observation(local_observation)
-    gather_start = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
-    gather_end = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
-    if gather_start is not None:
-        gather_start.record()
-    gathered_payloads = _all_gather_variable_int64(
-        local_payload,
-        device=device,
+    local_bundle = _normalize_local_bundle(local_observation)
+    gathered_bundles = _all_gather_objects(
+        local_bundle.to_dict(),
         process_group=world_group,
         group_world_size=group_world_size,
     )
-    if gather_end is not None:
-        gather_end.record()
-        torch.cuda.synchronize(device)
-        observation_all_gather_ms = float(gather_start.elapsed_time(gather_end))
-    else:
-        observation_all_gather_ms = 0.0
-    hostname_digests = {
-        rank_order[index]: _i64_to_hex(int(payload[15]))
-        for index, payload in enumerate(gathered_payloads)
-    }
-    node_index_map = compute_node_index_map(hostname_digests)
-    decoded_observations = tuple(
-        decode_runtime_observation(payload, ep_group_ranks=rank_order, node_index_map=node_index_map)
-        for payload in gathered_payloads
+    decoded_observations = _flatten_observation_bundles(
+        [ObservationBundle.from_dict(dict(item)) for item in gathered_bundles],
+        rank_order=rank_order,
     )
-    local_global_rank = int(getattr(local_observation, "global_rank"))
+    observation_all_gather_ms = 0.0
+    primary_observation = next(iter(local_bundle.observations_by_phase.values()))
+    local_global_rank = int(primary_observation.global_rank)
     if local_global_rank not in rank_order:
         raise RuntimeError(f"local global rank {local_global_rank} is not a member of control group {rank_order!r}")
     local_group_rank = int(rank_order.index(local_global_rank))
     root_group_rank = 0
+    wire_payload: list[int] = []
+    local_status: dict[str, object] = {
+        "success": False,
+        "failure_stage": "",
+        "failure_code": "",
+        "root_global_rank": int(root_global_rank),
+        "message_digest": "",
+        "root_wire_hash": "",
+        "root_semantic_hash": "",
+    }
     if local_group_rank == root_group_rank:
-        root_context = next(item for item in decoded_observations if int(item.global_rank) == root_global_rank)
-        plan = policy.build_plan(local_context=root_context, global_contexts=decoded_observations)
-        semantic_hash = plan.plan_hash
-        wire_payload = encode_plan_tensor(plan, len(rank_order))
-        wire_hash = stable_hash(wire_payload)
-    else:
-        plan = None
-        semantic_hash = ""
-        wire_payload = []
-        wire_hash = ""
-    gathered_wire = _all_gather_variable_int64(
-        wire_payload,
-        device=device,
+        try:
+            plan = policy.build_plan(
+                context=context,
+                global_observation=decoded_observations,
+            )
+            wire_payload = encode_plan_tensor(plan, len(rank_order))
+            local_status = {
+                "success": True,
+                "failure_stage": "",
+                "failure_code": "",
+                "root_global_rank": int(root_global_rank),
+                "message_digest": "",
+                "root_wire_hash": stable_hash(wire_payload),
+                "root_semantic_hash": str(plan.plan_hash),
+            }
+        except Exception as exc:
+            local_status = {
+                "success": False,
+                "failure_stage": "root_build_encode_validate",
+                "failure_code": type(exc).__name__,
+                "root_global_rank": int(root_global_rank),
+                "message_digest": stable_hash({"error": f"{type(exc).__name__}: {exc}"}),
+                "root_wire_hash": "",
+                "root_semantic_hash": "",
+            }
+    shared_status = [local_status]
+    dist.broadcast_object_list(shared_status, src=root_global_rank, group=world_group)
+    status = dict(shared_status[0])
+    if not bool(status.get("success", False)):
+        raise RuntimeError(
+            "policy_agreement_failed:"
+            f"{status.get('failure_stage', 'unknown')}:"
+            f"{status.get('failure_code', 'unknown')}"
+        )
+    plan_payload = [wire_payload]
+    dist.broadcast_object_list(plan_payload, src=root_global_rank, group=world_group)
+    root_payload = list(plan_payload[0])
+    try:
+        decoded_plan = decode_plan_tensor(root_payload, len(rank_order))
+        decode_status = {
+            "success": True,
+            "failure_stage": "",
+            "failure_code": "",
+            "root_global_rank": int(root_global_rank),
+            "message_digest": "",
+        }
+        decoded_hash = decoded_plan.plan_hash
+    except Exception as exc:
+        decoded_plan = None
+        decode_status = {
+            "success": False,
+            "failure_stage": "decode_plan_payload",
+            "failure_code": type(exc).__name__,
+            "root_global_rank": int(root_global_rank),
+            "message_digest": stable_hash({"error": f"{type(exc).__name__}: {exc}"}),
+        }
+        decoded_hash = f"decode_failed:{type(exc).__name__}"
+    gathered_decode_status = _all_gather_objects(
+        decode_status,
         process_group=world_group,
         group_world_size=group_world_size,
     )
-    root_payload = gathered_wire[0]
-    decoded_plan = decode_plan_tensor(root_payload, len(rank_order))
-    decoded_hash = decoded_plan.plan_hash
-    local_hash_tensor = [_hash_to_i64(decoded_hash)]
-    gathered_hashes = _all_gather_variable_int64(
-        local_hash_tensor,
-        device=device,
+    normalized_decode_status = [
+        dict(item)
+        for item in gathered_decode_status
+        if isinstance(item, dict)
+    ]
+    failing_status = next((item for item in normalized_decode_status if not bool(item.get("success", False))), None)
+    if failing_status is not None:
+        raise RuntimeError(
+            "policy_agreement_failed:"
+            f"{failing_status.get('failure_stage', 'unknown')}:"
+            f"{failing_status.get('failure_code', 'unknown')}"
+        )
+    assert decoded_plan is not None
+    gathered_hashes = _all_gather_objects(
+        decoded_hash,
         process_group=world_group,
         group_world_size=group_world_size,
     )
-    rank_hashes = tuple(_i64_to_hex(int(item[0])) for item in gathered_hashes if item)
+    rank_hashes = tuple(str(item) for item in gathered_hashes if item)
     validate_rank_hashes(rank_hashes)
     agreement = PlanAgreement(
         root_rank=root_global_rank,
         rank_count=len(rank_order),
-        root_wire_hash=wire_hash or stable_hash(root_payload),
-        root_semantic_hash=semantic_hash or decoded_hash,
+        root_wire_hash=str(status.get("root_wire_hash", "")) or stable_hash(root_payload),
+        root_semantic_hash=str(status.get("root_semantic_hash", "")) or decoded_hash,
         decoded_semantic_hash=decoded_hash,
         observation_digest=decoded_plan.observation_digest,
         agreement_status="accepted",

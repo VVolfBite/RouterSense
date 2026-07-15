@@ -47,12 +47,12 @@ from rs.planning import (
     PlannerSelector,
     PlanningCostModel,
 )
-from rs.planning.api import to_logical_plan
 from rs.planning.request_builder import build_window_planning_request
 from rs.planning.runtime_compat import resolve_phase_policy
 from rs.runtime.online.megatron_ep.contracts import (
     HookExecutionMode,
     InjectionDecision,
+    ObservationBundle,
     PlanAgreement,
     PolicyContext,
     RouterSenseInjectionConfig,
@@ -92,6 +92,7 @@ from rs.runtime.online.megatron_ep.compiler_facade import (
 )
 from rs.runtime.online.megatron_ep.execution.release_frontier import ReleaseBatchTask
 from rs.runtime.online.megatron_ep.state import PreparedWindowRuntimeState
+from rs.runtime.online.megatron_ep.target_planning.contracts import _compat_logical_plan_from_window_plan
 from rs.runtime.online.megatron_ep.planning.window_shadow_service import (
     advance_window_release,
     build_window_state_record,
@@ -2898,7 +2899,7 @@ class RouterSenseInjectionRuntime:
                 policy_name=raw_u_name,
             )
             self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
-            raw_u_plan = to_logical_plan(raw_u_window_plan)
+            raw_u_plan = _compat_logical_plan_from_window_plan(raw_u_window_plan)
             consumed_weights = dict((raw_u_plan.diagnostics or {}).get("consumed_weights", {}))
             requested_weights = {
                 "residual_weight": float(policy_options.residual_weight),
@@ -2940,7 +2941,7 @@ class RouterSenseInjectionRuntime:
                 policy_name=raw_u_name,
             )
             self._increment_state_counter_map("raw_u_build_count_by_layer", str(layer_id))
-            raw_u_plan = to_logical_plan(raw_u_window_plan)
+            raw_u_plan = _compat_logical_plan_from_window_plan(raw_u_window_plan)
             paired_b_start_ns = time.monotonic_ns()
             if safe_projection_mode == "disabled":
                 paired_b_window_plan = raw_u_window_plan
@@ -2948,7 +2949,7 @@ class RouterSenseInjectionRuntime:
                 paired_b_end_ns = paired_b_start_ns
             else:
                 paired_b_window_plan = PlannerRegistry.create(paired_b_name, None, usage="runtime").plan(formal_request)
-                paired_b_plan = to_logical_plan(paired_b_window_plan)
+                paired_b_plan = _compat_logical_plan_from_window_plan(paired_b_window_plan)
                 paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2978,7 +2979,7 @@ class RouterSenseInjectionRuntime:
                     mode=PlannerSelectionMode.COMPARE,
                 )
                 selected_window_plan = selected.selected_plan
-                selected_plan = to_logical_plan(selected_window_plan)
+                selected_plan = _compat_logical_plan_from_window_plan(selected_window_plan)
         safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
         if safe_projection_mode == "disabled":
             raw_score = CommonCorePlanEstimator().estimate(raw_u_window_plan, formal_request, formal_cost_model)
@@ -4380,8 +4381,16 @@ class RouterSenseInjectionRuntime:
             return
         context = replace(self._context(layer_name), expert_placement_hash=observation.expert_placement_hash)
         local_observations = (observation,)
+        local_observation_bundle = ObservationBundle(
+            run_id=str(self.run_id),
+            forward_generation=int(self._forward_epoch),
+            microbatch_id=str(self.microbatch_id),
+            layer_id=str(parse_layer_id(layer_name)),
+            ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
+            observations_by_phase={"P0": observation},
+        )
         plan, agreement = run_policy_agreement(
-            local_observations=local_observations,
+            local_observation=local_observation_bundle,
             context=context,
             policy=self._phase_policy(),
             device=torch.device(f"cuda:{self.local_rank}"),
@@ -5124,6 +5133,17 @@ class RouterSenseInjectionRuntime:
             )
             context = replace(self._context(layer_name), expert_placement_hash=p0_observation.expert_placement_hash)
             local_observations = (p0_observation, p1_observation)
+            local_observation_bundle = ObservationBundle(
+                run_id=str(self.run_id),
+                forward_generation=int(self._forward_epoch),
+                microbatch_id=str(self.microbatch_id),
+                layer_id=str(parse_layer_id(layer_name)),
+                ep_group_ranks=tuple(int(v) for v in self.ep_group_ranks),
+                observations_by_phase={
+                    "P0": p0_observation,
+                    "P1": p1_observation,
+                },
+            )
             policy = self._phase_policy()
             self._runtime_state.metrics.shadow_plan_build_count = int(
                 self._runtime_state.metrics.shadow_plan_build_count
@@ -5135,7 +5155,7 @@ class RouterSenseInjectionRuntime:
                 self._runtime_state.metrics.shadow_control_collective_count
             ) + 1
             plan, agreement = run_policy_agreement(
-                local_observations=local_observations,
+                local_observation=local_observation_bundle,
                 context=context,
                 policy=policy,
                 device=torch.device(f"cuda:{self.local_rank}"),

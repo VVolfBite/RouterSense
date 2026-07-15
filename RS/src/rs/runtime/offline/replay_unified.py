@@ -13,7 +13,7 @@ from rs.core.contracts import (
     PredictionHint as FormalPredictionHint,
 )
 from rs.planning import PlannerRegistry
-from rs.planning.api import to_logical_plan
+from rs.runtime.online.megatron_ep.target_planning.contracts import _compat_logical_plan_from_window_plan
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.scheduling.bucketizer import CanonicalBucketTask, CanonicalBucketizer
 from rs.scheduling.validation import stable_hash
@@ -283,7 +283,7 @@ class ReplayEngine:
         )
         planner = PlannerRegistry.create(str(policy_name), None)
         formal_plan = planner.plan(request)
-        logical_plan = to_logical_plan(formal_plan)
+        logical_plan = _compat_logical_plan_from_window_plan(formal_plan)
         audit = replay_and_audit_logical_plan(problem, logical_plan)
         planning_tasks = bucketize_planning_request(request)
         truth_digest = execution_truth_digest(execution_truth)

@@ -33,10 +33,56 @@ from .runtime_presets import (
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _canonical_online_to_runtime_view(payload: dict[str, Any]) -> dict[str, Any]:
+    runtime = dict(payload.get("runtime", {}) or {})
+    traffic = dict(payload.get("traffic", {}) or {})
+    policy = dict(payload.get("policy", {}) or {})
+    evaluation = dict(payload.get("evaluation", {}) or {})
+    return {
+        "schema_version": 1,
+        "run": dict(payload.get("run", {}) or {}),
+        "model": dict(payload.get("model", {}) or {}),
+        "topology": dict(payload.get("topology", {}) or {}),
+        "workload": dict(payload.get("workload", {}) or {}),
+        "runtime": {
+            "line": str(runtime.get("line", "phase_sync")),
+            "output_mode": str(runtime.get("output_mode", "paper")),
+            "precision": str(runtime.get("precision", "fp16")),
+            "dispatcher": str(runtime.get("dispatcher", "alltoall")),
+            "invariant_mode": str(runtime.get("invariant_mode", "diagnostic")),
+            "selected_layers": str(runtime.get("selected_layers", "all")),
+        },
+        "strategies": [dict(item) for item in payload.get("strategies", ()) or ()],
+        "execution": {
+            "repetitions": int(evaluation.get("repeats", 1) or 1),
+            "warmup": int(evaluation.get("warmup", 0) or 0),
+            "bucket_mode": str(traffic.get("bucket_mode", "dynamic_current")),
+            "bucket_rows": int(traffic.get("bucket_rows", 0) or 0),
+            "safe_projection_mode": str((policy.get("options", {}) or {}).get("safe_projection_mode", "host_select")),
+            "p0_weight": float((policy.get("options", {}) or {}).get("p0_weight", 1.0)),
+            "p1_reservation_weight": float((policy.get("options", {}) or {}).get("p1_reservation_weight", 1.0)),
+            "p2_hint_weight": float((policy.get("options", {}) or {}).get("p2_hint_weight", 1.0)),
+            "residual_weight": float((policy.get("options", {}) or {}).get("residual_weight", 0.75)),
+            "barrier_weight": float((policy.get("options", {}) or {}).get("barrier_weight", 1.75)),
+            "age_weight": float((policy.get("options", {}) or {}).get("age_weight", 0.15)),
+            "prediction_weight": float((policy.get("options", {}) or {}).get("prediction_weight", 0.35)),
+            "schedule_layer_selector": str(runtime.get("selected_layers", "all")),
+            "schedule_phase_selector": str(evaluation.get("phase_selector", "both")),
+        },
+        "comparison": {
+            "baseline_strategy": str(evaluation.get("baseline_strategy", "")),
+            "metrics": list(evaluation.get("metrics", ()) or ()),
+        },
+        "_canonical_public_entry": True,
+    }
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"comparison config must be a mapping: {path}")
+    if int(payload.get("schema_version", 0) or 0) == 1 and str((payload.get("run", {}) or {}).get("kind", "")) == "online_strategy_comparison":
+        return _canonical_online_to_runtime_view(payload)
     return payload
 
 
@@ -199,6 +245,18 @@ def entrypoint_module(*, run_kind: str) -> str:
 
 
 def torchrun_command(*, ep_size: int, config_path: Path, run_id: str, strategy_dir: Path, run_kind: str) -> list[str]:
+    if int(ep_size) == 1:
+        return [
+            os.fspath(Path(os.sys.executable).resolve()),
+            "-m",
+            entrypoint_module(run_kind=run_kind),
+            "--config",
+            str(config_path),
+            "--run-id",
+            run_id,
+            "--output-dir",
+            str(strategy_dir),
+        ]
     return [
         "torchrun",
         "--standalone",
@@ -219,7 +277,7 @@ def child_env() -> dict[str, str]:
     for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "GROUP_RANK", "ROLE_RANK", "ROLE_WORLD_SIZE"):
         env.pop(key, None)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = "src" if not existing else f"src:{existing}"
+    env["PYTHONPATH"] = os.pathsep.join(part for part in ("src", existing) if part)
     omp = env.get("OMP_NUM_THREADS", "").strip()
     if not omp or not omp.isdigit() or int(omp) <= 0:
         env["OMP_NUM_THREADS"] = "1"

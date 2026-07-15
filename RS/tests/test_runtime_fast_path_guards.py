@@ -13,7 +13,6 @@ def _read(relpath: str) -> str:
 def test_object_collectives_are_absent_from_runtime_hot_paths() -> None:
     hot_paths = [
         "src/rs/runtime/online/megatron_ep/lifecycle.py",
-        "src/rs/runtime/online/megatron_ep/control/plan_agreement.py",
         "src/rs/runtime/online/megatron_ep/async_release/agreement.py",
         "src/rs/runtime/online/megatron_ep/async_release/executor.py",
         "src/rs/runtime/online/megatron_ep/prediction/expert_trace_capture.py",
@@ -28,9 +27,11 @@ def test_object_collectives_are_absent_from_runtime_hot_paths() -> None:
 
 def test_known_object_collective_exceptions_are_confined_to_host_preflight() -> None:
     host_text = _read("src/rs/runtime/online/megatron_ep/host.py")
+    plan_agreement_text = _read("src/rs/runtime/online/megatron_ep/control/plan_agreement.py")
     assert "all_gather_object" in host_text
     assert "stage_barrier" in host_text
     assert "gather_rank_payloads" in host_text
+    assert "broadcast_object_list" in plan_agreement_text
 
 
 def test_expert_trace_capture_is_default_off_and_compact() -> None:

@@ -54,7 +54,17 @@ def compute_source_tree_digest(repo_root: Path) -> str:
     for path in sorted(item for item in repo_root.rglob("*") if item.is_file()):
         if path.name == "source_manifest.json" and path.parent == repo_root.parent:
             continue
-        relative = path.relative_to(repo_root).as_posix().encode("utf-8")
+        relative_posix = path.relative_to(repo_root).as_posix()
+        if (
+            "__pycache__" in path.parts
+            or path.suffix == ".pyc"
+            or ".pytest_cache" in path.parts
+            or relative_posix.startswith("outputs/")
+            or relative_posix.startswith("artifacts/")
+            or relative_posix.startswith("logs/")
+        ):
+            continue
+        relative = relative_posix.encode("utf-8")
         digest.update(relative)
         digest.update(path.read_bytes())
     return digest.hexdigest()

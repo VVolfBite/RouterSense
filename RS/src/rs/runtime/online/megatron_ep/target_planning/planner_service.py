@@ -17,12 +17,12 @@ from rs.core.contracts import (
     PredictionHint,
 )
 from rs.planning import CommonCorePlanEstimator, PlannerPolicyConfig, PlannerRegistry, PlannerSelectionMode, PlannerSelector, PlanningCostModel, SelectedPlan
-from rs.planning.api import to_logical_plan
+from rs.planning.validation import validate_window_plan_for_request
 from rs.planning.request_builder import build_window_planning_request
 from rs.scheduling.validation import stable_hash
 from rs.runtime.online.megatron_ep.public_types import LocalPreparationToken, LocalPublicationCandidate, PublicationSlot
 
-from .contracts import MatrixRows, PreparationToken, TargetLayerPreparedJointPlan, TargetPlanKey
+from .contracts import MatrixRows, PreparationToken, TargetLayerPreparedJointPlan, TargetPlanKey, _compat_logical_plan_from_window_plan
 from .predictor import SharedTwoHorizonPredictor, TwoHorizonPredictionBundle
 from .store import TargetPlanStore
 
@@ -736,7 +736,7 @@ class TargetLayerPlannerService:
         raw_policy_id = str(request.raw_u_policy_id or request.policy_id)
         raw_planner = self._make_planner(raw_policy_id)
         raw_plan = raw_planner.plan(planning_request)
-        raw_logical_plan = to_logical_plan(raw_plan)
+        raw_logical_plan = _compat_logical_plan_from_window_plan(raw_plan)
         raw_u_end = time.perf_counter_ns()
         metrics.raw_u_us = (raw_u_end - raw_u_start) / 1000.0
         paired_b_logical_plan = raw_logical_plan
@@ -748,6 +748,9 @@ class TargetLayerPlannerService:
             max_incoming_per_rank_per_wave=int(planning_request.topology.max_incoming_per_rank_per_wave),
         )
         raw_score = estimator.estimate(raw_plan, planning_request, cost_model)
+        if not bool(raw_score.valid):
+            raise RuntimeError(f"raw_plan_invalid:{raw_score.reason or 'unknown'}")
+        validate_window_plan_for_request(raw_plan, planning_request)
         paired_b_makespan = float(raw_score.estimated_makespan)
         selected_variant = "raw_u"
         selected_plan = raw_plan
@@ -761,7 +764,8 @@ class TargetLayerPlannerService:
                 raise RuntimeError("safe target planner missing paired_b_policy_id")
             paired_b_planner = self._make_planner(paired_policy_id)
             paired_b_plan = paired_b_planner.plan(planning_request)
-            paired_b_logical_plan = to_logical_plan(paired_b_plan)
+            validate_window_plan_for_request(paired_b_plan, planning_request)
+            paired_b_logical_plan = _compat_logical_plan_from_window_plan(paired_b_plan)
             paired_b_end = time.perf_counter_ns()
             paired_b_us = (paired_b_end - paired_b_start) / 1000.0
             metrics.paired_b_us = float(paired_b_us)
@@ -779,7 +783,8 @@ class TargetLayerPlannerService:
             safe_selection_us = (safe_end - safe_start) / 1000.0
             metrics.safe_selection_us = float(safe_selection_us)
             paired_b_makespan = float(selected.local_score.estimated_makespan if selected.local_score is not None else 0.0)
-        selected_logical_plan = to_logical_plan(selected_plan)
+        validate_window_plan_for_request(selected_plan, planning_request)
+        selected_logical_plan = _compat_logical_plan_from_window_plan(selected_plan)
         encode_start = time.perf_counter_ns()
         logical_digest = str(selected_plan.semantic_digest())
         legacy_logical_digest = str(stable_hash(selected_logical_plan.to_dict()))

@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from rs.core.contracts.result import ResultBundle
-from rs.core.contracts.provenance import resolve_commit_identity
+from rs.core.contracts.provenance import compute_source_tree_digest, resolve_commit_identity
 from rs.runtime.guards import InvariantContext, RouterSenseInvariantError, invariant_mode_allows_dirty_git, normalize_invariant_mode, require_invariant
 from rs.scheduling.catalog import resolve_algorithm_id
 from rs.scheduling.bucketizer import BUCKET_MODE_DYNAMIC_CURRENT, BUCKET_MODE_FIXED_ROWS
@@ -323,7 +323,7 @@ def initialize_run_artifacts(
         "git_dirty": _strict_bool(git_dirty, field_name="git_dirty", default=False),
         "config_schema_version": _strict_int(config_snapshot.get("schema_version", 0), field_name="schema_version", default=0),
         "config_digest": _config_digest(config_snapshot),
-        "source_tree_digest": commit_sha,
+        "source_tree_digest": compute_source_tree_digest(repo_root),
         "official_entrypoint": str(official_entrypoint),
         "runtime_line": str((config_snapshot.get("runtime", {}) or {}).get("line", "")),
         "policy_id": str((config_snapshot.get("policy", {}) or {}).get("name", "")),

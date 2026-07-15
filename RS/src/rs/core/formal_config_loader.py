@@ -10,8 +10,6 @@ from rs.core.config_normalization import (
     CanonicalRunConfig,
     canonical_offline_replay_payload,
     canonical_online_comparison_payload,
-    legacy_offline_replay_payload,
-    legacy_online_comparison_payload,
     normalize_run_config,
 )
 from rs.experiments.output_schema import validate_official_entrypoint_config
@@ -23,7 +21,6 @@ class ResolvedFormalConfig:
     normalized: CanonicalRunConfig
     normalized_config: dict[str, Any]
     consumed_config: dict[str, Any]
-    legacy_bridge_config: dict[str, Any] | None
     official_entrypoint: str
     expected_runtime_line: str | None
     invariant_mode: str
@@ -42,10 +39,8 @@ def load_formal_config(
     normalized = normalize_run_config(payload, source_path=resolved_path)
     if expected_runtime_line == "offline_replay":
         normalized_config = canonical_offline_replay_payload(normalized)
-        legacy_bridge_config = legacy_offline_replay_payload(normalized)
     else:
         normalized_config = canonical_online_comparison_payload(normalized)
-        legacy_bridge_config = legacy_online_comparison_payload(normalized)
     invariant_mode = validate_official_entrypoint_config(
         config_snapshot=normalized_config,
         expected_runtime_line=expected_runtime_line,
@@ -56,7 +51,6 @@ def load_formal_config(
         normalized=normalized,
         normalized_config=normalized_config,
         consumed_config=normalized_config,
-        legacy_bridge_config=legacy_bridge_config,
         official_entrypoint=str(official_entrypoint),
         expected_runtime_line=expected_runtime_line,
         invariant_mode=str(invariant_mode),

@@ -189,11 +189,16 @@ def test_plan_agreement_timing_in_metrics(monkeypatch) -> None:
             broadcast_state["payload"] = payload
             tensor.copy_(payload)
             return None
-        tensor.copy_(broadcast_state["payload"])
+            tensor.copy_(broadcast_state["payload"])
+            return None
+
+    def broadcast_object_list(payload, src=0, group=None):
+        payload[0] = {"success": True, "root_global_rank": 0}
         return None
 
     monkeypatch.setattr(plan_agreement_mod.dist, "all_gather", all_gather)
     monkeypatch.setattr(plan_agreement_mod.dist, "broadcast", broadcast)
+    monkeypatch.setattr(plan_agreement_mod.dist, "broadcast_object_list", broadcast_object_list)
 
     plan = plan_agreement_mod.run_phase_plan_agreement(local_context=local_context, policy=policy, group=None)
     for key in (

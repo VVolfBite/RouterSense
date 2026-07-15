@@ -64,24 +64,23 @@ def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, time
     popen_kwargs: dict[str, object] = {}
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
-    proc = subprocess.Popen(
-        command,
-        cwd=str(_repo_root()),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        **popen_kwargs,
-    )
-    timed_out = False
-    try:
-        stdout, stderr = proc.communicate(timeout=float(timeout_seconds))
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_process_tree(proc)
-        stdout, stderr = proc.communicate(timeout=15)
-    stdout_log.write_text(stdout or "", encoding="utf-8")
-    stderr_log.write_text(stderr or "", encoding="utf-8")
+    with stdout_log.open("w", encoding="utf-8") as stdout_handle, stderr_log.open("w", encoding="utf-8") as stderr_handle:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(_repo_root()),
+            env=env,
+            text=True,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            **popen_kwargs,
+        )
+        timed_out = False
+        try:
+            proc.wait(timeout=float(timeout_seconds))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process_tree(proc)
+            proc.wait(timeout=15)
     duration = time.monotonic() - started
     payload = {}
     if summary_path.is_file():

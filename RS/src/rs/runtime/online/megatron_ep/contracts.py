@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from rs.scheduling.observation_contracts import (
+    ObservationBundle,
     PeerFlow,
     PhaseDemand,
     PolicyContext,

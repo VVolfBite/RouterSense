@@ -188,10 +188,9 @@ def test_write_resolved_configs_writes_canonical_config_artifacts(tmp_path: Path
         layout,
         normalized_config={"schema_version": 1, "run": {"kind": "offline_replay"}},
         consumed_config={"run": {"kind": "offline_replay"}},
-        legacy_bridge_config={"fixture_dir": "tests/fixtures/offline_replay_smoke"},
     )
     assert (layout.config_dir / "normalized.yaml").exists()
     assert (layout.config_dir / "normalized.json").exists()
     assert (layout.config_dir / "consumed.yaml").exists()
     assert (layout.config_dir / "consumed.json").exists()
-    assert (layout.config_dir / "legacy_bridge.yaml").exists()
+    assert not (layout.config_dir / "legacy_bridge.yaml").exists()
