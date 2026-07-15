@@ -12,6 +12,7 @@ from rs.core.contracts.result import EligibilityResult, ResultBundle, RunIdentit
 from rs.core.contracts.trace import AuditEvidenceLevel, ReferenceTraceBundle, TrafficObservationRecord
 from rs.evidence.artifact_writer import FilesystemArtifactWriter
 from rs.evidence.eligibility import evaluate_result_bundle_eligibility
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.evidence.serialization import EvidenceSerializer
 from rs.runtime.debug.api import BufferedDebugProbe, NullDebugProbe, TensorCapture
 from rs.runtime.measurement.api import NullMeasurementSink, PerfLightMeasurementSink
@@ -401,3 +402,33 @@ def test_result_bundle_validate_rejects_summary_conflicts() -> None:
         assert "summary status conflicts" in str(exc)
     else:
         raise AssertionError("expected summary conflict validation failure")
+
+
+def test_result_builder_rejects_missing_boolean_facts() -> None:
+    try:
+        build_result_bundle(
+            ResultBundleDraft(
+                run_identity=_base_run_identity(),
+                status="success",
+                correctness_status="valid",
+                performance_status="ineligible",
+                commit_sha="abc123",
+                git_clean=None,  # type: ignore[arg-type]
+                instrumentation_mode="contract",
+                audit_evidence_level="summary_only",
+                measurement_complete=None,  # type: ignore[arg-type]
+                summary={
+                    "all_work_completed": True,
+                    "fallback_count": 0,
+                    "timeout_count": 0,
+                    "check_failure_count": 0,
+                    "execution_outcome_count": 1,
+                },
+                details={},
+                extensions={},
+            )
+        )
+    except ValueError as exc:
+        assert "explicit boolean" in str(exc)
+    else:
+        raise AssertionError("expected strict boolean fact validation failure")

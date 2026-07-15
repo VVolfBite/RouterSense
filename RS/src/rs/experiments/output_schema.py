@@ -67,13 +67,51 @@ def _config_digest(config_snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _strict_int(value: Any, *, field_name: str, default: int | None = None) -> int:
+    if value is None:
+        if default is None:
+            raise RouterSenseInvariantError(
+                stage="startup",
+                error_code="RS-CONFIG-INT",
+                message=f"{field_name} must be an integer",
+            )
+        value = default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RouterSenseInvariantError(
+            stage="startup",
+            error_code="RS-CONFIG-INT",
+            message=f"{field_name} must be an integer",
+            actual=type(value).__name__,
+        )
+    return int(value)
+
+
+def _strict_bool(value: Any, *, field_name: str, default: bool | None = None) -> bool:
+    if value is None:
+        if default is None:
+            raise RouterSenseInvariantError(
+                stage="startup",
+                error_code="RS-CONFIG-BOOL",
+                message=f"{field_name} must be a boolean",
+            )
+        value = default
+    if not isinstance(value, bool):
+        raise RouterSenseInvariantError(
+            stage="startup",
+            error_code="RS-CONFIG-BOOL",
+            message=f"{field_name} must be a boolean",
+            actual=type(value).__name__,
+        )
+    return value
+
+
 def validate_official_entrypoint_config(
     *,
     config_snapshot: dict[str, Any],
     expected_runtime_line: str | None,
     official_entrypoint: str,
 ) -> str:
-    schema_version = int(config_snapshot.get("schema_version", 0) or 0)
+    schema_version = _strict_int(config_snapshot.get("schema_version", 0), field_name="schema_version", default=0)
     runtime = dict(config_snapshot.get("runtime", {}) or {})
     traffic = dict(config_snapshot.get("traffic", {}) or {})
     policy = dict(config_snapshot.get("policy", {}) or {})
@@ -98,9 +136,9 @@ def validate_official_entrypoint_config(
     raw_bucket_rows = traffic.get("bucket_rows", 0)
     bucket_rows_are_dynamic = False
     if isinstance(raw_bucket_rows, list):
-        bucket_rows_are_dynamic = all(int(item) == 0 for item in raw_bucket_rows)
+        bucket_rows_are_dynamic = all(_strict_int(item, field_name=f"traffic.bucket_rows[{index}]") == 0 for index, item in enumerate(raw_bucket_rows))
     else:
-        bucket_rows_are_dynamic = int(raw_bucket_rows or 0) == 0
+        bucket_rows_are_dynamic = _strict_int(raw_bucket_rows if raw_bucket_rows is not None else 0, field_name="traffic.bucket_rows", default=0) == 0
     bucket_mode_default = BUCKET_MODE_DYNAMIC_CURRENT if bucket_rows_are_dynamic else BUCKET_MODE_FIXED_ROWS
     bucket_mode = str(traffic.get("bucket_mode", bucket_mode_default))
     require_invariant(
@@ -112,8 +150,8 @@ def validate_official_entrypoint_config(
     )
     bucket_rows = raw_bucket_rows
     bucket_values = bucket_rows if isinstance(bucket_rows, list) else [bucket_rows]
-    for value in bucket_values:
-        ivalue = int(value)
+    for index, value in enumerate(bucket_values):
+        ivalue = _strict_int(value, field_name=f"traffic.bucket_rows[{index}]")
         if bucket_mode == BUCKET_MODE_DYNAMIC_CURRENT:
             require_invariant(
                 ivalue == 0,
@@ -263,8 +301,8 @@ def initialize_run_artifacts(
         "source_commit_sha": commit_sha,
         "runtime_commit_sha": commit_sha,
         "result_commit_sha": commit_sha,
-        "git_dirty": bool(git_dirty),
-        "config_schema_version": int(config_snapshot.get("schema_version", 0) or 0),
+        "git_dirty": _strict_bool(git_dirty, field_name="git_dirty", default=False),
+        "config_schema_version": _strict_int(config_snapshot.get("schema_version", 0), field_name="schema_version", default=0),
         "config_digest": _config_digest(config_snapshot),
         "source_tree_digest": commit_sha,
         "official_entrypoint": str(official_entrypoint),
@@ -276,7 +314,11 @@ def initialize_run_artifacts(
         "model": config_snapshot.get("model", {}),
         "topology": config_snapshot.get("topology", {}),
         "workload": config_snapshot.get("workload", {}),
-        "world_size": int((config_snapshot.get("topology", {}) or {}).get("world_size", (config_snapshot.get("topology", {}) or {}).get("ep_size", 1)) or 1),
+        "world_size": _strict_int(
+            (config_snapshot.get("topology", {}) or {}).get("world_size", (config_snapshot.get("topology", {}) or {}).get("ep_size", 1)),
+            field_name="topology.world_size",
+            default=1,
+        ),
         "start_time": _utc_now(),
         "end_time": "",
         "status": "running",

@@ -24,6 +24,12 @@ class ResultBundleDraft:
     extensions: Mapping[str, object]
 
 
+def _require_bool(value: object, *, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an explicit boolean")
+    return value
+
+
 def build_result_bundle(draft: ResultBundleDraft) -> ResultBundle:
     placeholder = EligibilityResult(
         correctness_eligible=False,
@@ -44,10 +50,10 @@ def build_result_bundle(draft: ResultBundleDraft) -> ResultBundle:
         performance_status=str(draft.performance_status),
         pipeline=str(draft.run_identity.pipeline),
         commit_sha=str(draft.commit_sha),
-        git_clean=bool(draft.git_clean),
+        git_clean=_require_bool(draft.git_clean, field_name="git_clean"),
         instrumentation_mode=str(draft.instrumentation_mode),
         audit_evidence_level=str(draft.audit_evidence_level),
-        measurement_complete=bool(draft.measurement_complete),
+        measurement_complete=_require_bool(draft.measurement_complete, field_name="measurement_complete"),
         eligibility=placeholder,
         summary=dict(draft.summary),
         details=dict(draft.details),
