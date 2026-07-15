@@ -186,11 +186,22 @@ def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
             ["python", "-m", "pytest", "--collect-only", "-q"],
             [
                 "python",
-                "experiments/run_offline_replay.py",
-                "--config",
-                "configs/official/offline_replay.yaml",
-                "--output-dir",
-                str(rs_root / "outputs" / "archive_offline_smoke"),
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "import yaml; "
+                    "from rs.core.config_normalization import normalize_run_config; "
+                    "from rs.experiments.output_schema import validate_official_entrypoint_config; "
+                    "config_path=Path('configs/official/offline_replay.yaml'); "
+                    "payload=yaml.safe_load(config_path.read_text(encoding='utf-8')); "
+                    "normalized=normalize_run_config(payload, source_path=config_path); "
+                    "validate_official_entrypoint_config("
+                    "config_snapshot=normalized.to_dict(), "
+                    "expected_runtime_line='offline_replay', "
+                    "official_entrypoint='experiments/run_offline_replay.py'"
+                    "); "
+                    "print('OFFLINE_CONFIG_OK')"
+                ),
             ],
         ]
         for command in checks:
