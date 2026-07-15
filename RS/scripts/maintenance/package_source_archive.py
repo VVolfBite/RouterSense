@@ -179,6 +179,8 @@ def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
         env = dict(os.environ)
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src{os.pathsep}{existing_pythonpath}"
+        env["ROUTERSENSE_COMMIT_SHA"] = str(source_manifest.get("commit_sha", "unknown"))
+        env["ROUTERSENSE_GIT_DIRTY"] = "1" if bool(source_manifest.get("git_dirty", False)) else "0"
         checks = [
             ["python", "-c", "import rs; print('IMPORT_OK')"],
             ["python", "-m", "pytest", "--collect-only", "-q"],
