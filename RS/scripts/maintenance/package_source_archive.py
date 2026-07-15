@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -142,7 +143,7 @@ def _write_source_manifest(staging_root: Path, *, scope: str, included_paths: li
         "branch": branch or "unknown",
         "git_dirty": dirty if commit_sha else bool(os.environ.get("ROUTERSENSE_GIT_DIRTY", "")),
         "created_at": _utc_now(),
-        "archive_format": "tar.gz",
+        "archive_format": "unknown",
         "scope": scope,
         "included_paths": included_paths,
         "excluded_patterns": excluded_patterns,
@@ -154,28 +155,57 @@ def _write_source_manifest(staging_root: Path, *, scope: str, included_paths: li
     return manifest
 
 
-def _make_archive(staging_root: Path, archive_path: Path) -> None:
+def _archive_format(archive_path: Path) -> str:
+    lower_name = archive_path.name.lower()
+    if lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz"):
+        return "tar.gz"
+    if lower_name.endswith(".zip"):
+        return "zip"
+    raise ValueError(f"unsupported archive format for {archive_path.name!r}; expected .tar.gz, .tgz, or .zip")
+
+
+def _make_archive(staging_root: Path, archive_path: Path, *, archive_format: str) -> None:
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive_path, "w:gz") as tf:
-        for path in sorted(staging_root.rglob("*")):
-            if not path.is_file():
-                continue
-            arcname = PurePosixPath(path.relative_to(staging_root).as_posix())
-            tf.add(path, arcname=str(arcname))
+    if archive_format == "tar.gz":
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for path in sorted(staging_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                arcname = PurePosixPath(path.relative_to(staging_root).as_posix())
+                tf.add(path, arcname=str(arcname))
+        return
+    if archive_format == "zip":
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(staging_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                arcname = PurePosixPath(path.relative_to(staging_root).as_posix())
+                zf.write(path, arcname=str(arcname))
+        return
+    raise ValueError(f"unsupported archive format {archive_format!r}")
 
 
-def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
+def _self_check(archive_path: Path, *, scope: str, archive_format: str) -> dict[str, object]:
     commands: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory(prefix="rs_source_check_") as tmp:
         unpack_root = Path(tmp)
-        with tarfile.open(archive_path, "r:gz") as tf:
-            for member in tf.getmembers():
-                if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
-                    raise ValueError(f"unsafe archive entry: {member.name}")
-            try:
-                tf.extractall(unpack_root, filter="data")
-            except TypeError:
-                tf.extractall(unpack_root)
+        if archive_format == "tar.gz":
+            with tarfile.open(archive_path, "r:gz") as tf:
+                for member in tf.getmembers():
+                    if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
+                        raise ValueError(f"unsafe archive entry: {member.name}")
+                try:
+                    tf.extractall(unpack_root, filter="data")
+                except TypeError:
+                    tf.extractall(unpack_root)
+        elif archive_format == "zip":
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                for member in zf.infolist():
+                    if member.filename.startswith("/") or ".." in PurePosixPath(member.filename).parts:
+                        raise ValueError(f"unsafe archive entry: {member.filename}")
+                zf.extractall(unpack_root)
+        else:
+            raise ValueError(f"unsupported archive format {archive_format!r}")
         rs_root = unpack_root / "RS"
         source_manifest = json.loads((unpack_root / "source_manifest.json").read_text(encoding="utf-8"))
         if source_manifest["source_tree_digest"] != _tree_digest(rs_root):
@@ -227,6 +257,7 @@ def main() -> int:
     args = parser.parse_args()
 
     archive_path = Path(args.archive_path).resolve()
+    archive_format = _archive_format(archive_path)
     with tempfile.TemporaryDirectory(prefix="rs_source_stage_") as tmp:
         staging_root = Path(tmp)
         included_paths, excluded_patterns = _copy_tree(staging_root, scope=str(args.scope))
@@ -236,12 +267,14 @@ def main() -> int:
             included_paths=included_paths,
             excluded_patterns=excluded_patterns,
         )
-        _make_archive(staging_root, archive_path)
-        self_check = _self_check(archive_path, scope=str(args.scope))
+        manifest["archive_format"] = archive_format
+        (staging_root / "source_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        _make_archive(staging_root, archive_path, archive_format=archive_format)
+        self_check = _self_check(archive_path, scope=str(args.scope), archive_format=archive_format)
         manifest["self_check_status"] = str(self_check["status"])
         manifest["self_check_commands"] = list(self_check["commands"])
         (staging_root / "source_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        _make_archive(staging_root, archive_path)
+        _make_archive(staging_root, archive_path, archive_format=archive_format)
         if str(self_check["status"]) != "passed":
             print(json.dumps({"status": "failed", "archive_path": str(archive_path), "self_check": self_check}, ensure_ascii=False, indent=2))
             return 1

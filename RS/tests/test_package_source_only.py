@@ -4,6 +4,7 @@ import os
 import subprocess
 import tarfile
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,22 @@ def test_source_manifest_is_explicitly_authoritative(tmp_path):
     with tarfile.open(archive, "r:gz") as tf:
         manifest = json.loads(tf.extractfile("source_manifest.json").read().decode("utf-8"))
     assert manifest["authoritative"] is True
+
+
+def test_package_source_only_zip_is_real_zip_with_posix_paths(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    archive = tmp_path / "mainline.zip"
+    subprocess.run(
+        _package_command(root / "RS" / "scripts" / "maintenance" / "package_source_archive.py", scope="mainline", archive=archive),
+        check=True,
+    )
+    with zipfile.ZipFile(archive, "r") as zf:
+        names = zf.namelist()
+        assert "source_manifest.json" in names
+        assert "RS/README.md" in names
+        assert all("\\" not in name for name in names)
+        manifest = json.loads(zf.read("source_manifest.json").decode("utf-8"))
+    assert manifest["archive_format"] == "zip"
 
 
 def test_resolve_source_manifest_requires_explicit_authoritative(tmp_path):
