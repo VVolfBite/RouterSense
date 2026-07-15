@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from rs.scheduling.catalog import algorithm_specs, resolve_algorithm_id
 
-from ._legacy_runtime import LegacyPlannerAdapter
 from .api import PlannerSpec, planner_family_for_spec
+from .runtime_adapter import FormalRuntimePlanner
 
 
 class PlannerRegistry:
@@ -55,10 +55,9 @@ class PlannerRegistry:
             canonical_id=str(spec.canonical_id),
             execution_model=str(spec.execution_model),
         )
-        return LegacyPlannerAdapter(
+        return FormalRuntimePlanner(
             _planner_id=str(spec.canonical_id),
             _planner_family=family,
-            _builder_key=str(spec.builder_key),
         )
 
 

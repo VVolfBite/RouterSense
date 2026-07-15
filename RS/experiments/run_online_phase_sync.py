@@ -16,9 +16,8 @@ from experiments._bootstrap import ensure_src_on_path
 
 ROOT = ensure_src_on_path()
 
-import yaml
-
 from rs.core.formal_config_loader import load_formal_config
+from rs.experiments_support.strategy_comparison_runner import dump_yaml, run_strategy_comparison
 from rs.experiments.output_schema import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
@@ -28,9 +27,6 @@ from rs.experiments.output_schema import (
 )
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
-
-from experiments.online.run_strategy_comparison import main as run_strategy_comparison_main
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -69,11 +65,12 @@ def main() -> None:
         )
         tmp_config = output_dir / "normalized_phase_sync_config.yaml"
         tmp_config.parent.mkdir(parents=True, exist_ok=True)
-        tmp_config.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        argv = ["--config", str(tmp_config), "--output-dir", str(output_dir)]
-        if args.dry_run:
-            argv.append("--dry-run")
-        rc = run_strategy_comparison_main(argv)
+        dump_yaml(tmp_config, payload)
+        rc = run_strategy_comparison(
+            config_path=tmp_config,
+            output_dir=output_dir,
+            dry_run=bool(args.dry_run),
+        )
         update_status(
             layout,
             status=RUN_STATUS_COMPLETED if int(rc or 0) == 0 else RUN_STATUS_FAILED,
