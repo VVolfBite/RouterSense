@@ -1028,16 +1028,16 @@ def attach_dispatch_facade(
             def wrapped_dispatch(*args: Any, _facade=dispatch_facade, _dispatcher=dispatcher, _name=name, _role=layer_role, **kwargs: Any):
                 hidden_states = args[0] if args else None
                 probs = args[1] if len(args) > 1 else None
-                runtime.handle(
-                    DispatchReadyEvent(
-                        layer_name=str(_name),
-                        dispatcher=_dispatcher,
-                        packed_hidden_states=hidden_states,
-                        packed_probs=probs,
-                        layer_role=str(_role),
-                    )
-                )
                 try:
+                    runtime.handle(
+                        DispatchReadyEvent(
+                            layer_name=str(_name),
+                            dispatcher=_dispatcher,
+                            packed_hidden_states=hidden_states,
+                            packed_probs=probs,
+                            layer_role=str(_role),
+                        )
+                    )
                     result = _facade.dispatch(*args, **kwargs)
                 except BaseException as exc:
                     runtime.handle(
@@ -1063,14 +1063,14 @@ def attach_dispatch_facade(
 
             def wrapped_combine(*args: Any, _facade=combine_facade, _dispatcher=dispatcher, _name=name, **kwargs: Any):
                 hidden_states = args[0] if args else None
-                runtime.handle(
-                    CombineReadyEvent(
-                        layer_name=str(_name),
-                        dispatcher=_dispatcher,
-                        packed_hidden_states=hidden_states,
-                    )
-                )
                 try:
+                    runtime.handle(
+                        CombineReadyEvent(
+                            layer_name=str(_name),
+                            dispatcher=_dispatcher,
+                            packed_hidden_states=hidden_states,
+                        )
+                    )
                     result = _facade.dispatch(*args, **kwargs)
                 except BaseException as exc:
                     runtime.handle(

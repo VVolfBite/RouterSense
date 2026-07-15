@@ -31,6 +31,10 @@ class FormalRuntimeAttachPreflightError(RuntimeError):
     pass
 
 
+class DispatcherSynchronizationError(RuntimeError):
+    pass
+
+
 @dataclass
 class ControlGroupHandle:
     process_group: Any | None

@@ -114,6 +114,7 @@ from rs.runtime.online.megatron_ep.public_types import (
     CombineCompleteEvent,
     CombineReadyEvent,
     ControlGroupHandle,
+    DispatcherSynchronizationError,
     DispatchFailedEvent,
     DispatchCompleteEvent,
     DispatchReadyEvent,
@@ -1152,6 +1153,39 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.write("dtoh_callsite_wall_us", wall_map)
         self._runtime_state.write("dtoh_callsite_bytes", byte_map)
 
+    def _synchronize_dispatcher_tokens_or_raise(
+        self,
+        *,
+        dispatcher: Any,
+        callsite_id: str,
+    ) -> None:
+        sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
+        if not callable(sync_fn):
+            return
+        tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
+        dtoh_start_ns = time.monotonic_ns()
+        try:
+            synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
+        except Exception as exc:
+            dtoh_end_ns = time.monotonic_ns()
+            self._record_dtoh_callsite(
+                callsite_id=str(callsite_id),
+                start_ns=dtoh_start_ns,
+                end_ns=dtoh_end_ns,
+            )
+            self.evidence_counters.check_failure_count += 1
+            raise DispatcherSynchronizationError(
+                f"dispatcher synchronization failed at {callsite_id}: {type(exc).__name__}: {exc}"
+            ) from exc
+        dtoh_end_ns = time.monotonic_ns()
+        self._record_dtoh_callsite(
+            callsite_id=str(callsite_id),
+            start_ns=dtoh_start_ns,
+            end_ns=dtoh_end_ns,
+        )
+        if synchronized is not None:
+            dispatcher.tokens_per_expert = synchronized
+
     def _finalize_dispatch_observation(self, *, layer_name: str, dispatcher: Any, hidden_states: Any) -> None:
         self._runtime_state.metrics.observation_finalize_dispatch_count = int(
             self._runtime_state.metrics.observation_finalize_dispatch_count
@@ -1192,22 +1226,10 @@ class RouterSenseInjectionRuntime:
         self._runtime_state.metrics.prediction_source_p0_hook_count = int(
             self._runtime_state.metrics.prediction_source_p0_hook_count
         ) + 1
-        sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
-        if callable(sync_fn):
-            try:
-                tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
-                dtoh_start_ns = time.monotonic_ns()
-                synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
-                dtoh_end_ns = time.monotonic_ns()
-                self._record_dtoh_callsite(
-                    callsite_id="DTOH_P0_DISPATCHER_SYNC",
-                    start_ns=dtoh_start_ns,
-                    end_ns=dtoh_end_ns,
-                )
-                if synchronized is not None:
-                    dispatcher.tokens_per_expert = synchronized
-            except Exception:
-                pass
+        self._synchronize_dispatcher_tokens_or_raise(
+            dispatcher=dispatcher,
+            callsite_id="DTOH_P0_DISPATCHER_SYNC",
+        )
         phase_ctx = self._build_phase_ready_context_from_dispatcher(
             layer_name=layer_name,
             phase="P0",
@@ -3970,22 +3992,10 @@ class RouterSenseInjectionRuntime:
             return
         self._pump_target_planner_publications()
         self._poll_target_plan_slot(target_layer_id=str(parse_layer_id(layer_name)), safe_point="target_dispatch_ready")
-        sync_fn = getattr(dispatcher, "_maybe_dtoh_and_synchronize", None)
-        if callable(sync_fn):
-            try:
-                tokens_per_expert = getattr(dispatcher, "tokens_per_expert", None)
-                dtoh_start_ns = time.monotonic_ns()
-                synchronized = sync_fn("before_ep_alltoall", tokens_per_expert)
-                dtoh_end_ns = time.monotonic_ns()
-                self._record_dtoh_callsite(
-                    callsite_id="DTOH_P0_DISPATCHER_SYNC",
-                    start_ns=dtoh_start_ns,
-                    end_ns=dtoh_end_ns,
-                )
-                if synchronized is not None:
-                    dispatcher.tokens_per_expert = synchronized
-            except Exception:
-                pass
+        self._synchronize_dispatcher_tokens_or_raise(
+            dispatcher=dispatcher,
+            callsite_id="DTOH_P0_DISPATCHER_SYNC",
+        )
         phase_ctx_start_ns = time.monotonic_ns()
         phase_ctx = self._build_phase_ready_context_from_dispatcher(
             layer_name=layer_name,

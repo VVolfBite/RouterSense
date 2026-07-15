@@ -9,7 +9,9 @@ from rs.runtime.online.megatron_ep.host import attach_dispatch_observer, attach_
 from rs.runtime.online.megatron_ep.observation import RouterSenseObserver
 from rs.runtime.online.megatron_ep.public_types import (
     AggregateRuntimeCloseError,
+    DispatcherSynchronizationError,
     FormalRuntimeAttachPreflightError,
+    ForwardFailedEvent,
     LegacyObserverConflictError,
     RuntimeAlreadyAttachedError,
     RuntimeDecision,
@@ -26,6 +28,21 @@ class _TokenDispatcherStub:
 class _MissingCombineDispatcherStub:
     def __init__(self) -> None:
         self.token_dispatch = lambda *args, **kwargs: ("dispatch", args, kwargs)
+
+
+class _SyncFailDispatcherStub:
+    def __init__(self) -> None:
+        self.dispatch_calls = 0
+        self.token_dispatch = self._dispatch
+        self.token_combine = lambda *args, **kwargs: ("combine", args, kwargs)
+        self.tokens_per_expert = (1, 1)
+
+    def _maybe_dtoh_and_synchronize(self, *_args, **_kwargs):
+        raise RuntimeError("dtoh boom")
+
+    def _dispatch(self, *args, **kwargs):
+        self.dispatch_calls += 1
+        return ("dispatch", args, kwargs)
 
 
 class _MoELayerStub(torch.nn.Module):
@@ -291,6 +308,36 @@ def test_runtime_handle_emits_failure_events_and_reraises() -> None:
     assert "ForwardBeginEvent" in recorded
     assert "DispatchFailedEvent" in recorded
     assert "ForwardFailedEvent" in recorded
+
+
+def test_runtime_handle_emits_dispatch_failed_when_ready_stage_sync_fails() -> None:
+    model = _ScopeModelStub(dispatcher_cls=_SyncFailDispatcherStub)
+    handle = attach_formal_online_runtime(
+        model=model,
+        runtime_config=_config(),
+        rank=0,
+        local_rank=0,
+        run_id="run",
+        model_revision="model",
+        request_table_hash="request",
+        hostname="host",
+    )
+    recorded: list[str] = []
+    original_handle = handle.runtime.handle
+
+    def _recording_handle(event) -> RuntimeDecision:
+        recorded.append(type(event).__name__)
+        if isinstance(event, ForwardFailedEvent):
+            return RuntimeDecision()
+        return original_handle(event)
+
+    handle.runtime.handle = _recording_handle
+    with pytest.raises(DispatcherSynchronizationError, match="dtoh boom"):
+        model()
+    assert "DispatchReadyEvent" in recorded
+    assert "DispatchFailedEvent" in recorded
+    assert "ForwardFailedEvent" in recorded
+    assert model.layers[1].mlp.token_dispatcher.dispatch_calls == 0
 
 
 def test_attach_preflight_missing_token_combine_rolls_back_owner() -> None:
