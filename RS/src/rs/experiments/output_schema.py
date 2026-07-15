@@ -35,6 +35,11 @@ class OutputLayout:
     failures_dir: Path
 
 
+RUN_STATUS_RUNNING = "running"
+RUN_STATUS_COMPLETED = "completed"
+RUN_STATUS_FAILED = "failed"
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -197,6 +202,22 @@ def write_result_bundle(path: Path, bundle: ResultBundle) -> None:
     path.write_text(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def write_manifest(layout: OutputLayout, payload: dict[str, Any]) -> None:
+    write_json(layout.root / "manifest.json", payload)
+
+
+def read_manifest(layout: OutputLayout) -> dict[str, Any]:
+    return json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
+
+
+def write_run_status(layout: OutputLayout, payload: dict[str, Any]) -> None:
+    write_json(layout.root / "status.json", payload)
+
+
+def write_layout_result_bundle(layout: OutputLayout, bundle: ResultBundle) -> None:
+    write_result_bundle(layout.root / "result_bundle.json", bundle)
+
+
 def capture_environment() -> dict[str, Any]:
     return {
         "python_version": sys.version,
@@ -264,22 +285,21 @@ def initialize_run_artifacts(
     }
     if manifest_overrides:
         manifest.update(manifest_overrides)
-    write_json(layout.root / "manifest.json", manifest)
+    write_manifest(layout, manifest)
     write_json(layout.root / "environment.json", capture_environment())
     write_yaml(layout.root / "config_snapshot.yaml", config_snapshot)
-    write_json(layout.root / "status.json", {"status": "running", "updated_at": _utc_now()})
+    write_run_status(layout, {"status": RUN_STATUS_RUNNING, "updated_at": _utc_now()})
     return layout
 
 
 def update_status(layout: OutputLayout, *, status: str, extra: dict[str, Any] | None = None) -> None:
-    manifest_path = layout.root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = read_manifest(layout)
     manifest["status"] = str(status)
     manifest["end_time"] = _utc_now()
     if extra:
         manifest.update(extra)
-    write_json(manifest_path, manifest)
+    write_manifest(layout, manifest)
     status_payload: dict[str, Any] = {"status": str(status), "updated_at": _utc_now()}
     if extra:
         status_payload.update(extra)
-    write_json(layout.root / "status.json", status_payload)
+    write_run_status(layout, status_payload)

@@ -22,7 +22,16 @@ import yaml
 
 from rs.core.config_normalization import canonical_offline_replay_payload, legacy_offline_replay_payload, normalize_run_config
 from rs.core.contracts.result import OFFLINE_PIPELINE, RunIdentity
-from rs.experiments.output_schema import initialize_run_artifacts, update_status, validate_official_entrypoint_config, write_json, write_result_bundle
+from rs.experiments.output_schema import (
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    initialize_run_artifacts,
+    read_manifest,
+    update_status,
+    validate_official_entrypoint_config,
+    write_json,
+    write_layout_result_bundle,
+)
 from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
@@ -186,7 +195,7 @@ def main() -> None:
             expected=0,
             actual=audit_invalid_count,
         )
-        manifest = json.loads((layout.root / "manifest.json").read_text(encoding="utf-8"))
+        manifest = read_manifest(layout)
         summary_payload = {
             "rows": rows,
             "invariants": invariant_rows,
@@ -281,12 +290,12 @@ def main() -> None:
                 extensions={},
             )
         )
-        write_result_bundle(layout.root / "result_bundle.json", result_bundle)
+        write_layout_result_bundle(layout, result_bundle)
         (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         update_status(
             layout,
-            status="completed",
+            status=RUN_STATUS_COMPLETED,
             extra={
                 "row_count": len(rows),
                 "invariant_count": len(invariant_rows),
@@ -300,7 +309,7 @@ def main() -> None:
             write_failure_artifact(layout.failures_dir / "offline_invariant_failure.json", error=exc)
             update_status(
                 layout,
-                status="failed",
+                status=RUN_STATUS_FAILED,
                 extra={
                     "failure_codes": [exc.failure.error_code],
                     "run_valid": False,
@@ -312,7 +321,7 @@ def main() -> None:
         if layout is not None:
             failure_payload = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
             (layout.failures_dir / "offline_exception.json").write_text(json.dumps(failure_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            update_status(layout, status="failed", extra={"run_valid": False})
+            update_status(layout, status=RUN_STATUS_FAILED, extra={"run_valid": False})
         print(f"[offline_replay] exception: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise
 

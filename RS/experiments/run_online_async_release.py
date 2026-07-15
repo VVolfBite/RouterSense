@@ -19,7 +19,7 @@ ROOT = ensure_src_on_path()
 import yaml
 
 from rs.core.config_normalization import canonical_online_comparison_payload, legacy_online_comparison_payload, normalize_run_config
-from rs.experiments.output_schema import initialize_run_artifacts, update_status, validate_official_entrypoint_config
+from rs.experiments.output_schema import RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, initialize_run_artifacts, update_status, validate_official_entrypoint_config
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 
@@ -75,14 +75,14 @@ def main() -> None:
         rc = run_strategy_comparison_main(argv)
         update_status(
             layout,
-            status="completed" if int(rc or 0) == 0 else "failed",
+            status=RUN_STATUS_COMPLETED if int(rc or 0) == 0 else RUN_STATUS_FAILED,
             extra={"completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
         )
         raise SystemExit(int(rc or 0))
     except RouterSenseInvariantError as exc:
         if layout is not None:
             write_failure_artifact(layout.failures_dir / "startup_invariant_failure.json", error=exc)
-            update_status(layout, status="failed", extra={"failure_codes": [exc.failure.error_code]})
+            update_status(layout, status=RUN_STATUS_FAILED, extra={"failure_codes": [exc.failure.error_code]})
         raise SystemExit(2) from exc
 
 
