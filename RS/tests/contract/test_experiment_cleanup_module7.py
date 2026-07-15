@@ -163,23 +163,17 @@ def test_unified_report_builder_reads_structured_metrics(tmp_path: Path) -> None
                 "offline_audit_status": "valid",
                 "coverage_status": "complete",
             },
-            details={"run_kind": "OFFLINE_EVALUATION_FORMAL"},
+            details={
+                "run_kind": "OFFLINE_EVALUATION_FORMAL",
+                "row_count": 2,
+                "invariant_count": 1,
+                "policy_names": ["fifo_bucket", "birkhoff_bucket_phase_local"],
+                "hint_names": ["zero_hint", "copy_current_dispatch"],
+            },
             extensions={},
         )
     )
     (run_dir / "result_bundle.json").write_text(json.dumps(bundle.to_dict()), encoding="utf-8")
-    (run_dir / "metrics" / "summary.json").write_text(
-        json.dumps(
-            {
-                "rows": [
-                    {"canonical_policy_name": "fifo_bucket", "hint_type": "zero_hint"},
-                    {"canonical_policy_name": "birkhoff_bucket_phase_local", "hint_type": "copy_current_dispatch"},
-                ],
-                "invariants": [{"fixture_id": "fixture"}],
-            }
-        ),
-        encoding="utf-8",
-    )
     proc = _run("experiments/reporting/build_report.py", "--input", str(run_dir), "--report-type", "offline")
     assert proc.returncode == 0, proc.stderr + proc.stdout
     report = json.loads((run_dir / "reports" / "offline.json").read_text(encoding="utf-8"))
