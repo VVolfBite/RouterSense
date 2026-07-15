@@ -230,8 +230,12 @@ class TransferSlice:
     row_count: int
     send_offset_rows: int
     recv_offset_rows: int
-    dependency_ids: tuple[str, ...] = ()
+    physical_send_offset_rows: int = 0
+    physical_recv_offset_rows: int = 0
+    peer_send_offset_rows: int = 0
+    peer_recv_offset_rows: int = 0
     transfer_tag: int = 0
+    dependency_ids: tuple[str, ...] = ()
 
     def validate(self) -> None:
         _validate_string("task_id", self.task_id)
@@ -245,6 +249,10 @@ class TransferSlice:
             raise ValueError("row_count must be > 0")
         _validate_non_negative("send_offset_rows", self.send_offset_rows)
         _validate_non_negative("recv_offset_rows", self.recv_offset_rows)
+        _validate_non_negative("physical_send_offset_rows", self.physical_send_offset_rows)
+        _validate_non_negative("physical_recv_offset_rows", self.physical_recv_offset_rows)
+        _validate_non_negative("peer_send_offset_rows", self.peer_send_offset_rows)
+        _validate_non_negative("peer_recv_offset_rows", self.peer_recv_offset_rows)
         _validate_non_negative("transfer_tag", self.transfer_tag)
         for dep in self.dependency_ids:
             _validate_string("dependency_id", str(dep))
@@ -262,8 +270,12 @@ class TransferSlice:
             "row_count": int(self.row_count),
             "send_offset_rows": int(self.send_offset_rows),
             "recv_offset_rows": int(self.recv_offset_rows),
-            "dependency_ids": [str(dep) for dep in self.dependency_ids],
+            "physical_send_offset_rows": int(self.physical_send_offset_rows),
+            "physical_recv_offset_rows": int(self.physical_recv_offset_rows),
+            "peer_send_offset_rows": int(self.peer_send_offset_rows),
+            "peer_recv_offset_rows": int(self.peer_recv_offset_rows),
             "transfer_tag": int(self.transfer_tag),
+            "dependency_ids": [str(dep) for dep in self.dependency_ids],
         }
 
 

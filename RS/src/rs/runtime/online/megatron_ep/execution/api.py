@@ -124,10 +124,6 @@ def _peer_rows_total(rows_by_peer: dict[int, int]) -> int:
     return int(sum(int(value) for value in rows_by_peer.values()))
 
 
-def _peer_base_offset(rows_by_peer: dict[int, int], peer_group_rank: int) -> int:
-    return int(sum(int(rows_by_peer.get(index, 0)) for index in range(int(peer_group_rank))))
-
-
 def _make_output_tensor(invocation: PayloadInvocation, *, total_rows: int) -> torch.Tensor:
     if invocation.input_tensor is None:
         raise ValueError("input_tensor required")
@@ -141,18 +137,6 @@ def _copy_rows(target: torch.Tensor, target_offset: int, source: torch.Tensor, s
     if int(row_count) <= 0:
         return
     target.narrow(0, int(target_offset), int(row_count)).copy_(source.narrow(0, int(source_offset), int(row_count)))
-
-
-def _source_input_offset(plan: MaterializedPlan, payload_role: str, dst_group_rank: int, peer_local_offset: int) -> int:
-    rows_by_peer = {int(peer): int(value) for peer, value in plan.expected_outgoing_rows[str(payload_role)].items()}
-    return int(_peer_base_offset(rows_by_peer, int(dst_group_rank)) + int(peer_local_offset))
-
-
-def _target_output_offset(plan: MaterializedPlan, payload_role: str, src_group_rank: int, peer_local_offset: int) -> int:
-    rows_by_peer = {int(peer): int(value) for peer, value in plan.expected_incoming_rows[str(payload_role)].items()}
-    return int(_peer_base_offset(rows_by_peer, int(src_group_rank)) + int(peer_local_offset))
-
-
 def _slices_for_role(plan: MaterializedPlan, payload_role: str) -> list[Any]:
     return [
         item
@@ -171,36 +155,21 @@ def _collective_required_for_role(plan: MaterializedPlan, payload_role: str) -> 
     return str(payload_role) in role_names and any(bool(batch.collective_required) for batch in plan.batches)
 
 
-def _local_flow_source_offsets(plan: MaterializedPlan, payload_role: str) -> dict[str, int]:
-    offsets: dict[str, int] = {}
-    next_offset = 0
-    for batch in plan.batches:
-        for item in batch.slices:
-            if str(item.payload_role) != str(payload_role):
-                continue
-            if int(item.src_global_rank) != int(plan.local_global_rank):
-                continue
-            flow_id = str(item.flow_id)
-            if flow_id in offsets:
-                continue
-            offsets[flow_id] = int(next_offset)
-            next_offset += int(item.row_count)
-    return offsets
-
-
 def _p2p_tag_for_slice(item: Any) -> int:
     return int(getattr(item, "transfer_tag", 0))
 
 
 def _chunked_batches(items: list[Any], size: int) -> list[list[Any]]:
-    chunk_size = max(1, int(size))
+    if int(size) <= 0:
+        raise ValueError("max_inflight_batches must be > 0")
     iterator = iter(items)
-    chunks: list[list[Any]] = []
+    windows: list[list[Any]] = []
     while True:
-        chunk = list(islice(iterator, chunk_size))
-        if not chunk:
-            return chunks
-        chunks.append(chunk)
+        window = list(islice(iterator, int(size)))
+        if not window:
+            break
+        windows.append(window)
+    return windows
 
 
 class _BaseExecutor:
@@ -252,14 +221,12 @@ class PhaseSyncExecutor(_BaseExecutor):
         assert input_tensor is not None
         process_group = invocation.process_group if invocation.process_group is not None else dist.group.WORLD
         world_size = int(plan.rank_map.world_size)
-        row_width = int(input_tensor[0].numel()) if input_tensor.ndim > 1 and int(input_tensor.shape[0]) > 0 else int(input_tensor.shape[1]) if input_tensor.ndim > 1 else 1
         expected_incoming = {int(peer): int(value) for peer, value in plan.expected_incoming_rows[payload_role].items()}
         output = _make_output_tensor(invocation, total_rows=_peer_rows_total(expected_incoming))
         completed_task_ids: list[str] = []
         collective_call_count = 0
         processed_batch_count = 0
         satisfied_release_ids = {str(value) for value in context.satisfied_release_dependency_ids}
-        local_flow_offsets = _local_flow_source_offsets(plan, payload_role)
         for batch in plan.batches:
             if not bool(batch.collective_required):
                 continue
@@ -299,8 +266,8 @@ class PhaseSyncExecutor(_BaseExecutor):
             for item in role_slices:
                 if int(item.src_global_rank) == int(plan.local_global_rank):
                     if int(item.dst_global_rank) == int(plan.local_global_rank):
-                        local_input_offset = int(local_flow_offsets.get(str(item.flow_id), 0))
-                        local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                        local_input_offset = int(item.physical_send_offset_rows)
+                        local_output_offset = int(item.physical_recv_offset_rows)
                         _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
                         completed_task_ids.append(str(item.task_id))
                     else:
@@ -311,35 +278,40 @@ class PhaseSyncExecutor(_BaseExecutor):
                     incoming_remote.append(item)
             total_send = int(sum(send_splits))
             total_recv = int(sum(recv_splits))
-            send_split_elems = [int(value) * int(row_width) for value in send_splits]
-            recv_split_elems = [int(value) * int(row_width) for value in recv_splits]
-            send_buffer = input_tensor.new_empty((int(total_send) * int(row_width),))
-            recv_buffer = input_tensor.new_empty((int(total_recv) * int(row_width),))
-            pack_cursor = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(send_split_elems)}, peer) for peer in range(world_size)}
+            send_buffer = input_tensor.new_empty((total_send, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_send,))
+            recv_buffer = input_tensor.new_empty((total_recv, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_recv,))
+            send_peer_bases: dict[int, int] = {}
+            recv_peer_bases: dict[int, int] = {}
+            offset = 0
+            for peer in range(world_size):
+                send_peer_bases[peer] = int(offset)
+                offset += int(send_splits[peer])
+            offset = 0
+            for peer in range(world_size):
+                recv_peer_bases[peer] = int(offset)
+                offset += int(recv_splits[peer])
+            pack_cursor = dict(send_peer_bases)
             for item in remote_send_slices:
-                src_input_offset = int(local_flow_offsets.get(str(item.flow_id), 0))
+                src_input_offset = int(item.physical_send_offset_rows)
                 target_offset = int(pack_cursor[int(item.dst_group_rank)])
-                flat_send_tensor = input_tensor.narrow(0, int(src_input_offset), int(item.row_count)).contiguous().reshape(-1)
-                send_buffer.narrow(0, int(target_offset), int(item.row_count) * int(row_width)).copy_(flat_send_tensor)
-                pack_cursor[int(item.dst_group_rank)] += int(item.row_count) * int(row_width)
+                _copy_rows(send_buffer, target_offset, input_tensor, src_input_offset, int(item.row_count))
+                pack_cursor[int(item.dst_group_rank)] += int(item.row_count)
             if world_size > 1:
                 dist.all_to_all_single(
                     recv_buffer,
                     send_buffer,
-                    output_split_sizes=recv_split_elems,
-                    input_split_sizes=send_split_elems,
+                    output_split_sizes=recv_splits,
+                    input_split_sizes=send_splits,
                     group=process_group,
                 )
                 collective_call_count += 1
             if total_recv > 0:
-                recv_base = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(recv_split_elems)}, peer) for peer in range(world_size)}
+                recv_base = dict(recv_peer_bases)
                 for item in incoming_remote:
-                    output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                    output_offset = int(item.physical_recv_offset_rows)
                     recv_offset = int(recv_base[int(item.src_group_rank)])
-                    recv_slice = recv_buffer.narrow(0, int(recv_offset), int(item.row_count) * int(row_width))
-                    reshaped = recv_slice.reshape(int(item.row_count), *tuple(int(dim) for dim in input_tensor.shape[1:])) if input_tensor.ndim > 1 else recv_slice
-                    _copy_rows(output, output_offset, reshaped, 0, int(item.row_count))
-                    recv_base[int(item.src_group_rank)] += int(item.row_count) * int(row_width)
+                    _copy_rows(output, output_offset, recv_buffer, recv_offset, int(item.row_count))
+                    recv_base[int(item.src_group_rank)] += int(item.row_count)
             completed_task_ids.extend(str(item.task_id) for item in remote_send_slices)
             completed_task_ids.extend(str(item.task_id) for item in incoming_remote)
         submitted_task_ids = _submitted_task_ids_for_role(plan, payload_role)
@@ -375,25 +347,27 @@ class P2PReleaseExecutor(_BaseExecutor):
         input_tensor = invocation.input_tensor
         assert input_tensor is not None
         process_group = invocation.process_group if invocation.process_group is not None else dist.group.WORLD
+        world_size = int(plan.rank_map.world_size)
         expected_incoming = {int(peer): int(value) for peer, value in plan.expected_incoming_rows[payload_role].items()}
         output = _make_output_tensor(invocation, total_rows=_peer_rows_total(expected_incoming))
         max_inflight_batches = int(dict(context.metadata).get("max_inflight_batches", 2) or 2)
         satisfied_release_ids = {str(value) for value in context.satisfied_release_dependency_ids}
-        local_flow_offsets = _local_flow_source_offsets(plan, payload_role)
+        all_role_batches = [
+            (batch, [item for item in batch.slices if str(item.payload_role) == payload_role])
+            for batch in plan.batches
+        ]
+        completed_batches: list[str] = []
         completed_task_ids: list[str] = []
         submitted_task_ids: list[str] = list(submitted)
         peak_inflight = 0
         p2p_operation_count = 0
-        outgoing_slices = [
-            item
-            for batch in plan.batches
-            for item in batch.slices
-            if str(item.payload_role) == payload_role and int(item.src_global_rank) == int(plan.local_global_rank)
-        ]
+
         missing_dependencies = sorted(
             {
                 str(dep)
-                for item in outgoing_slices
+                for _, role_slices in all_role_batches
+                for item in role_slices
+                if int(item.src_global_rank) == int(plan.local_global_rank)
                 for dep in item.dependency_ids
                 if str(dep) not in satisfied_release_ids
             }
@@ -403,7 +377,7 @@ class P2PReleaseExecutor(_BaseExecutor):
                 success=False,
                 output_payload=None,
                 submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
-                completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
+                completed_task_ids=tuple(),
                 failed_task_ids=tuple(),
                 unresolved_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
                 executed_batch_count=0,
@@ -411,78 +385,69 @@ class P2PReleaseExecutor(_BaseExecutor):
                 failure_code=f"unresolved_dependency:{missing_dependencies[0]}",
                 details={
                     "backend_id": str(self.backend_id),
+                    "missing_dependencies": tuple(missing_dependencies),
                     "distributed_operation_count": 0,
                     "peak_inflight_batches": 0,
                 },
             )
-        completed_batches: list[str] = []
-        role_batches = [
-            (
-                batch,
-                [item for item in batch.slices if str(item.payload_role) == payload_role],
-            )
-            for batch in plan.batches
-        ]
-        for window in _chunked_batches(role_batches, max_inflight_batches):
-            recv_handles: list[Any] = []
-            send_handles: list[Any] = []
-            recv_payloads: list[tuple[Any, torch.Tensor]] = []
-            retained_send_tensors: list[torch.Tensor] = []
-            completion_candidates: list[Any] = []
-            local_completions: list[Any] = []
+
+        for window in _chunked_batches(all_role_batches, max_inflight_batches):
+            peak_inflight = max(peak_inflight, len(window))
+            posted_batches: list[tuple[Any, list[Any], list[tuple[Any, torch.Tensor]], list[torch.Tensor], tuple[str, ...]]] = []
             for batch, role_slices in window:
+                handles: list[Any] = []
+                recv_payloads: list[tuple[Any, torch.Tensor]] = []
+                retained_send_tensors: list[torch.Tensor] = []
+                completion_candidates: list[Any] = []
                 shape_suffix = tuple(int(dim) for dim in input_tensor.shape[1:])
                 for item in role_slices:
                     if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) == int(plan.local_global_rank):
-                        local_input_offset = int(local_flow_offsets.get(str(item.flow_id), 0))
-                        local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                        local_input_offset = int(item.physical_send_offset_rows)
+                        local_output_offset = int(item.physical_recv_offset_rows)
                         _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
-                        local_completions.append(item)
-                        continue
-                    if int(item.dst_global_rank) == int(plan.local_global_rank) and int(item.src_global_rank) != int(plan.local_global_rank):
-                        recv_tensor = input_tensor.new_empty((int(item.row_count), *shape_suffix)) if input_tensor.ndim > 1 else input_tensor.new_empty((int(item.row_count),))
-                        recv_handles.append(dist.irecv(recv_tensor, src=int(item.src_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
-                        recv_payloads.append((item, recv_tensor))
                         completion_candidates.append(item)
-            for batch, role_slices in window:
+                    elif int(item.dst_global_rank) == int(plan.local_global_rank) and int(item.src_global_rank) != int(plan.local_global_rank):
+                        recv_tensor = input_tensor.new_empty((int(item.row_count), *shape_suffix)) if input_tensor.ndim > 1 else input_tensor.new_empty((int(item.row_count),))
+                        handles.append(dist.irecv(recv_tensor, src=int(item.src_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
+                        recv_payloads.append((item, recv_tensor))
                 for item in role_slices:
                     if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) != int(plan.local_global_rank):
-                        src_input_offset = int(local_flow_offsets.get(str(item.flow_id), 0))
+                        src_input_offset = int(item.physical_send_offset_rows)
                         send_tensor = input_tensor.narrow(0, int(src_input_offset), int(item.row_count)).contiguous()
                         retained_send_tensors.append(send_tensor)
-                        send_handles.append(dist.isend(send_tensor, dst=int(item.dst_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
+                        handles.append(dist.isend(send_tensor, dst=int(item.dst_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
                         completion_candidates.append(item)
-            handles = recv_handles + send_handles
-            if handles:
-                p2p_operation_count += int(len(window))
-            peak_inflight = max(peak_inflight, int(len(window)))
-            try:
-                for handle in handles:
-                    handle.wait()
-            except Exception as exc:
-                failed_task_ids = tuple(
-                    str(item.task_id)
-                    for batch, role_slices in window
-                    for item in role_slices
-                )
-                return ExecutionOutcome(
-                    success=False,
-                    output_payload=None,
-                    submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
-                    completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
-                    failed_task_ids=failed_task_ids,
-                    unresolved_task_ids=tuple(task_id for task_id in submitted if task_id not in set(completed_task_ids)),
-                    executed_batch_count=int(len(completed_batches)),
-                    all_work_completed=False,
-                    failure_code=f"work_wait_failed:{type(exc).__name__}",
-                    details={"backend_id": str(self.backend_id)},
-                )
-            for item, recv_tensor in recv_payloads:
-                output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
-                _copy_rows(output, output_offset, recv_tensor, 0, int(item.row_count))
-            completed_task_ids.extend(str(item.task_id) for item in completion_candidates)
-            completed_task_ids.extend(str(item.task_id) for item in local_completions)
-            completed_batches.extend(str(batch.batch_id) for batch, _ in window)
+                if handles:
+                    p2p_operation_count += 1
+                posted_batches.append((batch, handles, recv_payloads, retained_send_tensors, tuple(str(item.task_id) for item in completion_candidates)))
+            for batch, handles, recv_payloads, retained_send_tensors, completion_task_ids in posted_batches:
+                try:
+                    for handle in handles:
+                        handle.wait()
+                except Exception as exc:
+                    return ExecutionOutcome(
+                        success=False,
+                        output_payload=None,
+                        submitted_task_ids=tuple(dict.fromkeys(submitted_task_ids)),
+                        completed_task_ids=tuple(dict.fromkeys(completed_task_ids)),
+                        failed_task_ids=tuple(completion_task_ids),
+                        unresolved_task_ids=tuple(task_id for task_id in submitted if task_id not in set(completed_task_ids)),
+                        executed_batch_count=int(len(completed_batches)),
+                        all_work_completed=False,
+                        failure_code=f"work_wait_failed:{type(exc).__name__}",
+                        details={
+                            "backend_id": str(self.backend_id),
+                            "distributed_operation_count": int(p2p_operation_count),
+                            "peak_inflight_batches": int(peak_inflight),
+                            "failed_batch_id": str(batch.batch_id),
+                        },
+                    )
+                for item, recv_tensor in recv_payloads:
+                    output_offset = int(item.physical_recv_offset_rows)
+                    _copy_rows(output, output_offset, recv_tensor, 0, int(item.row_count))
+                    completed_task_ids.append(str(item.task_id))
+                completed_task_ids.extend(completion_task_ids)
+                completed_batches.append(str(batch.batch_id))
         submitted_tuple = tuple(dict.fromkeys(submitted_task_ids))
         completed_tuple = tuple(dict.fromkeys(completed_task_ids))
         unresolved = tuple(task_id for task_id in submitted if task_id not in set(completed_tuple))
@@ -499,12 +464,12 @@ class P2PReleaseExecutor(_BaseExecutor):
             details={
                 "backend_id": str(self.backend_id),
                 "submitted_task_count": int(len(submitted_tuple)),
-                "completed_task_count": int(len(completed_tuple)),
-                "unresolved_task_count": int(len(unresolved)),
                 "completed_batches": tuple(completed_batches),
                 "max_inflight_batches": max_inflight_batches,
                 "peak_inflight_batches": int(peak_inflight),
                 "distributed_operation_count": int(p2p_operation_count),
+                "completed_task_count": int(len(completed_tuple)),
+                "unresolved_task_count": int(len(unresolved)),
             },
         )
 

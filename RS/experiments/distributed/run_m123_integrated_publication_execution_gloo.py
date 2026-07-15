@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import signal
 import socket
+import subprocess
+import time
 import traceback
+import uuid
 from pathlib import Path
 
 import torch
@@ -14,7 +19,6 @@ import torch.multiprocessing as mp
 from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
-from rs.runtime.online.megatron_ep.execution.api import _target_output_offset
 from rs.runtime.online.megatron_ep.execution.pipeline import build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.public_types import CombineCompleteEvent, CombineReadyEvent, DispatchCompleteEvent, DispatchReadyEvent
@@ -28,7 +32,6 @@ from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _runtime,
     _wait_until,
 )
-RUN_DIR = Path("outputs/closure/m123_integrated_publication_execution_gloo")
 
 
 def _free_port() -> int:
@@ -53,6 +56,7 @@ def _execute_role(
     runtime,
     published_plan,
     source_payload_specs_by_rank,
+    source_slice_oracle_by_rank,
     adapter: MegatronPhaseTransportAdapter,
     dispatcher,
     tensor_role: str,
@@ -69,6 +73,16 @@ def _execute_role(
     target_dtype = getattr(torch, str(spec.dtype).replace("torch.", ""), None)
     if target_dtype is not None:
         tensor = tensor.to(dtype=target_dtype)
+    gathered_inputs: list[dict[str, object] | None] = [None for _ in group_ranks]
+    dist.all_gather_object(
+        gathered_inputs,
+        {
+            "rank": int(rank),
+            "shape": [int(dim) for dim in tensor.shape],
+            "dtype": str(tensor.dtype),
+            "rows": tensor.float().tolist(),
+        },
+    )
     if str(phase) == "P1":
         output_split_sizes = dispatcher.input_splits
         input_split_sizes = dispatcher.output_splits
@@ -85,38 +99,15 @@ def _execute_role(
     )
     expected = torch.zeros_like(output)
     width = int(tensor.shape[1]) if tensor.ndim > 1 else 1
-    max_rows_by_src = {int(global_rank): 0 for global_rank in group_ranks}
-    flow_phase = "p0_dispatch" if str(phase) == "P0" else "p1_return"
-    flow_source_offset_by_id: dict[str, int] = {}
-    source_progress: dict[int, int] = {int(global_rank): 0 for global_rank in group_ranks}
-    for wave in published_plan.window_plan.waves:
-        for flow in wave.flows:
-            if str(flow.phase) != flow_phase:
-                continue
-            src_global_rank = int(published_plan.rank_map.group_rank_to_global_rank(int(flow.src_rank)))
-            flow_source_offset_by_id[str(flow.flow_id)] = int(source_progress.get(int(src_global_rank), 0))
-            source_progress[int(src_global_rank)] = int(source_progress.get(int(src_global_rank), 0)) + int(flow.row_count)
-    for src_global_rank, total_rows in source_progress.items():
-        max_rows_by_src[int(src_global_rank)] = max(int(max_rows_by_src[int(src_global_rank)]), int(total_rows))
-    for batch in prepared.materialized_plan.batches:
-        for item in batch.slices:
-            if str(item.payload_role) != str(tensor_role):
-                continue
-            max_rows_by_src[int(item.src_global_rank)] = max(
-                int(max_rows_by_src[int(item.src_global_rank)]),
-                int(flow_source_offset_by_id.get(str(item.flow_id), 0)) + int(item.row_count),
-            )
     source_tensors: dict[int, torch.Tensor] = {}
-    for global_rank in group_ranks:
-        source_spec = dict(source_payload_specs_by_rank.get(int(global_rank), {}).get(str(tensor_role), {}))
-        rows = max(int(source_spec.get("row_count", max_rows_by_src[int(global_rank)] or 0)), 1)
-        source_dtype_name = str(source_spec.get("dtype", str(tensor.dtype)))
-        source_dtype = getattr(torch, source_dtype_name.replace("torch.", ""), tensor.dtype)
-        values = torch.arange(int(global_rank) * 10000, int(global_rank) * 10000 + rows, dtype=torch.float32)
-        if width <= 1:
-            source_tensors[int(global_rank)] = values.reshape(rows, 1).to(dtype=source_dtype)
-        else:
-            source_tensors[int(global_rank)] = values.unsqueeze(1).repeat(1, width).to(dtype=source_dtype)
+    for payload in gathered_inputs:
+        item = dict(payload or {})
+        global_rank = int(item.get("rank", 0))
+        rows = torch.tensor(item.get("rows", []), dtype=torch.float32)
+        shape = tuple(int(dim) for dim in item.get("shape", []))
+        if shape:
+            rows = rows.reshape(shape)
+        source_tensors[global_rank] = rows.to(dtype=tensor.dtype)
     for batch in prepared.materialized_plan.batches:
         for item in batch.slices:
             if str(item.payload_role) != str(tensor_role):
@@ -124,13 +115,16 @@ def _execute_role(
             if int(item.dst_global_rank) != int(rank):
                 continue
             source_tensor = source_tensors[int(item.src_global_rank)]
-            src_offset = int(flow_source_offset_by_id.get(str(item.flow_id), 0))
-            dst_offset = _target_output_offset(
-                prepared.materialized_plan,
-                str(tensor_role),
-                int(item.src_group_rank),
-                int(item.recv_offset_rows),
+            source_slice_key = (
+                str(item.flow_id),
+                str(item.payload_role),
+                int(item.src_global_rank),
+                int(item.dst_global_rank),
             )
+            src_offset = int(
+                source_slice_oracle_by_rank[int(item.src_global_rank)].get(source_slice_key, item.physical_send_offset_rows)
+            )
+            dst_offset = int(item.physical_recv_offset_rows)
             expected.narrow(0, int(dst_offset), int(item.row_count)).copy_(
                 source_tensor.narrow(0, int(src_offset), int(item.row_count))
             )
@@ -183,6 +177,38 @@ def _execute_role(
     return output
 
 
+def _close_runtime_services(runtime, adapter) -> dict[str, object]:
+    errors: list[dict[str, object]] = []
+    planner_service = getattr(runtime, "target_planner_service", None)
+    if planner_service is not None:
+        try:
+            planner_service.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "target_planner_service", "error_type": type(exc).__name__, "error": str(exc)})
+    target_store = getattr(runtime, "target_plan_store", None)
+    if target_store is not None and hasattr(target_store, "shutdown"):
+        try:
+            target_store.shutdown()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "target_plan_store", "error_type": type(exc).__name__, "error": str(exc)})
+    instrumentation = getattr(runtime, "runtime_instrumentation", None)
+    if instrumentation is not None and hasattr(instrumentation, "close"):
+        try:
+            instrumentation.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "runtime_instrumentation", "error_type": type(exc).__name__, "error": str(exc)})
+    if adapter is not None and hasattr(adapter, "close"):
+        try:
+            adapter.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append({"component": "transport_adapter", "error_type": type(exc).__name__, "error": str(exc)})
+    planner_alive = bool(planner_service is not None and hasattr(planner_service, "is_alive") and planner_service.is_alive())
+    return {
+        "cleanup_errors": errors,
+        "planner_thread_alive": planner_alive,
+    }
+
+
 def _transfer_keys_from_completed_tasks(
     materialized_plan,
     completed_task_ids: tuple[str, ...],
@@ -218,14 +244,17 @@ def _all_task_ids(materialized_plan, *, payload_roles: set[str]) -> tuple[str, .
     )
 
 
-def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str) -> None:
+def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str, run_dir: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
     dist.init_process_group(backend="gloo", rank=rank, world_size=world_size)
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    run_root = Path(str(run_dir))
+    run_root.mkdir(parents=True, exist_ok=True)
     summary = {"rank": int(rank), "status": "failed"}
+    runtime = None
+    adapter = None
     try:
         group_ranks = tuple(range(world_size))
         runtime, trace, spy = _runtime(
@@ -305,7 +334,24 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             int(global_rank): dict(gathered_payload_specs[index] or {})
             for index, global_rank in enumerate(group_ranks)
         }
-        (RUN_DIR / f"rank{rank}_p0_materialized.json").write_text(
+        local_p0_slice_oracle = {
+            (
+                str(slice_.flow_id),
+                str(slice_.payload_role),
+                int(slice_.src_global_rank),
+                int(slice_.dst_global_rank),
+            ): int(slice_.physical_send_offset_rows)
+            for batch in prepared_p0.materialized_plan.batches
+            for slice_ in batch.slices
+            if int(slice_.src_global_rank) == int(rank)
+        }
+        gathered_p0_slice_oracles: list[dict[tuple[str, str, int, int], int] | None] = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_p0_slice_oracles, local_p0_slice_oracle)
+        p0_slice_oracle_by_rank = {
+            int(global_rank): dict(gathered_p0_slice_oracles[index] or {})
+            for index, global_rank in enumerate(group_ranks)
+        }
+        (run_root / f"rank{rank}_p0_materialized.json").write_text(
             json.dumps(
                 {
                     "rank": int(rank),
@@ -329,7 +375,7 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         )
         hidden_debug_spec = next(item for item in prepared_p0.materialized_plan.payload_specs if str(item.payload_role) == "hidden_states")
         hidden_debug_tensor = _input_tensor(hidden_debug_spec, source_global_rank=int(rank))
-        (RUN_DIR / f"rank{rank}_p0_hidden_input.json").write_text(
+        (run_root / f"rank{rank}_p0_hidden_input.json").write_text(
             json.dumps(
                 {
                     "rank": int(rank),
@@ -342,9 +388,9 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             ),
             encoding="utf-8",
         )
-        hidden_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
+        hidden_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_hidden = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
-        probs_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
+        probs_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_probs = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
         runtime.handle(
             DispatchCompleteEvent(
@@ -379,8 +425,25 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             int(global_rank): dict(gathered_p1_payload_specs[index] or {})
             for index, global_rank in enumerate(group_ranks)
         }
+        local_p1_slice_oracle = {
+            (
+                str(slice_.flow_id),
+                str(slice_.payload_role),
+                int(slice_.src_global_rank),
+                int(slice_.dst_global_rank),
+            ): int(slice_.physical_send_offset_rows)
+            for batch in prepared_p1.materialized_plan.batches
+            for slice_ in batch.slices
+            if int(slice_.src_global_rank) == int(rank)
+        }
+        gathered_p1_slice_oracles: list[dict[tuple[str, str, int, int], int] | None] = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_p1_slice_oracles, local_p1_slice_oracle)
+        p1_slice_oracle_by_rank = {
+            int(global_rank): dict(gathered_p1_slice_oracles[index] or {})
+            for index, global_rank in enumerate(group_ranks)
+        }
         release_before_p1 = tuple(sorted(runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1")))
-        p1_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
+        p1_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, source_slice_oracle_by_rank=p1_slice_oracle_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
         runtime.handle(
             CombineCompleteEvent(
                 layer_name="model.layers.1.mlp",
@@ -410,6 +473,10 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             for item in runtime._latest_execution_outcomes  # noqa: SLF001
             if str(item.get("phase")) == "P1"
         ]
+        all_outcomes = [
+            dict(item.get("outcome", item))
+            for item in runtime._latest_execution_outcomes  # noqa: SLF001
+        ]
         p0_completed_task_ids = tuple(
             str(task_id)
             for item in p0_outcomes
@@ -426,6 +493,21 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             raise AssertionError("missing actual P0 completed_task_ids")
         if not p1_completed_task_ids:
             raise AssertionError("missing actual P1 completed_task_ids")
+        distributed_operation_count = int(
+            sum(int(dict(item.get("details", {})).get("distributed_operation_count", 0) or 0) for item in all_outcomes)
+        )
+        peak_inflight_batches = int(
+            max((int(dict(item.get("details", {})).get("peak_inflight_batches", 0) or 0) for item in all_outcomes), default=0)
+        )
+        submitted_task_count = int(
+            sum(len(tuple(item.get("submitted_task_ids", ()))) for item in all_outcomes)
+        )
+        completed_task_count = int(
+            sum(len(tuple(item.get("completed_task_ids", ()))) for item in all_outcomes)
+        )
+        unresolved_task_count = int(
+            sum(len(tuple(item.get("unresolved_task_ids", ()))) for item in all_outcomes)
+        )
         summary = {
             "rank": int(rank),
             "status": "passed",
@@ -453,6 +535,11 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             "p1_materialized_plan_digest": str(prepared_p1.materialized_plan.materialized_plan_digest),
             "p0_completed_task_ids": list(p0_completed_task_ids),
             "p1_completed_task_ids": list(p1_completed_task_ids),
+            "distributed_operation_count": distributed_operation_count,
+            "peak_inflight_batches": peak_inflight_batches,
+            "submitted_task_count": submitted_task_count,
+            "completed_task_count": completed_task_count,
+            "unresolved_task_count": unresolved_task_count,
             "p0_completed_transfer_keys": list(
                 _transfer_keys_from_completed_tasks(
                     prepared_p0.materialized_plan,
@@ -481,24 +568,119 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         }
         raise
     finally:
-        (RUN_DIR / f"rank{rank}.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path = run_root / f"rank{rank}.json.tmp"
+        final_path = run_root / f"rank{rank}.json"
+        cleanup = _close_runtime_services(runtime, adapter)
+        summary["cleanup_errors"] = list(cleanup["cleanup_errors"])
+        summary["planner_thread_alive"] = bool(cleanup["planner_thread_alive"])
         if dist.is_initialized():
             dist.destroy_process_group()
+        summary["dist_destroyed"] = not dist.is_initialized()
+        summary["dist_initialized_after_cleanup"] = bool(dist.is_initialized())
+        if summary.get("status") == "passed":
+            if summary["cleanup_errors"] or bool(summary["planner_thread_alive"]) or not bool(summary["dist_destroyed"]):
+                summary["status"] = "failed"
+                summary["error_type"] = "CleanupError"
+                summary["error"] = "runtime cleanup incomplete"
+        tmp_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp_path, final_path)
+
+
+def _terminate_all_processes(context: mp.SpawnContext) -> None:
+    for pid in context.pids():
+        if int(pid) <= 0:
+            continue
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            continue
+        try:
+            os.killpg(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except Exception:
+                pass
+    if os.name != "nt":
+        time.sleep(2.0)
+        for pid in context.pids():
+            if int(pid) <= 0:
+                continue
+            try:
+                os.killpg(int(pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except Exception:
+                    pass
 
 
 def run_gate(*, instrumentation_mode: str = "perf_light") -> dict[str, object]:
     return run_gate_with_backend(instrumentation_mode=instrumentation_mode, execution_backend="phase_sync")
 
 
-def run_gate_with_backend(*, instrumentation_mode: str = "perf_light", execution_backend: str = "phase_sync") -> dict[str, object]:
+def run_gate_with_backend(
+    *,
+    instrumentation_mode: str = "perf_light",
+    execution_backend: str = "phase_sync",
+    output_dir: str | Path = Path("outputs/closure/m123_integrated_publication_execution_gloo"),
+    timeout_seconds: float = 180.0,
+) -> dict[str, object]:
     world_size = 4
     port = _free_port()
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    mp.spawn(_worker, args=(world_size, port, str(instrumentation_mode), str(execution_backend)), nprocs=world_size, join=True)
-    payloads = [json.loads((RUN_DIR / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
+    run_token = uuid.uuid4().hex
+    run_root = Path(output_dir).resolve() / f"m123_{execution_backend}_{run_token}"
+    if run_root.exists():
+        raise FileExistsError(f"run dir already exists: {run_root}")
+    run_root.mkdir(parents=True, exist_ok=False)
+    started_at = time.time()
+    (run_root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_token,
+                "run_dir": str(run_root),
+                "execution_backend": str(execution_backend),
+                "instrumentation_mode": str(instrumentation_mode),
+                "world_size": int(world_size),
+                "port": int(port),
+                "started_at": started_at,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    context = mp.spawn(
+        _worker,
+        args=(world_size, port, str(instrumentation_mode), str(execution_backend), str(run_root)),
+        nprocs=world_size,
+        join=False,
+    )
+    deadline = time.monotonic() + float(timeout_seconds)
+    timed_out = False
+    while True:
+        if context.join(timeout=1.0):
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            _terminate_all_processes(context)
+            break
+    if timed_out:
+        raise TimeoutError(f"m123 gate timed out after {timeout_seconds:.1f}s")
+    payloads = [json.loads((run_root / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
     assert all(item["status"] == "passed" for item in payloads), payloads
     summary = {
         "status": "passed",
+        "run_id": run_token,
+        "run_dir": str(run_root),
+        "started_at": started_at,
+        "finished_at": time.time(),
         "world_size": world_size,
         "instrumentation_mode": str(instrumentation_mode),
         "execution_backend": str(execution_backend),
@@ -506,7 +688,7 @@ def run_gate_with_backend(*, instrumentation_mode: str = "perf_light", execution
         "p1_matrix": [list(row) for row in tuple(tuple(_matrix_for_world_size(world_size)[src][dst] for src in range(world_size)) for dst in range(world_size))],
         "ranks": payloads,
     }
-    (RUN_DIR / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
 
@@ -514,15 +696,33 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execution-backend", default=str(os.environ.get("RS_M123_GATE_EXECUTION_BACKEND", "phase_sync") or "phase_sync"))
     parser.add_argument("--instrumentation-mode", default=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
+    parser.add_argument("--output-dir", default="outputs/closure/m123_integrated_publication_execution_gloo")
     parser.add_argument("--summary-path", default="")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     summary = run_gate_with_backend(
         instrumentation_mode=str(args.instrumentation_mode),
         execution_backend=str(args.execution_backend),
+        output_dir=str(args.output_dir),
     )
+    summary_digest = hashlib.sha256(json.dumps(summary, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
     if str(args.summary_path).strip():
         Path(str(args.summary_path)).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps(summary, sort_keys=True))
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "status": str(summary["status"]),
+                    "execution_backend": str(summary["execution_backend"]),
+                    "summary_path": str(Path(str(args.summary_path)).resolve()) if str(args.summary_path).strip() else str(Path(summary["run_dir"]) / "summary.json"),
+                    "summary_digest": summary_digest,
+                    "duration_seconds": round(float(summary["finished_at"]) - float(summary["started_at"]), 3),
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print(json.dumps(summary, sort_keys=True))
 
 
 if __name__ == "__main__":
