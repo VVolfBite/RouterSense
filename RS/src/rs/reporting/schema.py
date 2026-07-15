@@ -44,7 +44,16 @@ def validate_report_eligibility(
     allow_invalid_diagnostic: bool = False,
 ) -> ReportEligibility:
     failures: list[str] = []
-    manifest = load_manifest(run_dir)
+    try:
+        manifest = load_manifest(run_dir)
+    except Exception as exc:
+        failures.append(f"invalid_manifest:{type(exc).__name__}")
+        return ReportEligibility(
+            eligible=False,
+            failures=tuple(failures),
+            valid_for_performance_comparison=False,
+            diagnostic_only=bool(allow_invalid_diagnostic),
+        )
     bundle_path = run_dir / "result_bundle.json"
     if not bundle_path.exists():
         failures.append("missing_result_bundle")
@@ -67,6 +76,8 @@ def validate_report_eligibility(
     recomputed = evaluate_result_bundle_eligibility(bundle)
     if bundle.eligibility.to_dict() != recomputed.to_dict():
         failures.append("eligibility_recompute_mismatch")
+    if str(bundle.performance_status) not in {"eligible", "ineligible"}:
+        failures.append("performance_status_unresolved")
     manifest_commit = str(manifest.get("commit_sha", "")).strip()
     if manifest_commit and manifest_commit != str(bundle.commit_sha).strip():
         failures.append("commit_sha_mismatch")

@@ -454,3 +454,23 @@ def test_result_builder_rejects_missing_boolean_facts() -> None:
         assert "explicit boolean" in str(exc)
     else:
         raise AssertionError("expected strict boolean fact validation failure")
+
+
+def test_result_bundle_from_dict_requires_typed_eligibility_and_summary() -> None:
+    bundle = _valid_result_bundle().to_dict()
+    bundle.pop("eligibility")
+    try:
+        ResultBundle.from_dict(bundle)
+    except ValueError as exc:
+        assert "eligibility must be present and typed" in str(exc)
+    else:
+        raise AssertionError("expected missing eligibility failure")
+
+    bundle = _valid_result_bundle().to_dict()
+    bundle["summary"] = []
+    try:
+        ResultBundle.from_dict(bundle)
+    except ValueError as exc:
+        assert "summary must be present and typed" in str(exc)
+    else:
+        raise AssertionError("expected missing summary failure")

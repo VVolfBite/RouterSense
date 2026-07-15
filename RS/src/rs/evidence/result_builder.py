@@ -64,7 +64,7 @@ def build_result_bundle(draft: ResultBundleDraft) -> ResultBundle:
         run_identity=provisional.run_identity,
         status=provisional.status,
         correctness_status=provisional.correctness_status,
-        performance_status=provisional.performance_status,
+        performance_status="eligible" if final_eligibility.performance_eligible else "ineligible",
         pipeline=provisional.pipeline,
         commit_sha=provisional.commit_sha,
         git_clean=provisional.git_clean,

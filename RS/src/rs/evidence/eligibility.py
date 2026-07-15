@@ -37,6 +37,10 @@ def evaluate_result_bundle_eligibility(bundle: ResultBundle) -> EligibilityResul
         correctness_reasons.append("cleanup_failures_present")
     if int(summary.get("missing_execution_outcome_count", 0) or 0) > 0:
         correctness_reasons.append("missing_execution_outcome")
+    if int(summary.get("missing_expected_payload_role_count", 0) or 0) > 0:
+        correctness_reasons.append("missing_expected_payload_roles")
+    if int(summary.get("missing_selected_layer_count", 0) or 0) > 0:
+        correctness_reasons.append("missing_selected_layers")
     if bool(summary.get("formal_execution_expected")) and int(summary.get("execution_outcome_count", 0) or 0) <= 0:
         correctness_reasons.append("expected_execution_without_outcome")
     if int(summary.get("execution_outcome_count", 0) or 0) <= 0 and str(bundle.run_identity.claim_scope) == "formal":

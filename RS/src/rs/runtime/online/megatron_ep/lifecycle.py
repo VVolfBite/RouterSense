@@ -220,6 +220,53 @@ class RuntimeEvidenceCounters:
     cleanup_failure_count: int = 0
 
 
+@dataclass
+class ExpectedEvidence:
+    claim_scope: str = "formal"
+    selected_layers: set[str] = field(default_factory=set)
+    expected_phase_payload_roles: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    expected_execution_count: int = 0
+    measurement_required: bool = True
+    performance_claim_requested: bool = False
+    prediction_claim_requested: bool = False
+    offline_claim_requested: bool = False
+
+    def reset(
+        self,
+        *,
+        claim_scope: str,
+        selected_layers: set[str],
+        measurement_required: bool,
+        performance_claim_requested: bool,
+        prediction_claim_requested: bool,
+        offline_claim_requested: bool,
+    ) -> None:
+        self.claim_scope = str(claim_scope)
+        self.selected_layers = {str(item) for item in selected_layers}
+        self.expected_phase_payload_roles.clear()
+        self.expected_execution_count = 0
+        self.measurement_required = bool(measurement_required)
+        self.performance_claim_requested = bool(performance_claim_requested)
+        self.prediction_claim_requested = bool(prediction_claim_requested)
+        self.offline_claim_requested = bool(offline_claim_requested)
+
+    def expect_phase_payload_roles(
+        self,
+        *,
+        layer_id: str,
+        phase: str,
+        payload_roles: tuple[str, ...],
+    ) -> None:
+        if not payload_roles:
+            return
+        key = (str(layer_id), str(phase))
+        expected = self.expected_phase_payload_roles.setdefault(key, set())
+        for payload_role in payload_roles:
+            if str(payload_role) not in expected:
+                expected.add(str(payload_role))
+                self.expected_execution_count += 1
+
+
 @dataclass(frozen=True)
 class RuntimePredictionCompatResult:
     predictor_id: str
@@ -344,6 +391,7 @@ class RouterSenseInjectionRuntime:
     _latest_execution_outcomes: list[dict[str, Any]] = field(default_factory=list)
     _latest_result_bundle: ResultBundle | None = None
     evidence_counters: RuntimeEvidenceCounters = field(default_factory=RuntimeEvidenceCounters)
+    expected_evidence: ExpectedEvidence = field(default_factory=ExpectedEvidence)
     _runtime_failure_reason: str = ""
 
     # Configuration and policy selection
@@ -668,6 +716,12 @@ class RouterSenseInjectionRuntime:
             "plan": plan,
             "prepared_execution": prepared_execution,
         }
+        if self._layer_selected(layer_name):
+            self.expected_evidence.expect_phase_payload_roles(
+                layer_id=str(context.layer_id),
+                phase=str(phase),
+                payload_roles=self._required_payload_roles_for_phase(str(phase)),
+            )
         adapter = getattr(self, "transport_adapter", None)
         if adapter is not None:
             if hasattr(adapter, "set_effective_preflight_mode"):
@@ -812,12 +866,30 @@ class RouterSenseInjectionRuntime:
         commit_sha = str(getattr(self, "_commit_sha", "") or "")
         git_clean = bool(getattr(self, "_git_clean", False))
         outcomes = list(self._latest_execution_outcomes)
-        formal_execution_expected = bool(
-            any(
-                str(row.get("state", "")).upper() == "EXECUTING"
-                for row in list(getattr(self, "prepared_plan_bindings", ()))
-            )
-            or bool(getattr(self, "_prepared_executions", {}))
+        expected_evidence = self.expected_evidence
+        formal_execution_expected = int(expected_evidence.expected_execution_count) > 0
+        observed_role_map: dict[tuple[str, str], set[str]] = {}
+        observed_layers: set[str] = set()
+        for item in outcomes:
+            layer_id = str(item.get("layer_id", ""))
+            phase = str(item.get("phase", ""))
+            payload_role = str(item.get("payload_role", ""))
+            if layer_id:
+                observed_layers.add(layer_id)
+            if layer_id and phase and payload_role:
+                observed_role_map.setdefault((layer_id, phase), set()).add(payload_role)
+        missing_expected_roles: list[str] = []
+        for key, required_roles in expected_evidence.expected_phase_payload_roles.items():
+            observed_roles = observed_role_map.get(key, set())
+            for payload_role in sorted(required_roles):
+                if payload_role not in observed_roles:
+                    missing_expected_roles.append(f"{key[0]}:{key[1]}:{payload_role}")
+        missing_selected_layers = sorted(
+            layer_id for layer_id in expected_evidence.selected_layers if layer_id not in observed_layers
+        )
+        missing_execution_outcome_count = max(
+            0,
+            int(expected_evidence.expected_execution_count) - int(len(outcomes)),
         )
         runtime_failure_reason = str(getattr(self, "_runtime_failure_reason", "") or "")
         if runtime_failure_reason:
@@ -825,11 +897,23 @@ class RouterSenseInjectionRuntime:
             correctness_status = "invalid"
             status = "failure"
             failure_reason = runtime_failure_reason
-        elif formal_execution_expected and not outcomes:
+        elif formal_execution_expected and (
+            not outcomes
+            or missing_execution_outcome_count > 0
+            or missing_expected_roles
+            or missing_selected_layers
+        ):
             all_work_completed = False
             correctness_status = "invalid"
             status = "failure"
-            failure_reason = "missing_execution_outcomes"
+            if not outcomes:
+                failure_reason = "missing_execution_outcomes"
+            elif missing_expected_roles:
+                failure_reason = "missing_expected_payload_roles"
+            elif missing_selected_layers:
+                failure_reason = "missing_selected_layers"
+            else:
+                failure_reason = "missing_execution_outcomes"
         elif outcomes:
             all_work_completed = all(
                 bool(dict(item.get("outcome", {})).get("success", False))
@@ -847,6 +931,7 @@ class RouterSenseInjectionRuntime:
             failure_reason = ""
         summary = {
             "formal_execution_expected": bool(formal_execution_expected),
+            "expected_execution_count": int(expected_evidence.expected_execution_count),
             "all_work_completed": bool(all_work_completed),
             "fallback_count": int(self.evidence_counters.fallback_count),
             "timeout_count": int(self.evidence_counters.timeout_count),
@@ -857,7 +942,9 @@ class RouterSenseInjectionRuntime:
             "execution_failure_count": int(self.evidence_counters.execution_failure_count),
             "cleanup_failure_count": int(self.evidence_counters.cleanup_failure_count),
             "execution_outcome_count": int(len(outcomes)),
-            "missing_execution_outcome_count": int(1 if formal_execution_expected and not outcomes else 0),
+            "missing_execution_outcome_count": int(missing_execution_outcome_count),
+            "missing_expected_payload_role_count": int(len(missing_expected_roles)),
+            "missing_selected_layer_count": int(len(missing_selected_layers)),
             "release_id_count": int(len(self.release_state_ledger.satisfied_release_ids)),
             "measurement_event_count": int(getattr(measurement_snapshot, "event_count", 0) or 0) if measurement_snapshot is not None else 0,
             "measurement_unknown_event_count": int(getattr(measurement_snapshot, "unknown_event_count", 0) or 0) if measurement_snapshot is not None else 0,
@@ -889,6 +976,18 @@ class RouterSenseInjectionRuntime:
                     "measurement_capability": None if measurement_snapshot is None else measurement_snapshot.capability.to_dict(),
                     "measurement_completeness": None if measurement_snapshot is None else measurement_snapshot.completeness.to_dict(),
                     "failure_reason": str(failure_reason),
+                    "expected_evidence": {
+                        "claim_scope": str(expected_evidence.claim_scope),
+                        "selected_layers": list(sorted(expected_evidence.selected_layers)),
+                        "expected_execution_count": int(expected_evidence.expected_execution_count),
+                        "expected_phase_payload_roles": {
+                            f"{layer_id}:{phase}": list(sorted(payload_roles))
+                            for (layer_id, phase), payload_roles in sorted(expected_evidence.expected_phase_payload_roles.items())
+                        },
+                        "measurement_required": bool(expected_evidence.measurement_required),
+                    },
+                    "missing_expected_payload_roles": list(missing_expected_roles),
+                    "missing_selected_layers": list(missing_selected_layers),
                     "commit_sha_source": str(getattr(self, "_commit_sha_source", "") or ""),
                 },
                 extensions={},
@@ -3843,6 +3942,14 @@ class RouterSenseInjectionRuntime:
         self._latest_execution_outcomes.clear()
         self._latest_result_bundle = None
         self.evidence_counters = RuntimeEvidenceCounters()
+        self.expected_evidence.reset(
+            claim_scope="formal",
+            selected_layers=set(self._selected_layer_id_set),
+            measurement_required=str(getattr(self, "_instrumentation_mode", "off") or "off") != "off",
+            performance_claim_requested=False,
+            prediction_claim_requested=False,
+            offline_claim_requested=False,
+        )
         self._runtime_failure_reason = ""
         self._cleanup_execution_caches_for_generation(before_generation=int(self._forward_epoch))
         self.release_state_ledger.reset(

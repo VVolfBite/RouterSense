@@ -241,23 +241,15 @@ class ResultBundle:
     def from_dict(cls, payload: Mapping[str, object]) -> "ResultBundle":
         run_identity = RunIdentity.from_dict(payload.get("run_identity", {}))
         eligibility_payload = payload.get("eligibility")
+        if not isinstance(eligibility_payload, Mapping):
+            raise ValueError("eligibility must be present and typed")
+        summary_payload = payload.get("summary")
+        if not isinstance(summary_payload, Mapping):
+            raise ValueError("summary must be present and typed")
         bundle = cls(
             run_identity=run_identity,
             status=str(payload.get("status", "")),
-            eligibility=EligibilityResult.from_dict(eligibility_payload)
-            if isinstance(eligibility_payload, Mapping)
-            else EligibilityResult(
-                correctness_eligible=False,
-                performance_eligible=False,
-                prediction_evaluation_eligible=False,
-                offline_replay_eligible=False,
-                preparation_claim_eligible=False,
-                correctness_reasons=("missing_eligibility",),
-                performance_reasons=("missing_eligibility",),
-                prediction_reasons=("missing_eligibility",),
-                offline_replay_reasons=("missing_eligibility",),
-                preparation_claim_reasons=("missing_eligibility",),
-            ),
+            eligibility=EligibilityResult.from_dict(eligibility_payload),
             schema_version=str(payload.get("schema_version", "")),
             correctness_status=str(payload.get("correctness_status", "unknown")),
             performance_status=str(payload.get("performance_status", "unknown")),
@@ -267,7 +259,7 @@ class ResultBundle:
             instrumentation_mode=str(payload.get("instrumentation_mode", "off")),
             audit_evidence_level=str(payload.get("audit_evidence_level", "unavailable")),
             measurement_complete=payload.get("measurement_complete") if isinstance(payload.get("measurement_complete"), bool) else None,
-            summary=dict(payload.get("summary", {})) if isinstance(payload.get("summary"), Mapping) else {},
+            summary=dict(summary_payload),
             details=dict(payload.get("details", {})) if isinstance(payload.get("details"), Mapping) else {},
             extensions=dict(payload.get("extensions", {})) if isinstance(payload.get("extensions"), Mapping) else {},
         )

@@ -92,3 +92,20 @@ def test_release_ledger_clears_on_new_forward_and_result_bundle_finalizes() -> N
 
     runtime.begin_forward(forward_epoch=2)
     assert runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1") == ()
+
+
+def test_finalize_result_bundle_fails_closed_when_expected_execution_missing() -> None:
+    runtime = _runtime(rank=1)
+    runtime.begin_forward(forward_epoch=5)
+    runtime.expected_evidence.expect_phase_payload_roles(
+        layer_id="1",
+        phase="P0",
+        payload_roles=("hidden_states", "routing_probs"),
+    )
+    bundle = runtime._finalize_result_bundle()  # noqa: SLF001
+    assert bundle is not None
+    assert bundle.status == "failure"
+    assert bundle.correctness_status == "invalid"
+    assert bundle.summary["formal_execution_expected"] is True
+    assert bundle.summary["missing_execution_outcome_count"] == 2
+    assert "missing_execution_outcomes" == bundle.details["failure_reason"]
