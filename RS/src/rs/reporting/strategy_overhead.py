@@ -29,20 +29,14 @@ def _sum_stage(rows: list[dict[str, Any]], stage: str) -> float:
 
 def _load_result_facts(run_dir: Path) -> dict[str, Any]:
     bundle_path = run_dir / "result_bundle.json"
-    if bundle_path.exists():
-        bundle = ResultBundle.from_dict(_read_json(bundle_path))
-        return {
-            "status": bundle.status,
-            "details": dict(bundle.details),
-            "summary": dict(bundle.summary),
-            "diagnostic_only": not bool(bundle.eligibility.performance_eligible),
-        }
-    summary = _read_json(run_dir / "summary.json")
+    if not bundle_path.exists():
+        raise FileNotFoundError(f"missing canonical result bundle: {bundle_path}")
+    bundle = ResultBundle.from_dict(_read_json(bundle_path))
     return {
-        "status": summary.get("status"),
-        "details": dict(summary.get("details", {}) or {}),
-        "summary": summary,
-        "diagnostic_only": True,
+        "status": bundle.status,
+        "details": dict(bundle.details),
+        "summary": dict(bundle.summary),
+        "diagnostic_only": not bool(bundle.eligibility.performance_eligible),
     }
 
 
@@ -189,7 +183,7 @@ def _collect_run_c(run_c_dir: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {"run_c_dir": str(run_c_dir), "strategies": {}}
     for strategy_dir in sorted(run_c_dir.iterdir()):
         rep_dir = strategy_dir / "rep0"
-        if not rep_dir.is_dir() or not ((rep_dir / "result_bundle.json").exists() or (rep_dir / "summary.json").exists()):
+        if not rep_dir.is_dir() or not (rep_dir / "result_bundle.json").exists():
             continue
         payload["strategies"][strategy_dir.name] = _collect_strategy(rep_dir)
     return payload
@@ -199,7 +193,7 @@ def run_overhead_audit(run_a_dir: Path, run_c_dir: Path | None) -> dict[str, Any
     strategies = {}
     for strategy_dir in sorted(run_a_dir.iterdir()):
         rep_dir = strategy_dir / "rep0"
-        if rep_dir.is_dir() and ((rep_dir / "result_bundle.json").exists() or (rep_dir / "summary.json").exists()):
+        if rep_dir.is_dir() and (rep_dir / "result_bundle.json").exists():
             strategies[strategy_dir.name] = _collect_strategy(rep_dir)
 
     birkhoff = strategies.get("birkhoff_phase_local")

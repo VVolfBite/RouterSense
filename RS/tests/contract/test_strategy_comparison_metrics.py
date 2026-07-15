@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+from rs.core.contracts.result import RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.reporting.comparison_metrics import (
     add_baseline_deltas,
     build_comparison_report,
@@ -17,6 +19,38 @@ from rs.runtime.online.megatron_ep.control import plan_agreement as plan_agreeme
 from rs.scheduling.phase_execution import FutureDemandHint
 from rs.scheduling.registry import resolve_phase_policy
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
+
+
+def _write_result_bundle(run_dir) -> None:
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id="run",
+                pipeline="online",
+                claim_scope="formal",
+                trace_origin="runtime",
+                future_information_mode="predicted",
+            ),
+            status="success",
+            correctness_status="valid",
+            performance_status="ineligible",
+            commit_sha="abc123",
+            git_clean=True,
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=True,
+            summary={
+                "all_work_completed": True,
+                "fallback_count": 0,
+                "timeout_count": 0,
+                "check_failure_count": 0,
+                "execution_outcome_count": 1,
+            },
+            details={},
+            extensions={},
+        )
+    )
+    (run_dir / "result_bundle.json").write_text(json.dumps(bundle.to_dict()), encoding="utf-8")
 
 
 def test_communication_makespan_from_timeline() -> None:
@@ -276,7 +310,7 @@ def test_metrics_from_rank_dir_includes_shadow_alignment_summary(tmp_path) -> No
     (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
-    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    _write_result_bundle(run_dir)
     (run_dir / "rank0_prepared_phase_plan_shadow.jsonl").write_text(
         json.dumps(
             {
@@ -334,7 +368,7 @@ def test_metrics_from_rank_dir_uses_native_observer_fallback(tmp_path) -> None:
     (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
-    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    _write_result_bundle(run_dir)
     (run_dir / "rank0_observer.jsonl").write_text(
         "\n".join(
             [
@@ -376,7 +410,7 @@ def test_metrics_from_rank_dir_prefers_timeline_phase_window(tmp_path) -> None:
     (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
-    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    _write_result_bundle(run_dir)
     metrics = metrics_from_rank_dir(run_dir, rank=0)
     assert metrics["communication_makespan_us"] == 170.0
     assert metrics["communication_phase_window_us"] == 170.0
@@ -392,7 +426,7 @@ def test_metrics_from_rank_dir_includes_planning_stage_metrics(tmp_path) -> None
     (run_dir / "rank0_plan_arrival_records.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
-    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    _write_result_bundle(run_dir)
     (run_dir / "rank0_planning_timing.jsonl").write_text(
         "\n".join(
             [
@@ -420,7 +454,7 @@ def test_metrics_from_rank_dir_reads_prepared_plan_summary(tmp_path) -> None:
     (run_dir / "rank0_planning_timing.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_phase_contexts.jsonl").write_text("", encoding="utf-8")
     (run_dir / "rank0_observer.jsonl").write_text("", encoding="utf-8")
-    (run_dir / "rank0_summary.json").write_text(json.dumps({}), encoding="utf-8")
+    _write_result_bundle(run_dir)
     (run_dir / "rank0_scheduled_phase_plans.jsonl").write_text(
         json.dumps(
             {

@@ -25,11 +25,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _load_result_details(run_dir: Path) -> dict[str, Any]:
     bundle_path = run_dir / "result_bundle.json"
-    if bundle_path.exists():
-        bundle = ResultBundle.from_dict(_read_json(bundle_path))
-        return dict(bundle.details)
-    summary = _read_json(run_dir / "summary.json")
-    return dict(summary.get("details", {}) or {})
+    if not bundle_path.exists():
+        raise FileNotFoundError(f"missing canonical result bundle: {bundle_path}")
+    bundle = ResultBundle.from_dict(_read_json(bundle_path))
+    return dict(bundle.details)
 
 
 def _plan_row_summary(row: dict[str, Any]) -> dict[str, Any]:

@@ -3,14 +3,52 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rs.core.contracts.result import RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.reporting.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
+
+
+def _write_result_bundle(run_dir: Path, *, details: dict[str, object]) -> None:
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id="run",
+                pipeline="online",
+                claim_scope="formal",
+                trace_origin="runtime",
+                future_information_mode="predicted",
+            ),
+            status="success",
+            correctness_status="valid",
+            performance_status="ineligible",
+            commit_sha="abc123",
+            git_clean=True,
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=True,
+            summary={
+                "all_work_completed": True,
+                "fallback_count": 0,
+                "timeout_count": 0,
+                "check_failure_count": 0,
+                "execution_outcome_count": 1,
+            },
+            details=details,
+            extensions={},
+        )
+    )
+    (run_dir / "result_bundle.json").write_text(json.dumps(bundle.to_dict()), encoding="utf-8")
 
 
 def test_analyze_prepared_plan_runtime_extracts_arrival_binding_and_plan_summary(tmp_path: Path) -> None:
     run_dir = tmp_path
-    (run_dir / "summary.json").write_text(
-        json.dumps({"details": {"policy_name": "routersense_p0p1p2_hint", "p2_hint_mode": "calibrated_artifact", "execution_audit_status": "passed"}}),
-        encoding="utf-8",
+    _write_result_bundle(
+        run_dir,
+        details={
+            "policy_name": "routersense_p0p1p2_hint",
+            "p2_hint_mode": "calibrated_artifact",
+            "execution_audit_status": "passed",
+        },
     )
     (run_dir / "rank0_plan_arrival_records.jsonl").write_text(
         "\n".join(
@@ -89,3 +127,12 @@ def test_analyze_prepared_plan_runtime_extracts_arrival_binding_and_plan_summary
     assert report["scheduled_phase_plan_summaries"][0]["ordered_by_prepared_plan"] is True
     assert report["scheduled_phase_plan_summaries"][0]["hint_edges_consumed"] == 2
     assert report["execution_audit_summaries"][0]["prepared_plan_order_preserved"] is True
+
+
+def test_analyze_prepared_plan_runtime_requires_canonical_result_bundle(tmp_path: Path) -> None:
+    try:
+        analyze_prepared_plan_runtime(tmp_path, rank=0)
+    except FileNotFoundError as exc:
+        assert "missing canonical result bundle" in str(exc)
+    else:
+        raise AssertionError("expected missing canonical result bundle failure")
