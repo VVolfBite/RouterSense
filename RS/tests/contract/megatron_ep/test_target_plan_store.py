@@ -206,3 +206,22 @@ def test_target_plan_store_generation_floor_rejects_future_register_of_old_gener
     assert store.register_expected_publication(
         PreparationToken(service_session_id=1, forward_generation=3, target_key=key3, task_version=1, publish_sequence=1)
     ) is True
+
+
+def test_target_plan_store_does_not_let_older_token_override_newer_token() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    newer = PreparationToken(service_session_id=2, forward_generation=1, target_key=key, task_version=10, publish_sequence=10)
+    older = PreparationToken(service_session_id=1, forward_generation=1, target_key=key, task_version=1, publish_sequence=1)
+    assert store.register_expected_publication(newer) is True
+    assert store.register_expected_publication(older) is False
+    result = store.publish_if_current(token=newer, plan=_plan())
+    assert result.status == "PUBLISHED"
+
+
+def test_target_plan_store_same_token_is_idempotent() -> None:
+    store = TargetPlanStore()
+    key = TargetPlanKey("run", 1, "mb", "1")
+    token = PreparationToken(service_session_id=1, forward_generation=1, target_key=key, task_version=1, publish_sequence=1)
+    assert store.register_expected_publication(token) is True
+    assert store.register_expected_publication(token) is True

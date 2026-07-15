@@ -11,6 +11,15 @@ from rs.core.contracts import (
 )
 
 
+def _optional_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value)
+    if not normalized:
+        raise ValueError("optional identity field must not be empty")
+    return normalized
+
+
 def build_window_planning_request(
     *,
     identity: PlanningIdentity,
@@ -25,15 +34,17 @@ def build_window_planning_request(
     information_mode: str,
     hint_type: str = "traffic_matrix",
     oracle: bool = False,
+    planning_track: str = "runtime_lookahead",
+    p2_semantics: str = "advisory_hint",
 ) -> PlanningRequest:
     request = PlanningRequest(
         identity=PlanningIdentity(
             request_id=str(identity.request_id),
-            run_id=str(identity.run_id),
-            forward_id=str(identity.forward_id),
-            window_id=str(identity.window_id),
-            source_layer_id=str(identity.source_layer_id),
-            target_layer_id=str(identity.target_layer_id),
+            run_id=_optional_str(identity.run_id),
+            forward_id=_optional_str(identity.forward_id),
+            window_id=_optional_str(identity.window_id),
+            source_layer_id=_optional_str(identity.source_layer_id),
+            target_layer_id=_optional_str(identity.target_layer_id),
         ),
         traffic=PlanningTraffic(
             p0_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p0_dispatch_rows),
@@ -45,8 +56,8 @@ def build_window_planning_request(
             target_dispatch_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
             confidence=float(confidence),
             oracle=bool(oracle),
-            source_layer_id=str(identity.source_layer_id),
-            target_layer_id=str(identity.target_layer_id),
+            source_layer_id=_optional_str(identity.source_layer_id),
+            target_layer_id=_optional_str(identity.target_layer_id),
         ),
         topology=PlanningTopology(
             world_size=int(topology.world_size),
@@ -70,6 +81,8 @@ def build_window_planning_request(
             iteration_budget=weights.iteration_budget,
         ),
         information_mode=str(information_mode),
+        planning_track=str(planning_track),
+        p2_semantics=str(p2_semantics),
     )
     request.validate()
     return request

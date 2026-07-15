@@ -312,7 +312,18 @@ class TargetPlanKey:
     microbatch_id: str
     target_layer_id: str
 
+    def validate(self) -> None:
+        if not str(self.run_id):
+            raise ValueError("run_id must be non-empty")
+        if int(self.forward_epoch) < 0:
+            raise ValueError("forward_epoch must be >= 0")
+        if not str(self.microbatch_id):
+            raise ValueError("microbatch_id must be non-empty")
+        if not str(self.target_layer_id):
+            raise ValueError("target_layer_id must be non-empty")
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return asdict(self)
 
     @classmethod
@@ -333,7 +344,19 @@ class PreparationToken:
     task_version: int
     publish_sequence: int
 
+    def validate(self) -> None:
+        self.target_key.validate()
+        if int(self.service_session_id) < 0:
+            raise ValueError("service_session_id must be >= 0")
+        if int(self.forward_generation) != int(self.target_key.forward_epoch):
+            raise ValueError("generation_key_mismatch")
+        if int(self.task_version) < 0:
+            raise ValueError("task_version must be >= 0")
+        if int(self.publish_sequence) < 0:
+            raise ValueError("publish_sequence must be >= 0")
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         payload = asdict(self)
         payload["target_key"] = self.target_key.to_dict()
         return payload

@@ -70,10 +70,11 @@ def _runtime() -> RouterSenseInjectionRuntime:
 
 def test_raw_target_planner_does_not_build_paired_b() -> None:
     service = TargetLayerPlannerService(store=TargetPlanStore())
-    _bundle, plan = service._build_target_plan(  # noqa: SLF001
+    built = service._build_target_plan(  # noqa: SLF001
         request=_request(safe_projection_mode="disabled"),
         metrics=TargetLayerPlannerMetrics(),
     )
+    plan = built.prepared_plan
     assert plan.selected_variant == "raw_u"
     assert plan.paired_b_logical_plan_digest == ""
     assert plan.safe_projection_mode == "disabled"
@@ -85,10 +86,11 @@ def test_raw_target_planner_does_not_build_paired_b() -> None:
 
 def test_safe_target_planner_builds_paired_b_and_records_selection() -> None:
     service = TargetLayerPlannerService(store=TargetPlanStore())
-    _bundle, plan = service._build_target_plan(  # noqa: SLF001
+    built = service._build_target_plan(  # noqa: SLF001
         request=_request(safe_projection_mode="host_select"),
         metrics=TargetLayerPlannerMetrics(),
     )
+    plan = built.prepared_plan
     assert plan.raw_logical_plan_digest != ""
     assert plan.paired_b_logical_plan_digest != ""
     assert plan.selected_logical_plan_digest != ""
@@ -213,10 +215,11 @@ def test_sync_and_preplanned_formal_plan_digests_match_for_same_planning_request
     matrix = ((0, 2, 5), (3, 0, 3), (1, 5, 0))
     runtime = _runtime()
     service = TargetLayerPlannerService(store=TargetPlanStore())
-    bundle, _built = service._build_target_plan(  # noqa: SLF001
+    built = service._build_target_plan(  # noqa: SLF001
         request=_request(safe_projection_mode="disabled"),
         metrics=TargetLayerPlannerMetrics(),
     )
+    bundle = built.prediction_bundle
     runtime_request = runtime._build_formal_planning_request(  # noqa: SLF001
         request_id="same-request",
         source_layer_id="1",
@@ -238,6 +241,8 @@ def test_sync_and_preplanned_formal_plan_digests_match_for_same_planning_request
         target_layer_id="2",
     )
     assert runtime_request.semantic_digest() == service_request.semantic_digest()
+    assert built.prepared_plan.window_plan is not None
+    assert built.prepared_plan.window_plan.request_digest == built.planning_request.semantic_digest()
     runtime_plan = PlannerRegistry.create("U_barrier_criticality_global_matching", None).plan(runtime_request)
     service_plan = PlannerRegistry.create("U_barrier_criticality_global_matching", None).plan(service_request)
     assert runtime_plan.semantic_digest() == service_plan.semantic_digest()

@@ -121,23 +121,88 @@ class PredictionHint:
     oracle: bool = False
     source_layer_id: str | None = None
     target_layer_id: str | None = None
+    prediction_kind: str | None = None
+
+    @staticmethod
+    def _canonical_kind(*, predictor_id: str, hint_type: str, oracle: bool) -> str:
+        normalized_kind = str(hint_type or "").strip()
+        normalized_predictor = str(predictor_id or "").strip()
+        if normalized_kind in {
+            "zero_hint",
+            "copy_current_dispatch",
+            "learned_prediction",
+            "perfect_trace_hint",
+        }:
+            return normalized_kind
+        if normalized_kind == "traffic_matrix":
+            if bool(oracle):
+                return "perfect_trace_hint"
+            if normalized_predictor in {"zero", "zero_hint", "none"}:
+                return "zero_hint"
+            if normalized_predictor in {"copy_current", "copy_current_dispatch"}:
+                return "copy_current_dispatch"
+            return "learned_prediction"
+        if normalized_kind in {"different_hint", "history_ema", "history_linear_trend", "ridge_linear_trace_predictor"}:
+            return "learned_prediction"
+        return normalized_kind
 
     def validate(self, *, world_size: int | None = None) -> None:
         if not str(self.predictor_id):
             raise ValueError("predictor_id must be non-empty")
         if not str(self.hint_type):
             raise ValueError("hint_type must be non-empty")
+        canonical_kind = self._canonical_kind(
+            predictor_id=str(self.predictor_id),
+            hint_type=str(self.hint_type),
+            oracle=bool(self.oracle),
+        )
+        if canonical_kind not in {
+            "zero_hint",
+            "copy_current_dispatch",
+            "learned_prediction",
+            "perfect_trace_hint",
+        }:
+            raise ValueError(f"unsupported prediction kind {canonical_kind!r}")
         _validate_matrix("target_dispatch_rows", self.target_dispatch_rows, world_size=world_size)
         if self.confidence is not None:
             confidence = float(self.confidence)
             if not math.isfinite(confidence) or confidence < 0.0 or confidence > 1.0:
                 raise ValueError("confidence must be finite and within [0, 1]")
+        if canonical_kind == "perfect_trace_hint" and not bool(self.oracle):
+            raise ValueError("perfect trace must set oracle=True")
+        if bool(self.oracle) and canonical_kind != "perfect_trace_hint":
+            raise ValueError("oracle=True is only legal for perfect_trace_hint")
+        if canonical_kind == "zero_hint":
+            if any(int(value) != 0 for row in self.target_dispatch_rows for value in row):
+                raise ValueError("zero_hint matrix must be all zero")
+            if self.confidence is not None and float(self.confidence) != 0.0:
+                raise ValueError("zero_hint confidence must equal 0.0")
+        if canonical_kind == "perfect_trace_hint" and self.confidence is not None and float(self.confidence) != 1.0:
+            raise ValueError("perfect_trace_hint confidence must equal 1.0")
         for name, value in {
             "source_layer_id": self.source_layer_id,
             "target_layer_id": self.target_layer_id,
         }.items():
             if value is not None and not str(value):
                 raise ValueError(f"{name} must not be empty when provided")
+
+    def semantic_payload(self) -> dict[str, Any]:
+        self.validate()
+        canonical_kind = self._canonical_kind(
+            predictor_id=str(self.predictor_id),
+            hint_type=str(self.hint_type),
+            oracle=bool(self.oracle),
+        )
+        return {
+            "prediction_semantic_version": "prediction_hint_v2",
+            "predictor_id": str(self.predictor_id),
+            "prediction_kind": canonical_kind,
+            "target_dispatch_rows": [list(row) for row in self.target_dispatch_rows],
+            "confidence": None if self.confidence is None else float(self.confidence),
+            "oracle": bool(self.oracle),
+            "source_layer_id": self.source_layer_id,
+            "target_layer_id": self.target_layer_id,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -149,6 +214,11 @@ class PredictionHint:
             "oracle": bool(self.oracle),
             "source_layer_id": self.source_layer_id,
             "target_layer_id": self.target_layer_id,
+            "prediction_kind": self._canonical_kind(
+                predictor_id=str(self.predictor_id),
+                hint_type=str(self.hint_type),
+                oracle=bool(self.oracle),
+            ),
         }
 
 

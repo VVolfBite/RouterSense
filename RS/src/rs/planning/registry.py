@@ -33,9 +33,19 @@ class PlannerRegistry:
         return tuple(rows)
 
     @staticmethod
-    def create(planner_id: str, config=None):
+    def create(planner_id: str, config=None, *, usage: str | None = None):
         resolved = resolve_algorithm_id(planner_id)
         spec = resolved.spec
+        normalized_usage = None if usage is None else str(usage)
+        if normalized_usage == "runtime":
+            if not bool(spec.deployable) or bool(spec.reference_only) or str(spec.execution_model) == "exact_reference":
+                raise ValueError(f"planner {spec.canonical_id} is not runtime-deployable")
+        elif normalized_usage == "offline_exact":
+            if str(spec.execution_model) != "exact_reference":
+                raise ValueError(f"planner {spec.canonical_id} is not an offline exact planner")
+            raise ValueError("exact algorithms must be invoked through M4 OracleRegistry")
+        elif normalized_usage == "reporting":
+            raise ValueError("reporting aliases are not executable planners")
         family = planner_family_for_spec(
             family=str(spec.family),
             scheduling_scope=str(spec.scheduling_scope),

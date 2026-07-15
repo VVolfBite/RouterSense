@@ -6,6 +6,7 @@ from rs.core.contracts.execution import ActualPhaseContext, ExecutionContext, Ex
 from rs.runtime.online.megatron_ep.execution.api import (
     CommonExecutionGuard,
     GlooFunctionalExecutor,
+    NativePassthroughExecutor,
     P2PReleaseExecutor,
     PayloadInvocation,
     PhaseSyncExecutor,
@@ -77,6 +78,8 @@ def build_runtime_execution_pipeline(*, execution_mode: str) -> RuntimeExecution
         executor = P2PReleaseExecutor()
     elif normalized == "gloo_functional":
         executor = GlooFunctionalExecutor()
+    elif normalized in {"native_passthrough", "native", "disabled"}:
+        executor = NativePassthroughExecutor()
     else:
         raise ValueError(f"unsupported execution_mode {execution_mode!r}")
     return RuntimeExecutionPipeline(executor=executor)

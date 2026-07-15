@@ -1,4 +1,4 @@
-from .api import CommonExecutionGuard, GlooFunctionalExecutor, P2PReleaseExecutor, PayloadInvocation, PhaseSyncExecutor
+from .api import CommonExecutionGuard, GlooFunctionalExecutor, NativePassthroughExecutor, P2PReleaseExecutor, PayloadInvocation, PhaseSyncExecutor
 from .pipeline import PreparedExecution, RuntimeExecutionPipeline
 from .transport_adapter import HostAPIDriftError, MegatronPhaseTransportAdapter
 from .sync_wave_executor import PhaseExecutionResult, execute_scheduled_phase_tensor
@@ -9,6 +9,7 @@ __all__ = [
     "GlooFunctionalExecutor",
     "HostAPIDriftError",
     "MegatronPhaseTransportAdapter",
+    "NativePassthroughExecutor",
     "P2PReleaseExecutor",
     "PayloadInvocation",
     "PhaseExecutionResult",

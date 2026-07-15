@@ -89,7 +89,7 @@ def test_window_plan_semantic_digest_excludes_metadata_but_audit_digest_changes(
     assert plan.audit_digest() != same_waves_new_metadata.audit_digest()
 
 
-def test_request_semantic_digest_excludes_predictor_provenance() -> None:
+def test_request_semantic_digest_includes_prediction_semantics() -> None:
     first = _request()
     second = PlanningRequest(
         identity=first.identity,
@@ -99,7 +99,7 @@ def test_request_semantic_digest_excludes_predictor_provenance() -> None:
             hint_type="different_hint",
             target_dispatch_rows=first.prediction_hint.target_dispatch_rows,
             confidence=0.25,
-            oracle=True,
+            oracle=False,
             source_layer_id="999",
             target_layer_id="1000",
         ),
@@ -108,7 +108,7 @@ def test_request_semantic_digest_excludes_predictor_provenance() -> None:
         weights=first.weights,
         information_mode=first.information_mode,
     )
-    assert first.semantic_digest() == second.semantic_digest()
+    assert first.semantic_digest() != second.semantic_digest()
 
 
 def test_request_validate_rejects_negative_matrix_and_bad_information_mode() -> None:

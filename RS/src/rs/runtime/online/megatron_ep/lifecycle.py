@@ -2511,7 +2511,20 @@ class RouterSenseInjectionRuntime:
         prediction_confidence: float,
         information_mode: str = "p0_p1_p2",
         max_waves: int = 256,
+        planning_track: str = "runtime_lookahead",
+        p2_semantics: str | None = None,
     ) -> PlanningRequest:
+        effective_p2_semantics = (
+            str(p2_semantics)
+            if p2_semantics is not None
+            else (
+                "absent"
+                if str(information_mode) in {"p0_only", "p0_p1"}
+                else "advisory_hint"
+                if str(planning_track) == "runtime_lookahead"
+                else "executable_actual"
+            )
+        )
         return build_window_planning_request(
             identity=PlanningIdentity(
                 request_id=str(request_id),
@@ -2530,7 +2543,7 @@ class RouterSenseInjectionRuntime:
             constraints=PlanningConstraints(
                 bucket_rows=int(self.config.bucket_rows),
                 max_waves=int(max_waves),
-                expert_compute_delay=0.0,
+                expert_compute_delay=float(getattr(self.config, "expert_compute_delay", 0.0) or 0.0),
                 phase_release_model="p1_return",
             ),
             weights=PlanningWeights(
@@ -2543,6 +2556,16 @@ class RouterSenseInjectionRuntime:
                 prediction_weight=float(getattr(self.config, "prediction_weight", 0.35)),
             ),
             information_mode=str(information_mode),
+            planning_track=str(planning_track),
+            p2_semantics=str(effective_p2_semantics),
+            hint_type=(
+                "perfect_trace_hint"
+                if str(predictor_name) == "perfect_trace_hint"
+                else "copy_current_dispatch"
+                if str(predictor_name) == "copy_current_dispatch"
+                else "learned_prediction"
+            ),
+            oracle=bool(str(predictor_name) == "perfect_trace_hint"),
         )
 
     def _store_runtime_joint_plan_from_p0(
@@ -2631,7 +2654,7 @@ class RouterSenseInjectionRuntime:
             raw_u_name = effective_policy
             paired_b_name = effective_policy
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None).plan(formal_request)
+            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None, usage="runtime").plan(formal_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2673,7 +2696,7 @@ class RouterSenseInjectionRuntime:
             raw_u_name, paired_b_name = self._runtime_safe_joint_pair()
             safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
             raw_u_start_ns = time.monotonic_ns()
-            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None).plan(formal_request)
+            raw_u_window_plan = PlannerRegistry.create(raw_u_name, None, usage="runtime").plan(formal_request)
             raw_u_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -2691,7 +2714,7 @@ class RouterSenseInjectionRuntime:
                 paired_b_plan = raw_u_plan
                 paired_b_end_ns = paired_b_start_ns
             else:
-                paired_b_window_plan = PlannerRegistry.create(paired_b_name, None).plan(formal_request)
+                paired_b_window_plan = PlannerRegistry.create(paired_b_name, None, usage="runtime").plan(formal_request)
                 paired_b_plan = to_logical_plan(paired_b_window_plan)
                 paired_b_end_ns = time.monotonic_ns()
             self._record_planning_timing(
@@ -2706,8 +2729,8 @@ class RouterSenseInjectionRuntime:
             if safe_projection_mode != "disabled":
                 self._increment_state_counter_map("paired_b_build_count_by_layer", str(layer_id))
             selector = PlannerSelector(
-                local_planner=PlannerRegistry.create(paired_b_name, None),
-                joint_planner=PlannerRegistry.create(raw_u_name, None),
+                local_planner=PlannerRegistry.create(paired_b_name, None, usage="runtime"),
+                joint_planner=PlannerRegistry.create(raw_u_name, None, usage="runtime"),
                 estimator=CommonCorePlanEstimator(),
                 cost_model=formal_cost_model,
             )

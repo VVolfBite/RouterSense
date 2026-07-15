@@ -63,6 +63,8 @@ class PlanningTopology:
     def validate(self) -> None:
         if int(self.world_size) <= 0:
             raise ValueError("world_size must be > 0")
+        if not bool(self.full_duplex):
+            raise ValueError("half-duplex topology is not supported by the formal planner/runtime")
         if int(self.max_outgoing_per_rank_per_wave) != 1:
             raise ValueError("formal port model requires max_outgoing_per_rank_per_wave == 1")
         if int(self.max_incoming_per_rank_per_wave) != 1:
@@ -114,6 +116,8 @@ class PlanningWeights:
             numeric = float(value)
             if not math.isfinite(numeric):
                 raise ValueError(f"{name} must be finite")
+            if name != "iteration_budget" and numeric < 0.0:
+                raise ValueError(f"{name} must be >= 0")
         if self.iteration_budget is not None and int(self.iteration_budget) <= 0:
             raise ValueError("iteration_budget must be > 0 when provided")
 
@@ -134,6 +138,8 @@ class PlanningRequest:
     constraints: PlanningConstraints
     weights: PlanningWeights
     information_mode: str
+    planning_track: str = "runtime_lookahead"
+    p2_semantics: str = "advisory_hint"
 
     def validate(self) -> None:
         self.identity.validate()
@@ -145,6 +151,16 @@ class PlanningRequest:
         self.weights.validate()
         if str(self.information_mode) not in {"p0_p1_p2", "p0_only", "p0_p1"}:
             raise ValueError(f"unsupported information_mode {self.information_mode!r}")
+        if str(self.planning_track) not in {"runtime_lookahead", "execution_window", "offline_exact"}:
+            raise ValueError(f"unsupported planning_track {self.planning_track!r}")
+        if str(self.p2_semantics) not in {"advisory_hint", "executable_actual", "absent"}:
+            raise ValueError(f"unsupported p2_semantics {self.p2_semantics!r}")
+        if str(self.planning_track) == "runtime_lookahead" and str(self.p2_semantics) not in {"advisory_hint", "absent"}:
+            raise ValueError("runtime_lookahead cannot execute P2 actual traffic")
+        if str(self.information_mode) in {"p0_only", "p0_p1"} and str(self.p2_semantics) != "absent":
+            raise ValueError("P2 must be absent when information_mode excludes P2")
+        if str(self.planning_track) == "execution_window" and str(self.p2_semantics) == "advisory_hint":
+            raise ValueError("execution_window must use executable_actual or absent P2")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -156,18 +172,22 @@ class PlanningRequest:
             "constraints": self.constraints.to_dict(),
             "weights": self.weights.to_dict(),
             "information_mode": str(self.information_mode),
+            "planning_track": str(self.planning_track),
+            "p2_semantics": str(self.p2_semantics),
         }
 
     def semantic_payload(self) -> dict[str, Any]:
         self.validate()
         return {
-            "semantic_version": "planning_request_v3",
+            "semantic_version": "planning_request_v4",
             "traffic": self.traffic.to_dict(),
-            "prediction_hint_target_dispatch_rows": [list(row) for row in self.prediction_hint.target_dispatch_rows],
+            "prediction_hint": self.prediction_hint.semantic_payload(),
             "topology": self.topology.to_dict(),
             "constraints": self.constraints.to_dict(),
             "weights": self.weights.to_dict(),
             "information_mode": str(self.information_mode),
+            "planning_track": str(self.planning_track),
+            "p2_semantics": str(self.p2_semantics),
         }
 
     def semantic_digest(self) -> str:

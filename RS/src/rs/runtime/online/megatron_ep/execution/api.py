@@ -479,3 +479,25 @@ class GlooFunctionalExecutor(_BaseExecutor):
 
     def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
         return PhaseSyncExecutor().execute(plan=plan, invocation=invocation, context=context)
+
+
+class NativePassthroughExecutor(_BaseExecutor):
+    backend_id = "native_passthrough"
+
+    def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
+        submitted = _submitted_task_ids_for_role(plan, invocation.payload_role)
+        return ExecutionOutcome(
+            success=False,
+            output_payload=None,
+            submitted_task_ids=submitted,
+            completed_task_ids=tuple(),
+            failed_task_ids=tuple(),
+            unresolved_task_ids=submitted,
+            executed_batch_count=0,
+            all_work_completed=False,
+            failure_code="native_passthrough_should_not_execute_formal_plan",
+            details={
+                "backend_id": str(self.backend_id),
+                "submitted_task_count": int(len(submitted)),
+            },
+        )

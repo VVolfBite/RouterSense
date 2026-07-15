@@ -7,6 +7,7 @@ from rs.core.contracts import PlanScore, PlanningRequest, WindowPlan
 
 from .api import Planner
 from .estimation import CommonCorePlanEstimator, PlanningCostModel
+from .validation import validate_window_plan_for_request
 
 
 class PlannerSelectionMode(Enum):
@@ -43,6 +44,23 @@ class PlannerSelector:
         self._joint_planner = joint_planner
         self._estimator = estimator or CommonCorePlanEstimator()
         self._cost_model = cost_model or PlanningCostModel()
+
+    @staticmethod
+    def _invalid_score(*, reason: str) -> PlanScore:
+        return PlanScore(
+            estimated_makespan=float("inf"),
+            estimator_id="common_core_estimator",
+            cost_model_id="formal_cost_model",
+            valid=False,
+            reason=str(reason),
+        )
+
+    def _estimate_validated(self, *, plan: WindowPlan, request: PlanningRequest) -> PlanScore:
+        try:
+            validate_window_plan_for_request(plan, request)
+        except Exception as exc:
+            return self._invalid_score(reason=str(exc))
+        return self._estimator.estimate(plan, request, self._cost_model)
 
     def select(
         self,
@@ -82,7 +100,7 @@ class PlannerSelector:
         if mode is PlannerSelectionMode.LOCAL:
             if local_plan is None:
                 raise ValueError("LOCAL selection requires local_plan")
-            local_score = self._estimator.estimate(local_plan, request, self._cost_model)
+            local_score = self._estimate_validated(plan=local_plan, request=request)
             if not local_score.valid:
                 raise PlanningSelectionError(f"local_plan_invalid:{local_score.reason or 'unknown'}")
             return SelectedPlan(
@@ -95,7 +113,7 @@ class PlannerSelector:
         if mode is PlannerSelectionMode.JOINT:
             if joint_plan is None:
                 raise ValueError("JOINT selection requires joint_plan")
-            joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
+            joint_score = self._estimate_validated(plan=joint_plan, request=request)
             if not joint_score.valid:
                 raise PlanningSelectionError(f"joint_plan_invalid:{joint_score.reason or 'unknown'}")
             return SelectedPlan(
@@ -107,8 +125,8 @@ class PlannerSelector:
             )
         if local_plan is None or joint_plan is None:
             raise ValueError("COMPARE selection requires both local_plan and joint_plan")
-        local_score = self._estimator.estimate(local_plan, request, self._cost_model)
-        joint_score = self._estimator.estimate(joint_plan, request, self._cost_model)
+        local_score = self._estimate_validated(plan=local_plan, request=request)
+        joint_score = self._estimate_validated(plan=joint_plan, request=request)
         if local_score.valid and joint_score.valid:
             selected_plan = joint_plan if float(joint_score.estimated_makespan) < float(local_score.estimated_makespan) else local_plan
             selected_score = joint_score if selected_plan is joint_plan else local_score

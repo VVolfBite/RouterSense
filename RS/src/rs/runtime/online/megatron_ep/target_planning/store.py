@@ -81,11 +81,33 @@ class TargetPlanStore:
     def put(self, key: TargetPlanKey, plan: TargetLayerPreparedJointPlan) -> None:
         self.publish_logical(key, plan)
 
+    @staticmethod
+    def _token_order(token: PreparationToken) -> tuple[int, int, int]:
+        return (
+            int(token.service_session_id),
+            int(token.task_version),
+            int(token.publish_sequence),
+        )
+
     def register_expected_publication(self, token: PreparationToken) -> bool:
+        token.validate()
         with self._lock:
             if self._generation_expired(token.target_key):
                 return False
-            self._publish_tokens[self._key(token.target_key)] = token
+            skey = self._key(token.target_key)
+            current = self._publish_tokens.get(skey)
+            if current is None:
+                self._publish_tokens[skey] = token
+                return True
+            if current == token:
+                return True
+            current_order = self._token_order(current)
+            next_order = self._token_order(token)
+            if next_order < current_order:
+                return False
+            if next_order == current_order:
+                return False
+            self._publish_tokens[skey] = token
             return True
 
     def clear_expected_publication(self, key: TargetPlanKey) -> None:

@@ -2,23 +2,48 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rs.core.contracts import PlanningRequest
+from rs.core.contracts import MatrixRows, PlanningRequest
 from rs.scheduling.contracts import ReleaseConstraint
 from rs.scheduling.unified_interface import SchedulingRequest, SchedulingTopology, build_policy as build_legacy_policy
 
 from .api import Planner, PlannerPolicyConfig, PlannerSpec, from_logical_plan
 
 
+def _legacy_scheduling_mode(request: PlanningRequest) -> str:
+    if str(request.planning_track) == "runtime_lookahead":
+        return "runtime_lookahead"
+    if str(request.planning_track) in {"execution_window", "offline_exact"}:
+        return "execution_window"
+    raise ValueError(f"unsupported planning_track {request.planning_track!r}")
+
+
+def _effective_phase_rows(request: PlanningRequest) -> tuple[MatrixRows, MatrixRows, MatrixRows]:
+    zero = tuple(
+        tuple(0 for _ in range(int(request.topology.world_size)))
+        for _ in range(int(request.topology.world_size))
+    )
+    p0 = request.traffic.p0_dispatch_rows
+    if str(request.information_mode) == "p0_only":
+        return p0, zero, zero
+    p1 = request.traffic.p1_return_rows
+    if str(request.information_mode) == "p0_p1":
+        return p0, p1, zero
+    if str(request.p2_semantics) == "absent":
+        return p0, p1, zero
+    return p0, p1, request.prediction_hint.target_dispatch_rows
+
+
 def to_legacy_request(request: PlanningRequest) -> SchedulingRequest:
     from rs.scheduling.unified_interface import PlanningHintMetadata, PolicyOptions
 
     request.validate()
+    p0_rows, p1_rows, p2_rows = _effective_phase_rows(request)
     return SchedulingRequest(
         request_id=str(request.identity.request_id),
         tasks=(),
-        p0_truth_rows=request.traffic.p0_dispatch_rows,
-        p1_truth_rows=request.traffic.p1_return_rows,
-        p2_hint_rows=request.prediction_hint.target_dispatch_rows,
+        p0_truth_rows=p0_rows,
+        p1_truth_rows=p1_rows,
+        p2_hint_rows=p2_rows,
         topology=SchedulingTopology(group_size=int(request.topology.world_size)),
         release_model=ReleaseConstraint(
             phase=str(request.constraints.phase_release_model),
@@ -38,12 +63,18 @@ def to_legacy_request(request: PlanningRequest) -> SchedulingRequest:
             iteration_budget=request.weights.iteration_budget,
         ),
         hint_metadata=PlanningHintMetadata(
-            hint_type=str(request.prediction_hint.hint_type),
+            hint_type=str(request.prediction_hint.to_dict().get("prediction_kind", request.prediction_hint.hint_type)),
             confidence=float(request.prediction_hint.confidence or 0.0),
             source_layer=None if request.identity.source_layer_id is None else int(request.identity.source_layer_id) if str(request.identity.source_layer_id).isdigit() else None,
             target_layer=None if request.identity.target_layer_id is None else int(request.identity.target_layer_id) if str(request.identity.target_layer_id).isdigit() else None,
+            metadata={
+                "planning_track": str(request.planning_track),
+                "p2_semantics": str(request.p2_semantics),
+                "oracle": bool(request.prediction_hint.oracle),
+                "predictor_id": str(request.prediction_hint.predictor_id),
+            },
         ),
-        scheduling_mode="execution_window",
+        scheduling_mode=_legacy_scheduling_mode(request),
         information_mode=str(request.information_mode),
         max_waves=int(request.constraints.max_waves),
         task_quantum_rows=int(request.constraints.bucket_rows),

@@ -46,6 +46,20 @@ class TargetLayerPlanningRequest:
     raw_u_policy_id: str = ""
     paired_b_policy_id: str = ""
     safe_projection_mode: str = "disabled"
+    max_waves: int = 256
+    expert_compute_delay: float = 0.0
+    information_mode: str = "p0_p1_p2"
+    planning_track: str = "runtime_lookahead"
+    p2_semantics: str = "advisory_hint"
+    full_duplex: bool = True
+
+    def validate(self) -> None:
+        if int(self.max_waves) <= 0:
+            raise ValueError("max_waves must be > 0")
+        if float(self.expert_compute_delay) < 0.0:
+            raise ValueError("expert_compute_delay must be >= 0")
+        if not bool(self.full_duplex):
+            raise ValueError("full_duplex is the only supported formal topology mode")
 
 
 @dataclass
@@ -98,10 +112,17 @@ class _BuiltPlanningResult:
     token: PreparationToken
 
 
+@dataclass(frozen=True)
+class BuiltTargetPlan:
+    prediction_bundle: TwoHorizonPredictionBundle
+    prepared_plan: TargetLayerPreparedJointPlan
+    planning_request: PlanningRequest
+
+
 @dataclass
 class TargetLayerPlannerService:
     store: TargetPlanStore
-    planner_factory: Callable[[str, Any | None], Any] = PlannerRegistry.create
+    planner_factory: Callable[..., Any] = PlannerRegistry.create
     two_horizon_predictor_factory: Callable[[str], SharedTwoHorizonPredictor] | None = None
     max_queue_size: int = 16
     _queue: queue.Queue[str | None] = field(init=False)
@@ -191,6 +212,7 @@ class TargetLayerPlannerService:
         return (str(run_id), str(microbatch_id))
 
     def submit(self, request: TargetLayerPlanningRequest) -> PreparationSubmitResult:
+        request.validate()
         if self._last_error is not None:
             raise RuntimeError(f"planner service already failed: {self._last_error}") from self._last_error
         task_key = self._task_key(request)
@@ -396,7 +418,10 @@ class TargetLayerPlannerService:
             started_ns = time.perf_counter_ns()
             metrics = TargetLayerPlannerMetrics(queue_wait_us=max(0.0, (started_ns / 1000.0) - float(item.queued_at_us)))
             try:
-                bundle, plan, planning_request = self._build_target_plan(request=request, metrics=metrics)
+                built = self._build_target_plan(request=request, metrics=metrics)
+                bundle = built.prediction_bundle
+                plan = built.prepared_plan
+                planning_request = built.planning_request
                 key = TargetPlanKey(
                     run_id=request.run_id,
                     forward_epoch=int(request.forward_epoch),
@@ -603,7 +628,13 @@ class TargetLayerPlannerService:
                 "h2_digest": str(ready.bundle.h2.matrix_digest),
                 "planner_wall_us": float(ready.metrics.planner_wall_us),
             },
-        )
+            )
+
+    def _make_planner(self, planner_id: str):
+        try:
+            return self.planner_factory(planner_id, None, usage="runtime")
+        except TypeError:
+            return self.planner_factory(planner_id, None)
 
     def publication_state_for_slot(self, slot: PublicationSlot) -> LocalPublicationCandidate | None:
         with self._lock:
@@ -618,8 +649,16 @@ class TargetLayerPlannerService:
         mode: PlannerSelectionMode,
     ) -> SelectedPlan:
         selector = PlannerSelector(
-            local_planner=self.planner_factory("fifo_bucket", None) if local_plan is None else self.planner_factory(getattr(local_plan, "planner_id", "fifo_bucket"), None),
-            joint_planner=self.planner_factory("barrier_criticality_joint", None) if joint_plan is None else self.planner_factory(getattr(joint_plan, "planner_id", "barrier_criticality_joint"), None),
+            local_planner=(
+                self._make_planner("fifo_bucket")
+                if local_plan is None
+                else self._make_planner(getattr(local_plan, "planner_id", "fifo_bucket"))
+            ),
+            joint_planner=(
+                self._make_planner("barrier_criticality_joint")
+                if joint_plan is None
+                else self._make_planner(getattr(joint_plan, "planner_id", "barrier_criticality_joint"))
+            ),
             estimator=CommonCorePlanEstimator(),
             cost_model=PlanningCostModel(
                 expert_compute_delay=float(planning_request.constraints.expert_compute_delay),
@@ -640,7 +679,7 @@ class TargetLayerPlannerService:
         *,
         request: TargetLayerPlanningRequest,
         metrics: TargetLayerPlannerMetrics,
-    ) -> tuple[TwoHorizonPredictionBundle, TargetLayerPreparedJointPlan, PlanningRequest]:
+    ) -> BuiltTargetPlan:
         planner_started_ns = time.perf_counter_ns()
         predictor_factory = self.two_horizon_predictor_factory or (lambda predictor_name: SharedTwoHorizonPredictor(predictor_name=predictor_name))
         predictor = predictor_factory(request.predictor_name)
@@ -674,7 +713,7 @@ class TargetLayerPlannerService:
         metrics.target_problem_us = (target_problem_end - target_problem_start) / 1000.0
         raw_u_start = time.perf_counter_ns()
         raw_policy_id = str(request.raw_u_policy_id or request.policy_id)
-        raw_planner = self.planner_factory(raw_policy_id, None)
+        raw_planner = self._make_planner(raw_policy_id)
         raw_plan = raw_planner.plan(planning_request)
         raw_logical_plan = to_logical_plan(raw_plan)
         raw_u_end = time.perf_counter_ns()
@@ -699,7 +738,7 @@ class TargetLayerPlannerService:
             paired_policy_id = str(request.paired_b_policy_id or "")
             if not paired_policy_id:
                 raise RuntimeError("safe target planner missing paired_b_policy_id")
-            paired_b_planner = self.planner_factory(paired_policy_id, None)
+            paired_b_planner = self._make_planner(paired_policy_id)
             paired_b_plan = paired_b_planner.plan(planning_request)
             paired_b_logical_plan = to_logical_plan(paired_b_plan)
             paired_b_end = time.perf_counter_ns()
@@ -788,7 +827,11 @@ class TargetLayerPlannerService:
             paired_b_plan_was_scored=paired_b_plan_was_scored,
             paired_b_plan_was_selected=paired_b_plan_was_selected,
         )
-        return bundle, plan, planning_request
+        return BuiltTargetPlan(
+            prediction_bundle=bundle,
+            prepared_plan=plan,
+            planning_request=planning_request,
+        )
 
     @staticmethod
     def _build_planning_request(
@@ -816,11 +859,14 @@ class TargetLayerPlannerService:
             p2_hint_rows=tuple(tuple(int(v) for v in row) for row in p2_hint_rows),
             predictor_id=str(predictor_id),
             confidence=float(prediction_confidence),
-            topology=PlanningTopology(world_size=int(request.group_size)),
+            topology=PlanningTopology(
+                world_size=int(request.group_size),
+                full_duplex=bool(request.full_duplex),
+            ),
             constraints=PlanningConstraints(
                 bucket_rows=int(request.bucket_rows),
-                max_waves=256,
-                expert_compute_delay=0.0,
+                max_waves=int(request.max_waves),
+                expert_compute_delay=float(request.expert_compute_delay),
                 phase_release_model="p1_return",
             ),
             weights=PlanningWeights(
@@ -834,5 +880,15 @@ class TargetLayerPlannerService:
                 criticality_weight=float(request.policy_options.criticality_weight),
                 iteration_budget=request.policy_options.iteration_budget,
             ),
-            information_mode="p0_p1_p2",
+            information_mode=str(request.information_mode),
+            planning_track=str(request.planning_track),
+            p2_semantics=str(request.p2_semantics),
+            hint_type=(
+                "perfect_trace_hint"
+                if str(predictor_id) == "perfect_trace_hint"
+                else "copy_current_dispatch"
+                if str(predictor_id) == "copy_current_dispatch"
+                else "learned_prediction"
+            ),
+            oracle=bool(str(predictor_id) == "perfect_trace_hint"),
         )
