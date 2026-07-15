@@ -26,24 +26,18 @@ class RuntimeArtifactRecorder:
         self._writer = FilesystemArtifactWriter(root_dir=self.run_dir)
 
     def _write_json(self, relative_path: str, payload: object, *, schema: str, claim_role: str) -> None:
-        relative = Path(relative_path)
-        self._writer.write(
-            category="" if str(relative.parent) in {"", "."} else str(relative.parent).replace("\\", "/"),
-            name=relative.name,
+        self._writer.write_json(
+            relative_path=relative_path.replace("\\", "/"),
             payload=payload,
-            format="json",
             schema=schema,
             producer=self.producer,
             claim_role=claim_role,
         )
 
     def _write_jsonl(self, relative_path: str, rows: list[dict[str, Any]], *, schema: str, claim_role: str) -> None:
-        relative = Path(relative_path)
-        self._writer.write(
-            category="" if str(relative.parent) in {"", "."} else str(relative.parent).replace("\\", "/"),
-            name=relative.name,
+        self._writer.write_jsonl(
+            relative_path=relative_path.replace("\\", "/"),
             payload=rows,
-            format="jsonl",
             schema=schema,
             producer=self.producer,
             claim_role=claim_role,

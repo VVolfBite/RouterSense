@@ -54,6 +54,27 @@ class FilesystemArtifactWriter:
         temp.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
         temp.replace(self._manifest_path)
 
+    def _record_for_existing_path(
+        self,
+        *,
+        relative_path: str,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        target = self._resolve_target(relative_path)
+        if not target.exists():
+            raise FileNotFoundError(f"artifact path does not exist: {relative_path}")
+        payload = target.read_bytes()
+        return ArtifactRecord(
+            relative_path=str(target.relative_to(self.root_dir)).replace("\\", "/"),
+            schema=str(schema),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+            producer=str(producer),
+            claim_role=str(claim_role),
+        )
+
     @staticmethod
     def _encode_jsonl(payload: object) -> bytes:
         if not isinstance(payload, (list, tuple)):
@@ -107,6 +128,84 @@ class FilesystemArtifactWriter:
             size_bytes=base_record.size_bytes,
             producer=str(producer),
             claim_role=str(claim_role),
+        )
+        self._append_manifest(record)
+        return record
+
+    def write_json(
+        self,
+        *,
+        relative_path: str,
+        payload: object,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        relative = PurePosixPath(relative_path)
+        return self.write(
+            category="" if str(relative.parent) in {"", "."} else str(relative.parent),
+            name=relative.name,
+            payload=payload,
+            format="json",
+            schema=schema,
+            producer=producer,
+            claim_role=claim_role,
+        )
+
+    def write_jsonl(
+        self,
+        *,
+        relative_path: str,
+        payload: object,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        relative = PurePosixPath(relative_path)
+        return self.write(
+            category="" if str(relative.parent) in {"", "."} else str(relative.parent),
+            name=relative.name,
+            payload=payload,
+            format="jsonl",
+            schema=schema,
+            producer=producer,
+            claim_role=claim_role,
+        )
+
+    def write_bytes(
+        self,
+        *,
+        relative_path: str,
+        payload: bytes,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        base_record = self._write_bytes(relative_path=relative_path, payload=payload)
+        record = ArtifactRecord(
+            relative_path=base_record.relative_path,
+            schema=str(schema),
+            sha256=base_record.sha256,
+            size_bytes=base_record.size_bytes,
+            producer=str(producer),
+            claim_role=str(claim_role),
+        )
+        self._append_manifest(record)
+        return record
+
+    def register_existing(
+        self,
+        *,
+        relative_path: str,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        record = self._record_for_existing_path(
+            relative_path=relative_path,
+            schema=schema,
+            producer=producer,
+            claim_role=claim_role,
         )
         self._append_manifest(record)
         return record

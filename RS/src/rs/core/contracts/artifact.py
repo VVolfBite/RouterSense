@@ -37,3 +37,46 @@ class ArtifactWriter(Protocol):
         claim_role: str,
     ) -> ArtifactRecord:
         ...
+
+    def write_json(
+        self,
+        *,
+        relative_path: str,
+        payload: object,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        ...
+
+    def write_jsonl(
+        self,
+        *,
+        relative_path: str,
+        payload: object,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        ...
+
+    def write_bytes(
+        self,
+        *,
+        relative_path: str,
+        payload: bytes,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        ...
+
+    def register_existing(
+        self,
+        *,
+        relative_path: str,
+        schema: str,
+        producer: str,
+        claim_role: str,
+    ) -> ArtifactRecord:
+        ...

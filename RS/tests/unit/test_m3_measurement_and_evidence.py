@@ -260,6 +260,28 @@ def test_artifact_writer_roundtrip_and_path_guard(tmp_path: Path) -> None:
         raise AssertionError("expected path escape validation failure")
 
 
+def test_artifact_writer_jsonl_and_register_existing_roundtrip(tmp_path: Path) -> None:
+    writer = FilesystemArtifactWriter(root_dir=tmp_path)
+    writer.write_jsonl(
+        relative_path="events.jsonl",
+        payload=[{"a": 1}, {"b": 2}],
+        schema="events.v1",
+        producer="test",
+        claim_role="diagnostic",
+    )
+    (tmp_path / "prebuilt.bin").write_bytes(b"abc")
+    writer.register_existing(
+        relative_path="prebuilt.bin",
+        schema="binary.v1",
+        producer="test",
+        claim_role="raw",
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    artifact_paths = {item["relative_path"] for item in manifest["artifacts"]}
+    assert "events.jsonl" in artifact_paths
+    assert "prebuilt.bin" in artifact_paths
+
+
 def test_runtime_artifact_recorder_uses_canonical_manifest(tmp_path: Path) -> None:
     recorder = RuntimeArtifactRecorder(run_dir=tmp_path)
     recorder.write_run_manifest({"run_id": "run"})
