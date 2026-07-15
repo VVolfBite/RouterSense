@@ -375,17 +375,17 @@ def test_materializer_adds_release_dependencies_for_p1() -> None:
         layout_digest=str(contexts[1].canonical_receive_layout_id),
         metadata={"phase_ready_context": contexts[1].to_dict()},
     )
-    sender_materialized = CommonPlanMaterializer().materialize(published, sender_context)
-    receiver_materialized = CommonPlanMaterializer().materialize(published, receiver_context)
+    sender_plan = CommonPlanMaterializer().materialize(published, sender_context)
+    receiver_plan = CommonPlanMaterializer().materialize(published, receiver_context)
     sender_dependencies = {
         dep
-        for batch in sender_materialized.batches
+        for batch in sender_plan.batches
         for slice_ in batch.slices
         for dep in slice_.dependency_ids
     }
     receiver_dependencies = {
         dep
-        for batch in receiver_materialized.batches
+        for batch in receiver_plan.batches
         for slice_ in batch.slices
         for dep in slice_.dependency_ids
     }
