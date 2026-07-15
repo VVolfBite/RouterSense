@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from rs.core.contracts import EvaluationSpec, OfflineEvaluationRecord
@@ -10,7 +11,7 @@ from rs.experiments.config_loader import ExperimentConfigLoader
 from rs.experiments.registry import RunnerRegistry
 from rs.experiments.reporting_cli import write_plot_artifacts, write_report_artifacts
 from rs.experiments.specs import RunPlan
-from rs.offline import build_evaluation_bundle, paired_aggregate
+from rs.offline import build_evaluation_bundle
 
 
 def _plan_run_id(plan: RunPlan) -> str:
@@ -150,6 +151,111 @@ def _offline_record_from_payload(payload: dict[str, Any]) -> OfflineEvaluationRe
     )
 
 
+def _eligible_offline_record(record: OfflineEvaluationRecord) -> bool:
+    eligibility = dict(record.eligibility)
+    return (
+        str(record.audit_status) == "valid"
+        and str(record.coverage_status) == "complete"
+        and str(record.fallback_status) == "none"
+        and record.realized_makespan is not None
+        and bool(eligibility.get("offline_replay_eligible", False))
+    )
+
+
+def _paired_percentile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(item) for item in values)
+    index = int((len(ordered) - 1) * float(quantile))
+    return float(ordered[index])
+
+
+def _paired_case_aggregate(
+    records: list[OfflineEvaluationRecord],
+    *,
+    comparison_id: str,
+    baseline_planner_id: str,
+    baseline_predictor_id: str,
+    candidate_planner_id: str,
+    candidate_predictor_id: str,
+    track: str,
+) -> dict[str, Any]:
+    grouped: dict[tuple[str, str, str, str, str, str, str, str], list[OfflineEvaluationRecord]] = {}
+    for record in records:
+        if str(record.track) != str(track):
+            continue
+        metrics = dict(record.metrics)
+        key = (
+            str(metrics.get("trace_digest", record.window_identity)),
+            str(record.window_identity),
+            str(record.evaluation_spec_digest),
+            str(record.task_set_digest),
+            str(record.execution_truth_digest),
+            str(record.track),
+            str(metrics.get("repeat", "")),
+            str(metrics.get("seed", "")),
+        )
+        grouped.setdefault(key, []).append(record)
+    gains: list[float] = []
+    exclusion_reasons: dict[str, int] = {}
+    for bucket in grouped.values():
+        baseline = next(
+            (
+                item
+                for item in bucket
+                if str(item.planner_id) == str(baseline_planner_id)
+                and str(item.predictor_id) == str(baseline_predictor_id)
+            ),
+            None,
+        )
+        candidate = next(
+            (
+                item
+                for item in bucket
+                if str(item.planner_id) == str(candidate_planner_id)
+                and str(item.predictor_id) == str(candidate_predictor_id)
+            ),
+            None,
+        )
+        if baseline is None or candidate is None:
+            exclusion_reasons["missing_pair"] = int(exclusion_reasons.get("missing_pair", 0)) + 1
+            continue
+        if not _eligible_offline_record(baseline):
+            exclusion_reasons["baseline_ineligible"] = int(exclusion_reasons.get("baseline_ineligible", 0)) + 1
+            continue
+        if not _eligible_offline_record(candidate):
+            exclusion_reasons["candidate_ineligible"] = int(exclusion_reasons.get("candidate_ineligible", 0)) + 1
+            continue
+        gains.append(float(baseline.realized_makespan) - float(candidate.realized_makespan))
+    wins = sum(1 for item in gains if float(item) > 0.0)
+    ties = sum(1 for item in gains if float(item) == 0.0)
+    losses = sum(1 for item in gains if float(item) < 0.0)
+    return {
+        "comparison_id": str(comparison_id),
+        "track": str(track),
+        "baseline_planner_id": str(baseline_planner_id),
+        "baseline_predictor_id": str(baseline_predictor_id),
+        "candidate_planner_id": str(candidate_planner_id),
+        "candidate_predictor_id": str(candidate_predictor_id),
+        "sample_count": int(len(gains)),
+        "excluded_count": int(sum(int(value) for value in exclusion_reasons.values())),
+        "exclusion_reasons": dict(exclusion_reasons),
+        "mean": (sum(gains) / len(gains)) if gains else None,
+        "median": median(gains) if gains else None,
+        "p25": _paired_percentile(gains, 0.25),
+        "p50": _paired_percentile(gains, 0.50),
+        "p75": _paired_percentile(gains, 0.75),
+        "p90": _paired_percentile(gains, 0.90),
+        "positive_window_rate": (wins / len(gains)) if gains else None,
+        "negative_window_rate": (losses / len(gains)) if gains else None,
+        "tie_rate": (ties / len(gains)) if gains else None,
+        "win_rate": (wins / len(gains)) if gains else None,
+        "loss_rate": (losses / len(gains)) if gains else None,
+        "best": max(gains) if gains else None,
+        "worst": min(gains) if gains else None,
+    }
+
+
 def _write_offline_suite_aggregates(*, suite_dir: Path, suite_id: str, suite_results: list[dict[str, Any]]) -> None:
     records = [item for item in (_offline_record_from_payload(payload) for payload in suite_results) if item is not None]
     if not records:
@@ -159,12 +265,90 @@ def _write_offline_suite_aggregates(*, suite_dir: Path, suite_id: str, suite_res
     )
     eval_spec_payload = dict(first_offline_payload.get("details", {}).get("offline_bundle", {}).get("evaluation_spec", {}))
     spec = EvaluationSpec(**eval_spec_payload)
-    paired = []
-    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", candidate_predictor_id="copy_current_dispatch", track=str(spec.track)))
-    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", candidate_predictor_id="perfect_trace_hint", track=str(spec.track)))
-    paired.append(paired_aggregate(records, baseline_predictor_id="copy_current_dispatch", candidate_predictor_id="perfect_trace_hint", track=str(spec.track)))
-    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", planner_id="barrier_criticality_joint", track=str(spec.track)))
-    paired.append(paired_aggregate(records, baseline_predictor_id="zero_hint", planner_id="birkhoff_bucket_phase_local", track=str(spec.track)))
+    track = str(spec.track)
+    paired = [
+        _paired_case_aggregate(
+            records,
+            comparison_id="u_vs_b_zero",
+            baseline_planner_id="birkhoff_bucket_phase_local",
+            baseline_predictor_id="zero_hint",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="zero_hint",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="u_vs_b_copy",
+            baseline_planner_id="birkhoff_bucket_phase_local",
+            baseline_predictor_id="copy_current_dispatch",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="copy_current_dispatch",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="u_vs_b_perfect",
+            baseline_planner_id="birkhoff_bucket_phase_local",
+            baseline_predictor_id="perfect_trace_hint",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="perfect_trace_hint",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="b_vs_fifo_zero",
+            baseline_planner_id="fifo_bucket",
+            baseline_predictor_id="zero_hint",
+            candidate_planner_id="birkhoff_bucket_phase_local",
+            candidate_predictor_id="zero_hint",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="b_vs_greedy_zero",
+            baseline_planner_id="greedy_bucket",
+            baseline_predictor_id="zero_hint",
+            candidate_planner_id="birkhoff_bucket_phase_local",
+            candidate_predictor_id="zero_hint",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="safe_u_vs_b_copy",
+            baseline_planner_id="birkhoff_bucket_phase_local",
+            baseline_predictor_id="copy_current_dispatch",
+            candidate_planner_id="barrier_criticality_runtime_safe",
+            candidate_predictor_id="copy_current_dispatch",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="copy_vs_zero_u",
+            baseline_planner_id="barrier_criticality_joint",
+            baseline_predictor_id="zero_hint",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="copy_current_dispatch",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="perfect_vs_zero_u",
+            baseline_planner_id="barrier_criticality_joint",
+            baseline_predictor_id="zero_hint",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="perfect_trace_hint",
+            track=track,
+        ),
+        _paired_case_aggregate(
+            records,
+            comparison_id="copy_vs_perfect_u",
+            baseline_planner_id="barrier_criticality_joint",
+            baseline_predictor_id="perfect_trace_hint",
+            candidate_planner_id="barrier_criticality_joint",
+            candidate_predictor_id="copy_current_dispatch",
+            track=track,
+        ),
+    ]
     bundle = build_evaluation_bundle(
         spec=spec,
         records=tuple(records),
