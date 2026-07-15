@@ -124,10 +124,6 @@ def _peer_rows_total(rows_by_peer: dict[int, int]) -> int:
     return int(sum(int(value) for value in rows_by_peer.values()))
 
 
-def _peer_base_offset(rows_by_peer: dict[int, int], peer_group_rank: int) -> int:
-    return int(sum(int(rows_by_peer.get(index, 0)) for index in range(int(peer_group_rank))))
-
-
 def _make_output_tensor(invocation: PayloadInvocation, *, total_rows: int) -> torch.Tensor:
     if invocation.input_tensor is None:
         raise ValueError("input_tensor required")
@@ -141,18 +137,6 @@ def _copy_rows(target: torch.Tensor, target_offset: int, source: torch.Tensor, s
     if int(row_count) <= 0:
         return
     target.narrow(0, int(target_offset), int(row_count)).copy_(source.narrow(0, int(source_offset), int(row_count)))
-
-
-def _source_input_offset(plan: MaterializedPlan, payload_role: str, dst_group_rank: int, peer_local_offset: int) -> int:
-    rows_by_peer = {int(peer): int(value) for peer, value in plan.expected_outgoing_rows[str(payload_role)].items()}
-    return int(_peer_base_offset(rows_by_peer, int(dst_group_rank)) + int(peer_local_offset))
-
-
-def _target_output_offset(plan: MaterializedPlan, payload_role: str, src_group_rank: int, peer_local_offset: int) -> int:
-    rows_by_peer = {int(peer): int(value) for peer, value in plan.expected_incoming_rows[str(payload_role)].items()}
-    return int(_peer_base_offset(rows_by_peer, int(src_group_rank)) + int(peer_local_offset))
-
-
 def _slices_for_role(plan: MaterializedPlan, payload_role: str) -> list[Any]:
     return [
         item
@@ -282,8 +266,8 @@ class PhaseSyncExecutor(_BaseExecutor):
             for item in role_slices:
                 if int(item.src_global_rank) == int(plan.local_global_rank):
                     if int(item.dst_global_rank) == int(plan.local_global_rank):
-                        local_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
-                        local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                        local_input_offset = int(item.physical_send_offset_rows)
+                        local_output_offset = int(item.physical_recv_offset_rows)
                         _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
                         completed_task_ids.append(str(item.task_id))
                     else:
@@ -296,9 +280,19 @@ class PhaseSyncExecutor(_BaseExecutor):
             total_recv = int(sum(recv_splits))
             send_buffer = input_tensor.new_empty((total_send, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_send,))
             recv_buffer = input_tensor.new_empty((total_recv, *input_tensor.shape[1:])) if input_tensor.ndim > 1 else input_tensor.new_empty((total_recv,))
-            pack_cursor = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(send_splits)}, peer) for peer in range(world_size)}
+            send_peer_bases: dict[int, int] = {}
+            recv_peer_bases: dict[int, int] = {}
+            offset = 0
+            for peer in range(world_size):
+                send_peer_bases[peer] = int(offset)
+                offset += int(send_splits[peer])
+            offset = 0
+            for peer in range(world_size):
+                recv_peer_bases[peer] = int(offset)
+                offset += int(recv_splits[peer])
+            pack_cursor = dict(send_peer_bases)
             for item in remote_send_slices:
-                src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
+                src_input_offset = int(item.physical_send_offset_rows)
                 target_offset = int(pack_cursor[int(item.dst_group_rank)])
                 _copy_rows(send_buffer, target_offset, input_tensor, src_input_offset, int(item.row_count))
                 pack_cursor[int(item.dst_group_rank)] += int(item.row_count)
@@ -312,9 +306,9 @@ class PhaseSyncExecutor(_BaseExecutor):
                 )
                 collective_call_count += 1
             if total_recv > 0:
-                recv_base = {peer: _peer_base_offset({int(idx): int(value) for idx, value in enumerate(recv_splits)}, peer) for peer in range(world_size)}
+                recv_base = dict(recv_peer_bases)
                 for item in incoming_remote:
-                    output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                    output_offset = int(item.physical_recv_offset_rows)
                     recv_offset = int(recv_base[int(item.src_group_rank)])
                     _copy_rows(output, output_offset, recv_buffer, recv_offset, int(item.row_count))
                     recv_base[int(item.src_group_rank)] += int(item.row_count)
@@ -408,8 +402,8 @@ class P2PReleaseExecutor(_BaseExecutor):
                 shape_suffix = tuple(int(dim) for dim in input_tensor.shape[1:])
                 for item in role_slices:
                     if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) == int(plan.local_global_rank):
-                        local_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
-                        local_output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                        local_input_offset = int(item.physical_send_offset_rows)
+                        local_output_offset = int(item.physical_recv_offset_rows)
                         _copy_rows(output, local_output_offset, input_tensor, local_input_offset, int(item.row_count))
                         completion_candidates.append(item)
                     elif int(item.dst_global_rank) == int(plan.local_global_rank) and int(item.src_global_rank) != int(plan.local_global_rank):
@@ -418,7 +412,7 @@ class P2PReleaseExecutor(_BaseExecutor):
                         recv_payloads.append((item, recv_tensor))
                 for item in role_slices:
                     if int(item.src_global_rank) == int(plan.local_global_rank) and int(item.dst_global_rank) != int(plan.local_global_rank):
-                        src_input_offset = _source_input_offset(plan, payload_role, int(item.dst_group_rank), int(item.send_offset_rows))
+                        src_input_offset = int(item.physical_send_offset_rows)
                         send_tensor = input_tensor.narrow(0, int(src_input_offset), int(item.row_count)).contiguous()
                         retained_send_tensors.append(send_tensor)
                         handles.append(dist.isend(send_tensor, dst=int(item.dst_global_rank), group=process_group, tag=_p2p_tag_for_slice(item)))
@@ -449,7 +443,7 @@ class P2PReleaseExecutor(_BaseExecutor):
                         },
                     )
                 for item, recv_tensor in recv_payloads:
-                    output_offset = _target_output_offset(plan, payload_role, int(item.src_group_rank), int(item.recv_offset_rows))
+                    output_offset = int(item.physical_recv_offset_rows)
                     _copy_rows(output, output_offset, recv_tensor, 0, int(item.row_count))
                     completed_task_ids.append(str(item.task_id))
                 completed_task_ids.extend(completion_task_ids)

@@ -39,6 +39,22 @@ def _expected_rows_for_roles(context: PhaseReadyContext, *, use_send: bool) -> d
     }
 
 
+def _outgoing_segments_by_dst_global_rank(context: PhaseReadyContext) -> dict[int, Any]:
+    return {
+        int(segment.dst_rank): segment
+        for segment in context.outgoing_segments
+        if int(segment.row_count) > 0
+    }
+
+
+def _incoming_slots_by_src_global_rank(context: PhaseReadyContext) -> dict[int, Any]:
+    return {
+        int(slot.src_rank): slot
+        for slot in context.incoming_slots
+        if int(slot.row_count) > 0
+    }
+
+
 def _payload_specs(context: PhaseReadyContext) -> tuple[PayloadSpec, ...]:
     send_rows = int(sum(context.send_splits))
     payloads: list[PayloadSpec] = []
@@ -105,14 +121,16 @@ class CommonPlanMaterializer:
         expected_incoming = _expected_rows_for_roles(phase_ready_context, use_send=False)
         local_global_rank = int(phase_ready_context.global_rank)
         local_group_rank = int(phase_ready_context.ep_group_ranks.index(int(local_global_rank)))
-        send_offsets = {
+        peer_send_offsets = {
             str(role): [0 for _ in phase_ready_context.ep_group_ranks]
             for role in expected_outgoing
         }
-        recv_offsets = {
+        peer_recv_offsets = {
             str(role): [0 for _ in phase_ready_context.ep_group_ranks]
             for role in expected_incoming
         }
+        outgoing_by_dst_global_rank = _outgoing_segments_by_dst_global_rank(phase_ready_context)
+        incoming_by_src_global_rank = _incoming_slots_by_src_global_rank(phase_ready_context)
         batches: list[ExecutionBatch] = []
         next_transfer_tag = 1
         for wave in window_plan.waves:
@@ -145,8 +163,24 @@ class CommonPlanMaterializer:
                         src_global_rank=src_global_rank,
                         local_global_rank=local_global_rank,
                     )
-                    send_offset = int(send_offsets[str(spec.payload_role)][dst_group_rank]) if int(src_global_rank) == local_global_rank else 0
-                    recv_offset = int(recv_offsets[str(spec.payload_role)][src_group_rank]) if int(dst_global_rank) == local_global_rank else 0
+                    peer_send_offset = int(peer_send_offsets[str(spec.payload_role)][dst_group_rank]) if int(src_global_rank) == local_global_rank else 0
+                    peer_recv_offset = int(peer_recv_offsets[str(spec.payload_role)][src_group_rank]) if int(dst_global_rank) == local_global_rank else 0
+                    physical_send_offset = 0
+                    physical_recv_offset = 0
+                    if int(src_global_rank) == local_global_rank:
+                        segment = outgoing_by_dst_global_rank.get(int(dst_global_rank))
+                        if segment is None:
+                            raise ValueError(f"missing outgoing segment for dst_global_rank={dst_global_rank}")
+                        if int(peer_send_offset) + int(flow.row_count) > int(segment.row_count):
+                            raise ValueError("window plan exceeds outgoing segment row_count")
+                        physical_send_offset = int(segment.send_offset_rows) + int(peer_send_offset)
+                    if int(dst_global_rank) == local_global_rank:
+                        slot = incoming_by_src_global_rank.get(int(src_global_rank))
+                        if slot is None:
+                            raise ValueError(f"missing incoming slot for src_global_rank={src_global_rank}")
+                        if int(peer_recv_offset) + int(flow.row_count) > int(slot.row_count):
+                            raise ValueError("window plan exceeds incoming slot row_count")
+                        physical_recv_offset = int(slot.receive_offset_rows) + int(peer_recv_offset)
                     task_id = f"{flow.flow_id}:{spec.payload_role}"
                     slice_ = TransferSlice(
                         task_id=task_id,
@@ -157,17 +191,21 @@ class CommonPlanMaterializer:
                         src_global_rank=int(src_global_rank),
                         dst_global_rank=int(dst_global_rank),
                         row_count=int(flow.row_count),
-                        send_offset_rows=int(send_offset),
-                        recv_offset_rows=int(recv_offset),
+                        send_offset_rows=int(peer_send_offset),
+                        recv_offset_rows=int(peer_recv_offset),
+                        physical_send_offset_rows=int(physical_send_offset),
+                        physical_recv_offset_rows=int(physical_recv_offset),
+                        peer_send_offset_rows=int(peer_send_offset),
+                        peer_recv_offset_rows=int(peer_recv_offset),
                         transfer_tag=int(next_transfer_tag),
                         dependency_ids=dependency_ids,
                     )
                     next_transfer_tag += 1
                     slices.append(slice_)
                     if int(src_global_rank) == local_global_rank:
-                        send_offsets[str(spec.payload_role)][dst_group_rank] += int(flow.row_count)
+                        peer_send_offsets[str(spec.payload_role)][dst_group_rank] += int(flow.row_count)
                     if int(dst_global_rank) == local_global_rank:
-                        recv_offsets[str(spec.payload_role)][src_group_rank] += int(flow.row_count)
+                        peer_recv_offsets[str(spec.payload_role)][src_group_rank] += int(flow.row_count)
             batches.append(
                 ExecutionBatch(
                     batch_id=f"{context.phase}:wave:{wave.wave_id}",
@@ -182,6 +220,18 @@ class CommonPlanMaterializer:
                     },
                 )
             )
+        for dst_global_rank, segment in outgoing_by_dst_global_rank.items():
+            peer_group_rank = int(plan.rank_map.global_rank_to_group_rank(int(dst_global_rank)))
+            for spec in payload_specs:
+                consumed = int(peer_send_offsets[str(spec.payload_role)][peer_group_rank])
+                if consumed != int(segment.row_count):
+                    raise ValueError("outgoing segment rows not fully consumed by materialized plan")
+        for src_global_rank, slot in incoming_by_src_global_rank.items():
+            peer_group_rank = int(plan.rank_map.global_rank_to_group_rank(int(src_global_rank)))
+            for spec in payload_specs:
+                consumed = int(peer_recv_offsets[str(spec.payload_role)][peer_group_rank])
+                if consumed != int(slot.row_count):
+                    raise ValueError("incoming slot rows not fully consumed by materialized plan")
         draft = MaterializedPlan(
             publication_slot=dict(plan.publication_slot),
             local_global_rank=local_global_rank,
