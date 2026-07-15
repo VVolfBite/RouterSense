@@ -291,7 +291,7 @@ def main() -> None:
                 git_clean=not bool(manifest.get("git_dirty", False)),
                 instrumentation_mode="off",
                 audit_evidence_level="summary_only",
-                measurement_complete=True,
+                measurement_complete=False,
                 summary=summary,
                 details=details,
                 extensions={},

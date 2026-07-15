@@ -195,6 +195,7 @@ def test_offline_replay_entrypoint_writes_canonical_result_bundle(tmp_path: Path
     assert bundle_payload["schema_version"] == "result_bundle.v2"
     assert bundle_payload["run_identity"]["claim_scope"] == "offline_replay"
     assert bundle_payload["summary"]["offline_replay_complete"] is True
+    assert bundle_payload["measurement_complete"] is False
     assert bundle_payload["eligibility"]["performance_eligible"] is False
     eligibility = validate_report_eligibility(output_dir, report_type="offline")
     assert eligibility.eligible is False

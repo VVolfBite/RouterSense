@@ -165,20 +165,28 @@ def _run_transport_once_with_prepared(*, context, pipeline, prepared, instrument
         execution_pipeline=pipeline,
         runtime=runtime,
     )
-    tensor = torch.arange(4, dtype=torch.float16).reshape(4, 1)
+    hidden_spec, probs_spec = prepared.materialized_plan.payload_specs
+    hidden_tensor = torch.arange(
+        hidden_spec.row_count * hidden_spec.shape_suffix[0],
+        dtype=torch.float16,
+    ).reshape(hidden_spec.row_count, hidden_spec.shape_suffix[0])
+    probs_tensor = torch.arange(
+        probs_spec.row_count * probs_spec.shape_suffix[0],
+        dtype=torch.float16,
+    ).reshape(probs_spec.row_count, probs_spec.shape_suffix[0])
     output_hidden = adapter.maybe_execute(
         group=None,
-        input_tensor=tensor,
+        input_tensor=hidden_tensor,
         output_split_sizes=context.recv_splits,
         input_split_sizes=context.send_splits,
-        original_all_to_all=lambda *args, **kwargs: tensor.clone(),
+        original_all_to_all=lambda *args, **kwargs: hidden_tensor.clone(),
     )
     output_probs = adapter.maybe_execute(
         group=None,
-        input_tensor=tensor,
+        input_tensor=probs_tensor,
         output_split_sizes=context.recv_splits,
         input_split_sizes=context.send_splits,
-        original_all_to_all=lambda *args, **kwargs: tensor.clone(),
+        original_all_to_all=lambda *args, **kwargs: probs_tensor.clone(),
     )
     adapter.deactivate(layer_name="decoder.layers.0", phase="P0")
     return runtime, adapter, output_hidden, output_probs
@@ -217,6 +225,8 @@ def test_merged_runtime_instrumentation_off_and_perf_light_have_no_side_effects(
     off_context, off_pipeline, off_prepared = _build_prepared_execution()
     perf_context, perf_pipeline, perf_prepared = _build_prepared_execution()
     calls["json_dumps"] = 0
+    off_hidden_spec, off_probs_spec = off_prepared.materialized_plan.payload_specs
+    perf_hidden_spec, perf_probs_spec = perf_prepared.materialized_plan.payload_specs
 
     off_runtime, _, off_hidden, off_probs = _run_transport_once_with_prepared(
         context=off_context,
@@ -238,10 +248,34 @@ def test_merged_runtime_instrumentation_off_and_perf_light_have_no_side_effects(
         )
     )
 
-    assert torch.equal(off_hidden, torch.arange(4, dtype=torch.float16).reshape(4, 1))
-    assert torch.equal(off_probs, torch.arange(4, dtype=torch.float16).reshape(4, 1))
-    assert torch.equal(perf_hidden, torch.arange(4, dtype=torch.float16).reshape(4, 1))
-    assert torch.equal(perf_probs, torch.arange(4, dtype=torch.float16).reshape(4, 1))
+    assert torch.equal(
+        off_hidden,
+        torch.arange(
+            off_hidden_spec.row_count * off_hidden_spec.shape_suffix[0],
+            dtype=torch.float16,
+        ).reshape(off_hidden_spec.row_count, off_hidden_spec.shape_suffix[0]),
+    )
+    assert torch.equal(
+        off_probs,
+        torch.arange(
+            off_probs_spec.row_count * off_probs_spec.shape_suffix[0],
+            dtype=torch.float16,
+        ).reshape(off_probs_spec.row_count, off_probs_spec.shape_suffix[0]),
+    )
+    assert torch.equal(
+        perf_hidden,
+        torch.arange(
+            perf_hidden_spec.row_count * perf_hidden_spec.shape_suffix[0],
+            dtype=torch.float16,
+        ).reshape(perf_hidden_spec.row_count, perf_hidden_spec.shape_suffix[0]),
+    )
+    assert torch.equal(
+        perf_probs,
+        torch.arange(
+            perf_probs_spec.row_count * perf_probs_spec.shape_suffix[0],
+            dtype=torch.float16,
+        ).reshape(perf_probs_spec.row_count, perf_probs_spec.shape_suffix[0]),
+    )
     assert off_runtime.runtime_instrumentation.measurement_sink.snapshot().event_count == 0
     perf_snapshot = perf_runtime.runtime_instrumentation.measurement_sink.snapshot()
     assert perf_snapshot.event_count == 2
@@ -283,7 +317,8 @@ def test_runtime_transport_failure_marks_store_failed_and_records_measurement() 
         execution_pipeline=pipeline,
         runtime=runtime,
     )
-    tensor = torch.arange(4, dtype=torch.float16).reshape(4, 1)
+    spec = prepared.materialized_plan.payload_specs[0]
+    tensor = torch.arange(spec.row_count * spec.shape_suffix[0], dtype=torch.float16).reshape(spec.row_count, spec.shape_suffix[0])
     with pytest.raises(HostAPIDriftError, match="formal execution pipeline failed: unresolved_task"):
         adapter.maybe_execute(
             group=None,

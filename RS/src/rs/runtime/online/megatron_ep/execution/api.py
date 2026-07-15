@@ -133,6 +133,13 @@ def _payload_spec_map(plan: MaterializedPlan) -> dict[str, Any]:
     return {str(spec.payload_role): spec for spec in plan.payload_specs}
 
 
+def _payload_spec_for_role(plan: MaterializedPlan, payload_role: str) -> Any:
+    try:
+        return _payload_spec_map(plan)[str(payload_role)]
+    except KeyError as exc:
+        raise ValueError(f"unknown payload_role {payload_role!r}") from exc
+
+
 def _peer_rows_total(rows_by_peer: dict[int, int]) -> int:
     return int(sum(int(value) for value in rows_by_peer.values()))
 
@@ -185,11 +192,100 @@ def _chunked_batches(items: list[Any], size: int) -> list[list[Any]]:
     return windows
 
 
+def _validate_tensor_against_payload_spec(
+    *,
+    tensor: torch.Tensor,
+    payload_spec: Any,
+    expected_rows: int,
+    field_name: str,
+) -> str | None:
+    if int(tensor.ndim) <= 0:
+        return f"{field_name}_rank_mismatch"
+    if int(tensor.shape[0]) != int(expected_rows):
+        return f"{field_name}_row_count_mismatch"
+    expected_suffix = tuple(int(dim) for dim in payload_spec.shape_suffix)
+    actual_suffix = tuple(int(dim) for dim in tensor.shape[1:])
+    if actual_suffix != expected_suffix:
+        return f"{field_name}_shape_suffix_mismatch"
+    if str(tensor.dtype) != str(payload_spec.dtype):
+        return f"{field_name}_dtype_mismatch"
+    if int(tensor.numel()) != int(expected_rows) * max(int(payload_spec.element_count) // max(int(payload_spec.row_count), 1), 1):
+        return f"{field_name}_element_count_mismatch"
+    if int(tensor.element_size()) * int(tensor.numel()) != int(expected_rows) * int(payload_spec.bytes_per_row):
+        return f"{field_name}_byte_count_mismatch"
+    if not bool(tensor.is_contiguous()):
+        return f"{field_name}_not_contiguous"
+    return None
+
+
+def _validate_input_tensor(plan: MaterializedPlan, invocation: PayloadInvocation) -> str | None:
+    if invocation.input_tensor is None:
+        return "missing_input_tensor"
+    payload_spec = _payload_spec_for_role(plan, invocation.payload_role)
+    return _validate_tensor_against_payload_spec(
+        tensor=invocation.input_tensor,
+        payload_spec=payload_spec,
+        expected_rows=int(payload_spec.row_count),
+        field_name="input_payload",
+    )
+
+
+def _validate_output_tensor(plan: MaterializedPlan, invocation: PayloadInvocation, output_tensor: torch.Tensor | None) -> str | None:
+    if output_tensor is None:
+        return "missing_output_payload"
+    payload_role = str(invocation.payload_role)
+    payload_spec = _payload_spec_for_role(plan, payload_role)
+    expected_rows = _peer_rows_total({int(peer): int(value) for peer, value in plan.expected_incoming_rows[payload_role].items()})
+    return _validate_tensor_against_payload_spec(
+        tensor=output_tensor,
+        payload_spec=payload_spec,
+        expected_rows=int(expected_rows),
+        field_name="output_payload",
+    )
+
+
+def _wait_handles_with_drain(handles: list[Any]) -> tuple[str | None, dict[str, object]]:
+    waited = 0
+    drained = 0
+    failure_type = ""
+    failure_message = ""
+    for index, handle in enumerate(handles):
+        try:
+            handle.wait()
+            waited += 1
+        except Exception as exc:
+            waited += 1
+            failure_type = type(exc).__name__
+            failure_message = str(exc)
+            for tail in handles[index + 1 :]:
+                try:
+                    tail.wait()
+                    drained += 1
+                except Exception:
+                    drained += 1
+            return (
+                f"work_wait_failed:{failure_type}",
+                {
+                    "waited_handle_count": int(waited),
+                    "drained_handle_count": int(drained),
+                    "session_poisoned": True,
+                    "failure_message": failure_message,
+                },
+            )
+    return None, {
+        "waited_handle_count": int(waited),
+        "drained_handle_count": int(drained),
+        "session_poisoned": False,
+        "failure_message": failure_message,
+    }
+
+
 class _BaseExecutor:
     backend_id = ""
 
     def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
-        if invocation.input_tensor is None:
+        input_failure = _validate_input_tensor(plan, invocation)
+        if input_failure is not None:
             return ExecutionOutcome(
                 success=False,
                 output_payload=None,
@@ -199,8 +295,8 @@ class _BaseExecutor:
                 unresolved_task_ids=tuple(),
                 executed_batch_count=0,
                 all_work_completed=False,
-                failure_code="missing_input_tensor",
-                details={},
+                failure_code=str(input_failure),
+                details={"backend_id": str(self.backend_id)},
             )
         submitted_task_ids = _submitted_task_ids_for_role(plan, invocation.payload_role)
         if not submitted_task_ids:
@@ -222,6 +318,20 @@ class PhaseSyncExecutor(_BaseExecutor):
     backend_id = "phase_sync"
 
     def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
+        input_failure = _validate_input_tensor(plan, invocation)
+        if input_failure is not None:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=tuple(),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=0,
+                all_work_completed=False,
+                failure_code=str(input_failure),
+                details={"backend_id": str(self.backend_id)},
+            )
         base = (
             super().execute(plan=plan, invocation=invocation, context=context)
             if not _submitted_task_ids_for_role(plan, invocation.payload_role) and not _collective_required_for_role(plan, invocation.payload_role)
@@ -330,6 +440,25 @@ class PhaseSyncExecutor(_BaseExecutor):
         submitted_task_ids = _submitted_task_ids_for_role(plan, payload_role)
         completed_unique = tuple(dict.fromkeys(completed_task_ids))
         unresolved = tuple(task_id for task_id in submitted_task_ids if task_id not in set(completed_unique))
+        output_failure = _validate_output_tensor(plan, invocation, output)
+        if output_failure is not None:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=submitted_task_ids,
+                completed_task_ids=completed_unique,
+                failed_task_ids=tuple(),
+                unresolved_task_ids=unresolved if unresolved else submitted_task_ids,
+                executed_batch_count=int(processed_batch_count),
+                all_work_completed=False,
+                failure_code=str(output_failure),
+                details={
+                    "backend_id": str(self.backend_id),
+                    "submitted_task_count": int(len(submitted_task_ids)),
+                    "distributed_operation_count": int(collective_call_count),
+                    "collective_round_count": int(collective_call_count),
+                },
+            )
         return ExecutionOutcome(
             success=not unresolved,
             output_payload=output,
@@ -353,6 +482,20 @@ class P2PReleaseExecutor(_BaseExecutor):
     backend_id = "async_release"
 
     def execute(self, *, plan: MaterializedPlan, invocation: PayloadInvocation, context: ExecutionContext) -> ExecutionOutcome:
+        input_failure = _validate_input_tensor(plan, invocation)
+        if input_failure is not None:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=tuple(),
+                completed_task_ids=tuple(),
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=0,
+                all_work_completed=False,
+                failure_code=str(input_failure),
+                details={"backend_id": str(self.backend_id)},
+            )
         submitted = _submitted_task_ids_for_role(plan, invocation.payload_role)
         if not submitted:
             return super().execute(plan=plan, invocation=invocation, context=context)
@@ -434,10 +577,8 @@ class P2PReleaseExecutor(_BaseExecutor):
                     p2p_operation_count += 1
                 posted_batches.append((batch, handles, recv_payloads, retained_send_tensors, tuple(str(item.task_id) for item in completion_candidates)))
             for batch, handles, recv_payloads, retained_send_tensors, completion_task_ids in posted_batches:
-                try:
-                    for handle in handles:
-                        handle.wait()
-                except Exception as exc:
+                failure_code, wait_details = _wait_handles_with_drain(handles)
+                if failure_code is not None:
                     return ExecutionOutcome(
                         success=False,
                         output_payload=None,
@@ -447,12 +588,13 @@ class P2PReleaseExecutor(_BaseExecutor):
                         unresolved_task_ids=tuple(task_id for task_id in submitted if task_id not in set(completed_task_ids)),
                         executed_batch_count=int(len(completed_batches)),
                         all_work_completed=False,
-                        failure_code=f"work_wait_failed:{type(exc).__name__}",
+                        failure_code=str(failure_code),
                         details={
                             "backend_id": str(self.backend_id),
                             "distributed_operation_count": int(p2p_operation_count),
                             "peak_inflight_batches": int(peak_inflight),
                             "failed_batch_id": str(batch.batch_id),
+                            **wait_details,
                         },
                     )
                 for item, recv_tensor in recv_payloads:
@@ -464,6 +606,29 @@ class P2PReleaseExecutor(_BaseExecutor):
         submitted_tuple = tuple(dict.fromkeys(submitted_task_ids))
         completed_tuple = tuple(dict.fromkeys(completed_task_ids))
         unresolved = tuple(task_id for task_id in submitted if task_id not in set(completed_tuple))
+        output_failure = _validate_output_tensor(plan, invocation, output)
+        if output_failure is not None:
+            return ExecutionOutcome(
+                success=False,
+                output_payload=None,
+                submitted_task_ids=submitted_tuple,
+                completed_task_ids=completed_tuple,
+                failed_task_ids=tuple(),
+                unresolved_task_ids=unresolved if unresolved else submitted_tuple,
+                executed_batch_count=int(len(completed_batches)),
+                all_work_completed=False,
+                failure_code=str(output_failure),
+                details={
+                    "backend_id": str(self.backend_id),
+                    "submitted_task_count": int(len(submitted_tuple)),
+                    "completed_batches": tuple(completed_batches),
+                    "max_inflight_batches": max_inflight_batches,
+                    "peak_inflight_batches": int(peak_inflight),
+                    "distributed_operation_count": int(p2p_operation_count),
+                    "completed_task_count": int(len(completed_tuple)),
+                    "unresolved_task_count": int(len(unresolved)),
+                },
+            )
         return ExecutionOutcome(
             success=not unresolved,
             output_payload=output,

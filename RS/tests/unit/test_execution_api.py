@@ -238,6 +238,36 @@ def test_execution_guard_rejects_generation_mismatch() -> None:
     assert result.reason == "forward_generation_mismatch"
 
 
+def test_phase_sync_executor_rejects_input_dtype_mismatch() -> None:
+    materialized = _build_local_only_materialized_plan()
+    spec = materialized.payload_specs[0]
+    tensor = torch.zeros((spec.row_count, spec.shape_suffix[0]), dtype=torch.float32)
+    outcome = PhaseSyncExecutor().execute(
+        plan=materialized,
+        invocation=PayloadInvocation(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            payload_role=spec.payload_role,
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=spec.dtype,
+            layout_digest=materialized.layout_digest,
+            invocation_id="bad-input-dtype",
+            input_tensor=tensor,
+        ),
+        context=ExecutionContext(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            rank_space="global",
+        ),
+    )
+    assert outcome.success is False
+    assert outcome.failure_code == "input_payload_dtype_mismatch"
+
+
 def test_p2p_executor_reports_inflight_batches() -> None:
     materialized = _build_local_only_materialized_plan()
     spec = materialized.payload_specs[0]
@@ -468,6 +498,103 @@ def test_runtime_execution_pipeline_fails_closed_on_invalid_successful_outcome()
     assert second.failure_code == "invalid_execution_outcome"
 
 
+def test_runtime_execution_pipeline_fails_closed_on_invalid_output_payload_shape() -> None:
+    contexts = make_contexts_from_matrix(phase="P0", matrix=((4,),), p2_hint_mode="deterministic_stub")
+    publisher = CanonicalPlanPublisher(rank_map=RankMap(group_ranks=(0,), root_rank=0))
+    published = publisher.build(
+        publication_slot={
+            "run_id": "run",
+            "forward_generation": 0,
+            "microbatch_id": "mb",
+            "source_layer_id": "0",
+            "target_layer_id": "1",
+            "planning_slot": "0->1",
+        },
+        window_plan=WindowPlan(
+            planner_id="barrier_criticality_joint",
+            planner_family="joint",
+            request_digest="0->1",
+            waves=(
+                PlanWave(
+                    wave_id=0,
+                    flows=(
+                        PlannedFlow(
+                            flow_id="p0_0_0",
+                            phase="p0_dispatch",
+                            src_rank=0,
+                            dst_rank=0,
+                            row_count=4,
+                            release_state="ready",
+                            executable=True,
+                        ),
+                    ),
+                    estimated_duration=4.0,
+                ),
+            ),
+            metadata={"source_layer_id": "0", "target_layer_id": "1"},
+        ),
+    )
+    actual_context = ActualPhaseContext(
+        layer_id="0",
+        phase="P0",
+        world_size=1,
+        rank_space="global",
+        layout_digest=str(contexts[0].canonical_receive_layout_id),
+        metadata={"phase_ready_context": contexts[0].to_dict()},
+    )
+
+    class _BadOutputExecutor:
+        def execute(self, *, plan, invocation, context):
+            submitted = tuple(
+                str(item.task_id)
+                for batch in plan.batches
+                for item in batch.slices
+                if str(item.payload_role) == str(invocation.payload_role)
+            )
+            from rs.core.contracts.execution import ExecutionOutcome
+
+            bad_output = torch.zeros((1, invocation.input_tensor.shape[1]), dtype=invocation.input_tensor.dtype)
+            return ExecutionOutcome(
+                success=True,
+                output_payload=bad_output,
+                submitted_task_ids=submitted,
+                completed_task_ids=submitted,
+                failed_task_ids=tuple(),
+                unresolved_task_ids=tuple(),
+                executed_batch_count=1,
+                all_work_completed=True,
+                details={"backend_id": "bad-output"},
+            )
+
+    pipeline = RuntimeExecutionPipeline(executor=_BadOutputExecutor())
+    prepared = pipeline.prepare(published, actual_context)
+    spec = prepared.materialized_plan.payload_specs[0]
+    tensor = torch.arange(spec.row_count * spec.shape_suffix[0], dtype=torch.float16).reshape(spec.row_count, spec.shape_suffix[0])
+    invocation = PayloadInvocation(
+        run_id="run",
+        forward_generation=0,
+        layer_id="0",
+        phase="P0",
+        payload_role=spec.payload_role,
+        shape=tuple(int(dim) for dim in tensor.shape),
+        dtype=spec.dtype,
+        layout_digest=prepared.materialized_plan.layout_digest,
+        invocation_id="bad-output-shape",
+        input_tensor=tensor,
+    )
+    context = ExecutionContext(
+        run_id="run",
+        forward_generation=0,
+        layer_id="0",
+        phase="P0",
+        rank_space="global",
+    )
+    outcome = pipeline.execute(prepared, invocation, context)
+    assert outcome.success is False
+    assert outcome.failure_code == "invalid_execution_outcome"
+    assert outcome.details["reason"] == "output_payload_row_count_mismatch"
+
+
 def test_phase_sync_executor_rejects_missing_release_dependency() -> None:
     materialized = _build_local_only_materialized_plan()
     batch = materialized.batches[0]
@@ -644,3 +771,57 @@ def test_p2p_executor_rejects_missing_release_dependency() -> None:
     )
     assert outcome.success is False
     assert outcome.failure_code == "unresolved_dependency:release:0:p0_inbound_complete:0"
+
+
+def test_p2p_executor_drains_remaining_handles_after_wait_failure(monkeypatch) -> None:
+    from rs.runtime.online.megatron_ep.execution import api as execution_api
+    from rs.runtime.online.megatron_ep.execution.api import P2PReleaseExecutor
+
+    _, _, materialized = _build_materialized_plan()
+    spec = materialized.payload_specs[0]
+    tensor = torch.zeros((spec.row_count, spec.shape_suffix[0]), dtype=torch.float16)
+
+    wait_log: list[str] = []
+
+    class _Handle:
+        def __init__(self, name: str, *, fail: bool = False) -> None:
+            self._name = name
+            self._fail = fail
+
+        def wait(self) -> None:
+            wait_log.append(self._name)
+            if self._fail:
+                raise RuntimeError(f"{self._name}:boom")
+
+    monkeypatch.setattr(execution_api.dist, "irecv", lambda *a, **k: _Handle("recv-0", fail=True))
+    monkeypatch.setattr(execution_api.dist, "isend", lambda *a, **k: _Handle("send-0"))
+
+    outcome = P2PReleaseExecutor().execute(
+        plan=materialized,
+        invocation=PayloadInvocation(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            payload_role=spec.payload_role,
+            shape=tuple(int(dim) for dim in tensor.shape),
+            dtype=spec.dtype,
+            layout_digest=materialized.layout_digest,
+            invocation_id="p2p-drain-failure",
+            input_tensor=tensor,
+            process_group=object(),
+        ),
+        context=ExecutionContext(
+            run_id="run",
+            forward_generation=0,
+            layer_id="0",
+            phase="P0",
+            rank_space="global",
+            metadata={"max_inflight_batches": 1},
+        ),
+    )
+    assert outcome.success is False
+    assert outcome.failure_code == "work_wait_failed:RuntimeError"
+    assert wait_log == ["recv-0", "send-0"]
+    assert outcome.details["session_poisoned"] is True
+    assert outcome.details["drained_handle_count"] == 1

@@ -10,6 +10,7 @@ from rs.runtime.online.megatron_ep.execution.api import (
     P2PReleaseExecutor,
     PayloadInvocation,
     PhaseSyncExecutor,
+    _validate_output_tensor,
 )
 from rs.runtime.online.megatron_ep.materialization import CommonPlanMaterializer, CommonPlanValidator
 
@@ -173,6 +174,12 @@ def _validate_execution_outcome(
         reason = "successful_outcome_incomplete"
     elif not outcome.success and not str(outcome.failure_code or ""):
         reason = "failure_code_missing"
+    elif outcome.success:
+        output_reason = _validate_output_tensor(plan, invocation, outcome.output_payload if hasattr(outcome, "output_payload") else None)
+        if output_reason is not None:
+            reason = output_reason
+        else:
+            reason = ""
     else:
         reason = ""
     if not reason:
