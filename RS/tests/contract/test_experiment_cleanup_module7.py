@@ -12,6 +12,7 @@ import yaml
 from rs.core.config_normalization import normalize_run_config
 from rs.core.contracts.result import RunIdentity
 from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
+from rs.experiments.output_schema import build_output_layout, write_resolved_configs
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -179,3 +180,18 @@ def test_unified_report_builder_reads_structured_metrics(tmp_path: Path) -> None
     report = json.loads((run_dir / "reports" / "offline.json").read_text(encoding="utf-8"))
     assert report["row_count"] == 2
     assert report["invariant_count"] == 1
+
+
+def test_write_resolved_configs_writes_canonical_config_artifacts(tmp_path: Path) -> None:
+    layout = build_output_layout(tmp_path / "run")
+    write_resolved_configs(
+        layout,
+        normalized_config={"schema_version": 1, "run": {"kind": "offline_replay"}},
+        consumed_config={"run": {"kind": "offline_replay"}},
+        legacy_bridge_config={"fixture_dir": "tests/fixtures/offline_replay_smoke"},
+    )
+    assert (layout.config_dir / "normalized.yaml").exists()
+    assert (layout.config_dir / "normalized.json").exists()
+    assert (layout.config_dir / "consumed.yaml").exists()
+    assert (layout.config_dir / "consumed.json").exists()
+    assert (layout.config_dir / "legacy_bridge.yaml").exists()

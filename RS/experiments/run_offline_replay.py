@@ -30,6 +30,7 @@ from rs.experiments.output_schema import (
     update_status,
     validate_official_entrypoint_config,
     write_json,
+    write_resolved_configs,
     write_layout_result_bundle,
 )
 from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
@@ -129,6 +130,12 @@ def main() -> None:
             run_type="offline",
             official_entrypoint="experiments/run_offline_replay.py",
             config_snapshot=config,
+        )
+        write_resolved_configs(
+            layout,
+            normalized_config=config,
+            consumed_config=config,
+            legacy_bridge_config=legacy_config,
         )
         fixture_dir = (ROOT / str(replay_cfg["fixture_dir"])).resolve()
         evaluation = dict(config.get("evaluation", {}) or {})
@@ -291,7 +298,6 @@ def main() -> None:
             )
         )
         write_layout_result_bundle(layout, result_bundle)
-        (output_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         update_status(
             layout,

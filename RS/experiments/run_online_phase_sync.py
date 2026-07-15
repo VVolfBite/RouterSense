@@ -19,7 +19,14 @@ ROOT = ensure_src_on_path()
 import yaml
 
 from rs.core.config_normalization import canonical_online_comparison_payload, legacy_online_comparison_payload, normalize_run_config
-from rs.experiments.output_schema import RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, initialize_run_artifacts, update_status, validate_official_entrypoint_config
+from rs.experiments.output_schema import (
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    initialize_run_artifacts,
+    update_status,
+    validate_official_entrypoint_config,
+    write_resolved_configs,
+)
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 
@@ -65,10 +72,15 @@ def main() -> None:
         payload.setdefault("runtime", {})
         payload["runtime"]["line"] = "phase_sync"
         payload["_normalized_public_bridge"] = True
+        write_resolved_configs(
+            layout,
+            normalized_config=canonical_payload,
+            consumed_config=canonical_payload,
+            legacy_bridge_config=payload,
+        )
         tmp_config = output_dir / "normalized_phase_sync_config.yaml"
         tmp_config.parent.mkdir(parents=True, exist_ok=True)
         tmp_config.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        (output_dir / "canonical_config_snapshot.yaml").write_text(yaml.safe_dump(canonical_payload, sort_keys=False), encoding="utf-8")
         argv = ["--config", str(tmp_config), "--output-dir", str(output_dir)]
         if args.dry_run:
             argv.append("--dry-run")

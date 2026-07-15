@@ -28,6 +28,7 @@ _CANONICAL_OFFLINE_PREDICTORS = _CANONICAL_ONLINE_PREDICTORS | {"ridge_linear_tr
 @dataclass(frozen=True)
 class OutputLayout:
     root: Path
+    config_dir: Path
     raw_dir: Path
     metrics_dir: Path
     reports_dir: Path
@@ -208,15 +209,17 @@ def validate_official_entrypoint_config(
 
 def build_output_layout(output_dir: Path) -> OutputLayout:
     root = output_dir.resolve()
+    config_dir = root / "config"
     raw_dir = root / "raw"
     metrics_dir = root / "metrics"
     reports_dir = root / "reports"
     logs_dir = root / "logs"
     failures_dir = root / "failures"
-    for path in (root, raw_dir, metrics_dir, reports_dir, logs_dir, failures_dir):
+    for path in (root, config_dir, raw_dir, metrics_dir, reports_dir, logs_dir, failures_dir):
         path.mkdir(parents=True, exist_ok=True)
     return OutputLayout(
         root=root,
+        config_dir=config_dir,
         raw_dir=raw_dir,
         metrics_dir=metrics_dir,
         reports_dir=reports_dir,
@@ -254,6 +257,22 @@ def write_run_status(layout: OutputLayout, payload: dict[str, Any]) -> None:
 
 def write_layout_result_bundle(layout: OutputLayout, bundle: ResultBundle) -> None:
     write_result_bundle(layout.root / "result_bundle.json", bundle)
+
+
+def write_resolved_configs(
+    layout: OutputLayout,
+    *,
+    normalized_config: dict[str, Any],
+    consumed_config: dict[str, Any] | None = None,
+    legacy_bridge_config: dict[str, Any] | None = None,
+) -> None:
+    write_yaml(layout.config_dir / "normalized.yaml", normalized_config)
+    write_json(layout.config_dir / "normalized.json", normalized_config)
+    if consumed_config is not None:
+        write_yaml(layout.config_dir / "consumed.yaml", consumed_config)
+        write_json(layout.config_dir / "consumed.json", consumed_config)
+    if legacy_bridge_config is not None:
+        write_yaml(layout.config_dir / "legacy_bridge.yaml", legacy_bridge_config)
 
 
 def capture_environment() -> dict[str, Any]:
