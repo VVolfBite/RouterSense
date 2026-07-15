@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -15,12 +16,24 @@ def _repo_root() -> Path:
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
-    subprocess.run(
-        ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return
+    try:
+        os.killpg(int(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(int(proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
 
 
 def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, timeout_seconds: float) -> dict[str, object]:
@@ -48,6 +61,9 @@ def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, time
         "--quiet",
     ]
     started = time.monotonic()
+    popen_kwargs: dict[str, object] = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
         command,
         cwd=str(_repo_root()),
@@ -55,6 +71,7 @@ def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, time
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **popen_kwargs,
     )
     timed_out = False
     try:
@@ -69,6 +86,7 @@ def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, time
     payload = {}
     if summary_path.is_file():
         payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    rank_payloads = list(payload.get("ranks", ())) if payload else []
     return {
         "backend": str(backend),
         "status": str(payload.get("status", "timeout" if timed_out else "failed")),
@@ -76,12 +94,15 @@ def _run_once(*, backend: str, instrumentation_mode: str, output_dir: Path, time
         "exit_code": int(proc.returncode or 0),
         "timed_out": bool(timed_out),
         "summary_path": str(summary_path),
-        "rank_statuses": [str(item.get("status")) for item in payload.get("ranks", ())],
-        "distributed_operation_count": sum(int(item.get("measurement_event_count", 0) or 0) for item in payload.get("ranks", ())),
-        "peak_inflight_batches": max((int(item.get("p1_materialized_plan_digest", "0") and 0) for item in payload.get("ranks", ())), default=0),
+        "rank_statuses": [str(item.get("status")) for item in rank_payloads],
+        "distributed_operation_count": sum(int(item.get("distributed_operation_count", 0) or 0) for item in rank_payloads),
+        "peak_inflight_batches": max((int(item.get("peak_inflight_batches", 0) or 0) for item in rank_payloads), default=0),
+        "submitted_task_count": sum(int(item.get("submitted_task_count", 0) or 0) for item in rank_payloads),
+        "completed_task_count": sum(int(item.get("completed_task_count", 0) or 0) for item in rank_payloads),
+        "unresolved_task_count": sum(int(item.get("unresolved_task_count", 0) or 0) for item in rank_payloads),
         "orphan_process_count": 0,
-        "cleanup_error_count": sum(len(item.get("cleanup_errors", ())) for item in payload.get("ranks", ())) if payload else 0,
-        "planner_thread_alive_count": sum(1 for item in payload.get("ranks", ()) if bool(item.get("planner_thread_alive"))) if payload else 0,
+        "cleanup_error_count": sum(len(item.get("cleanup_errors", ())) for item in rank_payloads),
+        "planner_thread_alive_count": sum(1 for item in rank_payloads if bool(item.get("planner_thread_alive"))),
     }
 
 
