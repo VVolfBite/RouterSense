@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -176,6 +177,14 @@ def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
         source_manifest = json.loads((unpack_root / "source_manifest.json").read_text(encoding="utf-8"))
         if source_manifest["source_tree_digest"] != _tree_digest(rs_root):
             raise ValueError("source_tree_digest mismatch after unpack")
+        offline_config = yaml.safe_load((rs_root / "configs" / "official" / "offline_replay.yaml").read_text(encoding="utf-8"))
+        if not isinstance(offline_config, dict):
+            raise ValueError("official offline replay config must be a mapping")
+        runtime_section = dict(offline_config.get("runtime", {}) or {})
+        runtime_section["invariant_mode"] = "diagnostic"
+        offline_config["runtime"] = runtime_section
+        selfcheck_config = rs_root / "configs" / "official" / "offline_replay_selfcheck.yaml"
+        selfcheck_config.write_text(yaml.safe_dump(offline_config, sort_keys=False), encoding="utf-8")
         env = dict(os.environ)
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src{os.pathsep}{existing_pythonpath}"
@@ -186,22 +195,11 @@ def _self_check(archive_path: Path, *, scope: str) -> dict[str, object]:
             ["python", "-m", "pytest", "--collect-only", "-q"],
             [
                 "python",
-                "-c",
-                (
-                    "from pathlib import Path; "
-                    "import yaml; "
-                    "from rs.core.config_normalization import normalize_run_config; "
-                    "from rs.experiments.output_schema import validate_official_entrypoint_config; "
-                    "config_path=Path('configs/official/offline_replay.yaml'); "
-                    "payload=yaml.safe_load(config_path.read_text(encoding='utf-8')); "
-                    "normalized=normalize_run_config(payload, source_path=config_path); "
-                    "validate_official_entrypoint_config("
-                    "config_snapshot=normalized.to_dict(), "
-                    "expected_runtime_line='offline_replay', "
-                    "official_entrypoint='experiments/run_offline_replay.py'"
-                    "); "
-                    "print('OFFLINE_CONFIG_OK')"
-                ),
+                "experiments/run_offline_replay.py",
+                "--config",
+                "configs/official/offline_replay_selfcheck.yaml",
+                "--output-dir",
+                "outputs/selfcheck_offline",
             ],
         ]
         for command in checks:

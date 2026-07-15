@@ -202,6 +202,28 @@ def test_result_bundle_roundtrip_returns_typed_bundle() -> None:
     assert payload.extensions["lane"] == "formal"
 
 
+def test_eligibility_result_from_dict_rejects_string_booleans() -> None:
+    try:
+        EligibilityResult.from_dict(
+            {
+                "correctness_eligible": "false",
+                "performance_eligible": False,
+                "prediction_evaluation_eligible": False,
+                "offline_replay_eligible": False,
+                "preparation_claim_eligible": False,
+                "correctness_reasons": (),
+                "performance_reasons": (),
+                "prediction_reasons": (),
+                "offline_replay_reasons": (),
+                "preparation_claim_reasons": (),
+            }
+        )
+    except ValueError as exc:
+        assert "correctness_eligible must be an explicit boolean" in str(exc)
+    else:
+        raise AssertionError("expected strict eligibility boolean validation failure")
+
+
 def test_trace_bundle_roundtrip_returns_typed_bundle() -> None:
     serializer = EvidenceSerializer()
     trace_bundle = ReferenceTraceBundle(

@@ -42,8 +42,8 @@ def resolve_source_manifest(repo_root: Path) -> dict[str, Any] | None:
     )
     for path in candidates:
         if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if bool(payload.get("authoritative", True)):
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            if payload.get("authoritative") is True:
                 return payload
     return None
 

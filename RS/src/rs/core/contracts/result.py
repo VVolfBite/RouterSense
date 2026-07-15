@@ -34,6 +34,13 @@ RESERVED_RESULT_EXTENSION_KEYS = {
 }
 
 
+def _require_bool_field(payload: Mapping[str, object], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be an explicit boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class RunIdentity:
     run_id: str
@@ -114,11 +121,11 @@ class EligibilityResult:
     def from_dict(cls, payload: Mapping[str, object]) -> "EligibilityResult":
         legacy_reasons = tuple(str(item) for item in payload.get("reasons", ()))
         result = cls(
-            correctness_eligible=bool(payload.get("correctness_eligible", False)),
-            performance_eligible=bool(payload.get("performance_eligible", False)),
-            prediction_evaluation_eligible=bool(payload.get("prediction_evaluation_eligible", False)),
-            offline_replay_eligible=bool(payload.get("offline_replay_eligible", False)),
-            preparation_claim_eligible=bool(payload.get("preparation_claim_eligible", False)),
+            correctness_eligible=_require_bool_field(payload, "correctness_eligible"),
+            performance_eligible=_require_bool_field(payload, "performance_eligible"),
+            prediction_evaluation_eligible=_require_bool_field(payload, "prediction_evaluation_eligible"),
+            offline_replay_eligible=_require_bool_field(payload, "offline_replay_eligible"),
+            preparation_claim_eligible=_require_bool_field(payload, "preparation_claim_eligible"),
             correctness_reasons=tuple(str(item) for item in payload.get("correctness_reasons", ())),
             performance_reasons=tuple(str(item) for item in payload.get("performance_reasons", ())),
             prediction_reasons=tuple(str(item) for item in payload.get("prediction_reasons", ())),

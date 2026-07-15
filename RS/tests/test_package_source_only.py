@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import subprocess
 import tarfile
+import json
 from pathlib import Path
 
 import pytest
+from rs.core.contracts.provenance import resolve_source_manifest
 
 def _package_command(script: Path, *, scope: str, archive: Path) -> list[str]:
     return ["python", str(script), "--scope", scope, str(archive)]
@@ -78,3 +80,29 @@ def test_archive_unpack_allows_pytest_from_rs_dir(tmp_path):
     env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src{os.pathsep}{existing_pythonpath}"
     result = subprocess.run(["python", "-c", "from rs.topology.paths import resolve_rs_root; print(resolve_rs_root().name)"], cwd=rs_dir, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+
+def test_source_manifest_is_explicitly_authoritative(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    archive = tmp_path / "mainline.tar.gz"
+    subprocess.run(
+        _package_command(root / "RS" / "scripts" / "maintenance" / "package_source_archive.py", scope="mainline", archive=archive),
+        check=True,
+    )
+    with tarfile.open(archive, "r:gz") as tf:
+        manifest = json.loads(tf.extractfile("source_manifest.json").read().decode("utf-8"))
+    assert manifest["authoritative"] is True
+
+
+def test_resolve_source_manifest_requires_explicit_authoritative(tmp_path):
+    repo_root = tmp_path / "RS"
+    repo_root.mkdir()
+    (repo_root / "source_manifest.json").write_text(json.dumps({"commit_sha": "abc"}), encoding="utf-8")
+    assert resolve_source_manifest(repo_root) is None
+    (repo_root / "source_manifest.json").write_text(
+        json.dumps({"authoritative": True, "commit_sha": "abc"}, indent=2),
+        encoding="utf-8",
+    )
+    resolved = resolve_source_manifest(repo_root)
+    assert resolved is not None
+    assert resolved["commit_sha"] == "abc"
