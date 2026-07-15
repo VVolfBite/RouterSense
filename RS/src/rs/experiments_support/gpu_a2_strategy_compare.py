@@ -22,6 +22,7 @@ from rs.experiments_support.gpu_runner_common import (
     run_subprocess,
     torchrun_policy_command,
     write_json,
+    write_runner_result_bundle,
 )
 from rs.experiments_support.runtime_presets import resolve_strategy_runtime
 from rs.core.layer_ids import stable_layer_count_map, stable_layer_ids
@@ -719,6 +720,7 @@ def main() -> int:
     if args.dry_run:
         payload["status"] = "dry_run_ready"
         write_json(output_dir / "a2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_a2_strategy_compare", payload=payload, run_kind="GPU_PERFORMANCE")
         print((output_dir / "a2_runner_summary.json").read_text(encoding="utf-8"))
         return 0
     if available_cuda_count() < int(resolved_world_size):
@@ -735,6 +737,7 @@ def main() -> int:
             dry_run=bool(args.dry_run),
         )
         write_json(output_dir / "a2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_a2_strategy_compare", payload=payload, run_kind="GPU_PERFORMANCE")
         print((output_dir / "a2_runner_summary.json").read_text(encoding="utf-8"))
         return 0 if int(payload["fallback_returncode"]) == 0 else int(payload["fallback_returncode"])
 
@@ -776,6 +779,7 @@ def main() -> int:
         if proc.returncode != 0:
             payload.update({"status": f"{strategy}_failed", "failed_strategy": str(strategy), "returncode": int(proc.returncode), "failed_command": cmd})
             write_json(output_dir / "a2_runner_summary.json", payload)
+            write_runner_result_bundle(output_dir, runner_name="run_gpu_a2_strategy_compare", payload=payload, run_kind="GPU_PERFORMANCE")
             print((output_dir / "a2_runner_summary.json").read_text(encoding="utf-8"))
             return int(proc.returncode)
         run_dir = strategy_root / run_name
@@ -799,6 +803,7 @@ def main() -> int:
         }
     )
     write_json(output_dir / "a2_runner_summary.json", payload)
+    write_runner_result_bundle(output_dir, runner_name="run_gpu_a2_strategy_compare", payload=payload, run_kind="GPU_PERFORMANCE")
     print((output_dir / "a2_runner_summary.json").read_text(encoding="utf-8"))
     return 0
 

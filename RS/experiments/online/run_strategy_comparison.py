@@ -36,6 +36,9 @@ from experiments.online.support.runtime_presets import (
     validate_public_runtime_surface,
 )
 from rs.core.contracts.result import ResultBundle
+from rs.core.contracts.provenance import resolve_commit_identity
+from rs.core.contracts.result import ONLINE_PIPELINE, RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 from rs.reporting.prepared_plan_runtime_analysis import analyze_prepared_plan_runtime
 from rs.runtime.online.megatron_ep.observation import write_json
 
@@ -299,6 +302,50 @@ def read_summary(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _write_result_bundle(output_dir: Path, *, report: dict[str, Any], timing: dict[str, Any], dry_run: bool) -> None:
+    commit_sha, git_dirty, _source = resolve_commit_identity(ROOT)
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id=str(output_dir.resolve().name),
+                pipeline=ONLINE_PIPELINE,
+                claim_scope="diagnostic",
+                trace_origin="derived_runner",
+                future_information_mode="predicted",
+            ),
+            status="success",
+            correctness_status="invalid" if dry_run else "valid",
+            performance_status="ineligible",
+            commit_sha=str(commit_sha or "unknown"),
+            git_clean=bool(not git_dirty),
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=False,
+            summary={
+                "run_kind": "ONLINE_COMPARISON",
+                "all_work_completed": bool(not dry_run),
+                "fallback_count": 0,
+                "timeout_count": 0,
+                "check_failure_count": 0,
+                "cleanup_failure_count": 0,
+                "execution_outcome_count": 0 if dry_run else 1,
+                "missing_execution_outcome_count": 1 if dry_run else 0,
+                "formal_execution_expected": False,
+                "strategy_count": int(len(report.get("strategies", ()))),
+                "comparison_report_generated": True,
+            },
+            details={
+                "run_kind": "ONLINE_COMPARISON",
+                "comparison_report": report,
+                "timing": timing,
+                "dry_run": bool(dry_run),
+            },
+            extensions={},
+        )
+    )
+    write_json(output_dir / "result_bundle.json", bundle.to_dict())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if not _rank0_orchestrates_only():
@@ -373,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
     report = build_comparison_report(run_id=output_dir.name, baseline=baseline, strategies=strategy_entries)
     write_json(output_dir / "timing.json", timing)
     write_json(output_dir / "comparison_report.json", report)
+    _write_result_bundle(output_dir, report=report, timing=timing, dry_run=bool(args.dry_run))
     (output_dir / "comparison_report.md").write_text(render_markdown_report(report), encoding="utf-8")
     return 0
 

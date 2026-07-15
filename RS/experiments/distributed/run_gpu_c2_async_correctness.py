@@ -21,6 +21,7 @@ from experiments.distributed._gpu_runner_common import (
     run_subprocess,
     torchrun_policy_command,
     write_json,
+    write_runner_result_bundle,
 )
 
 
@@ -138,6 +139,7 @@ def main() -> int:
     if args.dry_run:
         payload["status"] = "dry_run_ready"
         write_json(output_dir / "c2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
         return 0
     if available_cuda_count() < int(resolved_world_size):
@@ -153,6 +155,7 @@ def main() -> int:
             dry_run=bool(args.dry_run),
         )
         write_json(output_dir / "c2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
         return 0 if int(payload["fallback_returncode"]) == 0 else int(payload["fallback_returncode"])
 
@@ -189,6 +192,7 @@ def main() -> int:
         if proc.returncode != 0:
             payload.update({"status": f"{run_name}_failed", "failed_command": cmd, "returncode": int(proc.returncode)})
             write_json(output_dir / "c2_runner_summary.json", payload)
+            write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
             print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
             return int(proc.returncode)
     reference_run = reference_root / "c2_reference"
@@ -234,6 +238,7 @@ def main() -> int:
             if key not in candidate_logits:
                 payload.update({"status": "candidate_missing_logits", "candidate_strategy": candidate_strategy, "missing_key": list(key)})
                 write_json(output_dir / "c2_runner_summary.json", payload)
+                write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
                 print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
                 return 1
             rank, epoch = key
@@ -249,6 +254,7 @@ def main() -> int:
         if len(candidate_rank_summaries) != int(resolved_world_size):
             payload.update({"status": "candidate_rank_summary_missing", "candidate_strategy": candidate_strategy})
             write_json(output_dir / "c2_runner_summary.json", payload)
+            write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
             print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
             return 1
         candidate_rank_summary = candidate_rank_summaries[0]
@@ -324,6 +330,7 @@ def main() -> int:
         }
     )
     write_json(output_dir / "c2_runner_summary.json", payload)
+    write_runner_result_bundle(output_dir, runner_name="run_gpu_c2_async_correctness", payload=payload, run_kind="GPU_CORRECTNESS")
     print((output_dir / "c2_runner_summary.json").read_text(encoding="utf-8"))
     return 0 if overall_pass else 1
 

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,10 @@ except Exception:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from rs.core.contracts.provenance import resolve_commit_identity
+from rs.core.contracts.result import ONLINE_PIPELINE, RunIdentity
+from rs.evidence.result_builder import ResultBundleDraft, build_result_bundle
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -307,3 +312,96 @@ def available_cuda_count() -> int:
         return int(torch.cuda.device_count())
     except Exception:
         return 0
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_runner_result_bundle(
+    output_dir: Path,
+    *,
+    runner_name: str,
+    payload: dict[str, Any],
+    run_kind: str,
+    claim_scope: str = "diagnostic",
+) -> None:
+    commit_sha, git_dirty, _source = resolve_commit_identity(REPO_ROOT)
+    status = str(payload.get("status", "")).strip()
+    executed = status in {"passed", "executed"}
+    completed = status == "passed"
+    reserved_detail_keys = {
+        "schema_version",
+        "run_identity",
+        "status",
+        "correctness_status",
+        "performance_status",
+        "pipeline",
+        "commit_sha",
+        "git_clean",
+        "instrumentation_mode",
+        "audit_evidence_level",
+        "measurement_complete",
+        "eligibility",
+        "summary",
+        "details",
+        "extensions",
+    }
+    payload_details = {
+        str(key): value
+        for key, value in dict(payload).items()
+        if str(key) not in reserved_detail_keys
+    }
+    summary = {
+        "run_kind": str(run_kind),
+        "all_work_completed": bool(completed),
+        "fallback_count": int(payload.get("fallback_count", 0) or 0),
+        "timeout_count": int(payload.get("timeout_count", 0) or 0),
+        "check_failure_count": int(payload.get("check_failure_count", 0) or 0),
+        "cleanup_failure_count": int(payload.get("cleanup_failure_count", 0) or 0),
+        "execution_outcome_count": 1 if executed else 0,
+        "missing_execution_outcome_count": 0 if executed else 1,
+        "formal_execution_expected": False,
+        "runner_name": str(runner_name),
+        "runner_status": status,
+        "performance_measurement_complete": False,
+        "measured_repeat_count": 0,
+        "warmup_excluded": False,
+        "preparation_miss_count": int(payload.get("preparation_miss_count", 0) or 0),
+        "provisional_execution_count": int(payload.get("provisional_execution_count", 0) or 0),
+        "materialization_failure_count": int(payload.get("materialization_failure_count", 0) or 0),
+        "execution_failure_count": int(payload.get("execution_failure_count", 0) or 0),
+        "native_fallback_count": int(payload.get("native_fallback_count", 0) or 0),
+        "semantic_failure_fallback_count": int(payload.get("semantic_failure_fallback_count", 0) or 0),
+        "safe_selector_fallback_count": int(payload.get("safe_selector_fallback_count", 0) or 0),
+    }
+    details = {
+        "run_kind": str(run_kind),
+        "runner_name": str(runner_name),
+        "runner_status": status,
+        "generated_at": _utc_now(),
+        **payload_details,
+    }
+    bundle = build_result_bundle(
+        ResultBundleDraft(
+            run_identity=RunIdentity(
+                run_id=str(output_dir.resolve().name),
+                pipeline=ONLINE_PIPELINE,
+                claim_scope=str(claim_scope),
+                trace_origin="derived_runner",
+                future_information_mode="predicted",
+            ),
+            status="success" if executed else "invalid",
+            correctness_status="valid" if completed else "invalid",
+            performance_status="ineligible",
+            commit_sha=str(commit_sha or "unknown"),
+            git_clean=bool(not git_dirty),
+            instrumentation_mode="contract",
+            audit_evidence_level="summary_only",
+            measurement_complete=False,
+            summary=summary,
+            details=details,
+            extensions={},
+        )
+    )
+    write_json(output_dir / "result_bundle.json", bundle.to_dict())

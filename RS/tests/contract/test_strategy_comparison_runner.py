@@ -89,8 +89,12 @@ def test_strategy_comparison_dry_run_legacy_config_still_works(tmp_path: Path) -
     _run_dry(config_path, output_dir)
 
     report = json.loads((output_dir / "comparison_report.json").read_text(encoding="utf-8"))
+    bundle = json.loads((output_dir / "result_bundle.json").read_text(encoding="utf-8"))
     assert report["baseline"] == "disabled"
     assert len(report["strategies"]) == 2
+    assert bundle["schema_version"] == "result_bundle.v2"
+    assert bundle["run_identity"]["claim_scope"] == "diagnostic"
+    assert bundle["eligibility"]["performance_eligible"] is False
     disabled_cmd = (output_dir / "per_strategy" / "disabled" / "rep0" / "command.txt").read_text(encoding="utf-8")
     hint_cmd = (output_dir / "per_strategy" / "routersense_p0p1p2_hint" / "rep1" / "command.txt").read_text(encoding="utf-8")
     assert "experiments.online.collect_native_ep_trace" in disabled_cmd

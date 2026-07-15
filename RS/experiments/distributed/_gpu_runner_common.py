@@ -22,6 +22,7 @@ from rs.experiments_support.gpu_runner_common import (
     run_subprocess,
     torchrun_policy_command,
     write_json,
+    write_runner_result_bundle,
 )
 
 __all__ = [
@@ -39,4 +40,5 @@ __all__ = [
     "run_subprocess",
     "torchrun_policy_command",
     "write_json",
+    "write_runner_result_bundle",
 ]

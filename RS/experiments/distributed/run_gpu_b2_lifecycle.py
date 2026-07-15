@@ -20,6 +20,7 @@ from experiments.distributed._gpu_runner_common import (
     run_subprocess,
     torchrun_policy_command,
     write_json,
+    write_runner_result_bundle,
 )
 from experiments.online.support.runtime_presets import resolve_strategy_runtime
 
@@ -229,6 +230,7 @@ def main() -> int:
     if args.dry_run:
         payload["status"] = "dry_run_ready"
         write_json(output_dir / "b2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_b2_lifecycle", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
         return 0
     if available_cuda_count() < int(args.world_size):
@@ -242,6 +244,7 @@ def main() -> int:
             dry_run=bool(args.dry_run),
         )
         write_json(output_dir / "b2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_b2_lifecycle", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
         return 0 if int(payload["fallback_returncode"]) == 0 else int(payload["fallback_returncode"])
 
@@ -280,6 +283,7 @@ def main() -> int:
             }
         )
         write_json(output_dir / "b2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_b2_lifecycle", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
         return int(candidate_proc.returncode)
 
@@ -313,6 +317,7 @@ def main() -> int:
             }
         )
         write_json(output_dir / "b2_runner_summary.json", payload)
+        write_runner_result_bundle(output_dir, runner_name="run_gpu_b2_lifecycle", payload=payload, run_kind="GPU_CORRECTNESS")
         print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
         return int(reference_proc.returncode)
 
@@ -479,6 +484,7 @@ def main() -> int:
     payload["checks"] = checks
     payload["status"] = "passed" if all(bool(value) for value in checks.values()) else "failed"
     write_json(output_dir / "b2_runner_summary.json", payload)
+    write_runner_result_bundle(output_dir, runner_name="run_gpu_b2_lifecycle", payload=payload, run_kind="GPU_CORRECTNESS")
     print((output_dir / "b2_runner_summary.json").read_text(encoding="utf-8"))
     return 0 if payload["status"] == "passed" else 1
 
