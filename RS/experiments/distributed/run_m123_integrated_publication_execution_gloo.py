@@ -265,6 +265,14 @@ def _manifest_digest(rows: list[dict[str, object]]) -> str:
     return _json_digest(canonical)
 
 
+def _id_set_digest(values: list[str] | tuple[str, ...] | set[str]) -> str:
+    return _json_digest(sorted(str(value) for value in values))
+
+
+def _sequence_digest(values: list[str] | tuple[str, ...]) -> str:
+    return _json_digest([str(value) for value in values])
+
+
 def _execute_role(
     *,
     runtime,
@@ -759,15 +767,27 @@ def _worker(
         peak_inflight_batches = int(
             max((int(dict(item.get("details", {})).get("peak_inflight_batches", 0) or 0) for item in all_outcomes), default=0)
         )
-        submitted_task_count = int(
-            sum(len(tuple(item.get("submitted_task_ids", ()))) for item in all_outcomes)
+        submitted_task_ids = tuple(
+            str(task_id)
+            for item in all_outcomes
+            for task_id in tuple(str(task_id) for task_id in item.get("submitted_task_ids", ()))
         )
-        completed_task_count = int(
-            sum(len(tuple(item.get("completed_task_ids", ()))) for item in all_outcomes)
+        completed_task_ids = tuple(
+            str(task_id)
+            for item in all_outcomes
+            for task_id in tuple(str(task_id) for task_id in item.get("completed_task_ids", ()))
         )
-        unresolved_task_count = int(
-            sum(len(tuple(item.get("unresolved_task_ids", ()))) for item in all_outcomes)
+        unresolved_task_ids = tuple(
+            str(task_id)
+            for item in all_outcomes
+            for task_id in tuple(str(task_id) for task_id in item.get("unresolved_task_ids", ()))
         )
+        submitted_task_count = int(len(submitted_task_ids))
+        completed_task_count = int(len(completed_task_ids))
+        unresolved_task_count = int(len(unresolved_task_ids))
+        fallback_count = int(getattr(adapter, "phase_sync_fallback_count", 0) or 0)
+        fallback_reasons = [] if fallback_count == 0 else ["phase_sync_fallback"]
+        native_fallback_invoked = bool(fallback_count > 0)
         summary = {
             "rank": int(rank),
             "status": "passed",
@@ -800,6 +820,19 @@ def _worker(
             "submitted_task_count": submitted_task_count,
             "completed_task_count": completed_task_count,
             "unresolved_task_count": unresolved_task_count,
+            "submitted_task_ids": list(submitted_task_ids),
+            "completed_task_ids": list(completed_task_ids),
+            "unresolved_task_ids": list(unresolved_task_ids),
+            "submitted_task_id_set_digest": _id_set_digest(submitted_task_ids),
+            "completed_task_id_set_digest": _id_set_digest(completed_task_ids),
+            "unresolved_task_id_set_digest": _id_set_digest(unresolved_task_ids),
+            "submit_sequence_digest": _sequence_digest(submitted_task_ids),
+            "completion_sequence_digest": _sequence_digest(completed_task_ids),
+            "fallback_count": fallback_count,
+            "fallback_reasons": list(fallback_reasons),
+            "native_fallback_invoked": native_fallback_invoked,
+            "descriptor_source": "materialized_plan",
+            "execution_identity_source": "formal_executor_outcome",
             "p0_completed_transfer_keys": list(
                 _transfer_keys_from_completed_tasks(
                     prepared_p0.materialized_plan,
@@ -1050,6 +1083,11 @@ def run_gate_with_backend(
     reference_final_digest = _json_digest([row["reference_final_digest"] for row in parity_rank_rows])
     executed_final_digest = _json_digest([row["executed_final_digest"] for row in parity_rank_rows])
     parity_pass = all(bool(row.get("allclose", False)) for row in parity_rank_rows)
+    all_submitted_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("submitted_task_ids", []))]
+    all_completed_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("completed_task_ids", []))]
+    all_unresolved_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("unresolved_task_ids", []))]
+    all_fallback_reasons = [str(reason) for row in payloads for reason in list(row.get("fallback_reasons", []))]
+    native_fallback_invoked = any(bool(row.get("native_fallback_invoked", False)) for row in payloads)
     (run_root / "materialized_task_manifest.json").write_text(
         json.dumps(
             {
@@ -1112,6 +1150,16 @@ def run_gate_with_backend(
         "reference_final_digest": reference_final_digest,
         "executed_final_digest": executed_final_digest,
         "tensor_parity_pass": parity_pass,
+        "submitted_task_id_set_digest": _id_set_digest(all_submitted_task_ids),
+        "completed_task_id_set_digest": _id_set_digest(all_completed_task_ids),
+        "unresolved_task_id_set_digest": _id_set_digest(all_unresolved_task_ids),
+        "submit_sequence_digest": _sequence_digest(all_submitted_task_ids),
+        "completion_sequence_digest": _sequence_digest(all_completed_task_ids),
+        "fallback_count": int(sum(int(row.get("fallback_count", 0) or 0) for row in payloads)),
+        "fallback_reasons": all_fallback_reasons,
+        "native_fallback_invoked": native_fallback_invoked,
+        "descriptor_source": "materialized_plan",
+        "execution_identity_source": "formal_executor_outcome",
         "ranks": payloads,
     }
     (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")

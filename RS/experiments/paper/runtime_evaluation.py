@@ -90,6 +90,8 @@ def _runtime_status_from_summary(summary: dict[str, Any], parity: dict[str, Any]
         return "EXECUTED_DIGEST_MISSING"
     if summary.get("materialized_task_manifest_digest") in {None, ""}:
         return "MATERIALIZED_DIGEST_MISSING"
+    if summary.get("fallback_count") is None or summary.get("fallback_reasons") is None or summary.get("native_fallback_invoked") is None:
+        return "FALLBACK_EVIDENCE_MISSING"
     if summary.get("executed_task_manifest_digest") != summary.get("materialized_task_manifest_digest"):
         return "PLAN_IDENTITY_MISMATCH"
     if not bool(parity.get("allclose", False)):
@@ -99,8 +101,10 @@ def _runtime_status_from_summary(summary: dict[str, Any], parity: dict[str, Any]
     unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
     if submitted != completed or unresolved != 0:
         return "INCOMPLETE_TASKS"
-    fallback = sum(int(rank.get("phase_sync_fallback_count", 0) or 0) for rank in summary.get("ranks", []))
+    fallback = int(summary.get("fallback_count", 0) or 0)
     if fallback != 0:
+        return "FALLBACK_OCCURRED"
+    if bool(summary.get("native_fallback_invoked", False)):
         return "FALLBACK_OCCURRED"
     return "RUNTIME_CORRECTNESS"
 
@@ -173,7 +177,7 @@ def _run_formal_gloo_backend(
         submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
         completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
         unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
-        fallback = sum(int(rank.get("phase_sync_fallback_count", 0) or 0) for rank in summary.get("ranks", []))
+        fallback = int(summary.get("fallback_count", 0) or 0) if summary.get("fallback_count") is not None else None
         return RuntimeEvaluationRecord(
             instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
             requested_policy_id=str(policy_name),
@@ -200,6 +204,15 @@ def _run_formal_gloo_backend(
                 "parity_path": str(parity_path),
                 "executed_task_manifest_path": str(executed_manifest_path),
                 "materialized_task_manifest_path": str(materialized_manifest_path),
+                "submitted_task_id_set_digest": summary.get("submitted_task_id_set_digest"),
+                "completed_task_id_set_digest": summary.get("completed_task_id_set_digest"),
+                "submit_sequence_digest": summary.get("submit_sequence_digest"),
+                "completion_sequence_digest": summary.get("completion_sequence_digest"),
+                "fallback_count": summary.get("fallback_count"),
+                "fallback_reasons": summary.get("fallback_reasons"),
+                "native_fallback_invoked": summary.get("native_fallback_invoked"),
+                "descriptor_source": summary.get("descriptor_source"),
+                "execution_identity_source": summary.get("execution_identity_source"),
                 "trace_sample_id": trace_sample_id,
                 "traffic_instance_id": traffic_instance_id,
             },
@@ -238,4 +251,3 @@ def evaluate_runtime_correctness_with_gloo(
         "records": [phase_sync.to_dict(), async_release.to_dict()],
         "tensor_parity_pass": tensor_parity_pass,
     }
-

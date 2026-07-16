@@ -275,6 +275,7 @@ def cmd_runtime(args: argparse.Namespace) -> int:
             backend = str(row.get("execution_backend_id", "unknown"))
             evidence = dict(row.get("evidence", {}) or {})
             backend_dir = output_dir / backend
+            rank_artifacts_dir = backend_dir / "rank_artifacts"
             write_json(backend_dir / "formal_runner_summary.json", evidence.get("runner_summary", {}))
             if evidence.get("runner_summary", {}).get("materialized_task_manifest_path"):
                 materialized = Path(str(evidence["runner_summary"]["materialized_task_manifest_path"]))
@@ -288,6 +289,21 @@ def cmd_runtime(args: argparse.Namespace) -> int:
                 parity_path = Path(str(evidence["parity_path"]))
                 if parity_path.exists():
                     write_json(backend_dir / "parity.json", json.loads(parity_path.read_text(encoding="utf-8")))
+            run_dir = Path(str(evidence.get("run_dir", "")))
+            if run_dir.exists():
+                for rank in range(int(evidence.get("runner_summary", {}).get("world_size", 4) or 4)):
+                    summary_src = run_dir / f"rank{rank}.json"
+                    materialized_src = run_dir / f"rank{rank}_materialized_task_manifest.json"
+                    executed_src = run_dir / f"rank{rank}_executed_task_manifest.json"
+                    parity_src = run_dir / f"rank{rank}_parity.json"
+                    if summary_src.exists():
+                        write_json(rank_artifacts_dir / f"rank{rank}_summary.json", json.loads(summary_src.read_text(encoding="utf-8")))
+                    if materialized_src.exists():
+                        write_json(rank_artifacts_dir / f"rank{rank}_materialized_task_manifest.json", json.loads(materialized_src.read_text(encoding="utf-8")))
+                    if executed_src.exists():
+                        write_json(rank_artifacts_dir / f"rank{rank}_executed_task_manifest.json", json.loads(executed_src.read_text(encoding="utf-8")))
+                    if parity_src.exists():
+                        write_json(rank_artifacts_dir / f"rank{rank}_parity.json", json.loads(parity_src.read_text(encoding="utf-8")))
         if trace_sample_id or traffic_instance_id:
             write_json(
                 output_dir / "real_trace_runtime_summary.json",
@@ -380,7 +396,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         "tiny_prediction_status": prediction["status"],
         "tiny_hiding_status": hiding["status"],
         "tiny_runtime_status": runtime_summary["status"],
-        "real_trace_offline_smoke": "ENVIRONMENT_BLOCKED",
+        "real_trace_offline_smoke": build_traffic_summary["status"],
         "build_traffic_smoke": build_traffic_summary["status"],
     }
     write_json(output_dir / "smoke_summary.json", smoke)
@@ -395,14 +411,17 @@ def cmd_audit(args: argparse.Namespace) -> int:
         hiding_summary=hiding,
         runtime_summary=runtime_summary,
         artifact_index={
-            "capability_matrix": str(output_dir / "capability_matrix.json"),
-            "scheduling_summary": str(output_dir / "scheduling_summary.json"),
-            "prediction_summary": str(output_dir / "prediction_summary.json"),
-            "hiding_summary": str(output_dir / "hiding_summary.json"),
-            "runtime_summary": str(output_dir / "runtime_summary.json"),
-            "smoke_summary": str(output_dir / "smoke_summary.json"),
+            "audit/capability_matrix.json": "audit/capability_matrix.json",
+            "results/scheduling_summary.json": "results/scheduling_summary.json",
+            "results/prediction_summary.json": "results/prediction_summary.json",
+            "results/hiding_summary.json": "results/hiding_summary.json",
+            "results/runtime_summary.json": "results/runtime_summary.json",
+            "tests/smoke_summary.json": "tests/smoke_summary.json",
             "trace/summary": "trace/summary.json" if evidence_dir is not None else "",
             "traffic/build_traffic_summary": "traffic/build_traffic_summary.json" if evidence_dir is not None else "",
+            "traffic/traffic_instances.json": "traffic/traffic_instances.json" if evidence_dir is not None else "",
+            "scheduling/strict_same_core_records.jsonl": "scheduling/strict_same_core_records.jsonl" if evidence_dir is not None else "",
+            "runtime/phase_sync/formal_runner_summary.json": "runtime/phase_sync/formal_runner_summary.json" if evidence_dir is not None else "",
         },
     )
     write_json(output_dir / "result_bundle.json", result_bundle)

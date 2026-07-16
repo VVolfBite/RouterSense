@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,7 @@ from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.runtime.online.megatron_ep.target_planning.contracts import _compat_logical_plan_from_window_plan
 from rs.scheduling.algorithm_catalog import get_algorithm_metadata
 from rs.scheduling.catalog import resolve_algorithm_id
-from rs.scheduling.reference.exact_small_instance import solve_problem_exact_with_scope
+from rs.scheduling.reference.exact_small_instance import exact_result_to_logical_plan, solve_problem_exact_with_scope
 
 from .adapters.scheduling_adapter import execute_policy, replay_window_from_matrices
 from .contracts import RecordMetadata, ScheduleEvaluationRecord
@@ -163,7 +165,7 @@ def _exact_record(
 ) -> ScheduleEvaluationRecord:
     started = time.perf_counter_ns()
     result = solve_problem_exact_with_scope(problem, scope=scope)
-    ended = time.perf_counter_ns()
+    replay_started = time.perf_counter_ns()
     nonempty_demand = bool(problem.flow_window.ready_flows or problem.flow_window.blocked_flows)
     empty_plan = not bool(result.get("schedule"))
     supported = bool(result.get("supported", False))
@@ -172,6 +174,10 @@ def _exact_record(
     objective_logical_makespan = None if result.get("objective_logical_makespan") is None else float(result["objective_logical_makespan"])
     comparable = supported and solver_status == "optimal" and certified_optimal and objective_logical_makespan is not None and not (nonempty_demand and empty_plan)
     validation_errors: list[str] = []
+    replay_audit: dict[str, Any] = {}
+    validation_runtime_ms = None
+    replay_evaluation_runtime_ms = None
+    plan_digest = None
     if nonempty_demand and empty_plan:
         validation_errors.append("empty_exact_plan_with_nonempty_demand")
     if not supported:
@@ -180,6 +186,21 @@ def _exact_record(
         validation_errors.append(f"solver_status={solver_status}")
     if not certified_optimal:
         validation_errors.append("certified_optimal=false")
+    if comparable:
+        logical_plan = exact_result_to_logical_plan(result, policy_name=policy_id)
+        validation_started = time.perf_counter_ns()
+        replay_audit = replay_and_audit_logical_plan(problem, logical_plan)
+        validation_ended = time.perf_counter_ns()
+        validation_runtime_ms = (validation_ended - validation_started) / 1_000_000.0
+        replay_evaluation_runtime_ms = validation_runtime_ms
+        plan_digest = hashlib.sha256(json.dumps(logical_plan.to_dict(), ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
+        if not bool(replay_audit.get("valid", False)):
+            comparable = False
+            objective_logical_makespan = None
+            validation_errors.extend(str(item) for item in replay_audit.get("validation_errors", ()) or ())
+        else:
+            objective_logical_makespan = float(replay_audit.get("replay_makespan", replay_audit.get("makespan", objective_logical_makespan)))
+    ended = time.perf_counter_ns()
     reference_model = str(result.get("reference_model")) if result.get("reference_model") is not None else None
     return ScheduleEvaluationRecord(
         instance_id=instance_id,
@@ -197,13 +218,13 @@ def _exact_record(
         best_bound=float(result["best_bound"]) if comparable and result.get("best_bound") is not None else None,
         optimality_gap=float(result["optimality_gap"]) if comparable and result.get("optimality_gap") is not None else None,
         planner_runtime_ms=float(result.get("solver_runtime_ms_wall")) if result.get("solver_runtime_ms_wall") is not None else None,
-        validation_runtime_ms=None,
-        replay_evaluation_runtime_ms=None,
+        validation_runtime_ms=validation_runtime_ms,
+        replay_evaluation_runtime_ms=replay_evaluation_runtime_ms,
         record_construction_runtime_ms=None,
         evaluation_total_runtime_ms=(ended - started) / 1_000_000.0,
         objective=objective_logical_makespan if comparable else None,
-        coverage_valid=comparable,
-        plan_digest=None,
+        coverage_valid=bool(replay_audit.get("valid", comparable)),
+        plan_digest=plan_digest if comparable else None,
         fallback_count=None,
         comparable=comparable,
         comparable_reason=f"exact_{scope}_supported" if comparable else f"exact_{scope}_not_comparable",
@@ -225,7 +246,8 @@ def _exact_record(
             "solver_runtime_ms_wall": result.get("solver_runtime_ms_wall"),
             "solver_time_limit_ms": result.get("time_limit_ms"),
             "phase_solver_results": result.get("phase_solver_results"),
-            "combined_validation": result.get("combined_validation"),
+            "combined_validation": replay_audit if replay_audit else result.get("combined_validation"),
+            "served_p2_volume": _phase2_served_volume(replay_audit),
         },
         metadata=metadata,
     )
