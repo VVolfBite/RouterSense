@@ -22,7 +22,7 @@ from rs.experiments_support.official_output import (
     update_official_status,
     write_official_configs,
 )
-from rs.experiments_support.strategy_comparison_runner import run_strategy_comparison
+from rs.experiments_support.strategy_comparison_runner import run_online_evaluation
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 
@@ -56,7 +56,7 @@ def main() -> None:
             normalized_config=canonical_payload,
             consumed_config=canonical_payload,
         )
-        rc = run_strategy_comparison(
+        rc = run_online_evaluation(
             config_path=config_path,
             output_dir=output_dir,
             dry_run=bool(args.dry_run),

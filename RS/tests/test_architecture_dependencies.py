@@ -218,3 +218,14 @@ def test_formal_experiments_do_not_import_private_runtime_modules() -> None:
         if any(token in module for token in forbidden_tokens):
             bad.append(f"{path}:{lineno}:{module}")
     assert not bad, bad
+
+
+def test_official_online_wrappers_do_not_import_strategy_comparison_name() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for relative in (
+        Path("experiments/run_online_phase_sync.py"),
+        Path("experiments/run_online_async_release.py"),
+    ):
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "run_strategy_comparison" not in source
+        assert "run_online_evaluation" in source

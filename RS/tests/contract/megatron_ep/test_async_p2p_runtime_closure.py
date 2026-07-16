@@ -13,6 +13,7 @@ from rs.runtime.online.megatron_ep.execution.async_p2p_executor import (
     _digest_sequence_items,
     _pair_index,
     _sequence_entry,
+    execute_async_phase_tensor,
     validate_async_phase_preflight,
 )
 from rs.scheduling.phase_execution import BucketTask, PayloadSlice, PhaseExecutionPlan, PlanWave
@@ -194,3 +195,91 @@ def test_gpu_runners_support_help_and_dry_run(tmp_path: Path) -> None:
         assert dry_proc.returncode == 0
         payload = json.loads(dry_proc.stdout)
         assert payload["dry_run"] is True
+
+
+def test_async_executor_frontier_stalled_fails_closed(monkeypatch) -> None:
+    from rs.runtime.online.megatron_ep.execution import async_p2p_executor as module
+
+    context = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (1, 0)))[0]
+    plan = _plan_for_context(
+        context=context,
+        tasks=[_task(context=context, src=0, dst=1, sender_offset=0, receiver_offset=0, row_count=2, task_id="t0")],
+    )
+    input_tensor = torch.zeros((sum(context.send_splits), 4), dtype=torch.float32)
+
+    class _Frontier:
+        def __init__(self, *args, **kwargs) -> None:
+            self.tasks = list(kwargs.get("tasks", ()))
+            self.release_epoch = 0
+            self.lineage = []
+
+        def commit_batch(self, limit=1):
+            return []
+
+        def pending_count(self):
+            return 1
+
+        def ready_batch(self, limit=1):
+            return []
+
+        def immutable_prefix_ids(self):
+            return ()
+
+        def replaceable_suffix_ids(self):
+            return tuple(str(task.task_id) for task in self.tasks)
+
+        def frontier_digest(self):
+            return "frontier"
+
+    monkeypatch.setattr(module, "ReleaseBatchFrontier", _Frontier)
+    result = execute_async_phase_tensor(
+        context=context,
+        plan=plan,
+        tensor_role="hidden_states",
+        input_tensor=input_tensor,
+        process_group=object(),
+        rank_context={"global_rank": 0, "local_rank": 0},
+    )
+    summary_row = next(row for row in result.execution_entries if row.get("record_type") == "async_phase_summary")
+    assert result.all_work_completed is False
+    assert result.failure_code == "frontier_stalled"
+    assert summary_row["all_work_completed"] is False
+    assert summary_row["failure_code"] == "frontier_stalled"
+
+
+def test_async_executor_wait_failure_marks_session_poisoned(monkeypatch) -> None:
+    from rs.runtime.online.megatron_ep.execution import async_p2p_executor as module
+
+    context = make_contexts_from_matrix(phase="P0", matrix=((0, 2), (0, 0)))[0]
+    plan = _plan_for_context(
+        context=context,
+        tasks=[_task(context=context, src=0, dst=1, sender_offset=0, receiver_offset=0, row_count=2, task_id="t0")],
+    )
+    input_tensor = torch.zeros((sum(context.send_splits), 4), dtype=torch.float32)
+
+    class _Handle:
+        def __init__(self, name: str, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+
+        def wait(self) -> None:
+            if self.fail:
+                raise RuntimeError(self.name)
+
+    monkeypatch.setattr(module.dist, "P2POp", lambda op, tensor, peer, group=None: (op, tensor, peer, group))
+    monkeypatch.setattr(module.dist, "isend", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.dist, "irecv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.dist, "batch_isend_irecv", lambda ops: [_Handle("h0", fail=True)])
+    result = execute_async_phase_tensor(
+        context=context,
+        plan=plan,
+        tensor_role="hidden_states",
+        input_tensor=input_tensor,
+        process_group=object(),
+        rank_context={"global_rank": 0, "local_rank": 0},
+    )
+    failure_row = next(row for row in result.execution_entries if row.get("record_type") == "async_phase_failure")
+    assert result.all_work_completed is False
+    assert result.session_poisoned is True
+    assert result.failure_code == "work_wait_failed:RuntimeError"
+    assert failure_row["session_poisoned"] is True

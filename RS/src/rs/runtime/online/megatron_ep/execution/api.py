@@ -14,6 +14,7 @@ from rs.core.contracts.execution import (
     MaterializedPlan,
 )
 from rs.runtime.online.megatron_ep.phase import PhaseReadyContext
+from .async_session import wait_handles_with_drain
 
 
 def _coerce_phase_ready_context(payload: object) -> PhaseReadyContext:
@@ -247,42 +248,6 @@ def _validate_output_tensor(plan: MaterializedPlan, invocation: PayloadInvocatio
         expected_rows=int(expected_rows),
         field_name="output_payload",
     )
-
-
-def _wait_handles_with_drain(handles: list[Any]) -> tuple[str | None, dict[str, object]]:
-    waited = 0
-    drained = 0
-    failure_type = ""
-    failure_message = ""
-    for index, handle in enumerate(handles):
-        try:
-            handle.wait()
-            waited += 1
-        except Exception as exc:
-            waited += 1
-            failure_type = type(exc).__name__
-            failure_message = str(exc)
-            for tail in handles[index + 1 :]:
-                try:
-                    tail.wait()
-                    drained += 1
-                except Exception:
-                    drained += 1
-            return (
-                f"work_wait_failed:{failure_type}",
-                {
-                    "waited_handle_count": int(waited),
-                    "drained_handle_count": int(drained),
-                    "session_poisoned": True,
-                    "failure_message": failure_message,
-                },
-            )
-    return None, {
-        "waited_handle_count": int(waited),
-        "drained_handle_count": int(drained),
-        "session_poisoned": False,
-        "failure_message": failure_message,
-    }
 
 
 class _BaseExecutor:
@@ -582,7 +547,16 @@ class P2PReleaseExecutor(_BaseExecutor):
                     p2p_operation_count += 1
                 posted_batches.append((batch, handles, recv_payloads, retained_send_tensors, tuple(str(item.task_id) for item in completion_candidates)))
             for batch, handles, recv_payloads, retained_send_tensors, completion_task_ids in posted_batches:
-                failure_code, wait_details = _wait_handles_with_drain(handles)
+                failure_code, session_state = wait_handles_with_drain(
+                    handles=handles,
+                    session_key=(
+                        str(context.run_id),
+                        str(context.forward_generation),
+                        str(context.layer_id),
+                        str(context.phase),
+                        str(payload_role),
+                    ),
+                )
                 if failure_code is not None:
                     return ExecutionOutcome(
                         success=False,
@@ -599,7 +573,7 @@ class P2PReleaseExecutor(_BaseExecutor):
                             "distributed_operation_count": int(p2p_operation_count),
                             "peak_inflight_batches": int(peak_inflight),
                             "failed_batch_id": str(batch.batch_id),
-                            **wait_details,
+                            **session_state.to_details(),
                         },
                     )
                 for item, recv_tensor in recv_payloads:

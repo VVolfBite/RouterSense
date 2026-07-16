@@ -17,6 +17,7 @@ import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.phase import BucketTask, PhaseExecutionPlan, PhaseReadyContext
 from rs.runtime.online.megatron_ep.execution.release_frontier import ReleaseBatchFrontier, ReleaseBatchTask
+from rs.runtime.online.megatron_ep.execution.async_session import wait_handles_with_drain
 
 from .sync_wave_executor import PhaseExecutionResult, _copy_segment, _empty_like_rows
 
@@ -26,6 +27,10 @@ class AsyncP2PExecutionResult:
     output: torch.Tensor
     summary: PhaseExecutionResult
     execution_entries: list[dict[str, Any]]
+    failure_code: str = ""
+    all_work_completed: bool = True
+    session_poisoned: bool = False
+    blocked_release_tokens: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -664,6 +669,9 @@ def execute_async_phase_tensor(
     last_request_submitted_ns = 0
     first_request_completed_ns = 0
     all_requests_completed_ns = 0
+    execution_failure_code = ""
+    session_poisoned = False
+    blocked_release_tokens: tuple[str, ...] = ()
     while True:
         batch = frontier.commit_batch(limit=1)
         if not batch:
@@ -671,9 +679,13 @@ def execute_async_phase_tensor(
                 break
             ready = frontier.ready_batch(limit=1)
             if not ready:
+                execution_failure_code = "frontier_stalled"
+                blocked_release_tokens = tuple(str(task.task_id) for task in frontier.tasks if str(task.task_id) not in set(frontier.immutable_prefix_ids()))
                 break
             batch = frontier.commit_batch(limit=1)
             if not batch:
+                execution_failure_code = "frontier_stalled"
+                blocked_release_tokens = tuple(str(task.task_id) for task in ready)
                 break
         batch_count += 1
         frontier.mark_in_flight([task.task_id for task in batch])
@@ -760,9 +772,40 @@ def execute_async_phase_tensor(
         if ops:
             last_request_submitted_ns = int(batch_submit_end_ns)
         wait_start_ns = time.perf_counter_ns()
-        for work in work_handles:
-            work.wait()
+        failure_code, session_state = wait_handles_with_drain(
+            handles=work_handles,
+            session_key=(
+                str(context.plan_key.get("run_id_digest", "")),
+                str(int(context.forward_epoch)),
+                str(context.plan_key.get("microbatch_id", "")),
+                str(context.layer_id),
+                str(tensor_role),
+            ),
+        )
         wait_end_ns = time.perf_counter_ns()
+        if failure_code is not None:
+            execution_failure_code = str(failure_code)
+            session_poisoned = bool(session_state.poisoned)
+            blocked_release_tokens = tuple(str(task.task_id) for task in batch)
+            op_build_us += float((op_build_end_ns - op_build_start_ns) / 1000.0)
+            batch_submit_us += float((batch_submit_end_ns - batch_submit_start_ns) / 1000.0)
+            wait_us += float((wait_end_ns - wait_start_ns) / 1000.0)
+            total_send_ops += int(batch_send)
+            total_recv_ops += int(batch_recv)
+            batch_isend_irecv_call_count += int(1 if ops else 0)
+            work_handle_count += int(len(work_handles))
+            execution_entries.append(
+                {
+                    "record_type": "async_phase_failure",
+                    "phase": str(context.phase),
+                    "tensor_role": str(tensor_role),
+                    "failure_code": str(failure_code),
+                    "failed_batch_task_ids": [str(task.task_id) for task in batch],
+                    "blocked_release_tokens": list(blocked_release_tokens),
+                    **session_state.to_details(),
+                }
+            )
+            break
         if ops:
             if first_request_completed_ns <= 0:
                 first_request_completed_ns = int(wait_end_ns)
@@ -804,6 +847,8 @@ def execute_async_phase_tensor(
                     agreement_token=dict(suffix_result.get("agreement_token", {})),
                 )
                 suffix_splice_count += 1
+        if execution_failure_code:
+            break
     total_end_ns = time.perf_counter_ns()
     active_transport_critical_path_us = (
         float((all_requests_completed_ns - first_request_submitted_ns) / 1000.0)
@@ -831,6 +876,7 @@ def execute_async_phase_tensor(
         else:
             session["secondary_replayed"] = True
 
+    all_work_completed = not bool(execution_failure_code) and frontier.pending_count() <= 0
     execution_entries.append(
         {
             "record_type": "async_phase_summary",
@@ -875,7 +921,10 @@ def execute_async_phase_tensor(
             "active_transport_sum_us": float(batch_submit_us + wait_us),
             "active_transport_critical_path_us": active_transport_critical_path_us,
             "batch_isend_irecv_call_count": int(batch_isend_irecv_call_count),
-            "all_work_completed": True,
+            "all_work_completed": bool(all_work_completed),
+            "failure_code": str(execution_failure_code),
+            "session_poisoned": bool(session_poisoned),
+            "blocked_release_tokens": list(blocked_release_tokens),
             "first_transport_submit_ns": int(first_transport_submit_ns),
             "last_transport_complete_ns": int(last_transport_complete_ns),
             "p0_first_submit_ns": int(first_transport_submit_ns if str(context.phase).upper() == "P0" else 0),
@@ -903,7 +952,15 @@ def execute_async_phase_tensor(
         remote_copy_rows=remote_copy_rows,
         output_shape=tuple(int(dim) for dim in output.shape),
     )
-    return AsyncP2PExecutionResult(output=output, summary=summary, execution_entries=execution_entries + ordered_entries)
+    return AsyncP2PExecutionResult(
+        output=output,
+        summary=summary,
+        execution_entries=execution_entries + ordered_entries,
+        failure_code=str(execution_failure_code),
+        all_work_completed=bool(all_work_completed),
+        session_poisoned=bool(session_poisoned),
+        blocked_release_tokens=tuple(str(value) for value in blocked_release_tokens),
+    )
 
 
 __all__ = ["AsyncP2PExecutionResult", "execute_async_phase_tensor"]

@@ -57,7 +57,6 @@ def _canonical_online_to_runtime_view(payload: dict[str, Any]) -> dict[str, Any]
             "repetitions": int(evaluation.get("repeats", 1) or 1),
             "warmup": int(evaluation.get("warmup", 0) or 0),
             "bucket_mode": str(traffic.get("bucket_mode", "dynamic_current")),
-            "bucket_rows": int(traffic.get("bucket_rows", 0) or 0),
             "safe_projection_mode": str((policy.get("options", {}) or {}).get("safe_projection_mode", "host_select")),
             "p0_weight": float((policy.get("options", {}) or {}).get("p0_weight", 1.0)),
             "p1_reservation_weight": float((policy.get("options", {}) or {}).get("p1_reservation_weight", 1.0)),
@@ -370,7 +369,7 @@ def write_result_bundle(output_dir: Path, *, report: dict[str, Any], timing: dic
     write_json(output_dir / "result_bundle.json", bundle.to_dict())
 
 
-def run_strategy_comparison(*, config_path: Path, output_dir: Path, dry_run: bool) -> int:
+def run_online_evaluation(*, config_path: Path, output_dir: Path, dry_run: bool) -> int:
     if not rank0_orchestrates_only():
         return 0
     comparison = load_yaml(config_path)
@@ -444,4 +443,12 @@ def run_strategy_comparison(*, config_path: Path, output_dir: Path, dry_run: boo
     return 0
 
 
-__all__ = ["run_strategy_comparison"]
+def run_strategy_comparison(*, config_path: Path, output_dir: Path, dry_run: bool) -> int:
+    return run_online_evaluation(
+        config_path=config_path,
+        output_dir=output_dir,
+        dry_run=dry_run,
+    )
+
+
+__all__ = ["run_online_evaluation", "run_strategy_comparison"]

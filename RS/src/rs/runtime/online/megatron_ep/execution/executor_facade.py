@@ -49,6 +49,9 @@ class ExecutionResult:
     all_work_completed: bool = True
     timing_us: dict[str, float] | None = None
     phase_metrics: dict[str, Any] | None = None
+    failure_code: str = ""
+    session_poisoned: bool = False
+    blocked_release_tokens: tuple[str, ...] = ()
     first_transport_submit_ns: int = 0
     last_transport_complete_ns: int = 0
     p0_first_submit_ns: int = 0
@@ -231,6 +234,9 @@ class AsyncReleaseTransportExecutor:
             p1_last_complete_ns=int(summary_row.get("p1_last_complete_ns", 0) or 0),
             raw_summary=result.summary.to_dict(),
             execution_entries=tuple(result.execution_entries),
+            failure_code=str(result.failure_code),
+            session_poisoned=bool(result.session_poisoned),
+            blocked_release_tokens=tuple(str(value) for value in result.blocked_release_tokens),
         )
 
 
