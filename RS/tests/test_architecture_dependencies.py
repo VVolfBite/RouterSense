@@ -229,3 +229,5 @@ def test_official_online_wrappers_do_not_import_strategy_comparison_name() -> No
         source = (root / relative).read_text(encoding="utf-8")
         assert "run_strategy_comparison" not in source
         assert "run_online_evaluation" in source
+        assert "online_evaluation_runner" in source
+        assert "strategy_comparison_runner" not in source

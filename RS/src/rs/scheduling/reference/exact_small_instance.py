@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+from rs.core.contracts import PlanWave, PlannedFlow, WindowPlan
 from rs.scheduling.contracts import FlowDemand, LogicalSchedulePlan, LogicalWave, MultiPhaseSchedulingProblem
 
 
@@ -138,6 +139,51 @@ def exact_result_to_logical_plan(result: dict[str, Any], *, policy_name: str = "
     )
 
 
+def exact_result_to_window_plan(
+    result: dict[str, Any],
+    *,
+    planner_id: str,
+    planner_family: str,
+    request_digest: str,
+) -> WindowPlan:
+    waves = []
+    for row in result.get("schedule", []):
+        flows = tuple(
+            PlannedFlow(
+                flow_id=str(item["flow_id"]),
+                phase=str(item["phase"]),
+                src_rank=int(item["src_rank"]),
+                dst_rank=int(item["dst_rank"]),
+                row_count=int(item["byte_count"]),
+                release_state="ready",
+                executable=True,
+            )
+            for item in row.get("flows", [])
+        )
+        waves.append(
+            PlanWave(
+                wave_id=int(row["wave_id"]),
+                flows=flows,
+                estimated_duration=float(row.get("duration", 0.0)),
+            )
+        )
+    metadata = {
+        "policy_name": str(planner_id),
+        "policy_version": "v1",
+        "logical_model": "discrete_bucket_phase_sync_wave",
+        "reference_result": dict(result),
+        "evaluation_eligible": True,
+        "certified_optimal": bool(result.get("certified_optimal", False)),
+    }
+    return WindowPlan(
+        planner_id=str(planner_id),
+        planner_family=str(planner_family),
+        request_digest=str(request_digest),
+        waves=tuple(waves),
+        metadata=metadata,
+    )
+
+
 def _compatible_wave_masks(flows: tuple[FlowDemand, ...]) -> set[int]:
     masks: set[int] = set()
     for mask in range(1, 1 << len(flows)):
@@ -193,6 +239,7 @@ __all__ = [
     "MAX_RANK_COUNT",
     "UnsupportedExactSolve",
     "exact_result_to_logical_plan",
+    "exact_result_to_window_plan",
     "solve_exact_small_instance",
     "solve_problem_exact",
 ]

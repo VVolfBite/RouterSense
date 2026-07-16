@@ -22,7 +22,7 @@ from rs.experiments_support.official_output import (
     update_official_status,
     write_official_configs,
 )
-from rs.experiments_support.strategy_comparison_runner import run_online_evaluation
+from rs.experiments_support.online_evaluation_runner import run_online_evaluation
 from rs.runtime.guards.artifact import write_failure_artifact
 from rs.runtime.guards.errors import RouterSenseInvariantError
 
