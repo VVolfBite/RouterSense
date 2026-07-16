@@ -348,6 +348,56 @@ def _offset_schedule(schedule: list[dict[str, Any]], *, start_offset: float, wav
     return rows
 
 
+def _run_b_core_phase(
+    *,
+    matrix_kind: str,
+    matrix_rows: tuple[tuple[int, ...], ...],
+    zero_matrix: list[list[int]],
+    problem: MultiPhaseSchedulingProblem,
+    spec: Tier1PolicySpec,
+    policy: Tier1MultiphasePolicy,
+) -> dict[str, Any]:
+    if matrix_kind == "p0":
+        dispatch_rows = [list(row) for row in matrix_rows]
+        combine_rows = [list(row) for row in zero_matrix]
+        next_rows = [list(row) for row in zero_matrix]
+    elif matrix_kind == "p1":
+        dispatch_rows = [list(row) for row in zero_matrix]
+        combine_rows = [list(row) for row in matrix_rows]
+        next_rows = [list(row) for row in zero_matrix]
+    elif matrix_kind == "p2":
+        dispatch_rows = [list(row) for row in zero_matrix]
+        combine_rows = [list(row) for row in zero_matrix]
+        next_rows = [list(row) for row in matrix_rows]
+    else:
+        raise ValueError(f"unsupported matrix_kind {matrix_kind!r}")
+    return run_global_matching_scheduler(
+        dispatch_rows,
+        combine_rows,
+        next_rows,
+        int(problem.topology.num_gpus),
+        strategy="U_barrier_criticality_global_matching",
+        mode=problem.options.scheduling_mode,
+        prediction_confidence=0.0,
+        expert_compute_delay=float(problem.release_model.expert_compute_delay),
+        exact_matching=spec.exact_matching,
+        wave_quantum=None,
+        max_waves=int(problem.options.max_waves),
+        residual_weight=spec.residual_weight,
+        barrier_weight=spec.barrier_weight,
+        age_weight=spec.age_weight,
+        prediction_weight=0.0,
+        adaptive_prices=False,
+        price_step=0.0,
+        price_decay=0.0,
+        price_clip=0.0,
+        iteration_budget=spec.iteration_budget,
+        atomic=spec.atomic,
+        prediction_matrix=[list(row) for row in zero_matrix],
+        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
+    )
+
+
 def _build_b_core_independent(
     problem: MultiPhaseSchedulingProblem,
     *,
@@ -369,57 +419,23 @@ def _build_b_core_independent(
     )
     zero_matrix = [[0 for _ in row] for row in problem.p0_dispatch_matrix]
     started = time.perf_counter()
-    p0_result = run_global_matching_scheduler(
-        [list(row) for row in problem.p0_dispatch_matrix],
-        [list(row) for row in zero_matrix],
-        [list(row) for row in zero_matrix],
-        int(problem.topology.num_gpus),
-        strategy="U_barrier_criticality_global_matching",
-        mode=problem.options.scheduling_mode,
-        prediction_confidence=0.0,
-        expert_compute_delay=float(problem.release_model.expert_compute_delay),
-        exact_matching=spec.exact_matching,
-        wave_quantum=None,
-        max_waves=int(problem.options.max_waves),
-        residual_weight=spec.residual_weight,
-        barrier_weight=spec.barrier_weight,
-        age_weight=spec.age_weight,
-        prediction_weight=0.0,
-        adaptive_prices=False,
-        price_step=0.0,
-        price_decay=0.0,
-        price_clip=0.0,
-        iteration_budget=spec.iteration_budget,
-        atomic=spec.atomic,
-        prediction_matrix=[list(row) for row in zero_matrix],
-        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
+    p0_result = _run_b_core_phase(
+        matrix_kind="p0",
+        matrix_rows=problem.p0_dispatch_matrix,
+        zero_matrix=zero_matrix,
+        problem=problem,
+        spec=spec,
+        policy=policy,
     )
     p0_schedule = list(p0_result.get("schedule", []))
     p0_end = max((float(entry.get("end", 0.0)) for entry in p0_schedule), default=0.0)
-    p1_result = run_global_matching_scheduler(
-        [list(row) for row in zero_matrix],
-        [list(row) for row in problem.p1_return_matrix],
-        [list(row) for row in zero_matrix],
-        int(problem.topology.num_gpus),
-        strategy="U_barrier_criticality_global_matching",
-        mode=problem.options.scheduling_mode,
-        prediction_confidence=0.0,
-        expert_compute_delay=float(problem.release_model.expert_compute_delay),
-        exact_matching=spec.exact_matching,
-        wave_quantum=None,
-        max_waves=int(problem.options.max_waves),
-        residual_weight=spec.residual_weight,
-        barrier_weight=spec.barrier_weight,
-        age_weight=spec.age_weight,
-        prediction_weight=0.0,
-        adaptive_prices=False,
-        price_step=0.0,
-        price_decay=0.0,
-        price_clip=0.0,
-        iteration_budget=spec.iteration_budget,
-        atomic=spec.atomic,
-        prediction_matrix=[list(row) for row in zero_matrix],
-        collect_debug_trace=bool(getattr(policy, "collect_debug_trace", False)),
+    p1_result = _run_b_core_phase(
+        matrix_kind="p1",
+        matrix_rows=problem.p1_return_matrix,
+        zero_matrix=zero_matrix,
+        problem=problem,
+        spec=spec,
+        policy=policy,
     )
     p1_schedule = _offset_schedule(
         list(p1_result.get("schedule", [])),
@@ -427,12 +443,35 @@ def _build_b_core_independent(
         wave_offset=(max((int(entry.get("wave_id", -1)) for entry in p0_schedule), default=-1) + 1),
     )
     raw_schedule = p0_schedule + p1_schedule
+    if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE:
+        p1_end = max((float(entry.get("end", 0.0)) for entry in p1_schedule), default=float(p0_end))
+        p2_result = _run_b_core_phase(
+            matrix_kind="p2",
+            matrix_rows=problem.p2_next_dispatch_forecast_matrix,
+            zero_matrix=zero_matrix,
+            problem=problem,
+            spec=spec,
+            policy=policy,
+        )
+        p2_schedule = _offset_schedule(
+            list(p2_result.get("schedule", [])),
+            start_offset=float(p1_end),
+            wave_offset=(max((int(entry.get("wave_id", -1)) for entry in p1_schedule), default=max((int(entry.get("wave_id", -1)) for entry in p0_schedule), default=-1)) + 1),
+        )
+        raw_schedule = raw_schedule + p2_schedule
     planning_time_ms = float((time.perf_counter() - started) * 1000.0)
     audit = replay_and_audit_schedule(
         schedule=raw_schedule,
         dispatch_matrix=[list(row) for row in problem.p0_dispatch_matrix],
         combine_matrix=[list(row) for row in problem.p1_return_matrix],
-        next_dispatch_matrix=[[0 for _ in row] for row in problem.p0_dispatch_matrix],
+        next_dispatch_matrix=[
+            [list(row)[idx] for idx in range(len(row))]
+            for row in (
+                problem.p2_next_dispatch_forecast_matrix
+                if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE
+                else tuple(tuple(0 for _ in row) for row in problem.p0_dispatch_matrix)
+            )
+        ],
         num_gpus=int(problem.topology.num_gpus),
         expert_compute_delay=float(problem.release_model.expert_compute_delay),
         mode=problem.options.scheduling_mode,

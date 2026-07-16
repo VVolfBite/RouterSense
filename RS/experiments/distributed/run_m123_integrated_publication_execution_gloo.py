@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
+from rs.runtime.online.megatron_ep.control.communication_lane import slot_from_request
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.execution.pipeline import build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
@@ -33,10 +34,7 @@ from rs.runtime.online.megatron_ep.public_types import CombineCompleteEvent, Com
 
 from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _begin_forward,
-    _dispatcher_for_phase,
-    _emit_source_events,
     _end_forward,
-    _matrix_for_world_size,
     _runtime,
     _wait_until,
 )
@@ -59,6 +57,214 @@ def _input_tensor(spec, *, source_global_rank: int) -> torch.Tensor:
     return values[:rows].unsqueeze(1).repeat(1, hidden).to(dtype=target_dtype)
 
 
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _tensor_digest(tensor: torch.Tensor) -> str:
+    payload = {
+        "dtype": str(tensor.dtype),
+        "shape": [int(dim) for dim in tensor.shape],
+        "bytes": tensor.detach().contiguous().cpu().view(torch.uint8).tolist(),
+    }
+    return _json_digest(payload)
+
+
+def _tensor_parity(expected: torch.Tensor, observed: torch.Tensor, *, atol: float = 1e-2, rtol: float = 1e-2) -> dict[str, object]:
+    expected_cpu = expected.detach().float().cpu()
+    observed_cpu = observed.detach().float().cpu()
+    abs_diff = (observed_cpu - expected_cpu).abs()
+    rel_diff = abs_diff / expected_cpu.abs().clamp_min(1e-12)
+    mismatch = abs_diff > (atol + rtol * expected_cpu.abs())
+    mismatch_indices = mismatch.nonzero(as_tuple=False)
+    first_index = None if int(mismatch_indices.shape[0]) == 0 else [int(value) for value in mismatch_indices[0].tolist()]
+    return {
+        "allclose": bool(torch.allclose(observed_cpu, expected_cpu, atol=atol, rtol=rtol)),
+        "atol": float(atol),
+        "rtol": float(rtol),
+        "max_abs_error": float(abs_diff.max().item()) if abs_diff.numel() else 0.0,
+        "max_rel_error": float(rel_diff.max().item()) if rel_diff.numel() else 0.0,
+        "mismatch_count": int(mismatch.sum().item()) if mismatch.numel() else 0,
+        "first_mismatch_index": first_index,
+        "nan_count": int(torch.isnan(observed_cpu).sum().item()),
+        "inf_count": int(torch.isinf(observed_cpu).sum().item()),
+        "reference_digest": _tensor_digest(expected),
+        "executed_digest": _tensor_digest(observed),
+    }
+
+
+def _matrix_for_world_size(world_size: int) -> tuple[tuple[int, ...], ...]:
+    if int(world_size) == 2:
+        return ((0, 4), (3, 0))
+    if int(world_size) == 4:
+        return ((0, 4, 0, 2), (1, 0, 3, 0), (0, 2, 0, 5), (4, 0, 1, 0))
+    raise ValueError(f"unsupported world_size {world_size!r}")
+
+
+def _load_matrix_bundle(*, matrix_bundle_path: str, world_size: int) -> dict[str, tuple[tuple[int, ...], ...]]:
+    if not str(matrix_bundle_path).strip():
+        p0 = _matrix_for_world_size(world_size)
+        p1 = tuple(tuple(int(p0[src][dst]) for src in range(world_size)) for dst in range(world_size))
+        return {"p0": p0, "p1": p1}
+    payload = json.loads(Path(str(matrix_bundle_path)).read_text(encoding="utf-8"))
+    p0 = tuple(tuple(int(value) for value in row) for row in payload["p0_matrix"])
+    p1 = tuple(tuple(int(value) for value in row) for row in payload["p1_matrix"])
+    if len(p0) != int(world_size) or len(p1) != int(world_size):
+        raise ValueError("matrix bundle world_size mismatch")
+    return {"p0": p0, "p1": p1}
+
+
+class _FakeDispatcher:
+    def __init__(self, *, input_splits: tuple[int, ...], output_splits: tuple[int, ...]) -> None:
+        self.input_splits = tuple(int(v) for v in input_splits)
+        self.output_splits = tuple(int(v) for v in output_splits)
+        self.tokens_per_expert = self.input_splits
+
+    def _maybe_dtoh_and_synchronize(self, _stage: str, tokens_per_expert):
+        return tokens_per_expert
+
+
+def _dispatcher_for_phase_from_matrices(
+    *,
+    rank: int,
+    group_ranks: tuple[int, ...],
+    phase: str,
+    p0_matrix: tuple[tuple[int, ...], ...],
+    p1_matrix: tuple[tuple[int, ...], ...],
+) -> tuple[_FakeDispatcher, torch.Tensor, torch.Tensor | None]:
+    matrix = p0_matrix
+    local_group_rank = tuple(int(v) for v in group_ranks).index(int(rank))
+    row = tuple(int(value) for value in matrix[local_group_rank])
+    col = tuple(int(matrix[src][local_group_rank]) for src in range(len(matrix)))
+    if phase == "P0":
+        hidden_rows = int(sum(row))
+        probs_rows = int(sum(row))
+        return (
+            _FakeDispatcher(input_splits=row, output_splits=col),
+            torch.zeros((hidden_rows, 4), dtype=torch.float32),
+            torch.zeros((probs_rows, 1), dtype=torch.float32),
+        )
+    if phase == "P1":
+        hidden_rows = int(sum(row))
+        return (
+            _FakeDispatcher(input_splits=row, output_splits=col),
+            torch.zeros((hidden_rows, 4), dtype=torch.float32),
+            None,
+        )
+    raise ValueError(f"unsupported phase {phase!r}")
+
+
+def _emit_source_events_from_matrices(
+    runtime,
+    *,
+    rank: int,
+    group_ranks: tuple[int, ...],
+    p0_matrix: tuple[tuple[int, ...], ...],
+    p1_matrix: tuple[tuple[int, ...], ...],
+) -> object:
+    source_dispatcher, source_hidden, source_probs = _dispatcher_for_phase_from_matrices(
+        rank=rank,
+        group_ranks=group_ranks,
+        phase="P0",
+        p0_matrix=p0_matrix,
+        p1_matrix=p1_matrix,
+    )
+    source_combine_dispatcher, source_combine_hidden, _ = _dispatcher_for_phase_from_matrices(
+        rank=rank,
+        group_ranks=group_ranks,
+        phase="P1",
+        p0_matrix=p0_matrix,
+        p1_matrix=p1_matrix,
+    )
+    runtime.handle(
+        DispatchReadyEvent(
+            layer_name="model.layers.0.mlp",
+            dispatcher=source_dispatcher,
+            packed_hidden_states=source_hidden,
+            packed_probs=source_probs,
+            layer_role="prediction_source",
+        )
+    )
+    runtime.handle(
+        DispatchCompleteEvent(
+            layer_name="model.layers.0.mlp",
+            dispatcher=source_dispatcher,
+            packed_hidden_states=source_hidden,
+            result=(source_hidden.clone(), source_probs.clone() if source_probs is not None else None),
+            layer_role="prediction_source",
+        )
+    )
+    runtime.handle(
+        CombineReadyEvent(
+            layer_name="model.layers.0.mlp",
+            dispatcher=source_combine_dispatcher,
+            packed_hidden_states=source_combine_hidden,
+        )
+    )
+    runtime.handle(
+        CombineCompleteEvent(
+            layer_name="model.layers.0.mlp",
+            dispatcher=source_combine_dispatcher,
+            packed_hidden_states=source_combine_hidden,
+            result=source_combine_hidden.clone(),
+        )
+    )
+    return slot_from_request(
+        run_id=str(runtime.run_id),
+        forward_generation=int(runtime._forward_epoch),  # noqa: SLF001
+        microbatch_id=str(runtime.microbatch_id),
+        source_layer_id="0",
+        target_layer_id="1",
+    )
+
+
+def _materialized_task_descriptor(
+    slice_dict: dict[str, object],
+    *,
+    phase: str,
+    wave_id: int,
+    payload_specs_by_role: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    role = str(slice_dict["payload_role"])
+    spec = dict(payload_specs_by_role.get(role, {}))
+    return {
+        "task_id": str(slice_dict["task_id"]),
+        "phase": str(phase),
+        "wave_id": int(wave_id),
+        "flow_id": str(slice_dict["flow_id"]),
+        "payload_role": role,
+        "src_rank": int(slice_dict["src_global_rank"]),
+        "dst_rank": int(slice_dict["dst_global_rank"]),
+        "src_group_rank": int(slice_dict["src_group_rank"]),
+        "dst_group_rank": int(slice_dict["dst_group_rank"]),
+        "row_count": int(slice_dict["row_count"]),
+        "dtype": str(spec.get("dtype", "")),
+        "shape_suffix": list(spec.get("shape_suffix", [])),
+        "send_offset_rows": int(slice_dict["send_offset_rows"]),
+        "recv_offset_rows": int(slice_dict["recv_offset_rows"]),
+        "physical_send_offset_rows": int(slice_dict["physical_send_offset_rows"]),
+        "physical_recv_offset_rows": int(slice_dict["physical_recv_offset_rows"]),
+        "peer_send_offset_rows": int(slice_dict.get("peer_send_offset_rows", 0) or 0),
+        "peer_recv_offset_rows": int(slice_dict.get("peer_recv_offset_rows", 0) or 0),
+        "dependency_ids": list(slice_dict.get("dependency_ids", [])),
+        "transfer_tag": int(slice_dict.get("transfer_tag", 0) or 0),
+    }
+
+
+def _manifest_digest(rows: list[dict[str, object]]) -> str:
+    canonical = sorted(
+        rows,
+        key=lambda item: (
+            str(item["task_id"]),
+            str(item["payload_role"]),
+            int(item["src_rank"]),
+            int(item["dst_rank"]),
+            int(item["wave_id"]),
+        ),
+    )
+    return _json_digest(canonical)
+
+
 def _execute_role(
     *,
     runtime,
@@ -71,7 +277,7 @@ def _execute_role(
     phase: str,
     rank: int,
     group_ranks: tuple[int, ...],
-) -> torch.Tensor:
+) -> dict[str, object]:
     active = runtime.current_transport()
     assert active is not None
     prepared = active["prepared_execution"]
@@ -182,7 +388,11 @@ def _execute_role(
             raise AssertionError(
                 f"{phase} {tensor_role} rank={rank} only observed local rows despite remote incoming traffic"
             )
-    return output
+    return {
+        "output": output,
+        "expected": expected,
+        "parity": _tensor_parity(expected, output),
+    }
 
 
 def _close_runtime_services(runtime, adapter) -> dict[str, object]:
@@ -252,7 +462,16 @@ def _all_task_ids(materialized_plan, *, payload_roles: set[str]) -> tuple[str, .
     )
 
 
-def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, execution_backend: str, run_dir: str) -> None:
+def _worker(
+    rank: int,
+    world_size: int,
+    port: int,
+    instrumentation_mode: str,
+    execution_backend: str,
+    run_dir: str,
+    policy_name: str,
+    matrix_bundle_path: str,
+) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
     os.environ["RANK"] = str(rank)
@@ -272,6 +491,8 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             root_rank=0,
             process_group=dist.group.WORLD,
         )
+        matrices = _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)
+        object.__setattr__(runtime.config, "policy", str(policy_name))
         runtime.plan_publisher = CanonicalPlanPublisher(
             rank_map=RankMap(group_ranks=group_ranks, root_rank=group_ranks[0])
         )
@@ -301,7 +522,13 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             **detail,
         )
         _begin_forward(runtime)
-        slot = _emit_source_events(runtime, rank=rank, group_ranks=group_ranks)
+        slot = _emit_source_events_from_matrices(
+            runtime,
+            rank=rank,
+            group_ranks=group_ranks,
+            p0_matrix=matrices["p0"],
+            p1_matrix=matrices["p1"],
+        )
         _wait_until(
             lambda: (
                 runtime.target_planner_service.publication_state_for_slot(slot) is not None  # type: ignore[union-attr]
@@ -313,7 +540,13 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
         assert publication_state is not None
         publication_metadata = dict(publication_state.metadata)
 
-        p0_dispatcher, p0_hidden, p0_probs = _dispatcher_for_phase(rank=rank, group_ranks=group_ranks, phase="P0")
+        p0_dispatcher, p0_hidden, p0_probs = _dispatcher_for_phase_from_matrices(
+            rank=rank,
+            group_ranks=group_ranks,
+            phase="P0",
+            p0_matrix=matrices["p0"],
+            p1_matrix=matrices["p1"],
+        )
         runtime.handle(
             DispatchReadyEvent(
                 layer_name="model.layers.1.mlp",
@@ -409,21 +642,27 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             ),
             encoding="utf-8",
         )
-        hidden_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
+        hidden_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_hidden = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
-        probs_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
+        probs_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
         release_after_probs = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
         runtime.handle(
             DispatchCompleteEvent(
                 layer_name="model.layers.1.mlp",
                 dispatcher=p0_dispatcher,
                 packed_hidden_states=p0_hidden,
-                result=(hidden_out, probs_out),
+                result=(hidden_result["output"], probs_result["output"]),
                 layer_role="selected",
             )
         )
 
-        p1_dispatcher, p1_hidden, _ = _dispatcher_for_phase(rank=rank, group_ranks=group_ranks, phase="P1")
+        p1_dispatcher, p1_hidden, _ = _dispatcher_for_phase_from_matrices(
+            rank=rank,
+            group_ranks=group_ranks,
+            phase="P1",
+            p0_matrix=matrices["p0"],
+            p1_matrix=matrices["p1"],
+        )
         runtime.handle(
             CombineReadyEvent(
                 layer_name="model.layers.1.mlp",
@@ -464,13 +703,13 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             for index, global_rank in enumerate(group_ranks)
         }
         release_before_p1 = tuple(sorted(runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1")))
-        p1_out = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, source_slice_oracle_by_rank=p1_slice_oracle_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
+        p1_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, source_slice_oracle_by_rank=p1_slice_oracle_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
         runtime.handle(
             CombineCompleteEvent(
                 layer_name="model.layers.1.mlp",
                 dispatcher=p1_dispatcher,
                 packed_hidden_states=p1_hidden,
-                result=p1_out,
+                result=p1_result["output"],
             )
         )
         release_after_p1 = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
@@ -579,6 +818,90 @@ def _worker(rank: int, world_size: int, port: int, instrumentation_mode: str, ex
             "publication_candidate_logical_plan_digest": str(publication_state.logical_plan_digest),
             "publication_candidate_planning_request": dict(publication_metadata.get("planning_request", {})),
         }
+        rank_materialized_manifest = [
+            _materialized_task_descriptor(
+                slice_.to_dict(),
+                phase=str(prepared_p0.materialized_plan.phase),
+                wave_id=int(batch.wave_id),
+                payload_specs_by_role=local_payload_specs,
+            )
+            for batch in prepared_p0.materialized_plan.batches
+            for slice_ in batch.slices
+        ] + [
+            _materialized_task_descriptor(
+                slice_.to_dict(),
+                phase=str(prepared_p1.materialized_plan.phase),
+                wave_id=int(batch.wave_id),
+                payload_specs_by_role=local_p1_payload_specs,
+            )
+            for batch in prepared_p1.materialized_plan.batches
+            for slice_ in batch.slices
+        ]
+        completed_ids = set(str(item) for item in (p0_completed_task_ids + p1_completed_task_ids))
+        rank_executed_manifest = [row for row in rank_materialized_manifest if str(row["task_id"]) in completed_ids]
+        parity_payload = {
+            "p0_hidden": dict(hidden_result["parity"]),
+            "p0_routing_probs": dict(probs_result["parity"]),
+            "p1_hidden": dict(p1_result["parity"]),
+        }
+        parity_payload["reference_p0_digest"] = _json_digest(
+            {
+                "hidden_states": parity_payload["p0_hidden"]["reference_digest"],
+                "routing_probs": parity_payload["p0_routing_probs"]["reference_digest"],
+            }
+        )
+        parity_payload["executed_p0_digest"] = _json_digest(
+            {
+                "hidden_states": parity_payload["p0_hidden"]["executed_digest"],
+                "routing_probs": parity_payload["p0_routing_probs"]["executed_digest"],
+            }
+        )
+        parity_payload["reference_p1_digest"] = str(parity_payload["p1_hidden"]["reference_digest"])
+        parity_payload["executed_p1_digest"] = str(parity_payload["p1_hidden"]["executed_digest"])
+        parity_payload["reference_final_digest"] = str(parity_payload["p1_hidden"]["reference_digest"])
+        parity_payload["executed_final_digest"] = str(parity_payload["p1_hidden"]["executed_digest"])
+        parity_payload["allclose"] = bool(
+            parity_payload["p0_hidden"]["allclose"]
+            and parity_payload["p0_routing_probs"]["allclose"]
+            and parity_payload["p1_hidden"]["allclose"]
+        )
+        parity_payload["status"] = "PASS" if parity_payload["allclose"] else "FAILED"
+        (run_root / f"rank{rank}_materialized_task_manifest.json").write_text(
+            json.dumps(
+                {
+                    "rank": int(rank),
+                    "policy_name": str(policy_name),
+                    "execution_backend": str(execution_backend),
+                    "manifest": rank_materialized_manifest,
+                    "manifest_digest": _manifest_digest(rank_materialized_manifest),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        (run_root / f"rank{rank}_executed_task_manifest.json").write_text(
+            json.dumps(
+                {
+                    "rank": int(rank),
+                    "policy_name": str(policy_name),
+                    "execution_backend": str(execution_backend),
+                    "manifest": rank_executed_manifest,
+                    "manifest_digest": _manifest_digest(rank_executed_manifest),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        (run_root / f"rank{rank}_parity.json").write_text(json.dumps(parity_payload, indent=2, sort_keys=True), encoding="utf-8")
+        summary["policy_name"] = str(policy_name)
+        summary["matrix_bundle_path"] = str(matrix_bundle_path)
+        summary["materialized_task_manifest_digest"] = _manifest_digest(rank_materialized_manifest)
+        summary["executed_task_manifest_digest"] = _manifest_digest(rank_executed_manifest)
+        summary["reference_final_digest"] = str(parity_payload["reference_final_digest"])
+        summary["executed_final_digest"] = str(parity_payload["executed_final_digest"])
+        summary["parity_status"] = str(parity_payload["status"])
     except Exception as exc:  # noqa: BLE001
         summary = {
             "rank": int(rank),
@@ -650,6 +973,8 @@ def run_gate_with_backend(
     *,
     instrumentation_mode: str = "perf_light",
     execution_backend: str = "phase_sync",
+    policy_name: str = "U_barrier_criticality_global_matching",
+    matrix_bundle_path: str = "",
     output_dir: str | Path = Path("outputs/closure/m123_integrated_publication_execution_gloo"),
     timeout_seconds: float = 180.0,
 ) -> dict[str, object]:
@@ -667,6 +992,8 @@ def run_gate_with_backend(
                 "run_id": run_token,
                 "run_dir": str(run_root),
                 "execution_backend": str(execution_backend),
+                "policy_name": str(policy_name),
+                "matrix_bundle_path": str(matrix_bundle_path),
                 "instrumentation_mode": str(instrumentation_mode),
                 "world_size": int(world_size),
                 "port": int(port),
@@ -679,7 +1006,15 @@ def run_gate_with_backend(
     )
     context = mp.spawn(
         _worker,
-        args=(world_size, port, str(instrumentation_mode), str(execution_backend), str(run_root)),
+        args=(
+            world_size,
+            port,
+            str(instrumentation_mode),
+            str(execution_backend),
+            str(run_root),
+            str(policy_name),
+            str(matrix_bundle_path),
+        ),
         nprocs=world_size,
         join=False,
     )
@@ -696,6 +1031,65 @@ def run_gate_with_backend(
         raise TimeoutError(f"m123 gate timed out after {timeout_seconds:.1f}s")
     payloads = [json.loads((run_root / f"rank{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
     assert all(item["status"] == "passed" for item in payloads), payloads
+    materialized_rank_rows = [
+        json.loads((run_root / f"rank{rank}_materialized_task_manifest.json").read_text(encoding="utf-8"))
+        for rank in range(world_size)
+    ]
+    executed_rank_rows = [
+        json.loads((run_root / f"rank{rank}_executed_task_manifest.json").read_text(encoding="utf-8"))
+        for rank in range(world_size)
+    ]
+    parity_rank_rows = [
+        json.loads((run_root / f"rank{rank}_parity.json").read_text(encoding="utf-8"))
+        for rank in range(world_size)
+    ]
+    materialized_manifest = [item for row in materialized_rank_rows for item in list(row.get("manifest", []))]
+    executed_manifest = [item for row in executed_rank_rows for item in list(row.get("manifest", []))]
+    materialized_manifest_digest = _manifest_digest(materialized_manifest)
+    executed_manifest_digest = _manifest_digest(executed_manifest)
+    reference_final_digest = _json_digest([row["reference_final_digest"] for row in parity_rank_rows])
+    executed_final_digest = _json_digest([row["executed_final_digest"] for row in parity_rank_rows])
+    parity_pass = all(bool(row.get("allclose", False)) for row in parity_rank_rows)
+    (run_root / "materialized_task_manifest.json").write_text(
+        json.dumps(
+            {
+                "policy_name": str(policy_name),
+                "execution_backend": str(execution_backend),
+                "manifest_digest": materialized_manifest_digest,
+                "manifest": materialized_manifest,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_root / "executed_task_manifest.json").write_text(
+        json.dumps(
+            {
+                "policy_name": str(policy_name),
+                "execution_backend": str(execution_backend),
+                "manifest_digest": executed_manifest_digest,
+                "manifest": executed_manifest,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_root / "parity.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS" if parity_pass else "FAILED",
+                "rank_parity": parity_rank_rows,
+                "reference_final_digest": reference_final_digest,
+                "executed_final_digest": executed_final_digest,
+                "allclose": parity_pass,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     summary = {
         "status": "passed",
         "run_id": run_token,
@@ -705,8 +1099,19 @@ def run_gate_with_backend(
         "world_size": world_size,
         "instrumentation_mode": str(instrumentation_mode),
         "execution_backend": str(execution_backend),
-        "p0_matrix": [list(row) for row in _matrix_for_world_size(world_size)],
-        "p1_matrix": [list(row) for row in tuple(tuple(_matrix_for_world_size(world_size)[src][dst] for src in range(world_size)) for dst in range(world_size))],
+        "policy_name": str(policy_name),
+        "matrix_bundle_path": str(matrix_bundle_path),
+        "p0_matrix": [list(row) for row in _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)["p0"]],
+        "p1_matrix": [list(row) for row in _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)["p1"]],
+        "materialized_task_manifest_path": str(run_root / "materialized_task_manifest.json"),
+        "executed_task_manifest_path": str(run_root / "executed_task_manifest.json"),
+        "parity_path": str(run_root / "parity.json"),
+        "materialized_task_manifest_digest": materialized_manifest_digest,
+        "executed_task_manifest_digest": executed_manifest_digest,
+        "plan_identity_match": materialized_manifest_digest == executed_manifest_digest,
+        "reference_final_digest": reference_final_digest,
+        "executed_final_digest": executed_final_digest,
+        "tensor_parity_pass": parity_pass,
         "ranks": payloads,
     }
     (run_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -716,6 +1121,8 @@ def run_gate_with_backend(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execution-backend", default=str(os.environ.get("RS_M123_GATE_EXECUTION_BACKEND", "phase_sync") or "phase_sync"))
+    parser.add_argument("--policy-name", default=str(os.environ.get("RS_M123_GATE_POLICY_NAME", "U_barrier_criticality_global_matching") or "U_barrier_criticality_global_matching"))
+    parser.add_argument("--matrix-bundle", default=str(os.environ.get("RS_M123_GATE_MATRIX_BUNDLE", "") or ""))
     parser.add_argument("--instrumentation-mode", default=str(os.environ.get("RS_M123_GATE_INSTRUMENTATION_MODE", "perf_light") or "perf_light"))
     parser.add_argument("--output-dir", default="outputs/closure/m123_integrated_publication_execution_gloo")
     parser.add_argument("--summary-path", default="")
@@ -724,6 +1131,8 @@ def main(argv: list[str] | None = None) -> None:
     summary = run_gate_with_backend(
         instrumentation_mode=str(args.instrumentation_mode),
         execution_backend=str(args.execution_backend),
+        policy_name=str(args.policy_name),
+        matrix_bundle_path=str(args.matrix_bundle),
         output_dir=str(args.output_dir),
     )
     summary_digest = hashlib.sha256(json.dumps(summary, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()

@@ -5,7 +5,7 @@ from typing import Any
 
 from rs.core.contracts import PlanningRequest, WindowPlan
 
-from .exact_small_instance import exact_result_to_window_plan, solve_problem_exact
+from .exact_small_instance import exact_result_to_window_plan, solve_problem_exact_with_scope
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,11 @@ class OracleRegistry:
             raise ValueError(f"unsupported oracle_id {oracle_id!r}")
         request.validate()
         problem = _problem_from_planning_request(request)
-        result = solve_problem_exact(problem, time_limit_ms=5000)
+        result = solve_problem_exact_with_scope(
+            problem,
+            time_limit_ms=5000,
+            scope="local" if normalized == "O_local" else "joint",
+        )
         status = str(result.get("solver_status", "unknown") or "unknown")
         plan = exact_result_to_window_plan(
             result,
@@ -47,11 +51,21 @@ class OracleRegistry:
             oracle_id=normalized,
             status=status,
             plan=plan,
-            runtime_ms=float(result.get("time_limit_ms", 0) or 0.0),
+            runtime_ms=float(result.get("solver_runtime_ms_wall", 0.0) or 0.0),
             best_bound=None if result.get("best_bound") is None else float(result.get("best_bound")),
             optimality_gap=None if result.get("optimality_gap") is None else float(result.get("optimality_gap")),
-            comparable=bool(result.get("supported", False)),
-            comparable_reason="" if bool(result.get("supported", False)) else str(status),
+            comparable=bool(result.get("supported", False))
+            and status == "optimal"
+            and bool(result.get("certified_optimal", False))
+            and result.get("objective_logical_makespan") is not None,
+            comparable_reason=""
+            if (
+                bool(result.get("supported", False))
+                and status == "optimal"
+                and bool(result.get("certified_optimal", False))
+                and result.get("objective_logical_makespan") is not None
+            )
+            else str(status),
             solver_payload=dict(result),
         )
 

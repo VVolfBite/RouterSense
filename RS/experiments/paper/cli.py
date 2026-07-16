@@ -39,6 +39,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         cmd.add_argument("--input", default="")
         cmd.add_argument("--model-path", default="")
         cmd.add_argument("--prompts", default="")
+        cmd.add_argument("--evidence-dir", default="")
     return parser.parse_args(argv)
 
 
@@ -59,6 +60,10 @@ def _git_text(*args: str) -> str:
         check=False,
     )
     return result.stdout.strip()
+
+
+def _load_json_path(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _metadata(*, config: dict[str, Any]) -> RecordMetadata:
@@ -104,6 +109,20 @@ def _write_common_output(output_dir: Path, config: dict[str, Any], input_path: s
     consumed = consumed_config_payload(config, output_dir=output_dir, input_path=input_path)
     write_json(output_dir / "consumed_config.json", consumed)
     return metadata
+
+
+def _remote_only_runtime_bundle(traffic_row: dict[str, Any]) -> dict[str, Any]:
+    p0 = [[int(value) for value in row] for row in traffic_row["P0_matrix"]]
+    size = len(p0)
+    p0_remote = [[0 if src == dst else int(p0[src][dst]) for dst in range(size)] for src in range(size)]
+    p1_remote = [[int(p0_remote[src][dst]) for src in range(size)] for dst in range(size)]
+    ignored_self_rows = sum(int(p0[i][i]) for i in range(size))
+    return {
+        "p0_matrix": p0_remote,
+        "p1_matrix": p1_remote,
+        "ignored_self_rows": int(ignored_self_rows),
+        "runtime_matrix_mode": "remote_only_from_real_trace",
+    }
 
 
 def cmd_capture_trace(args: argparse.Namespace) -> int:
@@ -216,9 +235,32 @@ def cmd_hiding(args: argparse.Namespace) -> int:
 def cmd_runtime(args: argparse.Namespace) -> int:
     config, _ = _load_config(args.config, default_rel="configs/official/paper/runtime_correctness_gloo.yaml")
     output_dir = _output_dir(args, config, "runtime")
-    metadata = _write_common_output(output_dir, config)
+    input_dir = Path(args.input) if args.input else None
+    metadata = _write_common_output(output_dir, config, input_path=str(input_dir) if input_dir else None)
     materialization = evaluate_materialization_contract_smoke(metadata=metadata)
-    gloo = evaluate_runtime_correctness_with_gloo(metadata=metadata)
+    matrix_bundle_path = ""
+    trace_sample_id = None
+    traffic_instance_id = None
+    if input_dir is not None and input_dir.exists() and (input_dir / "traffic_instances.json").exists():
+        traffic_instances = _load_json_path(input_dir / "traffic_instances.json")
+        if traffic_instances:
+            requested_vep = int(config.get("virtual_ep_sizes", [config.get("physical_world_size", 4)])[0])
+            selected = next(
+                (dict(row) for row in traffic_instances if int(row.get("virtual_ep_size", -1)) == requested_vep),
+                dict(traffic_instances[0]),
+            )
+            generated = output_dir / "generated_matrix_bundle.json"
+            write_json(generated, _remote_only_runtime_bundle(selected))
+            matrix_bundle_path = str(generated)
+            trace_sample_id = selected.get("trace_sample_id")
+            traffic_instance_id = selected.get("instance_id")
+    gloo = evaluate_runtime_correctness_with_gloo(
+        metadata=metadata,
+        policy_name=str(config["policies"][0]) if config.get("policies") else "U_barrier_criticality_global_matching",
+        matrix_bundle_path=matrix_bundle_path,
+        trace_sample_id=trace_sample_id,
+        traffic_instance_id=traffic_instance_id,
+    )
     overall_status = gloo["status"]
     if gloo["status"] == "ENVIRONMENT_BLOCKED":
         overall_status = "PARTIAL_GLOO_ENVIRONMENT_BLOCKED"
@@ -229,7 +271,33 @@ def cmd_runtime(args: argparse.Namespace) -> int:
     }
     write_json(output_dir / "runtime_summary.json", result)
     if gloo.get("records"):
-        write_json(output_dir / "formal_gloo_summary.json", gloo["records"][0].get("evidence", {}).get("runner_summary"))
+        for row in gloo["records"]:
+            backend = str(row.get("execution_backend_id", "unknown"))
+            evidence = dict(row.get("evidence", {}) or {})
+            backend_dir = output_dir / backend
+            write_json(backend_dir / "formal_runner_summary.json", evidence.get("runner_summary", {}))
+            if evidence.get("runner_summary", {}).get("materialized_task_manifest_path"):
+                materialized = Path(str(evidence["runner_summary"]["materialized_task_manifest_path"]))
+                if materialized.exists():
+                    write_json(backend_dir / "materialized_task_manifest.json", json.loads(materialized.read_text(encoding="utf-8")))
+            if evidence.get("runner_summary", {}).get("executed_task_manifest_path"):
+                executed = Path(str(evidence["runner_summary"]["executed_task_manifest_path"]))
+                if executed.exists():
+                    write_json(backend_dir / "executed_task_manifest.json", json.loads(executed.read_text(encoding="utf-8")))
+            if evidence.get("parity_path"):
+                parity_path = Path(str(evidence["parity_path"]))
+                if parity_path.exists():
+                    write_json(backend_dir / "parity.json", json.loads(parity_path.read_text(encoding="utf-8")))
+        if trace_sample_id or traffic_instance_id:
+            write_json(
+                output_dir / "real_trace_runtime_summary.json",
+                {
+                    "status": result["status"],
+                    "trace_sample_id": trace_sample_id,
+                    "traffic_instance_id": traffic_instance_id,
+                    "policy_id": str(config["policies"][0]) if config.get("policies") else "U_barrier_criticality_global_matching",
+                },
+            )
     print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
@@ -251,47 +319,55 @@ def cmd_audit(args: argparse.Namespace) -> int:
     config, _ = _load_config(args.config, default_rel="configs/official/paper/capability_audit.yaml")
     output_dir = _output_dir(args, config, "audit")
     input_dir = _resolved_input_path(config, cli_input=args.input)
+    evidence_dir = Path(args.evidence_dir) if args.evidence_dir else None
     metadata = _write_common_output(output_dir, config, input_path=str(input_dir))
-    scheduling = evaluate_scheduling(
-        fixture_dir=input_dir,
-        metadata=metadata,
-        model_id=metadata.model_id,
-        model_revision=metadata.model_revision,
-        policy_ids=tuple(config["policies"]),
-        cost_model_id=str(config["cost_model"]),
-    )
-    prediction = evaluate_prediction(
-        fixture_dir=input_dir,
-        metadata=metadata,
-        model_id=metadata.model_id,
-        model_revision=metadata.model_revision,
-        joint_policy_id=str(config["policies"][-1]),
-    )
-    hiding = evaluate_hiding_gap(metadata=metadata, model_id=metadata.model_id)
-    runtime = {
-        "status": "MATERIALIZATION_CONTRACT_SMOKE",
-        "records": [],
-    }
-    try:
-        runtime = evaluate_runtime_correctness_with_gloo(metadata=metadata)
-    except Exception:
-        runtime = {"status": "ENVIRONMENT_BLOCKED", "records": [], "tensor_parity_pass": False}
-    materialization = evaluate_materialization_contract_smoke(metadata=metadata)
-    runtime_status = runtime["status"]
-    if runtime["status"] == "ENVIRONMENT_BLOCKED":
-        runtime_status = "PARTIAL_GLOO_ENVIRONMENT_BLOCKED"
-    runtime_summary = {
-        "status": runtime_status,
-        "records": materialization["records"] + runtime["records"],
-        "tensor_parity_pass": bool(runtime.get("tensor_parity_pass", False)),
-    }
+    if evidence_dir is not None and evidence_dir.exists():
+        trace_summary = _load_json_path(evidence_dir / "trace" / "summary.json") if (evidence_dir / "trace" / "summary.json").exists() else {}
+        scheduling = _load_json_path(evidence_dir / "scheduling" / "scheduling_summary.json") if (evidence_dir / "scheduling" / "scheduling_summary.json").exists() else {}
+        prediction = _load_json_path(evidence_dir / "results" / "prediction_summary.json") if (evidence_dir / "results" / "prediction_summary.json").exists() else {"status": "PARTIAL_MISSING_PREDICTED", "records": []}
+        hiding = _load_json_path(evidence_dir / "results" / "hiding_summary.json") if (evidence_dir / "results" / "hiding_summary.json").exists() else {"status": "PARTIAL", "records": []}
+        runtime_summary = _load_json_path(evidence_dir / "results" / "runtime_summary.json") if (evidence_dir / "results" / "runtime_summary.json").exists() else {"status": "ENVIRONMENT_BLOCKED", "records": [], "tensor_parity_pass": False}
+        build_traffic_summary = _load_json_path(evidence_dir / "traffic" / "build_traffic_summary.json") if (evidence_dir / "traffic" / "build_traffic_summary.json").exists() else {"status": "ENVIRONMENT_BLOCKED", "reason": "build-traffic evidence missing"}
+    else:
+        trace_summary = {}
+        scheduling = evaluate_scheduling(
+            fixture_dir=input_dir,
+            metadata=metadata,
+            model_id=metadata.model_id,
+            model_revision=metadata.model_revision,
+            policy_ids=tuple(config["policies"]),
+            cost_model_id=str(config["cost_model"]),
+        )
+        prediction = evaluate_prediction(
+            fixture_dir=input_dir,
+            metadata=metadata,
+            model_id=metadata.model_id,
+            model_revision=metadata.model_revision,
+            joint_policy_id=str(config["policies"][-1]),
+        )
+        hiding = evaluate_hiding_gap(metadata=metadata, model_id=metadata.model_id)
+        runtime = {"status": "MATERIALIZATION_CONTRACT_SMOKE", "records": []}
+        try:
+            runtime = evaluate_runtime_correctness_with_gloo(metadata=metadata)
+        except Exception:
+            runtime = {"status": "ENVIRONMENT_BLOCKED", "records": [], "tensor_parity_pass": False}
+        materialization = evaluate_materialization_contract_smoke(metadata=metadata)
+        runtime_status = runtime["status"]
+        if runtime["status"] == "ENVIRONMENT_BLOCKED":
+            runtime_status = "PARTIAL_GLOO_ENVIRONMENT_BLOCKED"
+        runtime_summary = {
+            "status": runtime_status,
+            "records": materialization["records"] + runtime["records"],
+            "tensor_parity_pass": bool(runtime.get("tensor_parity_pass", False)),
+        }
+        build_traffic_summary = {"status": "ENVIRONMENT_BLOCKED", "reason": "external trace bundle not provided during audit"}
     write_json(output_dir / "scheduling_summary.json", scheduling)
     write_json(output_dir / "prediction_summary.json", prediction)
     write_json(output_dir / "hiding_summary.json", hiding)
     write_json(output_dir / "runtime_summary.json", runtime_summary)
-    build_traffic_summary = {"status": "ENVIRONMENT_BLOCKED", "reason": "external trace bundle not provided during audit"}
     matrix = apply_capability_evidence(
         baseline_capability_matrix(),
+        trace_summary=trace_summary,
         scheduling_summary=scheduling,
         prediction_summary=prediction,
         runtime_summary=runtime_summary,
@@ -325,6 +401,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
             "hiding_summary": str(output_dir / "hiding_summary.json"),
             "runtime_summary": str(output_dir / "runtime_summary.json"),
             "smoke_summary": str(output_dir / "smoke_summary.json"),
+            "trace/summary": "trace/summary.json" if evidence_dir is not None else "",
+            "traffic/build_traffic_summary": "traffic/build_traffic_summary.json" if evidence_dir is not None else "",
         },
     )
     write_json(output_dir / "result_bundle.json", result_bundle)

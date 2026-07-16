@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_STATUS = {"READY", "PARTIAL", "MISSING", "SEMANTICALLY_INVALID", "ENVIRONMENT_BLOCKED"}
+ALLOWED_STATUS = {"READY", "READY_FOR_SUPPORTED_TINY", "PARTIAL", "MISSING", "SEMANTICALLY_INVALID", "ENVIRONMENT_BLOCKED"}
 
 
 def _status(status: str, **kwargs: Any) -> dict[str, Any]:
@@ -33,14 +33,14 @@ def baseline_capability_matrix() -> dict[str, dict[str, Any]]:
             evidence="real trace to TrafficInstance builder not yet evidenced",
         ),
         "O_local": _status(
-            "SEMANTICALLY_INVALID",
-            public_entrypoint="none",
-            reason="no phase-local exact solver under same discrete objective as O_joint",
+            "PARTIAL",
+            public_entrypoint="python -m experiments.paper.cli scheduling",
+            evidence="exact local evaluator present; awaiting executed smoke evidence",
         ),
         "O_joint": _status(
             "PARTIAL",
-            public_entrypoint="exact_small_instance_reference",
-            evidence="tiny exact reference exists; replay comparable coverage still partial",
+            public_entrypoint="python -m experiments.paper.cli scheduling",
+            evidence="tiny exact joint evaluator exists; replay comparable coverage still partial",
         ),
         "local_policy_registry": _status(
             "READY",
@@ -88,12 +88,15 @@ def baseline_capability_matrix() -> dict[str, dict[str, Any]]:
 def apply_capability_evidence(
     matrix: dict[str, dict[str, Any]],
     *,
+    trace_summary: dict[str, Any] | None = None,
     scheduling_summary: dict[str, Any] | None = None,
     prediction_summary: dict[str, Any] | None = None,
     runtime_summary: dict[str, Any] | None = None,
     build_traffic_summary: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     result = {key: dict(value) for key, value in matrix.items()}
+    if trace_summary:
+        result["trace_wrapper"] = _status("READY", public_entrypoint="python -m experiments.paper.cli capture-trace", evidence="formal trace collector executed and emitted trace bundle")
     if build_traffic_summary is not None:
         status = str(build_traffic_summary.get("status", ""))
         if status == "OK":
@@ -101,13 +104,22 @@ def apply_capability_evidence(
             result["traffic_builder"] = _status("READY", public_entrypoint="python -m experiments.paper.cli build-traffic", evidence="real compact route counts -> TrafficInstance smoke passed")
         elif status == "ENVIRONMENT_BLOCKED":
             result["real_trace_ingest"] = _status("ENVIRONMENT_BLOCKED", public_entrypoint="python -m experiments.paper.cli build-traffic", evidence="external trace bundle unavailable")
+    if scheduling_summary is not None:
+        if str(scheduling_summary.get("o_local_status")) == "READY_FOR_SUPPORTED_TINY":
+            result["O_local"] = _status("READY_FOR_SUPPORTED_TINY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="phase-local exact comparable on supported tiny instance")
+        if str(scheduling_summary.get("o_joint_status")) == "READY_FOR_SUPPORTED_TINY":
+            result["O_joint"] = _status("READY_FOR_SUPPORTED_TINY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="joint exact comparable on supported tiny instance")
+        pair = dict(scheduling_summary.get("same_core_pair_summary", {}) or {})
+        if bool(pair.get("comparable")):
+            result["joint_policy_evaluation"] = _status("READY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="strict same-core B/U comparable and valid")
     if runtime_summary is not None:
         runtime_status = str(runtime_summary.get("status", ""))
-        if runtime_status in {"MATERIALIZATION_CONTRACT_SMOKE", "PARTIAL_GLOO_ENVIRONMENT_BLOCKED", "PARTIAL_EXECUTED_DIGEST_MISSING", "RUNTIME_CORRECTNESS"}:
+        if runtime_status in {"MATERIALIZATION_CONTRACT_SMOKE", "PARTIAL_GLOO_ENVIRONMENT_BLOCKED", "EXECUTED_DIGEST_MISSING", "RUNTIME_CORRECTNESS"}:
             result["materialization"] = _status("READY", public_entrypoint="python -m experiments.paper.cli runtime-correctness", evidence=runtime_status)
-        if runtime_status in {"PARTIAL_EXECUTED_DIGEST_MISSING", "RUNTIME_CORRECTNESS"}:
+        if runtime_status in {"EXECUTED_DIGEST_MISSING", "PLAN_IDENTITY_MISMATCH", "TENSOR_PARITY_FAILED", "INCOMPLETE_TASKS", "FALLBACK_OCCURRED"}:
             result["gloo_execution_wrapper"] = _status("PARTIAL", public_entrypoint="python -m experiments.paper.cli runtime-correctness", evidence=runtime_status)
         if runtime_status == "RUNTIME_CORRECTNESS":
+            result["gloo_execution_wrapper"] = _status("READY", public_entrypoint="python -m experiments.paper.cli runtime-correctness", evidence="phase-sync + async-release executed with formal runner")
             result["executed_plan_identity"] = _status("READY", public_entrypoint="python -m experiments.paper.cli runtime-correctness", evidence="executed digest matched materialized digest")
             result["tensor_parity"] = _status("READY", public_entrypoint="python -m experiments.paper.cli runtime-correctness", evidence="runtime parity passed")
         elif runtime_summary.get("tensor_parity_pass") is True:

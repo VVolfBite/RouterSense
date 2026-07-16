@@ -44,14 +44,20 @@ def build_result_bundle(
         missing_capabilities.append("predicted_paper_path")
     if runtime_summary and runtime_summary.get("status") != "RUNTIME_CORRECTNESS":
         failure_reasons.append(str(runtime_summary.get("status")))
+    if scheduling_summary and not scheduling_summary.get("oracle_dominance"):
+        missing_capabilities.append("oracle_dominance_evidence")
     comparable_count = len([row for row in (scheduling_summary or {}).get("records", []) if bool(row.get("comparable"))])
     invalid_count = len([row for row in (scheduling_summary or {}).get("records", []) if not bool(row.get("comparable", False))])
     harness_contract_tests_passed = True
-    trace_claim_eligible = True
-    traffic_claim_eligible = True
-    scheduling_claim_eligible = bool(scheduling_summary) and scheduling_summary.get("o_local_status") not in {None, "SEMANTICALLY_INVALID", "MISSING"}
+    trace_claim_eligible = bool(artifact_index.get("trace/summary") or artifact_index.get("trace_summary") or artifact_index.get("trace/compact_trace_samples"))
+    traffic_claim_eligible = bool(artifact_index.get("traffic/build_traffic_summary") or artifact_index.get("build_traffic_summary") or artifact_index.get("traffic/traffic_instances"))
+    strict_pair_claim_eligible = bool((scheduling_summary or {}).get("same_core_pair_summary", {}).get("comparable"))
+    oracle_dominance = (scheduling_summary or {}).get("oracle_dominance") or {}
+    oracle_claim_eligible = bool(isinstance(oracle_dominance, dict) and oracle_dominance.get("status") == "OK")
+    scheduling_claim_eligible = strict_pair_claim_eligible and oracle_claim_eligible
     prediction_claim_eligible = bool(prediction_summary and prediction_summary.get("status") not in {"PARTIAL_MISSING_PREDICTED", "MISSING_CAPABILITY"})
     runtime_correctness_eligible = bool(runtime_summary and runtime_summary.get("status") == "RUNTIME_CORRECTNESS")
+    hiding_claim_eligible = bool(hiding_summary and hiding_summary.get("status") == "READY")
     return {
         "schema_version": "paper_result_bundle.v1",
         "run_identity": {
@@ -64,9 +70,12 @@ def build_result_bundle(
         "harness_contract_tests_passed": harness_contract_tests_passed,
         "trace_claim_eligible": trace_claim_eligible,
         "traffic_claim_eligible": traffic_claim_eligible,
+        "strict_pair_claim_eligible": strict_pair_claim_eligible,
+        "oracle_claim_eligible": oracle_claim_eligible,
         "scheduling_claim_eligible": scheduling_claim_eligible,
         "prediction_claim_eligible": prediction_claim_eligible,
         "runtime_correctness_eligible": runtime_correctness_eligible,
+        "hiding_claim_eligible": hiding_claim_eligible,
         "performance_eligible": False,
         "record_counts": record_counts,
         "comparable_count": comparable_count,

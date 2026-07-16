@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -13,10 +12,6 @@ from rs.core.contracts.planning import PlanWave, PlannedFlow, WindowPlan
 from .adapters.execution_adapter import actual_phase_context_from_ready_context, build_phase_contexts_from_matrix
 from .adapters.publication_adapter import materialize_and_validate, publish_plan
 from .contracts import RecordMetadata, RuntimeEvaluationRecord
-
-
-def _hash_jsonable(value: object) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
 
 
 def _window_plan() -> WindowPlan:
@@ -82,36 +77,79 @@ def evaluate_materialization_contract_smoke(*, metadata: RecordMetadata) -> dict
     }
 
 
-def evaluate_runtime_correctness_with_gloo(*, metadata: RecordMetadata) -> dict[str, Any]:
-    script = Path(__file__).resolve().parents[1] / "distributed" / "run_m123_integrated_publication_execution_gloo.py"
-    with tempfile.TemporaryDirectory(prefix="rs_paper_gloo_") as tmpdir:
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _formal_runner_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "distributed" / "run_m123_integrated_publication_execution_gloo.py"
+
+
+def _runtime_status_from_summary(summary: dict[str, Any], parity: dict[str, Any]) -> str:
+    if summary.get("executed_task_manifest_digest") in {None, ""}:
+        return "EXECUTED_DIGEST_MISSING"
+    if summary.get("materialized_task_manifest_digest") in {None, ""}:
+        return "MATERIALIZED_DIGEST_MISSING"
+    if summary.get("executed_task_manifest_digest") != summary.get("materialized_task_manifest_digest"):
+        return "PLAN_IDENTITY_MISMATCH"
+    if not bool(parity.get("allclose", False)):
+        return "TENSOR_PARITY_FAILED"
+    submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    if submitted != completed or unresolved != 0:
+        return "INCOMPLETE_TASKS"
+    fallback = sum(int(rank.get("phase_sync_fallback_count", 0) or 0) for rank in summary.get("ranks", []))
+    if fallback != 0:
+        return "FALLBACK_OCCURRED"
+    return "RUNTIME_CORRECTNESS"
+
+
+def _run_formal_gloo_backend(
+    *,
+    metadata: RecordMetadata,
+    execution_backend: str,
+    policy_name: str,
+    matrix_bundle_path: str = "",
+    trace_sample_id: str | None = None,
+    traffic_instance_id: str | None = None,
+) -> RuntimeEvaluationRecord:
+    script = _formal_runner_script()
+    with tempfile.TemporaryDirectory(prefix=f"rs_paper_{execution_backend}_") as tmpdir:
         tmp = Path(tmpdir)
         summary_path = tmp / "summary.json"
         output_dir = tmp / "runner"
+        command = [
+            sys.executable,
+            str(script),
+            "--quiet",
+            "--execution-backend",
+            str(execution_backend),
+            "--policy-name",
+            str(policy_name),
+            "--output-dir",
+            str(output_dir),
+            "--summary-path",
+            str(summary_path),
+        ]
+        if str(matrix_bundle_path).strip():
+            command.extend(["--matrix-bundle", str(matrix_bundle_path)])
         proc = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--quiet",
-                "--output-dir",
-                str(output_dir),
-                "--summary-path",
-                str(summary_path),
-            ],
+            command,
             cwd=str(Path(__file__).resolve().parents[2]),
             capture_output=True,
             text=True,
             check=False,
         )
         if proc.returncode != 0:
-            record = RuntimeEvaluationRecord(
-                instance_id="paper-gloo-runtime-wrapper",
-                requested_policy_id=None,
-                selected_policy_id=None,
+            return RuntimeEvaluationRecord(
+                instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
+                requested_policy_id=str(policy_name),
+                selected_policy_id=str(policy_name),
                 published_plan_digest=None,
                 materialized_plan_digest=None,
                 executed_plan_digest=None,
-                execution_backend_id=None,
+                execution_backend_id=str(execution_backend),
                 submitted_tasks=None,
                 completed_tasks=None,
                 unresolved_tasks=None,
@@ -125,50 +163,79 @@ def evaluate_runtime_correctness_with_gloo(*, metadata: RecordMetadata) -> dict[
                 metadata=metadata,
                 evidence={"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode},
             )
-            return {"status": "ENVIRONMENT_BLOCKED", "records": [record.to_dict()], "tensor_parity_pass": False}
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        ranks = list(summary.get("ranks", []))
-        published_digests = sorted({str(item.get("published_plan_digest")) for item in ranks})
-        materialized_pairs = [
-            (str(item.get("p0_materialized_plan_digest")), str(item.get("p1_materialized_plan_digest")))
-            for item in ranks
-        ]
-        materialized_bundle_digest = _hash_jsonable(materialized_pairs)
-        submitted = int(sum(int(item.get("submitted_task_count", 0) or 0) for item in ranks))
-        completed = int(sum(int(item.get("completed_task_count", 0) or 0) for item in ranks))
-        unresolved = int(sum(int(item.get("unresolved_task_count", 0) or 0) for item in ranks))
-        observed_outputs = []
-        expected_outputs = []
-        for rank_payload in ranks:
-            for role_name, role_payload in dict(rank_payload.get("full_group", {}).get("results", {})).items():
-                observed_outputs.append(role_payload.get("sync", {}).get("output_payload", {}))
-                expected_outputs.append(role_payload.get("expected_output"))
-        executed_output_digest = _hash_jsonable(observed_outputs) if observed_outputs else None
-        reference_output_digest = _hash_jsonable(expected_outputs) if expected_outputs else None
-        tensor_parity_pass = executed_output_digest == reference_output_digest and bool(observed_outputs)
-        executed_plan_digest = None
-        status = "PARTIAL_EXECUTED_DIGEST_MISSING"
-        if executed_plan_digest is not None and executed_plan_digest == materialized_bundle_digest and submitted == completed and unresolved == 0 and tensor_parity_pass:
-            status = "RUNTIME_CORRECTNESS"
-        record = RuntimeEvaluationRecord(
-            instance_id="paper-gloo-runtime-wrapper",
-            requested_policy_id="formal_m123_integrated_publication_execution_gloo",
-            selected_policy_id="formal_m123_integrated_publication_execution_gloo",
-            published_plan_digest=published_digests[0] if len(published_digests) == 1 else None,
-            materialized_plan_digest=materialized_bundle_digest,
-            executed_plan_digest=executed_plan_digest,
+        summary = _load_json(summary_path)
+        run_dir = Path(str(summary["run_dir"]))
+        parity_path = Path(str(summary["parity_path"]))
+        executed_manifest_path = Path(str(summary["executed_task_manifest_path"]))
+        materialized_manifest_path = Path(str(summary["materialized_task_manifest_path"]))
+        parity = _load_json(parity_path) if parity_path.exists() else {"allclose": False, "status": "PARITY_ARTIFACT_MISSING"}
+        runtime_status = _runtime_status_from_summary(summary, parity) if parity_path.exists() else "PARITY_ARTIFACT_MISSING"
+        submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
+        completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
+        unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
+        fallback = sum(int(rank.get("phase_sync_fallback_count", 0) or 0) for rank in summary.get("ranks", []))
+        return RuntimeEvaluationRecord(
+            instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
+            requested_policy_id=str(policy_name),
+            selected_policy_id=str(policy_name),
+            published_plan_digest=str(summary["ranks"][0].get("published_plan_digest")) if summary.get("ranks") else None,
+            materialized_plan_digest=str(summary.get("materialized_task_manifest_digest")) if summary.get("materialized_task_manifest_digest") is not None else None,
+            executed_plan_digest=str(summary.get("executed_task_manifest_digest")) if summary.get("executed_task_manifest_digest") is not None else None,
             execution_backend_id=str(summary.get("execution_backend")),
             submitted_tasks=submitted,
             completed_tasks=completed,
             unresolved_tasks=unresolved,
-            fallback_count=None,
-            reference_output_digest=reference_output_digest,
-            executed_output_digest=executed_output_digest,
-            parity_status="PASS" if tensor_parity_pass else "FAILED",
+            fallback_count=fallback,
+            reference_output_digest=str(parity.get("reference_final_digest")) if parity.get("reference_final_digest") is not None else None,
+            executed_output_digest=str(parity.get("executed_final_digest")) if parity.get("executed_final_digest") is not None else None,
+            parity_status=str(parity.get("status", "PARITY_ARTIFACT_MISSING")),
             communication_makespan_ms=None,
             visible_control_ms=None,
-            runtime_status=status,
+            runtime_status=runtime_status,
             metadata=metadata,
-            evidence={"summary_path": str(summary_path), "runner_summary": summary},
+            evidence={
+                "summary_path": str(summary_path),
+                "run_dir": str(run_dir),
+                "runner_summary": summary,
+                "parity_path": str(parity_path),
+                "executed_task_manifest_path": str(executed_manifest_path),
+                "materialized_task_manifest_path": str(materialized_manifest_path),
+                "trace_sample_id": trace_sample_id,
+                "traffic_instance_id": traffic_instance_id,
+            },
         )
-        return {"status": status, "records": [record.to_dict()], "tensor_parity_pass": tensor_parity_pass}
+
+
+def evaluate_runtime_correctness_with_gloo(
+    *,
+    metadata: RecordMetadata,
+    policy_name: str = "U_barrier_criticality_global_matching",
+    matrix_bundle_path: str = "",
+    trace_sample_id: str | None = None,
+    traffic_instance_id: str | None = None,
+) -> dict[str, Any]:
+    phase_sync = _run_formal_gloo_backend(
+        metadata=metadata,
+        execution_backend="phase_sync",
+        policy_name=policy_name,
+        matrix_bundle_path=matrix_bundle_path,
+        trace_sample_id=trace_sample_id,
+        traffic_instance_id=traffic_instance_id,
+    )
+    async_release = _run_formal_gloo_backend(
+        metadata=metadata,
+        execution_backend="async_release",
+        policy_name=policy_name,
+        matrix_bundle_path=matrix_bundle_path,
+        trace_sample_id=trace_sample_id,
+        traffic_instance_id=traffic_instance_id,
+    )
+    statuses = {phase_sync.runtime_status, async_release.runtime_status}
+    overall_status = "RUNTIME_CORRECTNESS" if statuses == {"RUNTIME_CORRECTNESS"} else sorted(statuses)[0]
+    tensor_parity_pass = phase_sync.parity_status == "PASS" and async_release.parity_status == "PASS"
+    return {
+        "status": overall_status,
+        "records": [phase_sync.to_dict(), async_release.to_dict()],
+        "tensor_parity_pass": tensor_parity_pass,
+    }
+

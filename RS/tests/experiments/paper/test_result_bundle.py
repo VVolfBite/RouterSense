@@ -23,10 +23,13 @@ def test_result_bundle_marks_runtime_ineligible_without_real_execution() -> None
         artifact_index={"runtime_summary": "runtime_summary.json"},
     )
     assert bundle["harness_contract_tests_passed"] is True
-    assert bundle["trace_claim_eligible"] is True
-    assert bundle["traffic_claim_eligible"] is True
+    assert bundle["trace_claim_eligible"] is False
+    assert bundle["traffic_claim_eligible"] is False
+    assert bundle["strict_pair_claim_eligible"] is False
+    assert bundle["oracle_claim_eligible"] is False
     assert bundle["scheduling_claim_eligible"] is False
     assert bundle["prediction_claim_eligible"] is False
     assert bundle["runtime_correctness_eligible"] is False
+    assert bundle["hiding_claim_eligible"] is False
     assert bundle["performance_eligible"] is False
     assert "predicted_paper_path" in bundle["missing_capabilities"]

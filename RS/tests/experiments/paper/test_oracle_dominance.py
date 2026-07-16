@@ -16,9 +16,10 @@ def test_unsupported_exact_result_is_not_comparable() -> None:
         policy_ids=("exact_small_instance_reference",),
     )
     row = result["records"][0]
-    assert result["o_local_status"] == "SEMANTICALLY_INVALID"
+    assert result["o_local_status"] in {"READY_FOR_SUPPORTED_TINY", "PARTIAL"}
     assert row["is_exact"] is True
     assert row["comparable"] is False
     assert row["objective"] is None
     assert row["best_bound"] is None
     assert row["optimality_gap"] is None
+    assert result["o_joint_record"] is not None

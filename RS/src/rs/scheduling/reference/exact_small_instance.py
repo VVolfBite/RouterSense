@@ -105,8 +105,269 @@ def solve_exact_small_instance(
 
 
 def solve_problem_exact(problem: MultiPhaseSchedulingProblem, *, time_limit_ms: int = 5000) -> dict[str, Any]:
-    flows = tuple(problem.flow_window.ready_flows + problem.flow_window.blocked_flows)
-    return solve_exact_small_instance(flows=flows, rank_count=problem.topology.num_gpus, time_limit_ms=time_limit_ms)
+    return solve_problem_exact_with_scope(problem, time_limit_ms=time_limit_ms, scope="joint")
+
+
+def solve_problem_exact_with_scope(
+    problem: MultiPhaseSchedulingProblem,
+    *,
+    time_limit_ms: int = 5000,
+    scope: str = "joint",
+) -> dict[str, Any]:
+    normalized_scope = str(scope)
+    if normalized_scope not in {"joint", "local"}:
+        raise ValueError(f"unsupported exact scope {scope!r}")
+    started_ns = time.monotonic_ns()
+    rank_count = int(problem.topology.num_gpus)
+    phase_flows = _phase_grouped_flows(problem)
+    total_flow_count = sum(len(items) for items in phase_flows.values())
+    if rank_count > MAX_RANK_COUNT or total_flow_count > MAX_BUCKET_TASK_COUNT:
+        return {
+            "reference_model": "discrete_multiphase_release_wave",
+            "supported": False,
+            "solver_status": "unsupported_scale",
+            "certified_optimal": False,
+            "objective_logical_makespan": None,
+            "wave_count": None,
+            "best_bound": None,
+            "optimality_gap": None,
+            "search_nodes": 0,
+            "time_limit_ms": int(time_limit_ms),
+            "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+            "schedule": [],
+            "scope": normalized_scope,
+        }
+    if normalized_scope == "local":
+        return _solve_problem_exact_local(problem, phase_flows=phase_flows, time_limit_ms=time_limit_ms, started_ns=started_ns)
+    return _solve_problem_exact_joint(problem, phase_flows=phase_flows, time_limit_ms=time_limit_ms, started_ns=started_ns)
+
+
+def _phase_grouped_flows(problem: MultiPhaseSchedulingProblem) -> dict[str, tuple[FlowDemand, ...]]:
+    p0 = tuple(problem.flow_window.ready_flows)
+    p1 = tuple(problem.flow_window.blocked_flows)
+    p2 = tuple(
+        flow
+        for flow in problem.flow_window.forecast_pressure
+        if bool(flow.is_executable) and str(flow.release_state) != "advisory_only"
+    )
+    return {"p0": p0, "p1": p1, "p2": p2}
+
+
+def _solve_problem_exact_local(
+    problem: MultiPhaseSchedulingProblem,
+    *,
+    phase_flows: dict[str, tuple[FlowDemand, ...]],
+    time_limit_ms: int,
+    started_ns: int,
+) -> dict[str, Any]:
+    rank_count = int(problem.topology.num_gpus)
+    phase_results: list[dict[str, Any]] = []
+    schedule: list[dict[str, Any]] = []
+    wave_offset = 0
+    search_nodes = 0
+    elapsed_wall_ms = 0.0
+    for phase_name in ("p0", "p1", "p2"):
+        flows = phase_flows[phase_name]
+        if not flows:
+            continue
+        phase_started_ns = time.monotonic_ns()
+        phase_result = solve_exact_small_instance(flows=flows, rank_count=rank_count, time_limit_ms=time_limit_ms)
+        phase_wall_ms = (time.monotonic_ns() - phase_started_ns) / 1_000_000.0
+        phase_result = {**phase_result, "solver_runtime_ms_wall": phase_wall_ms, "phase_name": phase_name}
+        phase_results.append(phase_result)
+        elapsed_wall_ms += phase_wall_ms
+        search_nodes += int(phase_result.get("search_nodes", 0) or 0)
+        if (
+            not bool(phase_result.get("supported", False))
+            or str(phase_result.get("solver_status")) != "optimal"
+            or not bool(phase_result.get("certified_optimal", False))
+            or phase_result.get("objective_logical_makespan") is None
+        ):
+            return {
+                "reference_model": "discrete_multiphase_release_wave",
+                "supported": bool(phase_result.get("supported", False)),
+                "solver_status": str(phase_result.get("solver_status", "unknown")),
+                "certified_optimal": False,
+                "objective_logical_makespan": None,
+                "wave_count": None,
+                "best_bound": None,
+                "optimality_gap": None,
+                "search_nodes": int(search_nodes),
+                "time_limit_ms": int(time_limit_ms),
+                "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+                "schedule": [],
+                "scope": "local",
+                "phase_solver_results": phase_results,
+                "combined_validation": {"valid": False, "reason": "phase_exact_not_optimal"},
+            }
+        for wave in phase_result.get("schedule", []):
+            schedule.append({**dict(wave), "wave_id": int(wave_offset + int(wave["wave_id"]))})
+        wave_offset += len(tuple(phase_result.get("schedule", ())))
+    objective = float(sum(float(wave.get("duration", 0.0) or 0.0) for wave in schedule))
+    return {
+        "reference_model": "discrete_multiphase_release_wave",
+        "supported": True,
+        "solver_status": "optimal",
+        "certified_optimal": True,
+        "objective_logical_makespan": objective,
+        "wave_count": len(schedule),
+        "best_bound": objective,
+        "optimality_gap": 0.0,
+        "search_nodes": int(search_nodes),
+        "time_limit_ms": int(time_limit_ms),
+        "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+        "schedule": schedule,
+        "scope": "local",
+        "phase_solver_results": phase_results,
+        "combined_validation": {"valid": True, "objective": objective},
+    }
+
+
+def _solve_problem_exact_joint(
+    problem: MultiPhaseSchedulingProblem,
+    *,
+    phase_flows: dict[str, tuple[FlowDemand, ...]],
+    time_limit_ms: int,
+    started_ns: int,
+) -> dict[str, Any]:
+    phase_order = {"p0_dispatch": 0, "p1_return": 1, "p2_next_dispatch": 2}
+    flows = tuple(
+        sorted(
+            phase_flows["p0"] + phase_flows["p1"] + phase_flows["p2"],
+            key=lambda flow: (
+                phase_order.get(str(flow.phase), 99),
+                int(flow.src_rank),
+                int(flow.dst_rank),
+                int(flow.byte_count),
+                str(flow.flow_id),
+            ),
+        )
+    )
+    if not flows:
+        return {
+            "reference_model": "discrete_multiphase_release_wave",
+            "supported": True,
+            "solver_status": "optimal",
+            "certified_optimal": True,
+            "objective_logical_makespan": 0.0,
+            "wave_count": 0,
+            "best_bound": 0.0,
+            "optimality_gap": 0.0,
+            "search_nodes": 1,
+            "time_limit_ms": int(time_limit_ms),
+            "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+            "schedule": [],
+            "scope": "joint",
+        }
+    deadline_ns = started_ns + int(time_limit_ms) * 1_000_000
+    all_mask = (1 << len(flows)) - 1
+    search_nodes = 0
+
+    @lru_cache(maxsize=None)
+    def solve(mask: int) -> tuple[int, tuple[int, ...]] | None:
+        nonlocal search_nodes
+        search_nodes += 1
+        if time.monotonic_ns() > deadline_ns:
+            return None
+        if mask == 0:
+            return (0, ())
+        available_indices = _available_flow_indices(flows, mask)
+        if not available_indices:
+            return None
+        compatible_masks = _compatible_wave_masks_subset(flows, mask, available_indices)
+        best: tuple[int, tuple[int, ...]] | None = None
+        for sub in compatible_masks:
+            duration = _mask_duration(flows, sub)
+            remaining = solve(mask ^ sub)
+            if remaining is None:
+                return None
+            candidate = (duration + remaining[0], (sub, *remaining[1]))
+            if best is None or _candidate_key(flows, candidate) < _candidate_key(flows, best):
+                best = candidate
+        return best
+
+    result = solve(all_mask)
+    if result is None:
+        return {
+            "reference_model": "discrete_multiphase_release_wave",
+            "supported": True,
+            "solver_status": "time_limit",
+            "certified_optimal": False,
+            "objective_logical_makespan": None,
+            "wave_count": None,
+            "best_bound": None,
+            "optimality_gap": None,
+            "search_nodes": int(search_nodes),
+            "time_limit_ms": int(time_limit_ms),
+            "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+            "schedule": [],
+            "scope": "joint",
+        }
+    objective, masks = result
+    schedule = [_mask_to_wave_record(flows, wave_id, mask) for wave_id, mask in enumerate(masks)]
+    return {
+        "reference_model": "discrete_multiphase_release_wave",
+        "supported": True,
+        "solver_status": "optimal",
+        "certified_optimal": True,
+        "objective_logical_makespan": float(objective),
+        "wave_count": len(schedule),
+        "best_bound": float(objective),
+        "optimality_gap": 0.0,
+        "search_nodes": int(search_nodes),
+        "time_limit_ms": int(time_limit_ms),
+        "solver_runtime_ms_wall": (time.monotonic_ns() - started_ns) / 1_000_000.0,
+        "schedule": schedule,
+        "scope": "joint",
+    }
+
+
+def _available_flow_indices(flows: tuple[FlowDemand, ...], mask: int) -> tuple[int, ...]:
+    remaining = [flows[index] for index in range(len(flows)) if mask & (1 << index)]
+    remaining_p0_by_dst = {int(flow.dst_rank) for flow in remaining if str(flow.phase) == "p0_dispatch"}
+    remaining_p1_by_dst = {int(flow.dst_rank) for flow in remaining if str(flow.phase) == "p1_return"}
+    available: list[int] = []
+    for index, flow in enumerate(flows):
+        if not (mask & (1 << index)):
+            continue
+        phase = str(flow.phase)
+        if phase == "p0_dispatch":
+            available.append(index)
+            continue
+        if phase == "p1_return" and int(flow.src_rank) not in remaining_p0_by_dst:
+            available.append(index)
+            continue
+        if phase == "p2_next_dispatch" and int(flow.src_rank) not in remaining_p1_by_dst:
+            available.append(index)
+            continue
+    return tuple(available)
+
+
+def _compatible_wave_masks_subset(flows: tuple[FlowDemand, ...], mask: int, available_indices: tuple[int, ...]) -> tuple[int, ...]:
+    compatible: list[int] = []
+    candidates = [1 << index for index in available_indices]
+    limit = 1 << len(candidates)
+    for sub_index in range(1, limit):
+        submask = 0
+        for bit_index, bit_mask in enumerate(candidates):
+            if sub_index & (1 << bit_index):
+                submask |= bit_mask
+        if submask & ~mask:
+            continue
+        used_src: set[int] = set()
+        used_dst: set[int] = set()
+        ok = True
+        for index, flow in enumerate(flows):
+            if not (submask & (1 << index)):
+                continue
+            if int(flow.src_rank) in used_src or int(flow.dst_rank) in used_dst:
+                ok = False
+                break
+            used_src.add(int(flow.src_rank))
+            used_dst.add(int(flow.dst_rank))
+        if ok:
+            compatible.append(submask)
+    return tuple(sorted(compatible, key=lambda item: (_mask_duration(flows, item), item)))
 
 
 def exact_result_to_logical_plan(result: dict[str, Any], *, policy_name: str = "exact_small_instance_reference") -> LogicalSchedulePlan:
@@ -242,4 +503,5 @@ __all__ = [
     "exact_result_to_window_plan",
     "solve_exact_small_instance",
     "solve_problem_exact",
+    "solve_problem_exact_with_scope",
 ]
