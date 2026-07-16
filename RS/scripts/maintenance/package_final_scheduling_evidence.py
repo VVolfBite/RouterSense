@@ -213,20 +213,16 @@ def _source_digest_valid(root: Path) -> bool:
 
 
 def _sanitize_source_manifest(source_manifest_path: Path) -> None:
-    payload = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-    archive_self_check = dict(payload.get("archive_self_check", {}) or {})
-    commands = list(archive_self_check.get("commands", []) or [])
-    for row in commands:
-        command = list(dict(row).get("command", []) or [])
-        sanitized: list[str] = []
-        for token in command:
-            if isinstance(token, str) and (":\\" in token or token.startswith("/tmp/")):
-                sanitized.append(Path(token).name)
-            else:
-                sanitized.append(token)
-        row["command"] = sanitized
-    archive_self_check["commands"] = commands
-    payload["archive_self_check"] = archive_self_check
+    def _sanitize(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: _sanitize(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [_sanitize(child) for child in value]
+        if isinstance(value, str) and (":\\" in value or value.startswith("/tmp/")):
+            return Path(value).name
+        return value
+
+    payload = _sanitize(json.loads(source_manifest_path.read_text(encoding="utf-8")))
     write_json(source_manifest_path, payload)
 
 
