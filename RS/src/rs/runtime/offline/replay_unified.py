@@ -149,6 +149,23 @@ def build_multiphase_problem(
 ) -> MultiPhaseSchedulingProblem:
     replay_window = planning_problem.replay_window
     hint = planning_problem.planning_hint
+    mode = str(scheduling_mode)
+    if mode == "execution_window":
+        forecast_pressure = _flows_from_matrix(
+            execution_truth.p2_truth_rows,
+            phase="p2_next_dispatch",
+            release_state="blocked",
+            executable=True,
+        )
+    elif mode == "runtime_lookahead":
+        forecast_pressure = _flows_from_matrix(
+            hint.p2_hint_rows,
+            phase="p2_next_dispatch_forecast",
+            release_state="advisory_only",
+            executable=False,
+        )
+    else:
+        raise ValueError(f"unsupported scheduling_mode {scheduling_mode!r}")
     return MultiPhaseSchedulingProblem(
         flow_window=FlowWindow(
             ready_flows=_flows_from_matrix(
@@ -163,12 +180,7 @@ def build_multiphase_problem(
                 release_state="blocked",
                 executable=False,
             ),
-            forecast_pressure=_flows_from_matrix(
-                hint.p2_hint_rows,
-                phase="p2_next_dispatch_forecast",
-                release_state="advisory_only",
-                executable=False,
-            ),
+            forecast_pressure=forecast_pressure,
         ),
         topology=LogicalTopology(num_gpus=int(replay_window.group_size)),
         release_model=ReleaseConstraint(
