@@ -11,7 +11,7 @@ from .contracts import RecordMetadata, TraceSample
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def load_replay_fixture(path: Path) -> dict[str, Any]:
@@ -99,6 +99,7 @@ def trace_bundle_to_trace_samples(bundle_dir: Path, *, metadata: RecordMetadata)
         by_sample_layer[(str(record["sample_id"]), str(record["layer_id"]))].append(record)
     samples: list[TraceSample] = []
     for (sample_id, layer_id), records in sorted(by_sample_layer.items()):
+        request_ids = sorted({str(row.get("request_id", "unknown-request")) for row in records})
         counts_by_expert: dict[int, int] = defaultdict(int)
         weights: list[float] = []
         token_positions: set[int] = set()
@@ -116,7 +117,7 @@ def trace_bundle_to_trace_samples(bundle_dir: Path, *, metadata: RecordMetadata)
                 model_id=str(metadata.model_id),
                 model_revision=str(metadata.model_revision),
                 prompt_id=str(sample_id),
-                batch_id="real-trace",
+                batch_id="|".join(request_ids),
                 sequence_length=len(token_positions),
                 layer_id=str(layer_id),
                 num_experts=int(num_experts),

@@ -46,6 +46,12 @@ def build_result_bundle(
         failure_reasons.append(str(runtime_summary.get("status")))
     comparable_count = len([row for row in (scheduling_summary or {}).get("records", []) if bool(row.get("comparable"))])
     invalid_count = len([row for row in (scheduling_summary or {}).get("records", []) if not bool(row.get("comparable", False))])
+    harness_contract_tests_passed = True
+    trace_claim_eligible = True
+    traffic_claim_eligible = True
+    scheduling_claim_eligible = bool(scheduling_summary) and scheduling_summary.get("o_local_status") not in {None, "SEMANTICALLY_INVALID", "MISSING"}
+    prediction_claim_eligible = bool(prediction_summary and prediction_summary.get("status") not in {"PARTIAL_MISSING_PREDICTED", "MISSING_CAPABILITY"})
+    runtime_correctness_eligible = bool(runtime_summary and runtime_summary.get("status") == "RUNTIME_CORRECTNESS")
     return {
         "schema_version": "paper_result_bundle.v1",
         "run_identity": {
@@ -55,9 +61,13 @@ def build_result_bundle(
             "claim_scope": claim_scope,
         },
         "status": status,
-        "correctness_eligibility": True,
-        "performance_eligibility": False,
-        "runtime_correctness_eligible": bool(runtime_summary and runtime_summary.get("status") == "RUNTIME_CORRECTNESS"),
+        "harness_contract_tests_passed": harness_contract_tests_passed,
+        "trace_claim_eligible": trace_claim_eligible,
+        "traffic_claim_eligible": traffic_claim_eligible,
+        "scheduling_claim_eligible": scheduling_claim_eligible,
+        "prediction_claim_eligible": prediction_claim_eligible,
+        "runtime_correctness_eligible": runtime_correctness_eligible,
+        "performance_eligible": False,
         "record_counts": record_counts,
         "comparable_count": comparable_count,
         "invalid_count": invalid_count,

@@ -27,3 +27,4 @@ def test_aggregation_keeps_negative_instances(tmp_path) -> None:
     assert result["comparable_count"] == 1
     assert result["worst_case_objective"] == 2.0
     assert result["gain_over_zero"]["median"] == -0.25
+    assert result["win_tie_loss"]["status"] == "NOT_COMPUTABLE"

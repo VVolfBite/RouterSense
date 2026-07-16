@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from .prediction_evaluation import evaluate_prediction
 from .result_bundle import build_result_bundle, write_json
 from .runtime_evaluation import evaluate_materialization_contract_smoke, evaluate_runtime_correctness_with_gloo
 from .scheduling_evaluation import evaluate_scheduling
-from .traffic_builder import build_traffic_instances_from_trace_bundle
+from .traffic_builder import build_traffic_instances_from_trace_bundle, summarize_ownership_and_placement
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -49,11 +50,9 @@ def _load_config(path: str, *, default_rel: str) -> tuple[dict[str, Any], Path]:
     return config, config_path
 
 
-def _git_text(command: str) -> str:
-    import subprocess
-
+def _git_text(*args: str) -> str:
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", command],
+        ["git", *args],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -64,8 +63,8 @@ def _git_text(command: str) -> str:
 
 def _metadata(*, config: dict[str, Any]) -> RecordMetadata:
     config_digest = stable_hash_dict(config)
-    branch = _git_text("git branch --show-current")
-    commit = _git_text("git rev-parse HEAD")
+    branch = _git_text("branch", "--show-current")
+    commit = _git_text("rev-parse", "HEAD")
     model = dict(config.get("models", {}))
     return RecordMetadata(
         branch=branch,
@@ -149,7 +148,9 @@ def cmd_build_traffic(args: argparse.Namespace) -> int:
         cost_model_id=str(config["cost_model"]),
     )
     write_json(output_dir / "trace_samples.json", [item.to_dict() for item in trace_samples])
+    write_json(output_dir / "compact_trace_samples.json", [item.to_dict() for item in trace_samples])
     write_json(output_dir / "traffic_instances.json", [item.to_dict() for item in traffic_instances])
+    write_json(output_dir / "ownership_and_placement_summary.json", summarize_ownership_and_placement(traffic_instances=traffic_instances))
     veps_present = sorted({int(item.virtual_ep_size) for item in traffic_instances})
     summary = {
         "status": "OK",
@@ -177,6 +178,10 @@ def cmd_scheduling(args: argparse.Namespace) -> int:
         cost_model_id=str(config["cost_model"]),
     )
     write_json(output_dir / "scheduling_summary.json", result)
+    if result.get("execution_window_bridge_summary") is not None:
+        write_json(output_dir / "execution_window_bridge_summary.json", result["execution_window_bridge_summary"])
+    if result.get("same_core_pair_summary") is not None:
+        write_json(output_dir / "same_core_pair_summary.json", result["same_core_pair_summary"])
     print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
@@ -223,6 +228,8 @@ def cmd_runtime(args: argparse.Namespace) -> int:
         "tensor_parity_pass": bool(gloo.get("tensor_parity_pass", False)),
     }
     write_json(output_dir / "runtime_summary.json", result)
+    if gloo.get("records"):
+        write_json(output_dir / "formal_gloo_summary.json", gloo["records"][0].get("evidence", {}).get("runner_summary"))
     print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 

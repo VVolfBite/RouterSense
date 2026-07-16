@@ -61,7 +61,7 @@ def aggregate_results(*, input_dir: Path) -> dict[str, Any]:
         "valid_count": len(valid),
         "invalid_count": len(invalid),
         "comparable_count": len(comparable),
-        "win_tie_loss": {"win": 0, "tie": 0, "loss": 0},
+        "win_tie_loss": {"status": "NOT_COMPUTABLE", "win": None, "tie": None, "loss": None},
         "median_objective": None if not scheduling_objectives else float(median(scheduling_objectives)),
         "p90_objective": _percentile(scheduling_objectives, 0.90),
         "p95_objective": _percentile(scheduling_objectives, 0.95),

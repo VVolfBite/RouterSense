@@ -70,6 +70,15 @@ def _prediction_confidence(hint_type: str, confidence: float) -> float:
     return float(confidence)
 
 
+def _planning_mode_contract(*, scheduling_mode: str, has_p2: bool) -> tuple[str, str]:
+    mode = str(scheduling_mode)
+    if mode == "execution_window":
+        return ("execution_window", "executable_actual" if has_p2 else "absent")
+    if mode == "runtime_lookahead":
+        return ("runtime_lookahead", "advisory_hint" if has_p2 else "absent")
+    raise ValueError(f"unsupported scheduling_mode {scheduling_mode!r}")
+
+
 @dataclass(frozen=True)
 class ReplayWindow:
     fixture_id: str
@@ -246,6 +255,11 @@ class ReplayEngine:
             expert_compute_delay=self.expert_compute_delay,
             max_waves=self.max_waves,
         )
+        has_p2 = any(int(value) > 0 for row in planning_hint.p2_hint_rows for value in row)
+        planning_track, p2_semantics = _planning_mode_contract(
+            scheduling_mode=self.scheduling_mode,
+            has_p2=has_p2,
+        )
         request = PlanningRequest(
             identity=PlanningIdentity(
                 request_id=f"{replay_window.fixture_id}:{replay_window.window_id}:{policy_name}",
@@ -280,6 +294,8 @@ class ReplayEngine:
                 p2_weight=float(planning_hint.confidence),
             ),
             information_mode="p0_p1_p2",
+            planning_track=str(planning_track),
+            p2_semantics=str(p2_semantics),
         )
         planner = PlannerRegistry.create(str(policy_name), None)
         formal_plan = planner.plan(request)
@@ -305,6 +321,9 @@ class ReplayEngine:
             "logical_plan_digest": str(formal_plan.semantic_digest()),
             "logical_plan_audit_digest": str(formal_plan.audit_digest()),
             "planner_family": str(formal_plan.planner_family),
+            "plan_metadata": dict(formal_plan.metadata),
+            "planning_track": str(request.planning_track),
+            "p2_semantics": str(request.p2_semantics),
             "makespan": float(audit.get("replay_makespan", audit.get("makespan", 0.0)) or 0.0),
             "audit_valid": bool(audit.get("valid", False)),
             "audit": audit,

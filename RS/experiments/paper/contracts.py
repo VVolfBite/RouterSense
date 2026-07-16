@@ -55,6 +55,10 @@ class TrafficInstance:
     virtual_ep_size: int
     expert_to_rank_mapping: tuple[int, ...]
     mapping_digest: str
+    placement_policy_id: str
+    source_ownership_policy_id: str
+    current_layer_mapping_digest: str
+    target_layer_mapping_digest: str
     P0_matrix: tuple[tuple[int, ...], ...]
     P1_matrix: tuple[tuple[int, ...], ...]
     P2_truth_matrix: tuple[tuple[int, ...], ...]
@@ -101,6 +105,12 @@ class ScheduleEvaluationRecord:
     comparable_reason: str
     validation_errors: tuple[str, ...]
     cost_model_id: str
+    matching_core_id: str | None
+    task_contract_digest: str | None
+    bucket_contract_digest: str | None
+    cost_contract_digest: str | None
+    service_model_id: str | None
+    solver_budget_digest: str | None
     runtime_info: dict[str, Any]
     metadata: RecordMetadata
 
