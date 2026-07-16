@@ -284,3 +284,12 @@ def test_child_env_normalizes_invalid_omp_threads(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("OMP_NUM_THREADS", "4")
     env = _child_env()
     assert env["OMP_NUM_THREADS"] == "4"
+
+
+def test_strategy_comparison_read_summary_requires_result_bundle(tmp_path: Path) -> None:
+    from rs.experiments_support.strategy_comparison_runner import read_summary
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(json.dumps({"details": {"legacy": True}}), encoding="utf-8")
+    assert read_summary(run_dir) == {}

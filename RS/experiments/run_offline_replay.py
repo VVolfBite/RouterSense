@@ -20,7 +20,6 @@ ROOT = ensure_src_on_path()
 
 import yaml
 
-from rs.core.config_normalization import legacy_offline_replay_payload
 from rs.core.formal_config_loader import load_formal_config
 from rs.core.contracts.result import OFFLINE_PIPELINE, RunIdentity
 from rs.experiments.output_schema import (
@@ -110,7 +109,6 @@ def main() -> None:
             official_entrypoint="experiments/run_offline_replay.py",
         )
         config = resolved.normalized_config
-        legacy_config = legacy_offline_replay_payload(resolved.normalized)
         replay_cfg = dict(config.get("replay", {}) or {})
         default_output_dir = ROOT / str(replay_cfg.get("output_dir", "outputs/offline/offline_replay_smoke"))
         output_dir = (ROOT / str(args.output_dir)).resolve() if args.output_dir else default_output_dir.resolve()
@@ -125,7 +123,6 @@ def main() -> None:
             layout,
             normalized_config=config,
             consumed_config=config,
-            legacy_bridge_config=legacy_config,
         )
         fixture_dir = (ROOT / str(replay_cfg["fixture_dir"])).resolve()
         evaluation = dict(config.get("evaluation", {}) or {})

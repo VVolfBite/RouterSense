@@ -302,27 +302,17 @@ def write_runtime_analysis(run_dir: Path) -> None:
 
 def read_summary(run_dir: Path) -> dict[str, Any]:
     bundle_path = run_dir / "result_bundle.json"
-    if bundle_path.exists():
-        try:
-            payload = json.loads(bundle_path.read_text(encoding="utf-8"))
-            bundle = ResultBundle.from_dict(payload)
-            details = dict(bundle.details)
-            if details:
-                return details
-            return dict(bundle.summary)
-        except Exception:
-            pass
-    path = run_dir / "summary.json"
-    if not path.exists():
+    if not bundle_path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+        bundle = ResultBundle.from_dict(payload)
     except Exception:
         return {}
-    details = payload.get("details", {}) if isinstance(payload, dict) else {}
-    if isinstance(details, dict):
+    details = dict(bundle.details)
+    if details:
         return details
-    return {}
+    return dict(bundle.summary)
 
 
 def write_result_bundle(output_dir: Path, *, report: dict[str, Any], timing: dict[str, Any], dry_run: bool) -> None:
