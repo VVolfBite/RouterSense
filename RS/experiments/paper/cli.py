@@ -238,7 +238,7 @@ def cmd_hiding(args: argparse.Namespace) -> int:
 def cmd_runtime(args: argparse.Namespace) -> int:
     config, _ = _load_config(args.config, default_rel="configs/official/paper/runtime_correctness_gloo.yaml")
     output_dir = _output_dir(args, config, "runtime")
-    input_dir = Path(args.input) if args.input else None
+    input_dir = _resolved_input_path(config, cli_input=args.input)
     metadata = _write_common_output(output_dir, config, input_path=str(input_dir) if input_dir else None)
     materialization = evaluate_materialization_contract_smoke(metadata=metadata)
     matrix_bundle_path = ""

@@ -57,6 +57,46 @@ def _input_tensor(spec, *, source_global_rank: int) -> torch.Tensor:
     return values[:rows].unsqueeze(1).repeat(1, hidden).to(dtype=target_dtype)
 
 
+def _segment_tensor(spec, *, source_global_rank: int, destination_global_rank: int, row_count: int) -> torch.Tensor:
+    rows = int(row_count)
+    hidden = int(spec.shape_suffix[0]) if spec.shape_suffix else 1
+    base = int(source_global_rank) * 10000 + int(destination_global_rank) * 100
+    values = torch.arange(base, base + max(rows, 1), dtype=torch.float32)
+    target_dtype = getattr(torch, str(spec.dtype).replace("torch.", ""), torch.float32)
+    if hidden <= 1:
+        return values[:rows].to(dtype=target_dtype).reshape(rows, 1)
+    return values[:rows].unsqueeze(1).repeat(1, hidden).to(dtype=target_dtype)
+
+
+def _packed_source_tensor_for_matrix(
+    spec,
+    *,
+    matrix: tuple[tuple[int, ...], ...],
+    source_global_rank: int,
+) -> torch.Tensor:
+    pieces: list[torch.Tensor] = []
+    for destination_global_rank, row_count in enumerate(matrix[int(source_global_rank)]):
+        count = int(row_count)
+        if count <= 0:
+            continue
+        pieces.append(
+            _segment_tensor(
+                spec,
+                source_global_rank=int(source_global_rank),
+                destination_global_rank=int(destination_global_rank),
+                row_count=count,
+            )
+        )
+    if not pieces:
+        return _segment_tensor(
+            spec,
+            source_global_rank=int(source_global_rank),
+            destination_global_rank=0,
+            row_count=0,
+        )
+    return torch.cat(pieces, dim=0)
+
+
 def _json_digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -116,9 +156,12 @@ def _load_matrix_bundle(*, matrix_bundle_path: str, world_size: int) -> dict[str
     return {"p0": p0, "p1": p1, "full_p0": full_p0, "full_p1": full_p1}
 
 
-def _spec_for_role(payload_specs_by_role: dict[str, dict[str, object]], role: str) -> object:
+def _spec_for_role(payload_specs_by_role: dict[str, dict[str, object]], role: str, *, row_count_override: int | None = None) -> object:
     spec = dict(payload_specs_by_role.get(role, {}))
-    return type("Spec", (), {"row_count": int(spec.get("row_count", 0) or 0), "dtype": str(spec.get("dtype", "torch.float32")), "shape_suffix": tuple(int(dim) for dim in spec.get("shape_suffix", ()))})()
+    row_count = int(spec.get("row_count", 0) or 0)
+    if row_count_override is not None:
+        row_count = max(row_count, int(row_count_override))
+    return type("Spec", (), {"row_count": row_count, "dtype": str(spec.get("dtype", "torch.float32")), "shape_suffix": tuple(int(dim) for dim in spec.get("shape_suffix", ()))})()
 
 
 def _build_full_reference_tensor(
@@ -129,13 +172,24 @@ def _build_full_reference_tensor(
     tensor_role: str,
 ) -> torch.Tensor:
     rows: list[torch.Tensor] = []
-    for src_rank in range(len(matrix)):
+    ordered_src_ranks = [int(src_rank) for src_rank in range(len(matrix))]
+    for src_rank in ordered_src_ranks:
         row_count = int(matrix[src_rank][dst_rank])
         if row_count <= 0:
             continue
-        spec = _spec_for_role(dict(payload_specs_by_rank.get(int(src_rank), {})), tensor_role)
-        source_tensor = _input_tensor(spec, source_global_rank=int(src_rank))
-        rows.append(source_tensor.narrow(0, 0, row_count).clone())
+        spec = _spec_for_role(
+            dict(payload_specs_by_rank.get(int(src_rank), {})),
+            tensor_role,
+            row_count_override=sum(int(value) for value in matrix[src_rank]),
+        )
+        rows.append(
+            _segment_tensor(
+                spec,
+                source_global_rank=int(src_rank),
+                destination_global_rank=int(dst_rank),
+                row_count=row_count,
+            ).clone()
+        )
     if not rows:
         spec = _spec_for_role(dict(payload_specs_by_rank.get(int(dst_rank), {})), tensor_role)
         empty = _input_tensor(spec, source_global_rank=int(dst_rank))
@@ -154,14 +208,25 @@ def _reconstruct_full_tensor_from_remote_output(
 ) -> torch.Tensor:
     chunks: list[torch.Tensor] = []
     remote_offset = 0
-    for src_rank in range(len(full_matrix)):
+    ordered_src_ranks = [int(src_rank) for src_rank in range(len(full_matrix))]
+    for src_rank in ordered_src_ranks:
         full_rows = int(full_matrix[src_rank][dst_rank])
         if full_rows <= 0:
             continue
         if src_rank == dst_rank:
-            spec = _spec_for_role(dict(payload_specs_by_rank.get(int(src_rank), {})), tensor_role)
-            source_tensor = _input_tensor(spec, source_global_rank=int(src_rank))
-            chunks.append(source_tensor.narrow(0, 0, full_rows).clone())
+            spec = _spec_for_role(
+                dict(payload_specs_by_rank.get(int(src_rank), {})),
+                tensor_role,
+                row_count_override=sum(int(value) for value in full_matrix[src_rank]),
+            )
+            chunks.append(
+                _segment_tensor(
+                    spec,
+                    source_global_rank=int(src_rank),
+                    destination_global_rank=int(dst_rank),
+                    row_count=full_rows,
+                ).clone()
+            )
             continue
         remote_rows = int(remote_matrix[src_rank][dst_rank])
         if remote_rows <= 0:
@@ -346,13 +411,14 @@ def _execute_role(
     phase: str,
     rank: int,
     group_ranks: tuple[int, ...],
+    traffic_matrix: tuple[tuple[int, ...], ...],
 ) -> dict[str, object]:
     active = runtime.current_transport()
     assert active is not None
     prepared = active["prepared_execution"]
     assert prepared is not None
     spec = next(item for item in prepared.materialized_plan.payload_specs if str(item.payload_role) == str(tensor_role))
-    tensor = _input_tensor(spec, source_global_rank=int(rank))
+    tensor = _packed_source_tensor_for_matrix(spec, matrix=traffic_matrix, source_global_rank=int(rank))
     target_dtype = getattr(torch, str(spec.dtype).replace("torch.", ""), None)
     if target_dtype is not None:
         tensor = tensor.to(dtype=target_dtype)
@@ -697,7 +763,7 @@ def _worker(
             encoding="utf-8",
         )
         hidden_debug_spec = next(item for item in prepared_p0.materialized_plan.payload_specs if str(item.payload_role) == "hidden_states")
-        hidden_debug_tensor = _input_tensor(hidden_debug_spec, source_global_rank=int(rank))
+        hidden_debug_tensor = _packed_source_tensor_for_matrix(hidden_debug_spec, matrix=matrices["p0"], source_global_rank=int(rank))
         (run_root / f"rank{rank}_p0_hidden_input.json").write_text(
             json.dumps(
                 {
@@ -711,9 +777,9 @@ def _worker(
             ),
             encoding="utf-8",
         )
-        hidden_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks)
+        hidden_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="hidden_states", phase="P0", rank=rank, group_ranks=group_ranks, traffic_matrix=matrices["p0"])
         release_after_hidden = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
-        probs_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks)
+        probs_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=source_payload_specs_by_rank, source_slice_oracle_by_rank=p0_slice_oracle_by_rank, adapter=adapter, dispatcher=p0_dispatcher, tensor_role="routing_probs", phase="P0", rank=rank, group_ranks=group_ranks, traffic_matrix=matrices["p0"])
         release_after_probs = tuple(sorted(runtime.release_state_ledger.satisfied_release_ids))
         runtime.handle(
             DispatchCompleteEvent(
@@ -772,7 +838,7 @@ def _worker(
             for index, global_rank in enumerate(group_ranks)
         }
         release_before_p1 = tuple(sorted(runtime.satisfied_release_dependency_ids_for(layer_id="1", phase="P1")))
-        p1_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, source_slice_oracle_by_rank=p1_slice_oracle_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks)
+        p1_result = _execute_role(runtime=runtime, published_plan=published_plan, source_payload_specs_by_rank=p1_source_payload_specs_by_rank, source_slice_oracle_by_rank=p1_slice_oracle_by_rank, adapter=adapter, dispatcher=p1_dispatcher, tensor_role="hidden_states", phase="P1", rank=rank, group_ranks=group_ranks, traffic_matrix=matrices["p1"])
         runtime.handle(
             CombineCompleteEvent(
                 layer_name="model.layers.1.mlp",
