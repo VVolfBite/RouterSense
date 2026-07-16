@@ -20,6 +20,10 @@ def test_result_bundle_marks_runtime_ineligible_without_real_execution() -> None
         prediction_summary={"records": [], "status": "PARTIAL_MISSING_PREDICTED"},
         hiding_summary={"records": []},
         runtime_summary={"status": "MATERIALIZATION_CONTRACT_SMOKE", "records": []},
+        oracle_control_summary=None,
+        package_verification=None,
+        remote_synced=False,
+        git_clean=False,
         artifact_index={"runtime_summary": "runtime_summary.json"},
     )
     assert bundle["harness_contract_tests_passed"] is True
@@ -33,3 +37,4 @@ def test_result_bundle_marks_runtime_ineligible_without_real_execution() -> None
     assert bundle["hiding_claim_eligible"] is False
     assert bundle["performance_eligible"] is False
     assert "predicted_paper_path" in bundle["missing_capabilities"]
+    assert bundle["status"] == "FINAL-SCHEDULING-EVIDENCE-PARTIAL"

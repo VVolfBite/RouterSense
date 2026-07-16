@@ -58,6 +58,42 @@ def _planning_problem(window: ReplayWindow) -> tuple[Any, Any, Any]:
     return hint, execution_truth, problem
 
 
+def build_paper_execution_window_problem(
+    *,
+    fixture_id: str,
+    layer_id: int,
+    p0_matrix: tuple[tuple[int, ...], ...],
+    p1_matrix: tuple[tuple[int, ...], ...],
+    p2_matrix: tuple[tuple[int, ...], ...],
+    bucket_rows: int = 1,
+    expert_compute_delay: float = 0.0,
+) -> tuple[ReplayWindow, PlanningHint, Any]:
+    replay_window = replay_window_from_matrices(
+        fixture_id=fixture_id,
+        layer_id=int(layer_id),
+        p0_matrix=p0_matrix,
+        p1_matrix=p1_matrix,
+        p2_matrix=p2_matrix,
+    )
+    hint = PlanningHint(
+        hint_type="perfect_trace_hint",
+        p2_hint_rows=replay_window.p2_truth_rows,
+        confidence=1.0,
+        source_layer=int(replay_window.layer_id),
+        target_layer=int(replay_window.layer_id) + 1,
+    )
+    planning_problem = build_planning_problem(replay_window=replay_window, planning_hint=hint)
+    execution_truth = build_execution_truth(replay_window)
+    problem = build_multiphase_problem(
+        planning_problem=planning_problem,
+        execution_truth=execution_truth,
+        scheduling_mode="execution_window",
+        expert_compute_delay=float(expert_compute_delay),
+        max_waves=max(256, int(bucket_rows)),
+    )
+    return replay_window, hint, problem
+
+
 def _common_core_metadata(result: dict[str, Any]) -> dict[str, Any]:
     common = dict(result.get("plan_metadata", {}).get("common_core", {}))
     return {

@@ -131,3 +131,20 @@ def test_audit_can_start_with_monkeypatched_git(monkeypatch, tmp_path) -> None:
     rc = main(["audit", "--config", str(config), "--output-dir", str(output_dir)])
     assert rc == 0
     assert (output_dir / "result_bundle.json").exists()
+
+
+def test_oracle_controls_cli_reads_all_cases(tmp_path) -> None:
+    output_dir = tmp_path / "out"
+    rc = main(
+        [
+            "oracle-controls",
+            "--config",
+            str(Path(__file__).resolve().parents[3] / "configs" / "official" / "paper" / "oracle_controls.yaml"),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+    assert rc == 0
+    summary = json.loads((output_dir / "oracle_control_summary.json").read_text(encoding="utf-8"))
+    assert summary["case_count"] == 3
+    assert summary["cases"]["joint_advantage"]["status"] == "PASS"

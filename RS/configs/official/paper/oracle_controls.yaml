@@ -1,0 +1,42 @@
+schema_version: paper_eval_config.v1
+claim_scope: oracle_control_set
+
+models:
+  model_id: oracle-control-fixtures
+  model_revision: deterministic-v1
+
+inputs:
+  source: tests/fixtures/paper_oracle_controls
+
+layers: [0]
+virtual_ep_sizes: [2, 3, 4]
+physical_world_size: 1
+
+policies:
+  - O_local
+  - O_joint
+
+predictors: []
+
+cost_model: formal_replay_makespan
+
+seeds:
+  default: 0
+
+splits:
+  development: []
+  validation: []
+  frozen_evaluation:
+    - joint_advantage
+    - tie
+    - unsupported
+
+measurement:
+  mode: exact_oracle_control
+  numeric_tolerance: 1.0e-9
+
+eligibility:
+  runtime_performance: false
+
+output:
+  dir: outputs/paper

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_STATUS = {"READY", "READY_FOR_SUPPORTED_TINY", "PARTIAL", "MISSING", "SEMANTICALLY_INVALID", "ENVIRONMENT_BLOCKED"}
+ALLOWED_STATUS = {"READY", "READY_FOR_SUPPORTED_TINY", "READY_FOR_SUPPORTED_TINY_ZERO_COMPUTE_DELAY", "PARTIAL", "MISSING", "SEMANTICALLY_INVALID", "ENVIRONMENT_BLOCKED"}
 
 
 def _status(status: str, **kwargs: Any) -> dict[str, Any]:
@@ -93,6 +93,7 @@ def apply_capability_evidence(
     prediction_summary: dict[str, Any] | None = None,
     runtime_summary: dict[str, Any] | None = None,
     build_traffic_summary: dict[str, Any] | None = None,
+    oracle_control_summary: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     result = {key: dict(value) for key, value in matrix.items()}
     if trace_summary:
@@ -105,13 +106,19 @@ def apply_capability_evidence(
         elif status == "ENVIRONMENT_BLOCKED":
             result["real_trace_ingest"] = _status("ENVIRONMENT_BLOCKED", public_entrypoint="python -m experiments.paper.cli build-traffic", evidence="external trace bundle unavailable")
     if scheduling_summary is not None:
-        if str(scheduling_summary.get("o_local_status")) == "READY_FOR_SUPPORTED_TINY":
-            result["O_local"] = _status("READY_FOR_SUPPORTED_TINY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="phase-local exact comparable on supported tiny instance")
-        if str(scheduling_summary.get("o_joint_status")) == "READY_FOR_SUPPORTED_TINY":
-            result["O_joint"] = _status("READY_FOR_SUPPORTED_TINY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="joint exact comparable on supported tiny instance")
         pair = dict(scheduling_summary.get("same_core_pair_summary", {}) or {})
         if bool(pair.get("comparable")):
             result["joint_policy_evaluation"] = _status("READY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="strict same-core B/U comparable and valid")
+    if oracle_control_summary is not None:
+        cases = dict(oracle_control_summary.get("cases", {}) or {})
+        if (
+            oracle_control_summary.get("status") == "READY"
+            and int(oracle_control_summary.get("dominance_violation_count", 1)) == 0
+            and all(dict(cases.get(name, {})).get("status") == "PASS" for name in ("joint_advantage", "tie", "unsupported"))
+        ):
+            evidence = "oracle control set passed: joint-advantage, tie, unsupported fail-closed"
+            result["O_local"] = _status("READY_FOR_SUPPORTED_TINY_ZERO_COMPUTE_DELAY", public_entrypoint="python -m experiments.paper.cli oracle-controls", evidence=evidence)
+            result["O_joint"] = _status("READY_FOR_SUPPORTED_TINY_ZERO_COMPUTE_DELAY", public_entrypoint="python -m experiments.paper.cli oracle-controls", evidence=evidence)
     if runtime_summary is not None:
         runtime_status = str(runtime_summary.get("status", ""))
         if runtime_status in {"MATERIALIZATION_CONTRACT_SMOKE", "PARTIAL_GLOO_ENVIRONMENT_BLOCKED", "EXECUTED_DIGEST_MISSING", "RUNTIME_CORRECTNESS"}:

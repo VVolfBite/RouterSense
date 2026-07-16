@@ -22,6 +22,7 @@ from .capability_audit import apply_capability_evidence, baseline_capability_mat
 from .configuration import consumed_config_payload, validate_paper_config
 from .contracts import RecordMetadata
 from .hiding_evaluation import evaluate_hiding_gap
+from .oracle_evaluation import evaluate_oracle_control_set
 from .prediction_evaluation import evaluate_prediction
 from .result_bundle import build_result_bundle, write_json
 from .runtime_evaluation import evaluate_materialization_contract_smoke, evaluate_runtime_correctness_with_gloo
@@ -32,7 +33,7 @@ from .traffic_builder import build_traffic_instances_from_trace_bundle, summariz
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m experiments.paper.cli")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("audit", "capture-trace", "build-traffic", "scheduling", "prediction", "hiding", "runtime-correctness", "aggregate"):
+    for name in ("audit", "capture-trace", "build-traffic", "scheduling", "oracle-controls", "prediction", "hiding", "runtime-correctness", "aggregate"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--config", default="")
         cmd.add_argument("--output-dir", default="")
@@ -225,6 +226,31 @@ def cmd_prediction(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_oracle_controls(args: argparse.Namespace) -> int:
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/oracle_controls.yaml")
+    fixture_dir = _resolved_input_path(config, cli_input=args.input)
+    output_dir = _output_dir(args, config, "oracle_controls")
+    metadata = _write_common_output(output_dir, config, input_path=str(fixture_dir))
+    tolerance = float(config.get("measurement", {}).get("numeric_tolerance", 1.0e-9))
+    result = evaluate_oracle_control_set(
+        fixture_dir=fixture_dir,
+        metadata=metadata,
+        cost_model_id=str(config["cost_model"]),
+        tolerance=tolerance,
+    )
+    write_json(output_dir / "oracle_control_summary.json", result)
+    write_json(output_dir / "oracle_records.json", result["records"])
+    for case in result["case_results"]:
+        case_name = str(case["case_id"]).replace("oracle_", "").replace("_v1", "")
+        case_dir = output_dir / case_name
+        write_json(case_dir / "input.json", case["input"])
+        write_json(case_dir / "o_local.json", case["o_local"])
+        write_json(case_dir / "o_joint.json", case["o_joint"])
+        write_json(case_dir / "comparison.json", case["comparison"])
+    print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
+    return 0 if result["status"] == "READY" else 2
+
+
 def cmd_hiding(args: argparse.Namespace) -> int:
     config, _ = _load_config(args.config, default_rel="configs/official/paper/hiding_timeline.yaml")
     output_dir = _output_dir(args, config, "hiding")
@@ -343,6 +369,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if evidence_dir is not None and evidence_dir.exists():
         trace_summary = _load_json_path(evidence_dir / "trace" / "summary.json") if (evidence_dir / "trace" / "summary.json").exists() else {}
         scheduling = _load_json_path(evidence_dir / "scheduling" / "scheduling_summary.json") if (evidence_dir / "scheduling" / "scheduling_summary.json").exists() else {}
+        oracle_control_summary = _load_json_path(evidence_dir / "oracle" / "oracle_control_summary.json") if (evidence_dir / "oracle" / "oracle_control_summary.json").exists() else None
         prediction = _load_json_path(evidence_dir / "results" / "prediction_summary.json") if (evidence_dir / "results" / "prediction_summary.json").exists() else {"status": "PARTIAL_MISSING_PREDICTED", "records": []}
         hiding = _load_json_path(evidence_dir / "results" / "hiding_summary.json") if (evidence_dir / "results" / "hiding_summary.json").exists() else {"status": "PARTIAL", "records": []}
         runtime_summary = _load_json_path(evidence_dir / "results" / "runtime_summary.json") if (evidence_dir / "results" / "runtime_summary.json").exists() else {"status": "ENVIRONMENT_BLOCKED", "records": [], "tensor_parity_pass": False}
@@ -380,6 +407,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
             "tensor_parity_pass": bool(runtime.get("tensor_parity_pass", False)),
         }
         build_traffic_summary = {"status": "ENVIRONMENT_BLOCKED", "reason": "external trace bundle not provided during audit"}
+        oracle_control_summary = None
     write_json(output_dir / "scheduling_summary.json", scheduling)
     write_json(output_dir / "prediction_summary.json", prediction)
     write_json(output_dir / "hiding_summary.json", hiding)
@@ -391,6 +419,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         prediction_summary=prediction,
         runtime_summary=runtime_summary,
         build_traffic_summary=build_traffic_summary,
+        oracle_control_summary=oracle_control_summary,
     )
     write_json(output_dir / "capability_matrix.json", matrix)
     (output_dir / "CAPABILITY_AUDIT.md").write_text(render_capability_markdown(matrix), encoding="utf-8")
@@ -413,6 +442,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         prediction_summary=prediction,
         hiding_summary=hiding,
         runtime_summary=runtime_summary,
+        oracle_control_summary=oracle_control_summary,
         artifact_index={
             "audit/capability_matrix.json": "audit/capability_matrix.json",
             "results/scheduling_summary.json": "results/scheduling_summary.json",
@@ -424,7 +454,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
             "traffic/build_traffic_summary": "traffic/build_traffic_summary.json" if evidence_dir is not None else "",
             "traffic/traffic_instances.json": "traffic/traffic_instances.json" if evidence_dir is not None else "",
             "scheduling/strict_same_core_records.jsonl": "scheduling/strict_same_core_records.jsonl" if evidence_dir is not None else "",
-            "runtime/phase_sync/formal_runner_summary.json": "runtime/phase_sync/formal_runner_summary.json" if evidence_dir is not None else "",
+            "oracle/oracle_control_summary.json": "oracle/oracle_control_summary.json" if evidence_dir is not None else "",
+            "runtime/B/phase_sync/formal_runner_summary.json": "runtime/B/phase_sync/formal_runner_summary.json" if evidence_dir is not None else "",
         },
     )
     write_json(output_dir / "result_bundle.json", result_bundle)
@@ -442,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_build_traffic(args)
     if args.command == "scheduling":
         return cmd_scheduling(args)
+    if args.command == "oracle-controls":
+        return cmd_oracle_controls(args)
     if args.command == "prediction":
         return cmd_prediction(args)
     if args.command == "hiding":
