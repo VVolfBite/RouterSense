@@ -8,7 +8,7 @@ import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
@@ -49,9 +49,10 @@ def resolve_source_manifest(repo_root: Path) -> dict[str, Any] | None:
     return None
 
 
-def compute_source_tree_digest(repo_root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(item for item in repo_root.rglob("*") if item.is_file()):
+def _iter_canonical_digest_entries(repo_root: Path, paths: Iterable[Path] | None = None) -> list[tuple[str, Path]]:
+    candidates = paths if paths is not None else (item for item in repo_root.rglob("*") if item.is_file())
+    entries: list[tuple[str, Path]] = []
+    for path in candidates:
         if path.name == "source_manifest.json" and path.parent == repo_root.parent:
             continue
         relative_posix = path.relative_to(repo_root).as_posix()
@@ -64,6 +65,14 @@ def compute_source_tree_digest(repo_root: Path) -> str:
             or relative_posix.startswith("logs/")
         ):
             continue
+        entries.append((relative_posix, path))
+    entries.sort(key=lambda item: (item[0].casefold(), item[0]))
+    return entries
+
+
+def compute_source_tree_digest(repo_root: Path) -> str:
+    digest = hashlib.sha256()
+    for relative_posix, path in _iter_canonical_digest_entries(repo_root):
         relative = relative_posix.encode("utf-8")
         digest.update(relative)
         digest.update(path.read_bytes())

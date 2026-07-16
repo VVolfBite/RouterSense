@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from rs.core.contracts.provenance import resolve_commit_identity, resolve_verified_source_manifest
+from rs.core.contracts.provenance import _iter_canonical_digest_entries, resolve_commit_identity, resolve_verified_source_manifest
 
 DEFAULT_INCLUDED = (
     "src",
@@ -155,17 +155,7 @@ def _copy_tree(staging_root: Path, *, scope: str) -> tuple[list[str], list[str]]
 
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        relative_posix = path.relative_to(root).as_posix()
-        if (
-            "__pycache__" in path.parts
-            or path.suffix == ".pyc"
-            or ".pytest_cache" in path.parts
-            or relative_posix.startswith("outputs/")
-            or relative_posix.startswith("artifacts/")
-            or relative_posix.startswith("logs/")
-        ):
-            continue
+    for relative_posix, path in _iter_canonical_digest_entries(root):
         relative = relative_posix.encode("utf-8")
         digest.update(relative)
         digest.update(path.read_bytes())
@@ -188,6 +178,8 @@ def _write_source_manifest(staging_root: Path, *, scope: str, included_paths: li
         "scope": scope,
         "included_paths": included_paths,
         "excluded_patterns": excluded_patterns,
+        "digest_algorithm": "sha256_path_content",
+        "digest_order": "posix_casefold_then_original_v1",
         "source_tree_digest": _tree_digest(staging_root / "RS"),
         "self_check_status": "pending",
         "self_check_commands": [],

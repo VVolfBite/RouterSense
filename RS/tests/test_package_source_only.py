@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from rs.core.contracts.provenance import resolve_source_manifest, resolve_verified_source_manifest
+from rs.core.contracts.provenance import _iter_canonical_digest_entries, compute_source_tree_digest, resolve_source_manifest, resolve_verified_source_manifest
 
 def _package_command(script: Path, *, scope: str, archive: Path) -> list[str]:
     return ["python", str(script), "--scope", scope, str(archive)]
@@ -113,6 +113,8 @@ def test_package_source_only_zip_is_real_zip_with_posix_paths(tmp_path):
         assert all("\\" not in name for name in names)
         manifest = json.loads(zf.read("source_manifest.json").decode("utf-8"))
     assert manifest["archive_format"] == "zip"
+    assert manifest["digest_algorithm"] == "sha256_path_content"
+    assert manifest["digest_order"] == "posix_casefold_then_original_v1"
 
 
 def test_resolve_source_manifest_requires_explicit_authoritative(tmp_path):
@@ -166,3 +168,28 @@ def test_verified_archive_repackage_preserves_commit_identity(tmp_path):
     assert second_manifest["provenance_source"] == "source_manifest"
     assert second_manifest["parent_commit_sha"] == first_manifest["commit_sha"]
     assert second_manifest["parent_source_tree_digest"] == first_manifest["source_tree_digest"]
+
+
+def test_source_tree_digest_is_stable_across_enumeration_order(tmp_path):
+    repo_root = tmp_path / "RS"
+    (repo_root / "alpha").mkdir(parents=True)
+    (repo_root / "Zeta").mkdir(parents=True)
+    (repo_root / "alpha" / "Beta.txt").write_text("beta\n", encoding="utf-8")
+    (repo_root / "alpha" / "beta.txt").write_text("beta-lower\n", encoding="utf-8")
+    (repo_root / "Zeta" / "gamma.txt").write_text("gamma\n", encoding="utf-8")
+    (repo_root / "README.md").write_text("root\n", encoding="utf-8")
+
+    canonical_digest = compute_source_tree_digest(repo_root)
+    files = [path for path in repo_root.rglob("*") if path.is_file()]
+    reversed_entries = _iter_canonical_digest_entries(repo_root, reversed(files))
+    forward_entries = _iter_canonical_digest_entries(repo_root, files)
+
+    assert [relative for relative, _ in forward_entries] == [relative for relative, _ in reversed_entries]
+
+    import hashlib
+
+    digest = hashlib.sha256()
+    for relative_posix, path in reversed_entries:
+        digest.update(relative_posix.encode("utf-8"))
+        digest.update(path.read_bytes())
+    assert digest.hexdigest() == canonical_digest
