@@ -113,13 +113,16 @@ def _write_common_output(output_dir: Path, config: dict[str, Any], input_path: s
 
 def _remote_only_runtime_bundle(traffic_row: dict[str, Any]) -> dict[str, Any]:
     p0 = [[int(value) for value in row] for row in traffic_row["P0_matrix"]]
+    p1 = [[int(value) for value in row] for row in traffic_row["P1_matrix"]]
     size = len(p0)
     p0_remote = [[0 if src == dst else int(p0[src][dst]) for dst in range(size)] for src in range(size)]
-    p1_remote = [[int(p0_remote[src][dst]) for src in range(size)] for dst in range(size)]
+    p1_remote = [[0 if src == dst else int(p1[src][dst]) for dst in range(size)] for src in range(size)]
     ignored_self_rows = sum(int(p0[i][i]) for i in range(size))
     return {
         "p0_matrix": p0_remote,
         "p1_matrix": p1_remote,
+        "full_p0_matrix": p0,
+        "full_p1_matrix": p1,
         "ignored_self_rows": int(ignored_self_rows),
         "runtime_matrix_mode": "remote_only_from_real_trace",
     }

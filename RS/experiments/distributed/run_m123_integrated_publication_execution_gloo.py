@@ -105,13 +105,74 @@ def _load_matrix_bundle(*, matrix_bundle_path: str, world_size: int) -> dict[str
     if not str(matrix_bundle_path).strip():
         p0 = _matrix_for_world_size(world_size)
         p1 = tuple(tuple(int(p0[src][dst]) for src in range(world_size)) for dst in range(world_size))
-        return {"p0": p0, "p1": p1}
+        return {"p0": p0, "p1": p1, "full_p0": p0, "full_p1": p1}
     payload = json.loads(Path(str(matrix_bundle_path)).read_text(encoding="utf-8"))
     p0 = tuple(tuple(int(value) for value in row) for row in payload["p0_matrix"])
     p1 = tuple(tuple(int(value) for value in row) for row in payload["p1_matrix"])
+    full_p0 = tuple(tuple(int(value) for value in row) for row in payload.get("full_p0_matrix", payload["p0_matrix"]))
+    full_p1 = tuple(tuple(int(value) for value in row) for row in payload.get("full_p1_matrix", payload["p1_matrix"]))
     if len(p0) != int(world_size) or len(p1) != int(world_size):
         raise ValueError("matrix bundle world_size mismatch")
-    return {"p0": p0, "p1": p1}
+    return {"p0": p0, "p1": p1, "full_p0": full_p0, "full_p1": full_p1}
+
+
+def _spec_for_role(payload_specs_by_role: dict[str, dict[str, object]], role: str) -> object:
+    spec = dict(payload_specs_by_role.get(role, {}))
+    return type("Spec", (), {"row_count": int(spec.get("row_count", 0) or 0), "dtype": str(spec.get("dtype", "torch.float32")), "shape_suffix": tuple(int(dim) for dim in spec.get("shape_suffix", ()))})()
+
+
+def _build_full_reference_tensor(
+    *,
+    matrix: tuple[tuple[int, ...], ...],
+    payload_specs_by_rank: dict[int, dict[str, object]],
+    dst_rank: int,
+    tensor_role: str,
+) -> torch.Tensor:
+    rows: list[torch.Tensor] = []
+    for src_rank in range(len(matrix)):
+        row_count = int(matrix[src_rank][dst_rank])
+        if row_count <= 0:
+            continue
+        spec = _spec_for_role(dict(payload_specs_by_rank.get(int(src_rank), {})), tensor_role)
+        source_tensor = _input_tensor(spec, source_global_rank=int(src_rank))
+        rows.append(source_tensor.narrow(0, 0, row_count).clone())
+    if not rows:
+        spec = _spec_for_role(dict(payload_specs_by_rank.get(int(dst_rank), {})), tensor_role)
+        empty = _input_tensor(spec, source_global_rank=int(dst_rank))
+        return empty.narrow(0, 0, 0).clone()
+    return torch.cat(rows, dim=0)
+
+
+def _reconstruct_full_tensor_from_remote_output(
+    *,
+    remote_output: torch.Tensor,
+    full_matrix: tuple[tuple[int, ...], ...],
+    remote_matrix: tuple[tuple[int, ...], ...],
+    payload_specs_by_rank: dict[int, dict[str, object]],
+    dst_rank: int,
+    tensor_role: str,
+) -> torch.Tensor:
+    chunks: list[torch.Tensor] = []
+    remote_offset = 0
+    for src_rank in range(len(full_matrix)):
+        full_rows = int(full_matrix[src_rank][dst_rank])
+        if full_rows <= 0:
+            continue
+        if src_rank == dst_rank:
+            spec = _spec_for_role(dict(payload_specs_by_rank.get(int(src_rank), {})), tensor_role)
+            source_tensor = _input_tensor(spec, source_global_rank=int(src_rank))
+            chunks.append(source_tensor.narrow(0, 0, full_rows).clone())
+            continue
+        remote_rows = int(remote_matrix[src_rank][dst_rank])
+        if remote_rows <= 0:
+            continue
+        chunks.append(remote_output.narrow(0, remote_offset, remote_rows).clone())
+        remote_offset += remote_rows
+    if not chunks:
+        spec = _spec_for_role(dict(payload_specs_by_rank.get(int(dst_rank), {})), tensor_role)
+        empty = _input_tensor(spec, source_global_rank=int(dst_rank))
+        return empty.narrow(0, 0, 0).clone()
+    return torch.cat(chunks, dim=0)
 
 
 class _FakeDispatcher:
@@ -872,10 +933,55 @@ def _worker(
         ]
         completed_ids = set(str(item) for item in (p0_completed_task_ids + p1_completed_task_ids))
         rank_executed_manifest = [row for row in rank_materialized_manifest if str(row["task_id"]) in completed_ids]
+        full_p0_hidden_reference = _build_full_reference_tensor(
+            matrix=matrices["full_p0"],
+            payload_specs_by_rank=source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="hidden_states",
+        )
+        full_p0_hidden_executed = _reconstruct_full_tensor_from_remote_output(
+            remote_output=hidden_result["output"],
+            full_matrix=matrices["full_p0"],
+            remote_matrix=matrices["p0"],
+            payload_specs_by_rank=source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="hidden_states",
+        )
+        full_p0_probs_reference = _build_full_reference_tensor(
+            matrix=matrices["full_p0"],
+            payload_specs_by_rank=source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="routing_probs",
+        )
+        full_p0_probs_executed = _reconstruct_full_tensor_from_remote_output(
+            remote_output=probs_result["output"],
+            full_matrix=matrices["full_p0"],
+            remote_matrix=matrices["p0"],
+            payload_specs_by_rank=source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="routing_probs",
+        )
+        full_p1_hidden_reference = _build_full_reference_tensor(
+            matrix=matrices["full_p1"],
+            payload_specs_by_rank=p1_source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="hidden_states",
+        )
+        full_p1_hidden_executed = _reconstruct_full_tensor_from_remote_output(
+            remote_output=p1_result["output"],
+            full_matrix=matrices["full_p1"],
+            remote_matrix=matrices["p1"],
+            payload_specs_by_rank=p1_source_payload_specs_by_rank,
+            dst_rank=int(rank),
+            tensor_role="hidden_states",
+        )
         parity_payload = {
             "p0_hidden": dict(hidden_result["parity"]),
             "p0_routing_probs": dict(probs_result["parity"]),
             "p1_hidden": dict(p1_result["parity"]),
+            "traffic_to_execution_p0_hidden": _tensor_parity(full_p0_hidden_reference, full_p0_hidden_executed),
+            "traffic_to_execution_p0_routing_probs": _tensor_parity(full_p0_probs_reference, full_p0_probs_executed),
+            "traffic_to_execution_p1_hidden": _tensor_parity(full_p1_hidden_reference, full_p1_hidden_executed),
         }
         parity_payload["reference_p0_digest"] = _json_digest(
             {
@@ -891,12 +997,56 @@ def _worker(
         )
         parity_payload["reference_p1_digest"] = str(parity_payload["p1_hidden"]["reference_digest"])
         parity_payload["executed_p1_digest"] = str(parity_payload["p1_hidden"]["executed_digest"])
-        parity_payload["reference_final_digest"] = str(parity_payload["p1_hidden"]["reference_digest"])
-        parity_payload["executed_final_digest"] = str(parity_payload["p1_hidden"]["executed_digest"])
+        parity_payload["traffic_reference_final_digest"] = _json_digest(
+            {
+                "p0_hidden": parity_payload["traffic_to_execution_p0_hidden"]["reference_digest"],
+                "p0_routing_probs": parity_payload["traffic_to_execution_p0_routing_probs"]["reference_digest"],
+                "p1_hidden": parity_payload["traffic_to_execution_p1_hidden"]["reference_digest"],
+            }
+        )
+        parity_payload["traffic_executed_final_digest"] = _json_digest(
+            {
+                "p0_hidden": parity_payload["traffic_to_execution_p0_hidden"]["executed_digest"],
+                "p0_routing_probs": parity_payload["traffic_to_execution_p0_routing_probs"]["executed_digest"],
+                "p1_hidden": parity_payload["traffic_to_execution_p1_hidden"]["executed_digest"],
+            }
+        )
+        parity_payload["reference_final_digest"] = str(parity_payload["traffic_reference_final_digest"])
+        parity_payload["executed_final_digest"] = str(parity_payload["traffic_executed_final_digest"])
+        parity_payload["transport_materialized_slice_parity"] = {
+            "allclose": bool(
+                parity_payload["p0_hidden"]["allclose"]
+                and parity_payload["p0_routing_probs"]["allclose"]
+                and parity_payload["p1_hidden"]["allclose"]
+            ),
+            "reference_digest": _json_digest(
+                {
+                    "p0_hidden": parity_payload["p0_hidden"]["reference_digest"],
+                    "p0_routing_probs": parity_payload["p0_routing_probs"]["reference_digest"],
+                    "p1_hidden": parity_payload["p1_hidden"]["reference_digest"],
+                }
+            ),
+            "executed_digest": _json_digest(
+                {
+                    "p0_hidden": parity_payload["p0_hidden"]["executed_digest"],
+                    "p0_routing_probs": parity_payload["p0_routing_probs"]["executed_digest"],
+                    "p1_hidden": parity_payload["p1_hidden"]["executed_digest"],
+                }
+            ),
+        }
+        parity_payload["traffic_to_execution_parity"] = {
+            "allclose": bool(
+                parity_payload["traffic_to_execution_p0_hidden"]["allclose"]
+                and parity_payload["traffic_to_execution_p0_routing_probs"]["allclose"]
+                and parity_payload["traffic_to_execution_p1_hidden"]["allclose"]
+            ),
+            "reference_digest": str(parity_payload["traffic_reference_final_digest"]),
+            "executed_digest": str(parity_payload["traffic_executed_final_digest"]),
+        }
+        parity_payload["full_reconstruction_parity"] = dict(parity_payload["traffic_to_execution_parity"])
         parity_payload["allclose"] = bool(
-            parity_payload["p0_hidden"]["allclose"]
-            and parity_payload["p0_routing_probs"]["allclose"]
-            and parity_payload["p1_hidden"]["allclose"]
+            parity_payload["transport_materialized_slice_parity"]["allclose"]
+            and parity_payload["traffic_to_execution_parity"]["allclose"]
         )
         parity_payload["status"] = "PASS" if parity_payload["allclose"] else "FAILED"
         (run_root / f"rank{rank}_materialized_task_manifest.json").write_text(
