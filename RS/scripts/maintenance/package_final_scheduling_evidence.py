@@ -58,6 +58,14 @@ def _repo_dir(repo_root: Path) -> Path:
     raise FileNotFoundError(f"could not resolve git repo under {repo_root}")
 
 
+def _source_repo_dir(repo_root: Path) -> Path:
+    repo = _repo_dir(repo_root)
+    candidate = repo / "RS"
+    if (candidate / "experiments" / "paper" / "cli.py").exists():
+        return candidate
+    return repo
+
+
 def _run_git(repo_root: Path, *args: str) -> str:
     proc = subprocess.run(["git", *args], cwd=str(repo_root), text=True, capture_output=True, check=False)
     if proc.returncode != 0:
@@ -268,8 +276,7 @@ def _copy_runtime_tree(source_root: Path, staging_root: Path) -> dict[str, Any]:
 
 
 def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
-    repo = _repo_dir(repo_root)
-    source_repo = repo / "RS" if (repo / "RS" / "scripts" / "maintenance" / "package_source_archive.py").exists() else repo
+    source_repo = _source_repo_dir(repo_root)
     packager = source_repo / "scripts" / "maintenance" / "package_source_archive.py"
     if not packager.exists():
         raise FileNotFoundError(f"could not locate source archive packager under {source_repo}")
@@ -303,6 +310,7 @@ def main() -> int:
     evidence_root = Path(args.evidence_root)
     output_dir = Path(args.output_dir)
     repo = _repo_dir(repo_root)
+    source_repo = _source_repo_dir(repo_root)
     identity = resolve_git_identity(repo_root)
     if identity.branch != args.expected_branch or identity.head != args.expected_commit or identity.status_short.strip():
         raise SystemExit("git identity mismatch or dirty repo")
@@ -338,7 +346,7 @@ def main() -> int:
                 "--output-dir",
                 str(audit_output),
             ],
-            cwd=str(repo),
+            cwd=str(source_repo),
             text=True,
             capture_output=True,
             check=True,
