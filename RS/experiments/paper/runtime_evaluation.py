@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -119,104 +120,104 @@ def _run_formal_gloo_backend(
     traffic_instance_id: str | None = None,
 ) -> RuntimeEvaluationRecord:
     script = _formal_runner_script()
-    with tempfile.TemporaryDirectory(prefix=f"rs_paper_{execution_backend}_") as tmpdir:
-        tmp = Path(tmpdir)
-        summary_path = tmp / "summary.json"
-        output_dir = tmp / "runner"
-        command = [
-            sys.executable,
-            str(script),
-            "--quiet",
-            "--execution-backend",
-            str(execution_backend),
-            "--policy-name",
-            str(policy_name),
-            "--output-dir",
-            str(output_dir),
-            "--summary-path",
-            str(summary_path),
-        ]
-        if str(matrix_bundle_path).strip():
-            command.extend(["--matrix-bundle", str(matrix_bundle_path)])
-        proc = subprocess.run(
-            command,
-            cwd=str(Path(__file__).resolve().parents[2]),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return RuntimeEvaluationRecord(
-                instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
-                requested_policy_id=str(policy_name),
-                selected_policy_id=str(policy_name),
-                published_plan_digest=None,
-                materialized_plan_digest=None,
-                executed_plan_digest=None,
-                execution_backend_id=str(execution_backend),
-                submitted_tasks=None,
-                completed_tasks=None,
-                unresolved_tasks=None,
-                fallback_count=None,
-                reference_output_digest=None,
-                executed_output_digest=None,
-                parity_status="NOT_EXECUTED",
-                communication_makespan_ms=None,
-                visible_control_ms=None,
-                runtime_status="ENVIRONMENT_BLOCKED",
-                metadata=metadata,
-                evidence={"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode},
-            )
-        summary = _load_json(summary_path)
-        run_dir = Path(str(summary["run_dir"]))
-        parity_path = Path(str(summary["parity_path"]))
-        executed_manifest_path = Path(str(summary["executed_task_manifest_path"]))
-        materialized_manifest_path = Path(str(summary["materialized_task_manifest_path"]))
-        parity = _load_json(parity_path) if parity_path.exists() else {"allclose": False, "status": "PARITY_ARTIFACT_MISSING"}
-        runtime_status = _runtime_status_from_summary(summary, parity) if parity_path.exists() else "PARITY_ARTIFACT_MISSING"
-        submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
-        completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
-        unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
-        fallback = int(summary.get("fallback_count", 0) or 0) if summary.get("fallback_count") is not None else None
+    tmp = Path(tempfile.mkdtemp(prefix=f"rs_paper_{execution_backend}_"))
+    summary_path = tmp / "summary.json"
+    output_dir = tmp / "runner"
+    command = [
+        sys.executable,
+        str(script),
+        "--quiet",
+        "--execution-backend",
+        str(execution_backend),
+        "--policy-name",
+        str(policy_name),
+        "--output-dir",
+        str(output_dir),
+        "--summary-path",
+        str(summary_path),
+    ]
+    if str(matrix_bundle_path).strip():
+        command.extend(["--matrix-bundle", str(matrix_bundle_path)])
+    proc = subprocess.run(
+        command,
+        cwd=str(Path(__file__).resolve().parents[2]),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
         return RuntimeEvaluationRecord(
             instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
             requested_policy_id=str(policy_name),
             selected_policy_id=str(policy_name),
-            published_plan_digest=str(summary["ranks"][0].get("published_plan_digest")) if summary.get("ranks") else None,
-            materialized_plan_digest=str(summary.get("materialized_task_manifest_digest")) if summary.get("materialized_task_manifest_digest") is not None else None,
-            executed_plan_digest=str(summary.get("executed_task_manifest_digest")) if summary.get("executed_task_manifest_digest") is not None else None,
-            execution_backend_id=str(summary.get("execution_backend")),
-            submitted_tasks=submitted,
-            completed_tasks=completed,
-            unresolved_tasks=unresolved,
-            fallback_count=fallback,
-            reference_output_digest=str(parity.get("reference_final_digest")) if parity.get("reference_final_digest") is not None else None,
-            executed_output_digest=str(parity.get("executed_final_digest")) if parity.get("executed_final_digest") is not None else None,
-            parity_status=str(parity.get("status", "PARITY_ARTIFACT_MISSING")),
+            published_plan_digest=None,
+            materialized_plan_digest=None,
+            executed_plan_digest=None,
+            execution_backend_id=str(execution_backend),
+            submitted_tasks=None,
+            completed_tasks=None,
+            unresolved_tasks=None,
+            fallback_count=None,
+            reference_output_digest=None,
+            executed_output_digest=None,
+            parity_status="NOT_EXECUTED",
             communication_makespan_ms=None,
             visible_control_ms=None,
-            runtime_status=runtime_status,
+            runtime_status="ENVIRONMENT_BLOCKED",
             metadata=metadata,
-            evidence={
-                "summary_path": str(summary_path),
-                "run_dir": str(run_dir),
-                "runner_summary": summary,
-                "parity_path": str(parity_path),
-                "executed_task_manifest_path": str(executed_manifest_path),
-                "materialized_task_manifest_path": str(materialized_manifest_path),
-                "submitted_task_id_set_digest": summary.get("submitted_task_id_set_digest"),
-                "completed_task_id_set_digest": summary.get("completed_task_id_set_digest"),
-                "submit_sequence_digest": summary.get("submit_sequence_digest"),
-                "completion_sequence_digest": summary.get("completion_sequence_digest"),
-                "fallback_count": summary.get("fallback_count"),
-                "fallback_reasons": summary.get("fallback_reasons"),
-                "native_fallback_invoked": summary.get("native_fallback_invoked"),
-                "descriptor_source": summary.get("descriptor_source"),
-                "execution_identity_source": summary.get("execution_identity_source"),
-                "trace_sample_id": trace_sample_id,
-                "traffic_instance_id": traffic_instance_id,
-            },
+            evidence={"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode, "temp_root": str(tmp)},
         )
+    summary = _load_json(summary_path)
+    run_dir = Path(str(summary["run_dir"]))
+    parity_path = Path(str(summary["parity_path"]))
+    executed_manifest_path = Path(str(summary["executed_task_manifest_path"]))
+    materialized_manifest_path = Path(str(summary["materialized_task_manifest_path"]))
+    parity = _load_json(parity_path) if parity_path.exists() else {"allclose": False, "status": "PARITY_ARTIFACT_MISSING"}
+    runtime_status = _runtime_status_from_summary(summary, parity) if parity_path.exists() else "PARITY_ARTIFACT_MISSING"
+    submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    unresolved = sum(int(rank.get("unresolved_task_count", 0) or 0) for rank in summary.get("ranks", []))
+    fallback = int(summary.get("fallback_count", 0) or 0) if summary.get("fallback_count") is not None else None
+    return RuntimeEvaluationRecord(
+        instance_id=f"paper-gloo-runtime-wrapper:{execution_backend}",
+        requested_policy_id=str(policy_name),
+        selected_policy_id=str(policy_name),
+        published_plan_digest=str(summary["ranks"][0].get("published_plan_digest")) if summary.get("ranks") else None,
+        materialized_plan_digest=str(summary.get("materialized_task_manifest_digest")) if summary.get("materialized_task_manifest_digest") is not None else None,
+        executed_plan_digest=str(summary.get("executed_task_manifest_digest")) if summary.get("executed_task_manifest_digest") is not None else None,
+        execution_backend_id=str(summary.get("execution_backend")),
+        submitted_tasks=submitted,
+        completed_tasks=completed,
+        unresolved_tasks=unresolved,
+        fallback_count=fallback,
+        reference_output_digest=str(parity.get("reference_final_digest")) if parity.get("reference_final_digest") is not None else None,
+        executed_output_digest=str(parity.get("executed_final_digest")) if parity.get("executed_final_digest") is not None else None,
+        parity_status=str(parity.get("status", "PARITY_ARTIFACT_MISSING")),
+        communication_makespan_ms=None,
+        visible_control_ms=None,
+        runtime_status=runtime_status,
+        metadata=metadata,
+        evidence={
+            "summary_path": str(summary_path),
+            "run_dir": str(run_dir),
+            "runner_summary": summary,
+            "parity_path": str(parity_path),
+            "executed_task_manifest_path": str(executed_manifest_path),
+            "materialized_task_manifest_path": str(materialized_manifest_path),
+            "submitted_task_id_set_digest": summary.get("submitted_task_id_set_digest"),
+            "completed_task_id_set_digest": summary.get("completed_task_id_set_digest"),
+            "submit_sequence_digest": summary.get("submit_sequence_digest"),
+            "completion_sequence_digest": summary.get("completion_sequence_digest"),
+            "fallback_count": summary.get("fallback_count"),
+            "fallback_reasons": summary.get("fallback_reasons"),
+            "native_fallback_invoked": summary.get("native_fallback_invoked"),
+            "descriptor_source": summary.get("descriptor_source"),
+            "execution_identity_source": summary.get("execution_identity_source"),
+            "trace_sample_id": trace_sample_id,
+            "traffic_instance_id": traffic_instance_id,
+            "temp_root": str(tmp),
+        },
+    )
 
 
 def evaluate_runtime_correctness_with_gloo(
