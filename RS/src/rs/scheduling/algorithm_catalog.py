@@ -616,16 +616,16 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
 }
 
 
-# Strict same-core families introduced by the Local(f)/Joint(f) scope layer.
-# These entries coexist with historical metadata so old artifacts remain
-# readable, while new experiments can make the information-scope control
-# explicit.
+# Literature-grounded strict same-core families introduced by the
+# Local(f)/Joint(f) scope layer.  Historical metadata remains above so old
+# artifacts stay readable.
 def _register_strict_family_metadata() -> None:
     rows = (
-        ("gated_greedy", "gated_greedy_local", "gated_greedy_joint", "Gated Greedy"),
-        ("gated_maxweight", "gated_maxweight_local", "gated_maxweight_joint", "Gated MaxWeight"),
-        ("barrier_criticality", "barrier_criticality_core_independent", "barrier_criticality_joint", "Barrier Criticality"),
-        ("birkhoff_ranked", "birkhoff_ranked_local", "birkhoff_ranked_joint", "Birkhoff-Ranked"),
+        ("greedy_control", "greedy_control_local", "greedy_control_joint", "Greedy Control"),
+        ("gmwd", "gmwd_local", "gmwd_joint", "GMWD-style"),
+        ("rsbc", "rsbc_local", "rsbc_joint", "RouterSense Barrier Criticality"),
+        ("fast_stage", "fast_stage_local", "fast_stage_joint", "FAST-Stage"),
+        ("aurora_order", "aurora_order_local", "aurora_order_joint", "Aurora-Order"),
         ("adaptive_price", "adaptive_price_local", "adaptive_price_joint", "Adaptive Price"),
     )
     for family, local_id, joint_id, display in rows:
@@ -639,14 +639,14 @@ def _register_strict_family_metadata() -> None:
             joint_oracle_reference_id="O_joint_cp_sat_oracle",
             granularity_mode="canonical_bucket",
             planning_scope="phase_local_scope_adapter",
-            source="strict_family_scope_layer",
+            source="literature_grounded_family_scope_layer",
             online_eligible=True,
             offline_eligible=True,
             heavy_solver=False,
             deterministic_solver=True,
             oracle_like=False,
             recommended_role="strict_family_local",
-            notes="Shares one immutable kernel with its Joint counterpart; only visible information and ready-set scope differ.",
+            notes="Shares one immutable kernel with Joint; only visible information and ready-set scope differ.",
         )
         _ALGORITHMS[joint_id] = AlgorithmMetadata(
             algorithm_id=joint_id,
@@ -658,14 +658,14 @@ def _register_strict_family_metadata() -> None:
             joint_oracle_reference_id="O_joint_cp_sat_oracle",
             granularity_mode="canonical_bucket",
             planning_scope="global_release_aware_scope_adapter",
-            source="strict_family_scope_layer",
+            source="literature_grounded_family_scope_layer",
             online_eligible=True,
             offline_eligible=True,
             heavy_solver=False,
             deterministic_solver=True,
             oracle_like=False,
             recommended_role="strict_family_joint",
-            notes="Shares one immutable kernel with its Local counterpart; only visible information and ready-set scope differ.",
+            notes="Shares one immutable kernel with Local; only visible information and ready-set scope differ.",
         )
 
 
@@ -673,11 +673,18 @@ _register_strict_family_metadata()
 
 
 _PAIR_FAMILIES: tuple[tuple[str, str | None, str | None], ...] = (
-    ("gated_greedy", "gated_greedy_local", "gated_greedy_joint"),
-    ("gated_maxweight", "gated_maxweight_local", "gated_maxweight_joint"),
-    ("barrier_criticality", "barrier_criticality_core_independent", "barrier_criticality_joint"),
-    ("birkhoff_ranked", "birkhoff_ranked_local", "birkhoff_ranked_joint"),
+    ("greedy_control", "greedy_control_local", "greedy_control_joint"),
+    ("gmwd", "gmwd_local", "gmwd_joint"),
+    ("rsbc", "rsbc_local", "rsbc_joint"),
+    ("fast_stage", "fast_stage_local", "fast_stage_joint"),
+    ("aurora_order", "aurora_order_local", "aurora_order_joint"),
     ("adaptive_price", "adaptive_price_local", "adaptive_price_joint"),
+    # Historical same-family compatibility rows.  They remain readable but are
+    # not part of the strict information-scope claim.
+    ("birkhoff_bvn", "B_birkhoff", "U_ibbr"),
+    ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
+    ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
+    ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),
     ("legacy_birkhoff_ibbr", "B_birkhoff", "U_ibbr"),
     ("legacy_lagrangian", "B_lagrangian_phase_local", "U_lagrangian"),
     ("cp_lpt", None, None),

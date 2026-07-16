@@ -1,10 +1,13 @@
 from .core import (
+    EXPERIMENTAL_FAMILY_IDS,
     FAMILY_ID_ALIASES,
     FAMILY_KERNEL_SPECS,
     LEGACY_UNPAIRED_FAMILIES,
+    PRIMARY_FAMILY_IDS,
     STRICT_FAMILY_IDS,
     FamilyKernelSpec,
     FamilyScope,
+    LiteratureLineage,
     family_inventory,
     get_family_kernel_spec,
     normalize_family_id,
@@ -18,12 +21,15 @@ from .scoped import (
 )
 
 __all__ = [
+    "EXPERIMENTAL_FAMILY_IDS",
     "FAMILY_ID_ALIASES",
     "FAMILY_KERNEL_SPECS",
     "LEGACY_UNPAIRED_FAMILIES",
+    "PRIMARY_FAMILY_IDS",
     "STRICT_FAMILY_IDS",
     "FamilyKernelSpec",
     "FamilyScope",
+    "LiteratureLineage",
     "ScopedFamilyPolicy",
     "canonical_family_policy_id",
     "family_inventory",

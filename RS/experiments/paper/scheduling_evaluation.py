@@ -14,6 +14,7 @@ from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.runtime.online.megatron_ep.target_planning.contracts import _compat_logical_plan_from_window_plan
 from rs.scheduling.algorithm_catalog import get_algorithm_metadata, list_pair_families
 from rs.scheduling.catalog import resolve_algorithm_id
+from rs.scheduling.families import get_family_kernel_spec
 from rs.scheduling.reference.exact_small_instance import exact_result_to_logical_plan, solve_problem_exact_with_scope
 
 from .adapters.scheduling_adapter import execute_policy, replay_window_from_matrices
@@ -370,20 +371,27 @@ def _heuristic_record(
 
 
 def _strict_pair_summary(records: list[ScheduleEvaluationRecord]) -> dict[str, Any]:
-    same_core = [record for record in records if record.policy_id in {"B_barrier_criticality_core_independent", "U_barrier_criticality_global_matching"}]
-    paired_by_instance: dict[str, dict[str, ScheduleEvaluationRecord]] = {}
-    for record in same_core:
-        paired_by_instance.setdefault(record.instance_id, {})[record.policy_id] = record
+    candidate_pairs = (
+        ("rsbc_local", "rsbc_joint"),
+        ("B_barrier_criticality_core_independent", "U_barrier_criticality_global_matching"),
+    )
     pair_records: tuple[ScheduleEvaluationRecord, ScheduleEvaluationRecord] | None = None
-    for instance_id in sorted(paired_by_instance):
-        group = paired_by_instance[instance_id]
-        if "B_barrier_criticality_core_independent" in group and "U_barrier_criticality_global_matching" in group:
-            pair_records = (
-                group["B_barrier_criticality_core_independent"],
-                group["U_barrier_criticality_global_matching"],
-            )
+    selected_ids: tuple[str, str] | None = None
+    by_instance: dict[str, dict[str, ScheduleEvaluationRecord]] = {}
+    allowed = {item for pair in candidate_pairs for item in pair}
+    for record in records:
+        if record.policy_id in allowed:
+            by_instance.setdefault(record.instance_id, {})[record.policy_id] = record
+    for local_id, joint_id in candidate_pairs:
+        for instance_id in sorted(by_instance):
+            group = by_instance[instance_id]
+            if local_id in group and joint_id in group:
+                pair_records = (group[local_id], group[joint_id])
+                selected_ids = (local_id, joint_id)
+                break
+        if pair_records is not None:
             break
-    if pair_records is None:
+    if pair_records is None or selected_ids is None:
         return {
             "status": "NOT_AVAILABLE",
             "pair_kind": "strict_same_core",
@@ -391,47 +399,48 @@ def _strict_pair_summary(records: list[ScheduleEvaluationRecord]) -> dict[str, A
             "comparable": False,
             "records": [],
         }
-    b_record, u_record = pair_records
+    local_record, joint_record = pair_records
+    local_id, joint_id = selected_ids
     contract_match = {
-        "matching_core_id_equal": b_record.matching_core_id == u_record.matching_core_id,
-        "task_contract_digest_equal": b_record.task_contract_digest == u_record.task_contract_digest,
-        "bucket_contract_digest_equal": b_record.bucket_contract_digest == u_record.bucket_contract_digest,
-        "cost_contract_digest_equal": b_record.cost_contract_digest == u_record.cost_contract_digest,
-        "service_model_id_equal": b_record.service_model_id == u_record.service_model_id,
-        "solver_budget_digest_equal": b_record.solver_budget_digest == u_record.solver_budget_digest,
+        "matching_core_id_equal": local_record.matching_core_id == joint_record.matching_core_id,
+        "task_contract_digest_equal": local_record.task_contract_digest == joint_record.task_contract_digest,
+        "bucket_contract_digest_equal": local_record.bucket_contract_digest == joint_record.bucket_contract_digest,
+        "cost_contract_digest_equal": local_record.cost_contract_digest == joint_record.cost_contract_digest,
+        "service_model_id_equal": local_record.service_model_id == joint_record.service_model_id,
+        "solver_budget_digest_equal": local_record.solver_budget_digest == joint_record.solver_budget_digest,
     }
-    comparable = all(contract_match.values()) and b_record.coverage_valid and u_record.coverage_valid
+    comparable = all(contract_match.values()) and local_record.coverage_valid and joint_record.coverage_valid
     return {
         "status": "READY" if comparable else "PARTIAL_INVALID_POLICY",
         "pair_kind": "strict_same_core",
         "pair_status": "VALID_PAIR" if comparable else "INVALID_PAIR",
         "comparable": comparable,
+        "family_id": "rsbc",
         "family_pair": {
+            "local_policy_id": local_id,
+            "joint_policy_id": joint_id,
             "b_policy_id": "B_barrier_criticality_matching",
-            "u_policy_id": "U_barrier_criticality_global_matching",
+            "u_policy_id": joint_id,
         },
-        "strict_same_core_pair": {
-            "b_policy_id": b_record.policy_id,
-            "u_policy_id": u_record.policy_id,
-        },
+        "strict_same_core_pair": {"b_policy_id": local_id, "u_policy_id": joint_id},
         "safe_fallback_pair": {
             "policy_id": "RS_safe_barrier_criticality",
-            "raw_u_policy_id": "U_barrier_criticality_global_matching",
-            "paired_b_policy_id": "B_barrier_criticality_matching",
+            "raw_u_policy_id": joint_id,
+            "paired_b_policy_id": local_id,
         },
-        "records": [b_record.to_dict(), u_record.to_dict()],
+        "records": [local_record.to_dict(), joint_record.to_dict()],
         "contract_match": contract_match,
         "metadata_contract": {
-            "matching_core_id": b_record.matching_core_id,
-            "task_contract_digest": b_record.task_contract_digest,
-            "bucket_contract_digest": b_record.bucket_contract_digest,
-            "cost_contract_digest": b_record.cost_contract_digest,
-            "service_model_id": b_record.service_model_id,
-            "solver_budget_digest": b_record.solver_budget_digest,
+            "matching_core_id": local_record.matching_core_id,
+            "task_contract_digest": local_record.task_contract_digest,
+            "bucket_contract_digest": local_record.bucket_contract_digest,
+            "cost_contract_digest": local_record.cost_contract_digest,
+            "service_model_id": local_record.service_model_id,
+            "solver_budget_digest": local_record.solver_budget_digest,
         },
-        "b_objective": b_record.objective,
-        "u_objective": u_record.objective,
-        "paired_delta": None if b_record.objective is None or u_record.objective is None else float(u_record.objective - b_record.objective),
+        "b_objective": local_record.objective,
+        "u_objective": joint_record.objective,
+        "paired_delta": None if local_record.objective is None or joint_record.objective is None else float(joint_record.objective - local_record.objective),
     }
 
 
@@ -497,9 +506,21 @@ def _family_pair_summaries(records: list[ScheduleEvaluationRecord]) -> list[dict
         if not paired_rows:
             continue
         comparable_rows = [row for row in paired_rows if row["comparable"]]
+        try:
+            family_spec = get_family_kernel_spec(family_id)
+            literature = family_spec.literature.to_dict()
+            display_name = family_spec.display_name
+            primary_for_paper = bool(family_spec.primary_for_paper)
+        except ValueError:
+            literature = {}
+            display_name = family_id
+            primary_for_paper = False
         summaries.append(
             {
                 "family_id": family_id,
+                "display_name": display_name,
+                "literature": literature,
+                "primary_for_paper": primary_for_paper,
                 "local_policy_id": local_id,
                 "joint_policy_id": joint_id,
                 "status": "READY" if len(comparable_rows) == len(paired_rows) else "PARTIAL_INVALID_PAIR",
@@ -552,11 +573,18 @@ def evaluate_scheduling(
             p2_matrix=traffic.P2_truth_matrix,
         )
         planning_hint, _truth, problem = _planning_problem(replay_window)
-        if execution_window_bridge_summary is None and "U_barrier_criticality_global_matching" in policy_ids:
+        bridge_policy = (
+            "rsbc_joint"
+            if "rsbc_joint" in policy_ids
+            else "U_barrier_criticality_global_matching"
+            if "U_barrier_criticality_global_matching" in policy_ids
+            else None
+        )
+        if execution_window_bridge_summary is None and bridge_policy is not None:
             execution_window_bridge_summary = _execution_window_bridge_summary(
                 replay_window=replay_window,
                 planning_hint=planning_hint,
-                policy_name="U_barrier_criticality_global_matching",
+                policy_name=bridge_policy,
             )
         if o_local_record is None:
             o_local_record = _exact_record(

@@ -19,7 +19,7 @@ def test_family_evaluation_reports_effect_and_overhead() -> None:
     )
     result = evaluate_family_pairs(
         replay_window=window,
-        family_ids=("gated_greedy", "gated_maxweight", "barrier_criticality"),
+        family_ids=("greedy_control", "gmwd", "rsbc"),
         repeats=2,
         warmups=0,
     )
@@ -61,17 +61,17 @@ def test_main_scheduling_evaluator_emits_family_pair_summaries(tmp_path: Path) -
         model_id="fixture",
         model_revision="v1",
         policy_ids=(
-            "gated_greedy_local",
-            "gated_greedy_joint",
-            "gated_maxweight_local",
-            "gated_maxweight_joint",
-            "barrier_criticality_core_independent",
-            "barrier_criticality_joint",
+            "greedy_control_local",
+            "greedy_control_joint",
+            "gmwd_local",
+            "gmwd_joint",
+            "rsbc_local",
+            "rsbc_joint",
         ),
     )
     assert result["status"] == "OK"
     summaries = {row["family_id"]: row for row in result["family_pair_summaries"]}
-    assert summaries["gated_greedy"]["status"] == "READY"
-    assert summaries["gated_maxweight"]["status"] == "READY"
-    assert summaries["barrier_criticality"]["status"] == "READY"
-    assert summaries["gated_greedy"]["win_count"] == 1
+    assert summaries["greedy_control"]["status"] == "READY"
+    assert summaries["gmwd"]["status"] == "READY"
+    assert summaries["rsbc"]["status"] == "READY"
+    assert summaries["greedy_control"]["win_count"] == 1

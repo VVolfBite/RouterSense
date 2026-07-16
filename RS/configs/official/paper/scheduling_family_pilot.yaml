@@ -9,16 +9,16 @@ layers: [0]
 virtual_ep_sizes: [4]
 physical_world_size: 1
 policies:
-  - gated_greedy_local
-  - gated_greedy_joint
-  - gated_maxweight_local
-  - gated_maxweight_joint
-  - barrier_criticality_core_independent
-  - barrier_criticality_joint
-  - birkhoff_ranked_local
-  - birkhoff_ranked_joint
-  - adaptive_price_local
-  - adaptive_price_joint
+  - greedy_control_local
+  - greedy_control_joint
+  - gmwd_local
+  - gmwd_joint
+  - rsbc_local
+  - rsbc_joint
+  - fast_stage_local
+  - fast_stage_joint
+  - aurora_order_local
+  - aurora_order_joint
 predictors: []
 cost_model: formal_replay_makespan
 seeds:

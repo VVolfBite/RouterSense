@@ -6,7 +6,7 @@ import statistics
 from typing import Any, Iterable
 
 from rs.runtime.offline.replay_unified import ReplayWindow
-from rs.scheduling.families import STRICT_FAMILY_IDS, canonical_family_policy_id
+from rs.scheduling.families import STRICT_FAMILY_IDS, canonical_family_policy_id, get_family_kernel_spec
 from rs.scheduling.families.core import FamilyScope
 
 from .adapters.scheduling_adapter import execute_policy
@@ -126,9 +126,15 @@ def evaluate_family_pairs(
         improvement = None if local_objective <= 0.0 else (local_objective - joint_objective) / local_objective * 100.0
         local_runtime = float(local["planning_runtime_ms"]["median"])
         joint_runtime = float(joint["planning_runtime_ms"]["median"])
+        spec = get_family_kernel_spec(family_id)
         records.append(
             {
                 "family_id": family_id,
+                "display_name": spec.display_name,
+                "paper_label": spec.literature.paper_label,
+                "literature_mapping_level": spec.literature.mapping_level,
+                "literature_citation_key": spec.literature.citation_key,
+                "primary_for_paper": bool(spec.primary_for_paper),
                 "status": "READY" if local["valid"] and joint["valid"] and contract_equal else "INVALID",
                 "contract_equal": contract_equal,
                 "contract_mismatches": [

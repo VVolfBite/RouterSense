@@ -24,12 +24,14 @@ def _window():
 
 def test_scope_expression_and_legacy_aliases_resolve_to_same_family_layer() -> None:
     cases = (
-        ("Local(gated_greedy)", "gated_greedy", "local"),
-        ("B_gated_greedy_maximal", "gated_greedy", "local"),
-        ("Joint(gated_maxweight)", "gated_maxweight", "joint"),
-        ("U_gated_maxweight_matching", "gated_maxweight", "joint"),
-        ("Local(barrier_criticality)", "barrier_criticality", "local"),
-        ("U_barrier_criticality_global_matching", "barrier_criticality", "joint"),
+        ("Local(greedy_control)", "greedy_control", "local"),
+        ("B_gated_greedy_maximal", "greedy_control", "local"),
+        ("Joint(gmwd)", "gmwd", "joint"),
+        ("U_gated_maxweight_matching", "gmwd", "joint"),
+        ("Local(rsbc)", "rsbc", "local"),
+        ("U_barrier_criticality_global_matching", "rsbc", "joint"),
+        ("Local(fast_stage)", "fast_stage", "local"),
+        ("Joint(aurora_order)", "aurora_order", "joint"),
     )
     for name, family_id, scope in cases:
         policy = resolve_policy(policy_name=name, bucket_rows=1)
@@ -38,10 +40,14 @@ def test_scope_expression_and_legacy_aliases_resolve_to_same_family_layer() -> N
 
 
 def test_catalog_exposes_canonical_family_ids_and_expressions() -> None:
-    assert resolve_algorithm_id("Local(gated_greedy)").canonical_name == "gated_greedy_local"
-    assert resolve_algorithm_id("Joint(gated_maxweight)").canonical_name == "gated_maxweight_joint"
-    assert resolve_algorithm_id("Local(barrier_criticality)").canonical_name == "barrier_criticality_core_independent"
-    assert resolve_algorithm_id("Joint(birkhoff_ranked)").canonical_name == "birkhoff_ranked_joint"
+    assert resolve_algorithm_id("Local(greedy_control)").canonical_name == "greedy_control_local"
+    assert resolve_algorithm_id("Joint(gmwd)").canonical_name == "gmwd_joint"
+    assert resolve_algorithm_id("Local(rsbc)").canonical_name == "rsbc_local"
+    assert resolve_algorithm_id("Joint(fast_stage)").canonical_name == "fast_stage_joint"
+    assert resolve_algorithm_id("Local(aurora_order)").canonical_name == "aurora_order_local"
+    # Historical scope expressions remain compatibility aliases.
+    assert resolve_algorithm_id("Local(gated_greedy)").canonical_name == "greedy_control_local"
+    assert resolve_algorithm_id("Joint(gated_maxweight)").canonical_name == "gmwd_joint"
 
 
 def test_all_strict_families_have_valid_same_core_local_joint_plans() -> None:

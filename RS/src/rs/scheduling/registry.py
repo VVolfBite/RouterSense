@@ -65,6 +65,8 @@ def resolve_policy(
     barrier_weight: float | None = None,
     age_weight: float | None = None,
     prediction_weight: float | None = None,
+    endpoint_pressure_weight: float | None = None,
+    release_gain_weight: float | None = None,
     p2_hint_artifact: str = "",
 ) -> SchedulingPolicy:
     # Family expressions and their canonical/legacy aliases are resolved before
@@ -77,6 +79,8 @@ def resolve_policy(
             barrier_weight=barrier_weight,
             age_weight=age_weight,
             prediction_weight=prediction_weight,
+            endpoint_pressure_weight=endpoint_pressure_weight,
+            release_gain_weight=release_gain_weight,
         )
     base_name, mode = _parse_policy_name(policy_name)
     if is_scoped_family_policy(base_name):
@@ -86,6 +90,8 @@ def resolve_policy(
             barrier_weight=barrier_weight,
             age_weight=age_weight,
             prediction_weight=prediction_weight,
+            endpoint_pressure_weight=endpoint_pressure_weight,
+            release_gain_weight=release_gain_weight,
         )
     if base_name == "native_passthrough":
         return NativePassthroughPolicy()
@@ -115,6 +121,8 @@ def resolve_policy(
             barrier_weight=barrier_weight,
             age_weight=age_weight,
             prediction_weight=prediction_weight,
+            endpoint_pressure_weight=endpoint_pressure_weight,
+            release_gain_weight=release_gain_weight,
             p2_hint_artifact=p2_hint_artifact,
         )
         paired_b_policy = resolve_policy(
@@ -127,6 +135,8 @@ def resolve_policy(
             barrier_weight=barrier_weight,
             age_weight=age_weight,
             prediction_weight=prediction_weight,
+            endpoint_pressure_weight=endpoint_pressure_weight,
+            release_gain_weight=release_gain_weight,
             p2_hint_artifact=p2_hint_artifact,
         )
         return SafeJointPolicy(

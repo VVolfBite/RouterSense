@@ -25,45 +25,40 @@ from .core import FamilyKernelSpec, FamilyScope, get_family_kernel_spec, normali
 
 _EXPRESSION = re.compile(r"^(Local|Joint)\(([A-Za-z0-9_\-]+)\)$", re.IGNORECASE)
 
-# Old names remain accepted, but they resolve to the common family layer rather
-# than separate ad-hoc B/U implementations.
+# Old names remain accepted, but resolve to literature-grounded canonical
+# families rather than independent ad-hoc B/U implementations.
 _LEGACY_NAMES: dict[str, tuple[str, FamilyScope]] = {
-    "B_gated_greedy_maximal": ("gated_greedy", FamilyScope.LOCAL),
-    "U_gated_greedy_maximal": ("gated_greedy", FamilyScope.JOINT),
-    "B_gated_maxweight_matching": ("gated_maxweight", FamilyScope.LOCAL),
-    "U_gated_maxweight_matching": ("gated_maxweight", FamilyScope.JOINT),
-    "B_barrier_criticality_core_independent": ("barrier_criticality", FamilyScope.LOCAL),
-    "U_barrier_criticality_global_matching": ("barrier_criticality", FamilyScope.JOINT),
+    "B_gated_greedy_maximal": ("greedy_control", FamilyScope.LOCAL),
+    "U_gated_greedy_maximal": ("greedy_control", FamilyScope.JOINT),
+    "B_gated_maxweight_matching": ("gmwd", FamilyScope.LOCAL),
+    "U_gated_maxweight_matching": ("gmwd", FamilyScope.JOINT),
+    "B_barrier_criticality_core_independent": ("rsbc", FamilyScope.LOCAL),
+    "U_barrier_criticality_global_matching": ("rsbc", FamilyScope.JOINT),
     "B_barrier_price_adaptive_matching": ("adaptive_price", FamilyScope.LOCAL),
     "U_barrier_price_adaptive_matching": ("adaptive_price", FamilyScope.JOINT),
+    # Canonical IDs from the first scope-layer prototype.
+    "gated_greedy_local": ("greedy_control", FamilyScope.LOCAL),
+    "gated_greedy_joint": ("greedy_control", FamilyScope.JOINT),
+    "gated_maxweight_local": ("gmwd", FamilyScope.LOCAL),
+    "gated_maxweight_joint": ("gmwd", FamilyScope.JOINT),
+    "barrier_criticality_core_independent": ("rsbc", FamilyScope.LOCAL),
+    "barrier_criticality_joint": ("rsbc", FamilyScope.JOINT),
+    "birkhoff_ranked_local": ("fast_stage", FamilyScope.LOCAL),
+    "birkhoff_ranked_joint": ("fast_stage", FamilyScope.JOINT),
 }
 
 _CANONICAL_NAMES: dict[str, tuple[str, FamilyScope]] = {
-    f"{family_id}_local": (family_id, FamilyScope.LOCAL)
+    f"{family_id}_{scope.value}": (family_id, scope)
     for family_id in (
-        "gated_greedy",
-        "gated_maxweight",
-        "birkhoff_ranked",
+        "greedy_control",
+        "gmwd",
+        "rsbc",
+        "fast_stage",
+        "aurora_order",
         "adaptive_price",
     )
+    for scope in (FamilyScope.LOCAL, FamilyScope.JOINT)
 }
-_CANONICAL_NAMES.update(
-    {
-        f"{family_id}_joint": (family_id, FamilyScope.JOINT)
-        for family_id in (
-            "gated_greedy",
-            "gated_maxweight",
-            "birkhoff_ranked",
-            "adaptive_price",
-        )
-    }
-)
-_CANONICAL_NAMES.update(
-    {
-        "barrier_criticality_core_independent": ("barrier_criticality", FamilyScope.LOCAL),
-        "barrier_criticality_joint": ("barrier_criticality", FamilyScope.JOINT),
-    }
-)
 
 
 def parse_scoped_family_policy(policy_name: str) -> tuple[str, FamilyScope] | None:
@@ -86,9 +81,9 @@ def is_scoped_family_policy(policy_name: str) -> bool:
 
 
 def canonical_family_policy_id(family_id: str, scope: FamilyScope) -> str:
-    if family_id == "barrier_criticality":
-        return "barrier_criticality_core_independent" if scope is FamilyScope.LOCAL else "barrier_criticality_joint"
-    return f"{family_id}_{scope.value}"
+    normalized = normalize_family_id(family_id)
+    get_family_kernel_spec(normalized)
+    return f"{normalized}_{scope.value}"
 
 
 class ScopedFamilyPolicy:
@@ -111,6 +106,8 @@ class ScopedFamilyPolicy:
         barrier_weight: float | None = None,
         age_weight: float | None = None,
         prediction_weight: float | None = None,
+        endpoint_pressure_weight: float | None = None,
+        release_gain_weight: float | None = None,
     ) -> None:
         self.family_id = str(family_id)
         self.scope = FamilyScope(scope)
@@ -119,6 +116,8 @@ class ScopedFamilyPolicy:
             barrier_weight=barrier_weight,
             age_weight=age_weight,
             prediction_weight=prediction_weight,
+            endpoint_pressure_weight=endpoint_pressure_weight,
+            release_gain_weight=release_gain_weight,
         )
         self.policy_name = str(reported_policy_name or canonical_family_policy_id(self.family_id, self.scope))
         self.algorithm_id = self.policy_name
@@ -180,6 +179,8 @@ class ScopedFamilyPolicy:
             barrier_weight=float(self.spec.barrier_weight),
             age_weight=float(self.spec.age_weight),
             prediction_weight=float(self.spec.prediction_weight),
+            endpoint_pressure_weight=float(self.spec.endpoint_pressure_weight),
+            release_gain_weight=float(self.spec.release_gain_weight),
             adaptive_prices=bool(self.spec.adaptive_prices),
             price_step=float(self.spec.price_step),
             price_decay=float(self.spec.price_decay),
@@ -188,7 +189,7 @@ class ScopedFamilyPolicy:
             atomic=bool(self.spec.atomic),
             prediction_matrix=prediction_matrix,
             base_score_lookup=base_score_lookup,
-            base_priority_weight=1.0 if base_score_lookup else 0.0,
+            base_priority_weight=(float(self.spec.base_priority_weight) if base_score_lookup else 0.0),
             collect_debug_trace=bool(self.collect_debug_trace),
         )
 
@@ -199,6 +200,10 @@ class ScopedFamilyPolicy:
             "family_scope": self.scope.value,
             "family_expression": f"{self.scope.value.title()}({self.family_id})",
             "strict_same_core": True,
+            "display_name": self.spec.display_name,
+            "paper_label": self.spec.literature.paper_label,
+            "literature_mapping_level": self.spec.literature.mapping_level,
+            "literature_citation_key": self.spec.literature.citation_key,
             "phase_independent": bool(phase_independent),
             "visibility_contract": (
                 "per_phase_only_no_cross_phase_ready_set"
@@ -363,6 +368,8 @@ def resolve_scoped_family_policy(
     barrier_weight: float | None = None,
     age_weight: float | None = None,
     prediction_weight: float | None = None,
+    endpoint_pressure_weight: float | None = None,
+    release_gain_weight: float | None = None,
 ) -> ScopedFamilyPolicy:
     parsed = parse_scoped_family_policy(policy_name)
     if parsed is None:
@@ -381,6 +388,8 @@ def resolve_scoped_family_policy(
         barrier_weight=barrier_weight,
         age_weight=age_weight,
         prediction_weight=prediction_weight,
+        endpoint_pressure_weight=endpoint_pressure_weight,
+        release_gain_weight=release_gain_weight,
     )
 
 
