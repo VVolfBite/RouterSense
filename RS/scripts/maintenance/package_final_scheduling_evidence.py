@@ -269,12 +269,16 @@ def _copy_runtime_tree(source_root: Path, staging_root: Path) -> dict[str, Any]:
 
 def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
     repo = _repo_dir(repo_root)
+    source_repo = repo / "RS" if (repo / "RS" / "scripts" / "maintenance" / "package_source_archive.py").exists() else repo
+    packager = source_repo / "scripts" / "maintenance" / "package_source_archive.py"
+    if not packager.exists():
+        raise FileNotFoundError(f"could not locate source archive packager under {source_repo}")
     source_root = staging_root / "source"
     source_root.mkdir(parents=True, exist_ok=True)
     archive = source_root / "canonical_source.zip"
     subprocess.run(
-        ["python", str(repo / "scripts" / "maintenance" / "package_source_archive.py"), "--scope", "mainline", str(archive)],
-        cwd=str(repo),
+        ["python", str(packager), "--scope", "mainline", str(archive)],
+        cwd=str(source_repo),
         text=True,
         capture_output=True,
         check=True,
