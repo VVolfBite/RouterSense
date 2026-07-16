@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments.paper.result_bundle import build_result_bundle, sha256_file, write_json
+from rs.core.contracts.provenance import compute_source_tree_digest
 
 
 @dataclass(frozen=True)
@@ -204,11 +205,25 @@ def _source_digest_valid(root: Path) -> bool:
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(unpack)
         rs_root = unpack / "RS"
-        digest = hashlib.sha256()
-        for file in sorted((p for p in rs_root.rglob("*") if p.is_file()), key=lambda p: p.relative_to(rs_root).as_posix()):
-            digest.update(file.relative_to(rs_root).as_posix().encode("utf-8"))
-            digest.update(file.read_bytes())
-        return str(manifest.get("source_tree_digest")) == digest.hexdigest()
+        return str(manifest.get("source_tree_digest")) == compute_source_tree_digest(rs_root)
+
+
+def _sanitize_source_manifest(source_manifest_path: Path) -> None:
+    payload = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    archive_self_check = dict(payload.get("archive_self_check", {}) or {})
+    commands = list(archive_self_check.get("commands", []) or [])
+    for row in commands:
+        command = list(dict(row).get("command", []) or [])
+        sanitized: list[str] = []
+        for token in command:
+            if isinstance(token, str) and (":\\" in token or token.startswith("/tmp/")):
+                sanitized.append(Path(token).name)
+            else:
+                sanitized.append(token)
+        row["command"] = sanitized
+    archive_self_check["commands"] = commands
+    payload["archive_self_check"] = archive_self_check
+    write_json(source_manifest_path, payload)
 
 
 def fresh_unpack_verify(zip_path: Path, expected_commit: str) -> PackageVerification:
@@ -295,6 +310,7 @@ def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
         with zipfile.ZipFile(archive, "r") as zf:
             zf.extractall(unpack)
         shutil.copy2(unpack / "source_manifest.json", source_root / "source_manifest.json")
+    _sanitize_source_manifest(source_root / "source_manifest.json")
 
 
 def main() -> int:
@@ -357,6 +373,9 @@ def main() -> int:
             src = audit_output / name
             if src.exists():
                 shutil.copy2(src, results_root / name)
+        consumed_config = audit_output / "consumed_config.json"
+        if consumed_config.exists():
+            consumed_config.unlink()
         artifact_index = build_relative_artifact_index(staging_root)
         bundle = json.loads((results_root / "result_bundle.json").read_text(encoding="utf-8"))
         rebuilt = build_result_bundle(

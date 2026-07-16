@@ -53,8 +53,20 @@ def build_result_bundle(
     comparable_count = len([row for row in (scheduling_summary or {}).get("records", []) if bool(row.get("comparable"))])
     invalid_count = len([row for row in (scheduling_summary or {}).get("records", []) if not bool(row.get("comparable", False))])
     harness_contract_tests_passed = True
-    trace_claim_eligible = bool(artifact_index.get("trace/summary") or artifact_index.get("trace_summary") or artifact_index.get("trace/compact_trace_samples"))
-    traffic_claim_eligible = bool(artifact_index.get("traffic/build_traffic_summary") or artifact_index.get("build_traffic_summary") or artifact_index.get("traffic/traffic_instances"))
+    trace_claim_eligible = bool(
+        artifact_index.get("trace/summary")
+        or artifact_index.get("trace/summary.json")
+        or artifact_index.get("trace_summary")
+        or artifact_index.get("trace/compact_trace_samples")
+        or artifact_index.get("trace/compact_trace_samples.json")
+    )
+    traffic_claim_eligible = bool(
+        artifact_index.get("traffic/build_traffic_summary")
+        or artifact_index.get("traffic/build_traffic_summary.json")
+        or artifact_index.get("build_traffic_summary")
+        or artifact_index.get("traffic/traffic_instances")
+        or artifact_index.get("traffic/traffic_instances.json")
+    )
     strict_pair_claim_eligible = bool((scheduling_summary or {}).get("same_core_pair_summary", {}).get("comparable"))
     oracle_claim_eligible = bool(
         oracle_control_summary is not None
