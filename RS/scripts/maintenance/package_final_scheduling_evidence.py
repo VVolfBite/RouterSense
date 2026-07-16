@@ -6,11 +6,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SOURCE_ROOT / "src"))
 
 from experiments.paper.result_bundle import build_result_bundle, sha256_file, write_json
 from rs.core.contracts.provenance import compute_source_tree_digest
