@@ -178,11 +178,17 @@ def _policy_identity_fields(window_plan) -> dict[str, object]:
     planner_id = str(window_plan.planner_id)
     resolved = resolve_algorithm_id(planner_id)
     algorithm_id = str(resolved.canonical_name)
-    phase_independent = bool(algorithm_id.startswith("B_"))
+    policy_name = str(window_plan.metadata.get("legacy_policy_name", planner_id))
+    common_core = dict(window_plan.metadata.get("common_core") or {})
+    phase_independent = bool(
+        common_core.get("phase_independent", False)
+        or planner_id.startswith("B_")
+        or policy_name.startswith("B_")
+    )
     return {
         "actual_window_plan_planner_id": planner_id,
         "actual_window_plan_algorithm_id": algorithm_id,
-        "actual_window_plan_policy_name": str(window_plan.metadata.get("legacy_policy_name", planner_id)),
+        "actual_window_plan_policy_name": policy_name,
         "actual_phase_independent": phase_independent,
     }
 
@@ -208,7 +214,17 @@ def _publish_requested_window_plan_through_formal_store(
         target_key = runtime._target_plan_key_from_slot(slot)  # noqa: SLF001
         published_plan = runtime._execution_plan_cache().get(runtime.target_plan_store._key(target_key))  # type: ignore[union-attr]  # noqa: SLF001
         if published_plan is None:
-            raise KeyError("missing published U plan in execution cache")
+            prepared_payload = dict(publication_metadata.get("plan") or {})
+            if not prepared_payload:
+                raise KeyError("missing U publication payload")
+            prepared_plan = TargetLayerPreparedJointPlan.from_dict(prepared_payload)
+            if prepared_plan.window_plan is None:
+                raise KeyError("missing U window plan in publication payload")
+            published_plan = runtime.plan_publisher.build(
+                publication_slot=slot.semantic_payload(),
+                window_plan=prepared_plan.window_plan,
+                metadata={"planning_request": publication_metadata.get("planning_request")},
+            )
         return {
             "published_plan": published_plan,
             "publication_state": publication_state,
@@ -292,6 +308,15 @@ def _publish_requested_window_plan_through_formal_store(
     )
     runtime.target_plan_store.publish_logical(target_key, prepared_plan)  # type: ignore[union-attr]
     runtime._execution_plan_cache()[runtime.target_plan_store._key(target_key)] = published_plan  # type: ignore[union-attr]  # noqa: SLF001
+    # For manual B publication, the formal target-planner service remains configured for
+    # joint target preplanning. Leaving it active causes the lifecycle polling path to
+    # pull an unrelated U-style local candidate for the same slot and reject publication
+    # before the already-published B plan is consumed. Disable that service path after
+    # the formal store/cache publication so materialization/execution still consume the
+    # requested B plan through the normal store + publisher boundaries.
+    if getattr(runtime, "_ready_target_plan_candidates", None) is not None:  # noqa: SLF001
+        runtime._ready_target_plan_candidates.clear()  # noqa: SLF001
+    runtime.target_planner_service = None
     publication_state = type(
         "ManualPublicationState",
         (),
