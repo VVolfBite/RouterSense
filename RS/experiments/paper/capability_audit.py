@@ -107,8 +107,24 @@ def apply_capability_evidence(
             result["real_trace_ingest"] = _status("ENVIRONMENT_BLOCKED", public_entrypoint="python -m experiments.paper.cli build-traffic", evidence="external trace bundle unavailable")
     if scheduling_summary is not None:
         pair = dict(scheduling_summary.get("same_core_pair_summary", {}) or {})
-        if bool(pair.get("comparable")):
-            result["joint_policy_evaluation"] = _status("READY", public_entrypoint="python -m experiments.paper.cli scheduling", evidence="strict same-core B/U comparable and valid")
+        scheduling_status = str(scheduling_summary.get("status", ""))
+        invalid_count = sum(
+            1
+            for row in list(scheduling_summary.get("records", []) or [])
+            if not bool(row.get("coverage_valid", False))
+        )
+        if scheduling_status == "OK" and bool(pair.get("comparable")) and invalid_count == 0:
+            result["joint_policy_evaluation"] = _status(
+                "READY",
+                public_entrypoint="python -m experiments.paper.cli scheduling",
+                evidence="all configured scheduling policies valid; strict same-core B/U comparable",
+            )
+        elif bool(pair.get("comparable")):
+            result["joint_policy_evaluation"] = _status(
+                "PARTIAL",
+                public_entrypoint="python -m experiments.paper.cli scheduling",
+                evidence=f"strict pair valid but scheduling_status={scheduling_status or 'MISSING'} invalid_count={invalid_count}",
+            )
     if oracle_control_summary is not None:
         cases = dict(oracle_control_summary.get("cases", {}) or {})
         if (

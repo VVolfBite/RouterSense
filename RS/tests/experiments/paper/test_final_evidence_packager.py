@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.maintenance.package_final_scheduling_evidence import build_portable_zip, build_relative_artifact_index, fresh_unpack_verify, write_relative_checksums
+from scripts.maintenance.package_final_scheduling_evidence import (
+    _audit_result_bundle_consistent,
+    build_portable_zip,
+    build_relative_artifact_index,
+    fresh_unpack_verify,
+    write_relative_checksums,
+)
 
 
 def test_checksums_are_relative_and_no_bom(tmp_path) -> None:
@@ -62,3 +68,32 @@ def test_fresh_unpack_verify_detects_complete_minimal_package(tmp_path) -> None:
     build_portable_zip(tmp_path, zip_path)
     verification = fresh_unpack_verify(zip_path, "deadbeef")
     assert verification.portable_zip_paths is True
+
+
+def test_audit_bundle_consistency_rejects_invalid_baseline_hidden_by_ready_bundle(tmp_path) -> None:
+    payloads = {
+        "audit/capability_matrix.json": {
+            "gloo_execution_wrapper": {"status": "READY"},
+            "O_local": {"status": "READY_FOR_SUPPORTED_TINY_ZERO_COMPUTE_DELAY"},
+            "joint_policy_evaluation": {"status": "READY"},
+        },
+        "results/result_bundle.json": {
+            "runtime_correctness_eligible": True,
+            "oracle_claim_eligible": True,
+            "strict_pair_claim_eligible": True,
+            "scheduling_claim_eligible": True,
+        },
+        "results/scheduling_summary.json": {
+            "status": "PARTIAL_INVALID_POLICY",
+            "same_core_pair_summary": {"comparable": True},
+            "records": [
+                {"policy_id": "B", "coverage_valid": True},
+                {"policy_id": "islip_bucket", "coverage_valid": False},
+            ],
+        },
+    }
+    for relative, payload in payloads.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8", newline="\n")
+    assert _audit_result_bundle_consistent(tmp_path) is False

@@ -11,7 +11,13 @@ from rs.scheduling.diagnostics import PolicyDiagnostics, WaveDiagnostics
 from rs.scheduling.phase_execution import BucketTask, PhaseExecutionPlan, PhaseReadyContext, PlanWave
 
 from ..capabilities import PolicyCapabilities
-from .common import build_transfer_layouts_and_tasks, finalize_execution_plan, flows_from_matrix
+from .common import (
+    build_phase_serial_release_aware_plan,
+    build_transfer_layouts_and_tasks,
+    finalize_execution_plan,
+    flows_from_matrix,
+    include_real_p2_phase,
+)
 
 
 class ISLIPNoProgressError(RuntimeError):
@@ -54,34 +60,57 @@ class ISLIPRoundRobinPolicy:
             start_wave_id=len(p0_waves),
             max_rounds=self.max_rounds,
         )
-        waves = tuple(p0_waves + p1_waves)
-        per_wave = tuple(_wave_diag(wave, trace) for wave, trace in zip(waves, p0_trace + p1_trace, strict=True))
-        diag = PolicyDiagnostics(
+        p2_flows: list[FlowDemand] = []
+        p2_waves: list[LogicalWave] = []
+        p2_trace: list[dict[str, Any]] = []
+        if include_real_p2_phase(problem):
+            p2_flows = list(
+                flows_from_matrix(
+                    problem.p2_next_dispatch_forecast_matrix,
+                    phase="p2_next_dispatch",
+                    release_state="ready",
+                    executable=True,
+                )
+            )
+            p2_waves, p2_trace = _schedule_flows(
+                p2_flows,
+                ranks=tuple(range(problem.topology.num_gpus)),
+                seed_payload={
+                    "policy": self.policy_name,
+                    "phase": "p2_next_dispatch",
+                    "matrix": problem.p2_next_dispatch_forecast_matrix,
+                    "seed": self.pointer_seed,
+                },
+                start_wave_id=len(p0_waves) + len(p1_waves),
+                max_rounds=self.max_rounds,
+            )
+        all_traces = p0_trace + p1_trace + p2_trace
+        fallback_reason = ";".join(
+            str(item.get("fallback_reason", ""))
+            for item in all_traces
+            if item.get("fallback_used")
+        )
+        base_plan = build_phase_serial_release_aware_plan(
+            problem=problem,
             policy_name=self.policy_name,
             policy_version=self.policy_version,
+            capabilities=self.capabilities,
             information_mode="phase_local_islip_round_robin",
             tie_break_rule="stable rotating input/output pointers",
-            wave_count=len(waves),
-            logical_flow_count=sum(len(wave.flows) for wave in waves),
-            ready_flow_count=len(p0_flows),
-            blocked_flow_count=len(p1_flows),
-            forecast_flow_count=len(problem.flow_window.forecast_pressure),
-            p1_dependency_used=False,
-            p2_forecast_used=False,
-            p2_source=problem.forecast.source if problem.forecast is not None else "none",
-            evaluation_eligible=True,
-            per_wave=per_wave,
             priority_components={"islip_rounds": self.max_rounds},
-            fallback_reason=";".join(str(item.get("fallback_reason", "")) for item in p0_trace + p1_trace if item.get("fallback_used")),
+            p0_waves=tuple(p0_waves),
+            p1_waves=tuple(p1_waves),
+            p2_waves=tuple(p2_waves),
+            service_model="phase_serial_islip_round_robin_v1",
+            fallback_reason=fallback_reason,
         )
         return LogicalSchedulePlan(
-            policy_name=self.policy_name,
-            waves=waves,
+            policy_name=base_plan.policy_name,
+            waves=base_plan.waves,
             diagnostics={
-                **diag.to_dict(),
-                "logical_model": "discrete_bucket_phase_sync_wave",
+                **base_plan.diagnostics,
                 "islip_rounds": self.max_rounds,
-                "islip_trace": p0_trace + p1_trace,
+                "islip_trace": all_traces,
             },
         )
 

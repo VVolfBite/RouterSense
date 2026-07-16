@@ -77,7 +77,15 @@ def build_result_bundle(
             for name in ("joint_advantage", "tie", "unsupported")
         )
     )
-    scheduling_claim_eligible = strict_pair_claim_eligible and oracle_claim_eligible
+    scheduling_status = str((scheduling_summary or {}).get("status", ""))
+    scheduling_claim_eligible = bool(
+        strict_pair_claim_eligible
+        and oracle_claim_eligible
+        and scheduling_status == "OK"
+        and invalid_count == 0
+    )
+    if scheduling_summary is not None and not scheduling_claim_eligible:
+        failure_reasons.append(f"scheduling_status={scheduling_status or 'MISSING'}; invalid_count={invalid_count}")
     prediction_claim_eligible = bool(prediction_summary and prediction_summary.get("status") not in {"PARTIAL_MISSING_PREDICTED", "MISSING_CAPABILITY"})
     runtime_correctness_eligible = bool(runtime_summary and runtime_summary.get("status") == "RUNTIME_CORRECTNESS")
     hiding_claim_eligible = bool(hiding_summary and hiding_summary.get("status") == "READY")

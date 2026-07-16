@@ -87,6 +87,7 @@ def test_phase_local_policies_cover_exactly_once() -> None:
     for policy_name in (
         "phase_barrier_fifo",
         "greedy_ready_set",
+        "islip_round_robin",
         "birkhoff_phase_local",
         "aurora_order_fixed",
         "fast_bvn_single_tier",
@@ -123,6 +124,7 @@ def test_phase_local_policies_schedule_real_p2_under_execution_window() -> None:
     for policy_name in (
         "phase_barrier_fifo",
         "greedy_ready_set",
+        "islip_round_robin",
         "birkhoff_phase_local",
         "aurora_order_fixed",
         "fast_bvn_single_tier",
@@ -141,6 +143,7 @@ def test_phase_local_policies_do_not_consume_unused_oracle_forecast() -> None:
     for policy_name in (
         "phase_barrier_fifo",
         "greedy_ready_set",
+        "islip_round_robin",
         "birkhoff_phase_local",
         "aurora_order_fixed",
         "fast_bvn_single_tier",

@@ -332,13 +332,23 @@ def _audit_result_bundle_consistent(root: Path) -> bool:
     bundle = _load_json(bundle_path)
     scheduling = _load_json(scheduling_path)
     strict_ready = bool(dict(scheduling.get("same_core_pair_summary", {}) or {}).get("comparable"))
+    scheduling_status = str(scheduling.get("status", ""))
+    invalid_count = sum(
+        1
+        for row in list(scheduling.get("records", []) or [])
+        if not bool(row.get("coverage_valid", False))
+    )
+    scheduling_ready = scheduling_status == "OK" and strict_ready and invalid_count == 0
     runtime_ready = str(dict(capability.get("gloo_execution_wrapper", {}) or {}).get("status", "")) == "READY"
     oracle_ready = str(dict(capability.get("O_local", {}) or {}).get("status", "")).startswith("READY")
+    joint_policy_ready = str(dict(capability.get("joint_policy_evaluation", {}) or {}).get("status", "")) == "READY"
     return all(
         (
             bool(bundle.get("runtime_correctness_eligible", False)) == runtime_ready,
             bool(bundle.get("oracle_claim_eligible", False)) == oracle_ready,
             bool(bundle.get("strict_pair_claim_eligible", False)) == strict_ready,
+            bool(bundle.get("scheduling_claim_eligible", False)) == scheduling_ready,
+            joint_policy_ready == scheduling_ready,
         )
     )
 
