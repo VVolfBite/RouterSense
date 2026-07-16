@@ -24,6 +24,10 @@ if str(SRC) not in sys.path:
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from rs.core.contracts import PlanningConstraints, PlanningIdentity, PlanningTopology, PlanningWeights
+from rs.planning import PlannerRegistry
+from rs.planning.request_builder import build_window_planning_request
+from rs.runtime.online.megatron_ep.target_planning.contracts import TargetLayerPreparedJointPlan, _compat_logical_plan_from_window_plan
 from rs.runtime.observation.instrumentation import BufferedEvidenceSink, build_runtime_instrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.communication_lane import slot_from_request
@@ -31,6 +35,7 @@ from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.execution.pipeline import build_runtime_execution_pipeline
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.public_types import CombineCompleteEvent, CombineReadyEvent, DispatchCompleteEvent, DispatchReadyEvent
+from rs.scheduling.catalog import resolve_algorithm_id
 
 from experiments.distributed.run_m1_formal_lifecycle_publication_gloo import (
     _begin_forward,
@@ -141,19 +146,171 @@ def _matrix_for_world_size(world_size: int) -> tuple[tuple[int, ...], ...]:
     raise ValueError(f"unsupported world_size {world_size!r}")
 
 
+def _zero_like(matrix: tuple[tuple[int, ...], ...]) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(0 for _ in row) for row in matrix)
+
+
 def _load_matrix_bundle(*, matrix_bundle_path: str, world_size: int) -> dict[str, tuple[tuple[int, ...], ...]]:
     if not str(matrix_bundle_path).strip():
         p0 = _matrix_for_world_size(world_size)
         p1 = tuple(tuple(int(p0[src][dst]) for src in range(world_size)) for dst in range(world_size))
-        return {"p0": p0, "p1": p1, "full_p0": p0, "full_p1": p1}
+        return {
+            "p0": p0,
+            "p1": p1,
+            "p2": _zero_like(p0),
+            "full_p0": p0,
+            "full_p1": p1,
+            "full_p2": _zero_like(p0),
+        }
     payload = json.loads(Path(str(matrix_bundle_path)).read_text(encoding="utf-8"))
     p0 = tuple(tuple(int(value) for value in row) for row in payload["p0_matrix"])
     p1 = tuple(tuple(int(value) for value in row) for row in payload["p1_matrix"])
+    p2 = tuple(tuple(int(value) for value in row) for row in payload.get("p2_matrix", payload.get("p2_next_dispatch_matrix", _zero_like(p0))))
     full_p0 = tuple(tuple(int(value) for value in row) for row in payload.get("full_p0_matrix", payload["p0_matrix"]))
     full_p1 = tuple(tuple(int(value) for value in row) for row in payload.get("full_p1_matrix", payload["p1_matrix"]))
+    full_p2 = tuple(tuple(int(value) for value in row) for row in payload.get("full_p2_matrix", payload.get("p2_matrix", payload.get("p2_next_dispatch_matrix", p2))))
     if len(p0) != int(world_size) or len(p1) != int(world_size):
         raise ValueError("matrix bundle world_size mismatch")
-    return {"p0": p0, "p1": p1, "full_p0": full_p0, "full_p1": full_p1}
+    return {"p0": p0, "p1": p1, "p2": p2, "full_p0": full_p0, "full_p1": full_p1, "full_p2": full_p2}
+
+
+def _policy_identity_fields(window_plan) -> dict[str, object]:
+    planner_id = str(window_plan.planner_id)
+    resolved = resolve_algorithm_id(planner_id)
+    algorithm_id = str(resolved.canonical_name)
+    phase_independent = bool(algorithm_id.startswith("B_"))
+    return {
+        "actual_window_plan_planner_id": planner_id,
+        "actual_window_plan_algorithm_id": algorithm_id,
+        "actual_window_plan_policy_name": str(window_plan.metadata.get("legacy_policy_name", planner_id)),
+        "actual_phase_independent": phase_independent,
+    }
+
+
+def _publish_requested_window_plan_through_formal_store(
+    *,
+    runtime,
+    slot,
+    requested_policy_id: str,
+    matrices: dict[str, tuple[tuple[int, ...], ...]],
+) -> dict[str, object]:
+    if str(requested_policy_id) == "U_barrier_criticality_global_matching":
+        _wait_until(
+            lambda: (
+                runtime.target_planner_service.publication_state_for_slot(slot) is not None  # type: ignore[union-attr]
+                and str(runtime.target_planner_service.publication_state_for_slot(slot).status).upper() == "READY"  # type: ignore[union-attr]
+            ),
+            timeout_seconds=10.0,
+        )
+        publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
+        assert publication_state is not None
+        publication_metadata = dict(publication_state.metadata)
+        target_key = runtime._target_plan_key_from_slot(slot)  # noqa: SLF001
+        published_plan = runtime._execution_plan_cache().get(runtime.target_plan_store._key(target_key))  # type: ignore[union-attr]  # noqa: SLF001
+        if published_plan is None:
+            raise KeyError("missing published U plan in execution cache")
+        return {
+            "published_plan": published_plan,
+            "publication_state": publication_state,
+            "publication_metadata": publication_metadata,
+            "requested_policy_id": str(requested_policy_id),
+            **_policy_identity_fields(published_plan.window_plan),
+        }
+
+    target_key = runtime._target_plan_key_from_slot(slot)  # noqa: SLF001
+    request = build_window_planning_request(
+        identity=PlanningIdentity(
+            request_id=f"{runtime.run_id}:{runtime._forward_epoch}:{runtime.microbatch_id}:{slot.target_layer_id}:formal_b",  # noqa: SLF001
+            run_id=str(runtime.run_id),
+            forward_id=str(runtime._forward_epoch),  # noqa: SLF001
+            window_id=f"{runtime._forward_epoch}:{runtime.microbatch_id}:{slot.target_layer_id}:formal_b",  # noqa: SLF001
+            source_layer_id=str(slot.source_layer_id),
+            target_layer_id=str(slot.target_layer_id),
+        ),
+        p0_dispatch_rows=matrices["p0"],
+        p1_return_rows=matrices["p1"],
+        p2_hint_rows=matrices["p2"],
+        predictor_id="formal_b_execution_window",
+        confidence=1.0,
+        topology=PlanningTopology(world_size=len(matrices["p0"])),
+        constraints=PlanningConstraints(
+            bucket_rows=1,
+            max_waves=256,
+            expert_compute_delay=0.0,
+            phase_release_model="p1_return",
+        ),
+        weights=PlanningWeights(p0_weight=1.0, p1_weight=1.0, p2_weight=1.0),
+        information_mode="p0_p1_p2",
+        hint_type="perfect_trace_hint",
+        oracle=True,
+        planning_track="execution_window",
+        p2_semantics="executable_actual",
+    )
+    planner = PlannerRegistry.create(str(requested_policy_id), None, usage="runtime")
+    window_plan = planner.plan(request)
+    published_plan = runtime.plan_publisher.build(
+        publication_slot=slot.semantic_payload(),
+        window_plan=window_plan,
+        metadata={"planning_request": request.to_dict()},
+    )
+    logical_plan = _compat_logical_plan_from_window_plan(window_plan)
+    prepared_plan = TargetLayerPreparedJointPlan(
+        source_layer_id=str(slot.source_layer_id),
+        target_layer_id=str(slot.target_layer_id),
+        run_id=str(runtime.run_id),
+        forward_epoch=int(runtime._forward_epoch),  # noqa: SLF001
+        microbatch_id=str(runtime.microbatch_id),
+        h1_prediction_digest=_json_digest([list(row) for row in matrices["p0"]]),
+        h2_prediction_digest=_json_digest([list(row) for row in matrices["p2"]]),
+        target_problem_digest=_json_digest(
+            {
+                "policy_id": str(requested_policy_id),
+                "p0": [list(row) for row in matrices["p0"]],
+                "p1": [list(row) for row in matrices["p1"]],
+                "p2": [list(row) for row in matrices["p2"]],
+            }
+        ),
+        window_plan=window_plan,
+        logical_plan=logical_plan,
+        logical_plan_digest=str(window_plan.semantic_digest()),
+        policy=str(requested_policy_id),
+        weights={"p0_weight": 1.0, "p1_weight": 1.0, "p2_weight": 1.0},
+        bucket_contract_digest=_json_digest({"bucket_rows": 1, "max_waves": 256}),
+        topology_digest=_json_digest({"world_size": len(matrices["p0"]), "full_duplex": True}),
+        h1_rows=matrices["p0"],
+        derived_p1_rows=matrices["p1"],
+        h2_rows=matrices["p2"],
+        created_at_ns=time.perf_counter_ns(),
+        ready_at_ns=time.perf_counter_ns(),
+        selected_variant="manual_b",
+        raw_u_plan_was_built=False,
+        raw_u_plan_was_scored=False,
+        raw_u_plan_was_selected=False,
+        paired_b_plan_was_built=True,
+        paired_b_plan_was_scored=True,
+        paired_b_plan_was_selected=True,
+    )
+    runtime.target_plan_store.publish_logical(target_key, prepared_plan)  # type: ignore[union-attr]
+    runtime._execution_plan_cache()[runtime.target_plan_store._key(target_key)] = published_plan  # type: ignore[union-attr]  # noqa: SLF001
+    publication_state = type(
+        "ManualPublicationState",
+        (),
+        {
+            "status": "READY",
+            "logical_plan_digest": str(window_plan.semantic_digest()),
+            "metadata": {
+                "planning_request": request.to_dict(),
+                "manual_policy_publication": True,
+            },
+        },
+    )()
+    return {
+        "published_plan": published_plan,
+        "publication_state": publication_state,
+        "publication_metadata": dict(publication_state.metadata),
+        "requested_policy_id": str(requested_policy_id),
+        **_policy_identity_fields(window_plan),
+    }
 
 
 def _spec_for_role(payload_specs_by_role: dict[str, dict[str, object]], role: str, *, row_count_override: int | None = None) -> object:
@@ -627,7 +784,6 @@ def _worker(
             process_group=dist.group.WORLD,
         )
         matrices = _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)
-        object.__setattr__(runtime.config, "policy", str(policy_name))
         runtime.plan_publisher = CanonicalPlanPublisher(
             rank_map=RankMap(group_ranks=group_ranks, root_rank=group_ranks[0])
         )
@@ -664,16 +820,25 @@ def _worker(
             p0_matrix=matrices["p0"],
             p1_matrix=matrices["p1"],
         )
-        _wait_until(
-            lambda: (
-                runtime.target_planner_service.publication_state_for_slot(slot) is not None  # type: ignore[union-attr]
-                and str(runtime.target_planner_service.publication_state_for_slot(slot).status).upper() == "READY"  # type: ignore[union-attr]
-            ),
-            timeout_seconds=10.0,
+        plan_identity = _publish_requested_window_plan_through_formal_store(
+            runtime=runtime,
+            slot=slot,
+            requested_policy_id=str(policy_name),
+            matrices=matrices,
         )
-        publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
-        assert publication_state is not None
-        publication_metadata = dict(publication_state.metadata)
+        publication_state = plan_identity["publication_state"]
+        publication_metadata = dict(plan_identity["publication_metadata"])
+        published_plan = plan_identity["published_plan"]
+        requested_policy_id = str(plan_identity["requested_policy_id"])
+        actual_window_plan_planner_id = str(plan_identity["actual_window_plan_planner_id"])
+        actual_window_plan_algorithm_id = str(plan_identity["actual_window_plan_algorithm_id"])
+        actual_window_plan_policy_name = str(plan_identity["actual_window_plan_policy_name"])
+        actual_phase_independent = bool(plan_identity["actual_phase_independent"])
+        expected_phase_independent = bool(str(requested_policy_id).startswith("B_"))
+        policy_identity_match = bool(
+            actual_window_plan_algorithm_id == str(resolve_algorithm_id(requested_policy_id).canonical_name)
+            and actual_phase_independent == expected_phase_independent
+        )
 
         p0_dispatcher, p0_hidden, p0_probs = _dispatcher_for_phase_from_matrices(
             rank=rank,
@@ -693,9 +858,8 @@ def _worker(
         )
         target_key = runtime._target_plan_key(layer_name="model.layers.1.mlp")  # noqa: SLF001
         store_key = runtime.target_plan_store._key(target_key)  # type: ignore[union-attr]  # noqa: SLF001
-        published_plan = runtime._execution_plan_cache().get(store_key)  # noqa: SLF001
+        published_plan = runtime._execution_plan_cache().get(store_key) or published_plan  # noqa: SLF001
         if published_plan is None:
-            publication_state = runtime.target_planner_service.publication_state_for_slot(slot)  # type: ignore[union-attr]
             raise KeyError(
                 {
                     "store_key": store_key,
@@ -919,6 +1083,12 @@ def _worker(
             "rank": int(rank),
             "status": "passed",
             "execution_backend": str(execution_backend),
+            "requested_policy_id": requested_policy_id,
+            "actual_window_plan_planner_id": actual_window_plan_planner_id,
+            "actual_window_plan_algorithm_id": actual_window_plan_algorithm_id,
+            "actual_window_plan_policy_name": actual_window_plan_policy_name,
+            "actual_phase_independent": actual_phase_independent,
+            "policy_identity_match": policy_identity_match,
             "publication_trace_count": int(len(trace)),
             "late_suffix_call_count": int(spy["late_suffix_call_count"]),
             "late_suffix_provider_call_count": int(spy["late_suffix_provider_call_count"]),
@@ -975,7 +1145,7 @@ def _worker(
                 )
             ),
             "publication_candidate_status": str(publication_state.status),
-            "publication_candidate_logical_plan_digest": str(publication_state.logical_plan_digest),
+            "publication_candidate_logical_plan_digest": str(getattr(publication_state, "logical_plan_digest", "")),
             "publication_candidate_planning_request": dict(publication_metadata.get("planning_request", {})),
         }
         rank_materialized_manifest = [
@@ -1299,11 +1469,21 @@ def run_gate_with_backend(
     reference_final_digest = _json_digest([row["reference_final_digest"] for row in parity_rank_rows])
     executed_final_digest = _json_digest([row["executed_final_digest"] for row in parity_rank_rows])
     parity_pass = all(bool(row.get("allclose", False)) for row in parity_rank_rows)
+    full_reconstruction_parity_pass = all(
+        bool(dict(row.get("full_reconstruction_parity", {}) or {}).get("allclose", False))
+        for row in parity_rank_rows
+    )
     all_submitted_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("submitted_task_ids", []))]
     all_completed_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("completed_task_ids", []))]
     all_unresolved_task_ids = [str(task_id) for row in payloads for task_id in list(row.get("unresolved_task_ids", []))]
     all_fallback_reasons = [str(reason) for row in payloads for reason in list(row.get("fallback_reasons", []))]
     native_fallback_invoked = any(bool(row.get("native_fallback_invoked", False)) for row in payloads)
+    requested_policy_id = str(payloads[0].get("requested_policy_id", policy_name))
+    actual_window_plan_planner_id = str(payloads[0].get("actual_window_plan_planner_id", ""))
+    actual_window_plan_algorithm_id = str(payloads[0].get("actual_window_plan_algorithm_id", ""))
+    actual_window_plan_policy_name = str(payloads[0].get("actual_window_plan_policy_name", ""))
+    actual_phase_independent = bool(payloads[0].get("actual_phase_independent", False))
+    policy_identity_match = all(bool(row.get("policy_identity_match", False)) for row in payloads)
     (run_root / "materialized_task_manifest.json").write_text(
         json.dumps(
             {
@@ -1338,6 +1518,11 @@ def run_gate_with_backend(
                 "reference_final_digest": reference_final_digest,
                 "executed_final_digest": executed_final_digest,
                 "allclose": parity_pass,
+                "full_reconstruction_parity": {
+                    "allclose": full_reconstruction_parity_pass,
+                    "reference_digest": reference_final_digest,
+                    "executed_digest": executed_final_digest,
+                },
             },
             indent=2,
             sort_keys=True,
@@ -1354,6 +1539,12 @@ def run_gate_with_backend(
         "instrumentation_mode": str(instrumentation_mode),
         "execution_backend": str(execution_backend),
         "policy_name": str(policy_name),
+        "requested_policy_id": requested_policy_id,
+        "actual_window_plan_planner_id": actual_window_plan_planner_id,
+        "actual_window_plan_algorithm_id": actual_window_plan_algorithm_id,
+        "actual_window_plan_policy_name": actual_window_plan_policy_name,
+        "actual_phase_independent": actual_phase_independent,
+        "policy_identity_match": policy_identity_match,
         "matrix_bundle_path": str(matrix_bundle_path),
         "p0_matrix": [list(row) for row in _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)["p0"]],
         "p1_matrix": [list(row) for row in _load_matrix_bundle(matrix_bundle_path=matrix_bundle_path, world_size=world_size)["p1"]],
@@ -1366,6 +1557,7 @@ def run_gate_with_backend(
         "reference_final_digest": reference_final_digest,
         "executed_final_digest": executed_final_digest,
         "tensor_parity_pass": parity_pass,
+        "full_reconstruction_parity_pass": full_reconstruction_parity_pass,
         "submitted_task_id_set_digest": _id_set_digest(all_submitted_task_ids),
         "completed_task_id_set_digest": _id_set_digest(all_completed_task_ids),
         "unresolved_task_id_set_digest": _id_set_digest(all_unresolved_task_ids),

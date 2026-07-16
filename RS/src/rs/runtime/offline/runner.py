@@ -24,7 +24,7 @@ from rs.scheduling import (
     MultiPhaseSchedulingProblem,
     ReleaseConstraint,
 )
-from rs.scheduling.multiphase.global_ready_set import replay_and_audit_schedule
+from rs.scheduling.multiphase.replay import replay_and_audit_schedule
 
 
 @dataclass(frozen=True)
@@ -207,40 +207,47 @@ def schedule_greedy(problem: MultiPhaseSchedulingProblem) -> LogicalSchedulePlan
 
 def replay_and_audit_logical_plan(problem: MultiPhaseSchedulingProblem, plan: LogicalSchedulePlan) -> dict[str, Any]:
     raw_schedule = list(plan.diagnostics.get("raw_schedule", []))
-    if raw_schedule:
-        return replay_and_audit_schedule(
-            schedule=raw_schedule,
-            dispatch_matrix=[list(row) for row in problem.p0_dispatch_matrix],
-            combine_matrix=[list(row) for row in problem.p1_return_matrix],
-            next_dispatch_matrix=[list(row) for row in problem.p2_next_dispatch_forecast_matrix],
-            num_gpus=problem.topology.num_gpus,
-            expert_compute_delay=problem.release_model.expert_compute_delay,
-            mode=problem.options.scheduling_mode,
-            scheduler_name=plan.policy_name,
-            planning_time_ms=float(plan.diagnostics.get("solve_time_ms", 0.0)),
-            reported_makespan=float(plan.diagnostics.get("makespan", 0.0)),
-            prediction_used=bool(plan.diagnostics.get("prediction_used", False)),
-        )
-    flow_remaining = {flow.flow_id: int(flow.byte_count) for wave in plan.waves for flow in wave.flows}
-    seen: set[str] = set()
-    for wave in plan.waves:
-        used_src: set[int] = set()
-        used_dst: set[int] = set()
-        for flow in wave.flows:
-            if flow.src_rank in used_src or flow.dst_rank in used_dst:
-                return {"valid": False, "validation_errors": [f"wave {wave.wave_id} violates full-duplex legality"], "makespan": None}
-            used_src.add(flow.src_rank)
-            used_dst.add(flow.dst_rank)
-            seen.add(flow.flow_id)
-            flow_remaining[flow.flow_id] = max(0, flow_remaining.get(flow.flow_id, 0) - int(flow.byte_count))
-    incomplete = [flow_id for flow_id, remaining in flow_remaining.items() if remaining != 0]
-    return {
-        "valid": not incomplete,
-        "validation_errors": [f"incomplete flow coverage: {incomplete!r}"] if incomplete else [],
-        "makespan": float(sum(float(wave.duration) for wave in plan.waves)),
-        "wave_count": len(plan.waves),
-        "replay_makespan": float(sum(float(wave.duration) for wave in plan.waves)),
-    }
+    if not raw_schedule:
+        cursor = 0.0
+        phase_map = {
+            "p0_dispatch": 0,
+            "p1_return": 1,
+            "p2_next_dispatch": 2,
+            "P0": 0,
+            "P1": 1,
+            "P2": 2,
+        }
+        for wave in sorted(plan.waves, key=lambda item: int(item.wave_id)):
+            start = float(cursor)
+            end = start + float(wave.duration)
+            for flow in wave.flows:
+                raw_schedule.append(
+                    {
+                        "chunk_id": str(flow.flow_id),
+                        "flow_id": str(flow.flow_id),
+                        "phase": int(phase_map[str(flow.phase)]),
+                        "src_gpu": int(flow.src_rank),
+                        "dst_gpu": int(flow.dst_rank),
+                        "start": start,
+                        "end": end,
+                        "served_volume": float(flow.byte_count),
+                        "wave_id": int(wave.wave_id),
+                    }
+                )
+            cursor = end
+    return replay_and_audit_schedule(
+        schedule=raw_schedule,
+        dispatch_matrix=[list(row) for row in problem.p0_dispatch_matrix],
+        combine_matrix=[list(row) for row in problem.p1_return_matrix],
+        next_dispatch_matrix=[list(row) for row in problem.p2_next_dispatch_forecast_matrix],
+        num_gpus=problem.topology.num_gpus,
+        expert_compute_delay=problem.release_model.expert_compute_delay,
+        mode=problem.options.scheduling_mode,
+        scheduler_name=plan.policy_name,
+        planning_time_ms=float(plan.diagnostics.get("solve_time_ms", 0.0)),
+        reported_makespan=float(plan.diagnostics.get("makespan", 0.0)) if plan.diagnostics.get("makespan") is not None else None,
+        prediction_used=bool(plan.diagnostics.get("prediction_used", False)),
+    )
 
 
 def summarize_schedule_tail_metrics(

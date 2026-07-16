@@ -87,6 +87,12 @@ def _formal_runner_script() -> Path:
 
 
 def _runtime_status_from_summary(summary: dict[str, Any], parity: dict[str, Any]) -> str:
+    if summary.get("requested_policy_id") in {None, ""}:
+        return "REQUESTED_POLICY_MISSING"
+    if summary.get("actual_window_plan_algorithm_id") in {None, ""}:
+        return "ACTUAL_POLICY_MISSING"
+    if not bool(summary.get("policy_identity_match", False)):
+        return "POLICY_IDENTITY_MISMATCH"
     if summary.get("executed_task_manifest_digest") in {None, ""}:
         return "EXECUTED_DIGEST_MISSING"
     if summary.get("materialized_task_manifest_digest") in {None, ""}:
@@ -96,6 +102,8 @@ def _runtime_status_from_summary(summary: dict[str, Any], parity: dict[str, Any]
     if summary.get("executed_task_manifest_digest") != summary.get("materialized_task_manifest_digest"):
         return "PLAN_IDENTITY_MISMATCH"
     if not bool(parity.get("allclose", False)):
+        return "TENSOR_PARITY_FAILED"
+    if not bool(dict(parity.get("full_reconstruction_parity", {}) or {}).get("allclose", False)):
         return "TENSOR_PARITY_FAILED"
     submitted = sum(int(rank.get("submitted_task_count", 0) or 0) for rank in summary.get("ranks", []))
     completed = sum(int(rank.get("completed_task_count", 0) or 0) for rank in summary.get("ranks", []))
@@ -204,6 +212,12 @@ def _run_formal_gloo_backend(
             "parity_path": str(parity_path),
             "executed_task_manifest_path": str(executed_manifest_path),
             "materialized_task_manifest_path": str(materialized_manifest_path),
+            "requested_policy_id": summary.get("requested_policy_id"),
+            "actual_window_plan_planner_id": summary.get("actual_window_plan_planner_id"),
+            "actual_window_plan_algorithm_id": summary.get("actual_window_plan_algorithm_id"),
+            "actual_window_plan_policy_name": summary.get("actual_window_plan_policy_name"),
+            "actual_phase_independent": summary.get("actual_phase_independent"),
+            "policy_identity_match": summary.get("policy_identity_match"),
             "submitted_task_id_set_digest": summary.get("submitted_task_id_set_digest"),
             "completed_task_id_set_digest": summary.get("completed_task_id_set_digest"),
             "submit_sequence_digest": summary.get("submit_sequence_digest"),

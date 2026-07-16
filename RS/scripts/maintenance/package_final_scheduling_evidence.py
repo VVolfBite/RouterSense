@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +19,10 @@ sys.path.insert(0, str(SOURCE_ROOT / "src"))
 from experiments.paper.result_bundle import build_result_bundle, sha256_file, write_json
 from rs.core.contracts.provenance import compute_source_tree_digest
 
+WINDOWS_ABSOLUTE = re.compile(r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/]")
+WINDOWS_TEMP = re.compile(r"(?i)[A-Z]:[\\/].*?(appdata[\\/]+local[\\/]+temp|temp)[\\/]")
+POSIX_TEMP = re.compile(r"(?<![A-Za-z0-9])/(tmp|var/tmp)/")
+
 
 @dataclass(frozen=True)
 class GitIdentity:
@@ -33,7 +37,8 @@ class GitIdentity:
 class EvidenceValidation:
     expected_commit: str
     commit_identity_valid: bool
-    absolute_path_count: int
+    forbidden_ephemeral_path_count: int
+    external_resource_path_count: int
     scanned_files: int
 
 
@@ -48,7 +53,8 @@ class PackageVerification:
     oracle_control_valid: bool
     runtime_matrix_valid: bool
     audit_result_bundle_consistent: bool
-    absolute_path_count: int
+    forbidden_ephemeral_path_count: int
+    external_resource_path_count: int
     status: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,12 +104,9 @@ def assert_remote_synced(repo_root: Path, branch: str, expected_commit: str) -> 
 
 
 def _iter_text_files(root: Path) -> list[Path]:
+    suffixes = {".json", ".jsonl", ".txt", ".md", ".sha256", ".yaml", ".yml"}
     return sorted(
-        [
-            path
-            for path in root.rglob("*")
-            if path.is_file() and path.suffix.lower() in {".json", ".jsonl", ".txt", ".md", ".sha256"}
-        ],
+        [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in suffixes],
         key=lambda item: item.relative_to(root).as_posix(),
     )
 
@@ -114,30 +117,50 @@ def _scan_for_commit_values(value: Any, expected_commit: str, *, hits: list[str]
             if key in {"commit", "final_commit", "commit_sha"} and child not in {None, ""} and str(child) != str(expected_commit):
                 hits.append(f"{path}:{key}={child}")
             _scan_for_commit_values(child, expected_commit, hits=hits, path=f"{path}.{key}")
-    elif isinstance(value, list):
+        return
+    if isinstance(value, list):
         for index, child in enumerate(value):
             _scan_for_commit_values(child, expected_commit, hits=hits, path=f"{path}[{index}]")
 
 
+def _scan_text_for_paths(text: str) -> tuple[int, int]:
+    forbidden = len(WINDOWS_TEMP.findall(text)) + len(POSIX_TEMP.findall(text)) + text.count("%TEMP%")
+    external = 0
+    for match in WINDOWS_ABSOLUTE.finditer(text):
+        token = match.group(0)
+        if WINDOWS_TEMP.search(token):
+            continue
+        external += 1
+    return int(forbidden), int(external)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def validate_evidence_root(evidence_root: Path, expected_commit: str) -> EvidenceValidation:
     hits: list[str] = []
-    absolute_path_count = 0
+    forbidden = 0
+    external = 0
     scanned = 0
     for path in _iter_text_files(evidence_root):
         scanned += 1
         text = path.read_text(encoding="utf-8-sig")
-        absolute_path_count += text.count("C:\\") + text.count("/tmp/") + text.count("AppData\\Local\\Temp") + text.count("%TEMP%")
+        local_forbidden, local_external = _scan_text_for_paths(text)
+        forbidden += local_forbidden
+        external += local_external
         if path.suffix.lower() == ".json":
-            _scan_for_commit_values(json.loads(text), expected_commit, hits=hits, path=path.relative_to(evidence_root).as_posix())
+            _scan_for_commit_values(_load_json(path), expected_commit, hits=hits, path=path.relative_to(evidence_root).as_posix())
         elif path.suffix.lower() == ".jsonl":
             for line_number, line in enumerate([line for line in text.splitlines() if line.strip()], start=1):
                 _scan_for_commit_values(json.loads(line), expected_commit, hits=hits, path=f"{path.relative_to(evidence_root).as_posix()}:{line_number}")
     if hits:
-        raise RuntimeError("evidence commit mismatch: " + "; ".join(hits[:10]))
+        raise RuntimeError("evidence commit mismatch: " + "; ".join(hits[:20]))
     return EvidenceValidation(
         expected_commit=str(expected_commit),
         commit_identity_valid=True,
-        absolute_path_count=int(absolute_path_count),
+        forbidden_ephemeral_path_count=int(forbidden),
+        external_resource_path_count=int(external),
         scanned_files=int(scanned),
     )
 
@@ -182,9 +205,17 @@ def build_portable_zip(staging_root: Path, zip_path: Path) -> None:
 
 def _verify_checksums(root: Path) -> bool:
     checksum_path = root / "checksums.sha256"
+    if not checksum_path.exists():
+        return False
+    if checksum_path.read_bytes().startswith(b"\xef\xbb\xbf"):
+        return False
     lines = checksum_path.read_text(encoding="utf-8").splitlines()
     for line in lines:
+        if "  " not in line:
+            return False
         digest, relative = line.split("  ", 1)
+        if not relative or "\\" in relative or Path(relative).is_absolute():
+            return False
         target = root / relative
         if not target.exists() or sha256_file(target) != digest:
             return False
@@ -198,17 +229,21 @@ def _portable_zip_paths(zip_path: Path) -> bool:
 
 def _source_digest_valid(root: Path) -> bool:
     manifest_path = root / "source" / "source_manifest.json"
-    if not manifest_path.exists():
-        return False
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     archive_path = root / "source" / "canonical_source.zip"
-    if not archive_path.exists():
+    if not manifest_path.exists() or not archive_path.exists():
         return False
+    manifest = _load_json(manifest_path)
     with tempfile.TemporaryDirectory(prefix="rs_pkg_source_") as tmp:
         unpack = Path(tmp)
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(unpack)
         rs_root = unpack / "RS"
+        if any(path.name == "__pycache__" for path in rs_root.rglob("*")):
+            return False
+        if any(path.suffix.lower() == ".pyc" for path in rs_root.rglob("*")):
+            return False
+        if (rs_root / ".git").exists() or (rs_root / ".pytest_cache").exists():
+            return False
         return str(manifest.get("source_tree_digest")) == compute_source_tree_digest(rs_root)
 
 
@@ -218,12 +253,94 @@ def _sanitize_source_manifest(source_manifest_path: Path) -> None:
             return {key: _sanitize(child) for key, child in value.items()}
         if isinstance(value, list):
             return [_sanitize(child) for child in value]
-        if isinstance(value, str) and (":\\" in value or value.startswith("/tmp/")):
+        if isinstance(value, str) and (":\\" in value or ":/" in value or value.startswith("/tmp/")):
             return Path(value).name
         return value
 
-    payload = _sanitize(json.loads(source_manifest_path.read_text(encoding="utf-8")))
-    write_json(source_manifest_path, payload)
+    write_json(source_manifest_path, _sanitize(_load_json(source_manifest_path)))
+
+
+def _derive_verification_status(fields: dict[str, bool], *, forbidden_ephemeral_path_count: int) -> str:
+    return "PASS" if all(fields.values()) and int(forbidden_ephemeral_path_count) == 0 else "FAILED"
+
+
+def _oracle_control_valid(root: Path) -> bool:
+    path = root / "oracle" / "oracle_control_summary.json"
+    if not path.exists():
+        return False
+    summary = _load_json(path)
+    cases = dict(summary.get("cases", {}) or {})
+    if summary.get("status") != "READY":
+        return False
+    if int(summary.get("dominance_violation_count", 1)) != 0:
+        return False
+    if not all(dict(cases.get(name, {})).get("status") == "PASS" for name in ("joint_advantage", "tie", "unsupported")):
+        return False
+    for record in list(summary.get("records", []) or []):
+        if bool(record.get("comparable")) and not bool(record.get("coverage_valid")):
+            return False
+    return True
+
+
+def _runtime_group_valid(root: Path, family: str, backend: str) -> bool:
+    summary_path = root / "runtime" / family / backend / "formal_runner_summary.json"
+    parity_path = root / "runtime" / family / backend / "parity.json"
+    if not summary_path.exists() or not parity_path.exists():
+        return False
+    summary = _load_json(summary_path)
+    parity = _load_json(parity_path)
+    expected_policy = {
+        "B": "B_barrier_criticality_core_independent",
+        "U": "U_barrier_criticality_global_matching",
+    }[family]
+    return all(
+        (
+            str(summary.get("status")) == "passed",
+            str(summary.get("requested_policy_id")) == expected_policy,
+            bool(summary.get("policy_identity_match", False)),
+            int(sum(int(row.get("submitted_task_count", 0) or 0) for row in summary.get("ranks", []))) == int(sum(int(row.get("completed_task_count", 0) or 0) for row in summary.get("ranks", []))),
+            int(sum(int(row.get("unresolved_task_count", 0) or 0) for row in summary.get("ranks", []))) == 0,
+            int(summary.get("fallback_count", -1)) == 0,
+            summary.get("fallback_reasons") == [],
+            bool(summary.get("native_fallback_invoked", True)) is False,
+            str(summary.get("materialized_task_manifest_digest", "")) != "",
+            str(summary.get("executed_task_manifest_digest", "")) != "",
+            str(summary.get("materialized_task_manifest_digest")) == str(summary.get("executed_task_manifest_digest")),
+            bool(summary.get("tensor_parity_pass", False)),
+            bool(summary.get("full_reconstruction_parity_pass", False)),
+            bool(parity.get("allclose", False)),
+            bool(dict(parity.get("full_reconstruction_parity", {}) or {}).get("allclose", False)),
+        )
+    )
+
+
+def _runtime_matrix_valid(root: Path) -> bool:
+    return all(
+        _runtime_group_valid(root, family, backend)
+        for family in ("B", "U")
+        for backend in ("phase_sync", "async_release")
+    )
+
+
+def _audit_result_bundle_consistent(root: Path) -> bool:
+    capability_path = root / "audit" / "capability_matrix.json"
+    bundle_path = root / "results" / "result_bundle.json"
+    scheduling_path = root / "results" / "scheduling_summary.json"
+    if not capability_path.exists() or not bundle_path.exists() or not scheduling_path.exists():
+        return False
+    capability = _load_json(capability_path)
+    bundle = _load_json(bundle_path)
+    scheduling = _load_json(scheduling_path)
+    strict_ready = bool(dict(scheduling.get("same_core_pair_summary", {}) or {}).get("comparable"))
+    runtime_ready = str(dict(capability.get("gloo_execution_wrapper", {}) or {}).get("status", "")) == "READY"
+    oracle_ready = str(dict(capability.get("O_local", {}) or {}).get("status", "")).startswith("READY")
+    return all(
+        (
+            bool(bundle.get("runtime_correctness_eligible", False)) == runtime_ready,
+            bool(bundle.get("oracle_claim_eligible", False)) == oracle_ready,
+            bool(bundle.get("strict_pair_claim_eligible", False)) == strict_ready,
+        )
+    )
 
 
 def fresh_unpack_verify(zip_path: Path, expected_commit: str) -> PackageVerification:
@@ -231,63 +348,41 @@ def fresh_unpack_verify(zip_path: Path, expected_commit: str) -> PackageVerifica
         root = Path(tmp)
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(root)
-        artifact_index = json.loads((root / "results" / "result_bundle.json").read_text(encoding="utf-8")).get("artifact_index", {})
+        artifact_index = dict(_load_json(root / "results" / "result_bundle.json").get("artifact_index", {}) or {})
         artifact_index_valid = all((root / relative).exists() for relative in artifact_index.values())
         commit_validation = validate_evidence_root(root, expected_commit)
-        package_verification = PackageVerification(
-            checksums_valid=_verify_checksums(root),
+        checksums_valid = _verify_checksums(root)
+        source_digest_valid = _source_digest_valid(root)
+        portable_zip_paths = _portable_zip_paths(zip_path)
+        text_encoding_valid = not (root / "checksums.sha256").read_bytes().startswith(b"\xef\xbb\xbf")
+        oracle_control_valid = _oracle_control_valid(root)
+        runtime_matrix_valid = _runtime_matrix_valid(root)
+        audit_result_bundle_consistent = _audit_result_bundle_consistent(root)
+        fields = {
+            "checksums_valid": checksums_valid,
+            "artifact_index_valid": artifact_index_valid,
+            "commit_identity_valid": commit_validation.commit_identity_valid,
+            "source_digest_valid": source_digest_valid,
+            "portable_zip_paths": portable_zip_paths,
+            "text_encoding_valid": text_encoding_valid,
+            "oracle_control_valid": oracle_control_valid,
+            "runtime_matrix_valid": runtime_matrix_valid,
+            "audit_result_bundle_consistent": audit_result_bundle_consistent,
+        }
+        return PackageVerification(
+            checksums_valid=checksums_valid,
             artifact_index_valid=artifact_index_valid,
             commit_identity_valid=commit_validation.commit_identity_valid,
-            source_digest_valid=_source_digest_valid(root),
-            portable_zip_paths=_portable_zip_paths(zip_path),
-            text_encoding_valid=not (root / "checksums.sha256").read_bytes().startswith(b"\xef\xbb\xbf"),
-            oracle_control_valid=(root / "oracle" / "oracle_control_summary.json").exists(),
-            runtime_matrix_valid=all(
-                (root / relative).exists()
-                for relative in (
-                    "runtime/B/phase_sync/formal_runner_summary.json",
-                    "runtime/B/async_release/formal_runner_summary.json",
-                    "runtime/U/phase_sync/formal_runner_summary.json",
-                    "runtime/U/async_release/formal_runner_summary.json",
-                )
-            ),
-            audit_result_bundle_consistent=(root / "audit" / "capability_matrix.json").exists() and (root / "results" / "result_bundle.json").exists(),
-            absolute_path_count=commit_validation.absolute_path_count,
-            status="PASS",
+            source_digest_valid=source_digest_valid,
+            portable_zip_paths=portable_zip_paths,
+            text_encoding_valid=text_encoding_valid,
+            oracle_control_valid=oracle_control_valid,
+            runtime_matrix_valid=runtime_matrix_valid,
+            audit_result_bundle_consistent=audit_result_bundle_consistent,
+            forbidden_ephemeral_path_count=commit_validation.forbidden_ephemeral_path_count,
+            external_resource_path_count=commit_validation.external_resource_path_count,
+            status=_derive_verification_status(fields, forbidden_ephemeral_path_count=commit_validation.forbidden_ephemeral_path_count),
         )
-        if not all(
-            (
-                package_verification.checksums_valid,
-                package_verification.artifact_index_valid,
-                package_verification.commit_identity_valid,
-                package_verification.source_digest_valid,
-                package_verification.portable_zip_paths,
-                package_verification.text_encoding_valid,
-                package_verification.oracle_control_valid,
-                package_verification.runtime_matrix_valid,
-                package_verification.audit_result_bundle_consistent,
-                package_verification.absolute_path_count == 0,
-            )
-        ):
-            package_verification = PackageVerification(**{**package_verification.to_dict(), "status": "FAILED"})
-        return package_verification
-
-
-def _copy_runtime_tree(source_root: Path, staging_root: Path) -> dict[str, Any]:
-    runtime_root = staging_root / "runtime"
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    copied: dict[str, Any] = {"status": "RUNTIME_CORRECTNESS", "records": [], "tensor_parity_pass": True}
-    layouts = {
-        "B": source_root / "runtime" / "B",
-        "U": source_root / "runtime" / "U",
-    }
-    for family, family_root in layouts.items():
-        for backend in ("phase_sync", "async_release"):
-            src = family_root / backend
-            dst = runtime_root / family / backend
-            if src.exists():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-    return copied
 
 
 def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
@@ -299,7 +394,7 @@ def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
     source_root.mkdir(parents=True, exist_ok=True)
     archive = source_root / "canonical_source.zip"
     subprocess.run(
-        ["python", str(packager), "--scope", "mainline", str(archive)],
+        [sys.executable, str(packager), "--scope", "mainline", str(archive)],
         cwd=str(source_repo),
         text=True,
         capture_output=True,
@@ -311,6 +406,134 @@ def _copy_source_archive(repo_root: Path, staging_root: Path) -> None:
             zf.extractall(unpack)
         shutil.copy2(unpack / "source_manifest.json", source_root / "source_manifest.json")
     _sanitize_source_manifest(source_root / "source_manifest.json")
+
+
+def _write_git_files(staging_root: Path, identity: GitIdentity, *, commit: str, remote_commit: str) -> None:
+    git_root = staging_root / "git"
+    git_root.mkdir(parents=True, exist_ok=True)
+    for name, value in {
+        "branch.txt": identity.branch,
+        "starting_commit.txt": commit,
+        "final_commit.txt": commit,
+        "remote_commit.txt": remote_commit,
+        "status.txt": identity.status_short,
+        "remote.txt": identity.remote,
+        "commits.txt": f"{commit}\n",
+    }.items():
+        (git_root / name).write_text(str(value) + ("" if str(value).endswith("\n") else "\n"), encoding="utf-8", newline="\n")
+
+
+def _run_audit(source_repo: Path, staging_root: Path) -> None:
+    audit_output = staging_root / "audit"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "experiments.paper.cli",
+            "audit",
+            "--config",
+            "configs/official/paper/capability_audit.yaml",
+            "--evidence-dir",
+            str(staging_root),
+            "--output-dir",
+            str(audit_output),
+        ],
+        cwd=str(source_repo),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    results_root = staging_root / "results"
+    results_root.mkdir(parents=True, exist_ok=True)
+    for name in ("scheduling_summary.json", "prediction_summary.json", "hiding_summary.json", "runtime_summary.json", "result_bundle.json"):
+        src = audit_output / name
+        if src.exists():
+            shutil.copy2(src, results_root / name)
+    consumed_config = audit_output / "consumed_config.json"
+    if consumed_config.exists():
+        consumed_config.unlink()
+
+
+def _rebuild_bundle_and_manifest(
+    *,
+    staging_root: Path,
+    branch: str,
+    commit: str,
+    remote_commit: str,
+    package_verification: dict[str, Any] | None,
+    remote_synced: bool,
+    git_clean: bool,
+) -> None:
+    results_root = staging_root / "results"
+    existing_bundle = _load_json(results_root / "result_bundle.json")
+    scheduling_summary = _load_json(results_root / "scheduling_summary.json") if (results_root / "scheduling_summary.json").exists() else None
+    prediction_summary = _load_json(results_root / "prediction_summary.json") if (results_root / "prediction_summary.json").exists() else None
+    hiding_summary = _load_json(results_root / "hiding_summary.json") if (results_root / "hiding_summary.json").exists() else None
+    runtime_summary = _load_json(results_root / "runtime_summary.json") if (results_root / "runtime_summary.json").exists() else None
+    oracle_control_summary = _load_json(staging_root / "oracle" / "oracle_control_summary.json") if (staging_root / "oracle" / "oracle_control_summary.json").exists() else None
+    artifact_index = build_relative_artifact_index(staging_root)
+    rebuilt = build_result_bundle(
+        branch=branch,
+        commit=commit,
+        config_digest=str(existing_bundle["run_identity"]["config_digest"]),
+        claim_scope=str(existing_bundle["run_identity"]["claim_scope"]),
+        status=str(existing_bundle["status"]),
+        scheduling_summary=scheduling_summary,
+        prediction_summary=prediction_summary,
+        hiding_summary=hiding_summary,
+        runtime_summary=runtime_summary,
+        oracle_control_summary=oracle_control_summary,
+        package_verification=package_verification,
+        remote_synced=remote_synced,
+        git_clean=git_clean,
+        artifact_index=artifact_index,
+    )
+    write_json(results_root / "result_bundle.json", rebuilt)
+    runtime_status = None if runtime_summary is None else runtime_summary.get("status")
+    strict_pair_status = None if scheduling_summary is None else dict(scheduling_summary.get("same_core_pair_summary", {}) or {}).get("status")
+    oracle_status = None if oracle_control_summary is None else oracle_control_summary.get("status")
+    package_status = None if package_verification is None else package_verification.get("status")
+    write_json(
+        staging_root / "run_manifest.json",
+        {
+            "branch": branch,
+            "starting_commit": commit,
+            "final_commit": commit,
+            "remote_commit": remote_commit,
+            "git_clean": bool(git_clean),
+            "remote_synced": bool(remote_synced),
+            "oracle_control_status": oracle_status,
+            "strict_pair_status": strict_pair_status,
+            "runtime_matrix_status": runtime_status,
+            "package_verification_status": package_status,
+            "final_status": rebuilt["status"],
+        },
+    )
+
+
+def _prepare_staging(
+    *,
+    repo_root: Path,
+    source_repo: Path,
+    evidence_root: Path,
+    staging_root: Path,
+    identity: GitIdentity,
+    commit: str,
+    remote_commit: str,
+) -> None:
+    copy_evidence_tree(evidence_root, staging_root)
+    _copy_source_archive(repo_root, staging_root)
+    _write_git_files(staging_root, identity, commit=commit, remote_commit=remote_commit)
+    _run_audit(source_repo, staging_root)
+    _rebuild_bundle_and_manifest(
+        staging_root=staging_root,
+        branch=identity.branch,
+        commit=commit,
+        remote_commit=remote_commit,
+        package_verification={"status": "FAILED"},
+        remote_synced=True,
+        git_clean=True,
+    )
 
 
 def main() -> int:
@@ -335,111 +558,65 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="rs_final_stage_") as tmp:
         staging_root = Path(tmp) / "pkg"
-        copy_evidence_tree(evidence_root, staging_root)
-        _copy_source_archive(repo_root, staging_root)
-        (staging_root / "git").mkdir(parents=True, exist_ok=True)
-        for name, value in {
-            "branch.txt": identity.branch,
-            "starting_commit.txt": args.expected_commit,
-            "final_commit.txt": args.expected_commit,
-            "remote_commit.txt": remote_commit,
-            "status.txt": identity.status_short,
-            "remote.txt": identity.remote,
-            "commits.txt": f"{args.expected_commit}\n",
-        }.items():
-            (staging_root / "git" / name).write_text(str(value) + ("\n" if not str(value).endswith("\n") else ""), encoding="utf-8", newline="\n")
-        audit_output = staging_root / "audit"
-        subprocess.run(
-            [
-                "python",
-                "-m",
-                "experiments.paper.cli",
-                "audit",
-                "--config",
-                "configs/official/paper/capability_audit.yaml",
-                "--evidence-dir",
-                str(staging_root),
-                "--output-dir",
-                str(audit_output),
-            ],
-            cwd=str(source_repo),
-            text=True,
-            capture_output=True,
-            check=True,
+        _prepare_staging(
+            repo_root=repo_root,
+            source_repo=source_repo,
+            evidence_root=evidence_root,
+            staging_root=staging_root,
+            identity=identity,
+            commit=args.expected_commit,
+            remote_commit=remote_commit,
         )
-        results_root = staging_root / "results"
-        results_root.mkdir(parents=True, exist_ok=True)
-        for name in ("scheduling_summary.json", "prediction_summary.json", "hiding_summary.json", "runtime_summary.json", "result_bundle.json"):
-            src = audit_output / name
-            if src.exists():
-                shutil.copy2(src, results_root / name)
-        consumed_config = audit_output / "consumed_config.json"
-        if consumed_config.exists():
-            consumed_config.unlink()
-        artifact_index = build_relative_artifact_index(staging_root)
-        bundle = json.loads((results_root / "result_bundle.json").read_text(encoding="utf-8"))
-        rebuilt = build_result_bundle(
+        write_json(staging_root / "package_verification.json", {"status": "FAILED"})
+        write_relative_checksums(staging_root)
+        candidate_zip = output_dir / f"RouterSense_final_scheduling_evidence_{args.expected_commit[:8]}_candidate.zip"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        build_portable_zip(staging_root, candidate_zip)
+        candidate_verification = fresh_unpack_verify(candidate_zip, args.expected_commit)
+        if candidate_verification.status != "PASS":
+            if candidate_zip.exists():
+                candidate_zip.unlink()
+            raise SystemExit("candidate package verification failed")
+
+        write_json(staging_root / "package_verification.json", candidate_verification.to_dict())
+        _rebuild_bundle_and_manifest(
+            staging_root=staging_root,
             branch=identity.branch,
             commit=args.expected_commit,
-            config_digest=str(bundle["run_identity"]["config_digest"]),
-            claim_scope=str(bundle["run_identity"]["claim_scope"]),
-            status=str(bundle["status"]),
-            scheduling_summary=json.loads((results_root / "scheduling_summary.json").read_text(encoding="utf-8")) if (results_root / "scheduling_summary.json").exists() else None,
-            prediction_summary=json.loads((results_root / "prediction_summary.json").read_text(encoding="utf-8")) if (results_root / "prediction_summary.json").exists() else None,
-            hiding_summary=json.loads((results_root / "hiding_summary.json").read_text(encoding="utf-8")) if (results_root / "hiding_summary.json").exists() else None,
-            runtime_summary=json.loads((results_root / "runtime_summary.json").read_text(encoding="utf-8")) if (results_root / "runtime_summary.json").exists() else None,
-            oracle_control_summary=json.loads((staging_root / "oracle" / "oracle_control_summary.json").read_text(encoding="utf-8")) if (staging_root / "oracle" / "oracle_control_summary.json").exists() else None,
-            package_verification={"status": "PASS"},
+            remote_commit=remote_commit,
+            package_verification=candidate_verification.to_dict(),
             remote_synced=True,
             git_clean=True,
-            artifact_index=artifact_index,
         )
-        write_json(results_root / "result_bundle.json", rebuilt)
-        artifact_index = build_relative_artifact_index(staging_root)
-        rebuilt["artifact_index"] = artifact_index
-        write_json(results_root / "result_bundle.json", rebuilt)
-        run_manifest = {
-            "branch": identity.branch,
-            "starting_commit": args.expected_commit,
-            "final_commit": args.expected_commit,
-            "remote_commit": remote_commit,
-            "git_clean": True,
-            "remote_synced": True,
-            "oracle_control_status": json.loads((staging_root / "oracle" / "oracle_control_summary.json").read_text(encoding="utf-8")).get("status"),
-            "strict_pair_status": json.loads((staging_root / "scheduling" / "strict_same_core_summary.json").read_text(encoding="utf-8")).get("status") if (staging_root / "scheduling" / "strict_same_core_summary.json").exists() else None,
-            "runtime_matrix_status": json.loads((results_root / "runtime_summary.json").read_text(encoding="utf-8")).get("status"),
-            "package_verification_status": "PASS",
-            "final_status": rebuilt["status"],
-        }
-        write_json(staging_root / "run_manifest.json", run_manifest)
-        pre_zip_verification = {
-            "checksums_valid": False,
-            "artifact_index_valid": True,
-            "commit_identity_valid": True,
-            "source_digest_valid": True,
-            "portable_zip_paths": True,
-            "text_encoding_valid": True,
-            "oracle_control_valid": True,
-            "runtime_matrix_valid": True,
-            "audit_result_bundle_consistent": True,
-            "absolute_path_count": 0,
-            "status": "PASS",
-        }
-        write_json(staging_root / "package_verification.json", pre_zip_verification)
         write_relative_checksums(staging_root)
+
         zip_name = f"RouterSense_final_scheduling_evidence_{args.expected_commit[:8]}_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-        zip_path = output_dir / zip_name
-        if output_dir.exists():
-            for old in output_dir.iterdir():
-                if old.is_file():
-                    old.unlink()
-                else:
-                    shutil.rmtree(old)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        build_portable_zip(staging_root, zip_path)
-        verification = fresh_unpack_verify(zip_path, args.expected_commit)
-        write_json(output_dir / f"{zip_path.name}.verification.json", verification.to_dict())
-        print(json.dumps({"zip_path": str(zip_path), "zip_sha256": sha256_file(zip_path), "verification": verification.to_dict()}, ensure_ascii=False, indent=2))
+        final_zip = output_dir / zip_name
+        for old in output_dir.iterdir():
+            if old == final_zip:
+                continue
+            if old.is_file():
+                old.unlink()
+            else:
+                shutil.rmtree(old)
+        build_portable_zip(staging_root, final_zip)
+        final_verification = fresh_unpack_verify(final_zip, args.expected_commit)
+        internal_verification = _load_json(staging_root / "package_verification.json")
+        if final_verification.to_dict() != internal_verification or final_verification.status != "PASS":
+            if final_zip.exists():
+                final_zip.unlink()
+            raise SystemExit("final package verification failed")
+        print(
+            json.dumps(
+                {
+                    "zip_path": str(final_zip),
+                    "zip_sha256": sha256_file(final_zip),
+                    "verification": final_verification.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0
 
 

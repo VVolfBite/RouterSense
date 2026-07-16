@@ -106,6 +106,14 @@ def replay_and_audit_schedule(
         wave_count = len({(float(entry["start"]), float(entry["end"])) for entry in schedule})
     send_busy_time = [sum(max(0.0, float(end) - float(start)) for start, end, _entry in send_intervals[gpu]) for gpu in range(num_gpus)]
     recv_busy_time = [sum(max(0.0, float(end) - float(start)) for start, end, _entry in recv_intervals[gpu]) for gpu in range(num_gpus)]
+    target_volume_by_phase = {
+        phase: sum(value for (key_phase, _src, _dst), value in target_by_key.items() if int(key_phase) == int(phase))
+        for phase in (0, 1, 2)
+    }
+    served_volume_by_phase = {
+        phase: sum(value for (key_phase, _src, _dst), value in served_by_key.items() if int(key_phase) == int(phase))
+        for phase in (0, 1, 2)
+    }
     return {
         "scheduler_name": scheduler_name,
         "mode": mode,
@@ -118,5 +126,8 @@ def replay_and_audit_schedule(
         "barrier_times": barrier_times,
         "send_busy_time": send_busy_time,
         "recv_busy_time": recv_busy_time,
+        "target_volume_by_phase": target_volume_by_phase,
+        "served_volume_by_phase": served_volume_by_phase,
+        "raw_schedule": ordered_schedule,
         "validation_errors": errors,
     }

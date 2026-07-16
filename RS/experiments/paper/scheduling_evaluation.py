@@ -107,18 +107,27 @@ def _common_core_metadata(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _phase2_served_volume(audit: dict[str, Any]) -> float:
+    served = dict(audit.get("served_volume_by_phase", {}) or {})
+    return float(served.get(2, served.get("2", 0.0)) or 0.0)
+
+
+def _phase2_truth_report(window: ReplayWindow) -> dict[str, float]:
     total = 0.0
-    for row in audit.get("raw_schedule", ()) or ():
-        phase = row.get("phase")
-        flow_id = str(row.get("flow_id", ""))
-        chunk_id = str(row.get("chunk_id", ""))
-        if phase in {2, "p2_next_dispatch", "phase2"} or "phase2" in flow_id or "p2_next_dispatch" in flow_id or "phase2" in chunk_id:
-            total += float(row.get("served_volume", 0.0) or 0.0)
-    return total
-
-
-def _phase2_truth_volume(window: ReplayWindow) -> float:
-    return float(sum(sum(int(value) for value in row) for row in window.p2_truth_rows))
+    self_volume = 0.0
+    remote = 0.0
+    for src, row in enumerate(window.p2_truth_rows):
+        for dst, value in enumerate(row):
+            volume = float(int(value))
+            total += volume
+            if int(src) == int(dst):
+                self_volume += volume
+            else:
+                remote += volume
+    return {
+        "truth_p2_total_volume": total,
+        "truth_p2_self_volume": self_volume,
+        "truth_p2_remote_volume": remote,
+    }
 
 
 def _execution_window_request(*, replay_window: ReplayWindow, planning_hint: PlanningHint, bucket_rows: int = 1) -> Any:
@@ -170,20 +179,20 @@ def _execution_window_bridge_summary(*, replay_window: ReplayWindow, planning_hi
         planning_hint=planning_hint,
         policy_name=str(policy_name),
     )
-    truth_volume = _phase2_truth_volume(replay_window)
+    truth = _phase2_truth_report(replay_window)
     return {
         "policy_id": str(policy_name),
-        "truth_p2_volume": truth_volume,
+        **truth,
         "direct_global_scheduler": {
             "audit_valid": bool(direct_audit.get("valid", False)),
-            "phase2_served_volume": _phase2_served_volume(dict(direct_plan.metadata)),
+            "served_p2_remote_volume": _phase2_served_volume(direct_audit),
             "validation_errors": list(direct_audit.get("validation_errors", ()) or ()),
         },
         "replay_engine": {
             "audit_valid": bool(replay_result.get("audit_valid", False)),
             "planning_track": replay_result.get("planning_track"),
             "p2_semantics": replay_result.get("p2_semantics"),
-            "phase2_served_volume": _phase2_served_volume(dict(replay_result.get("plan_metadata", {}))),
+            "served_p2_remote_volume": _phase2_served_volume(dict(replay_result.get("audit", {}))),
             "validation_errors": list(dict(replay_result.get("audit", {})).get("validation_errors", ()) or ()),
         },
     }
