@@ -1,4 +1,0 @@
-{
-  "status": "passed",
-  "command": "python experiments/run_offline_replay.py --config configs/offline_replay.yaml"
-}

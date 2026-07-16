@@ -1,6 +1,0 @@
-{
-  "offline_smoke": "passed",
-  "contract_tests": "18 passed",
-  "gloo_gate": "passed",
-  "runtime_state_dict_style_access_count": 0
-}

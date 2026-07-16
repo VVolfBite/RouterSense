@@ -40,9 +40,6 @@
 
 以下文件继续保留，但不再是当前默认入口：
 
-- `tmp_comm_ramp_selected_4gpu.yaml`
-- `tmp_comm_ramp_selected_bucket1024_4gpu.yaml`
-- `tmp_comm_ramp_256x128_disabled.yaml`
 - `paper_core_*`
 - `paper_phase_local_*`
 - `wire_slim_core_4gpu_64.yaml`
@@ -76,4 +73,5 @@
 如果只是继续当前论文主线实验：
 
 1. 默认先用 `natural_256x128_4gpu.yaml`
-2. 只有做历史对照或消融时，才回到 `tmp_*` / `paper_*` 配置
+2. 临时 `tmp_*` 配置已经从当前工作树移除；如需复现历史临时组合，请从 Git 历史恢复
+3. 只有做历史对照或消融时，才回到 `paper_*` / `wire_*` 配置
