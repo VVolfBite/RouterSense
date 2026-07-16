@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rs.core.hashing import stable_hash_dict
 from rs.scheduling.traffic_matrix import matrix_digest_remote
 
 from .adapters.prediction_adapter import evaluate_traffic_prediction
@@ -84,23 +83,29 @@ def evaluate_prediction(
             source_layer_id=str(fixture["metadata"].get("layer_id", "0")),
             target_layer_id=str(int(fixture["metadata"].get("layer_id", 0) or 0) + 1),
         )
-        prediction_regret = None if not perfect["makespan"] else float((zero["makespan"] - perfect["makespan"]) / perfect["makespan"])
-        gain_over_zero = None
         records.append(
             PredictionEvaluationRecord(
                 instance_id=traffic.instance_id,
-                predictor_id="predicted_missing",
+                predictor_id=None,
                 input_digest=matrix_digest_remote(traffic.P0_matrix),
-                prediction_digest="MISSING_CAPABILITY",
+                prediction_digest=None,
                 truth_digest=matrix_digest_remote(traffic.P2_truth_matrix),
-                no_future_leakage=True,
-                raw_prediction_metrics={"predicted_status": "MISSING_CAPABILITY"},
-                perfect_plan_metrics={"objective": perfect["makespan"], "hint_type": "perfect_trace_hint"},
-                predicted_plan_metrics={"status": "MISSING_CAPABILITY"},
-                zero_plan_metrics={"objective": zero["makespan"], **zero_metrics},
-                shuffled_plan_metrics={"objective": shuffled["makespan"], "hint_digest": stable_hash_dict({"rows": [list(r) for r in shuffled_rows]})},
-                prediction_regret=prediction_regret,
-                gain_over_zero=gain_over_zero,
+                no_future_leakage=None,
+                allowed_input_fields=("current_dispatch_rows", "current_return_rows", "history_dispatch_rows", "source_layer_id", "target_layer_id"),
+                prediction_ready_at=None,
+                truth_available_at=None,
+                raw_prediction_metrics={"status": "MISSING_CAPABILITY"},
+                perfect_plan_metrics={"status": "BASELINE", "objective": perfect.get("objective"), "hint_type": "perfect_trace_hint"},
+                predicted_plan_metrics={
+                    "status": "MISSING_CAPABILITY",
+                    "reason": "formal predicted paper path not executed",
+                    "allowed_input_fields": ["current_dispatch_rows", "current_return_rows", "history_dispatch_rows", "source_layer_id", "target_layer_id"],
+                    "truth_digest_present_in_input": False,
+                },
+                zero_plan_metrics={"status": "BASELINE", "objective": zero.get("objective"), **zero_metrics},
+                shuffled_plan_metrics={"status": "BASELINE", "objective": shuffled.get("objective"), "hint_type": "shuffled_control"},
+                prediction_regret=None,
+                gain_over_zero=None,
                 metadata=metadata,
             )
         )

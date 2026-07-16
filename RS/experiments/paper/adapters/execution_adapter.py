@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 
-from rs.core.contracts.execution import ActualPhaseContext, ExecutionOutcome
-from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+from rs.core.contracts.execution import ActualPhaseContext
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     FutureDemandHint,
@@ -69,14 +66,23 @@ def build_phase_contexts_from_matrix(
                     release_state="ready",
                     demand_known_at="router_ready",
                     payload_exists=True,
-                    p2_hint=FutureDemandHint(hint_mode="deterministic_stub", hint_digest="paper-digest", hint_source="paper"),
+                    p2_hint=FutureDemandHint(
+                        hint_mode="deterministic_stub",
+                        hint_digest="paper-digest",
+                        hint_source="paper",
+                    ),
                 )
             )
         )
     return tuple(contexts)
 
 
-def actual_phase_context_from_ready_context(ready_context, *, phase: str, layer_id: str = "0") -> ActualPhaseContext:
+def actual_phase_context_from_ready_context(
+    ready_context,
+    *,
+    phase: str,
+    layer_id: str = "0",
+) -> ActualPhaseContext:
     return ActualPhaseContext(
         layer_id=str(layer_id),
         phase=str(phase),
@@ -85,29 +91,3 @@ def actual_phase_context_from_ready_context(ready_context, *, phase: str, layer_
         layout_digest=str(ready_context.canonical_receive_layout_id),
         metadata={"phase_ready_context": ready_context.to_dict()},
     )
-
-
-@dataclass
-class _SuccessExecutor:
-    def execute(self, *, plan, invocation, context) -> ExecutionOutcome:
-        submitted = tuple(
-            str(item.task_id)
-            for batch in plan.batches
-            for item in batch.slices
-            if str(item.payload_role) == str(invocation.payload_role)
-        )
-        return ExecutionOutcome(
-            success=True,
-            output_payload=invocation.input_tensor.clone() if hasattr(invocation, "input_tensor") else None,
-            submitted_task_ids=submitted,
-            completed_task_ids=submitted,
-            failed_task_ids=tuple(),
-            unresolved_task_ids=tuple(),
-            executed_batch_count=len(plan.batches),
-            all_work_completed=True,
-            details={"backend_id": "paper-success-stub"},
-        )
-
-
-def build_execution_pipeline() -> RuntimeExecutionPipeline:
-    return RuntimeExecutionPipeline(executor=_SuccessExecutor())

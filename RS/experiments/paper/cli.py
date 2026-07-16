@@ -15,14 +15,17 @@ ROOT = ensure_src_on_path()
 
 from rs.core.hashing import stable_hash_dict
 
+from .adapters.trace_adapter import capture_trace_from_config
 from .aggregation import aggregate_results
-from .capability_audit import render_capability_markdown, run_capability_audit
+from .capability_audit import apply_capability_evidence, baseline_capability_matrix, render_capability_markdown
+from .configuration import consumed_config_payload, validate_paper_config
 from .contracts import RecordMetadata
 from .hiding_evaluation import evaluate_hiding_gap
 from .prediction_evaluation import evaluate_prediction
-from .result_bundle import write_json
-from .runtime_evaluation import evaluate_runtime_correctness
+from .result_bundle import build_result_bundle, write_json
+from .runtime_evaluation import evaluate_materialization_contract_smoke, evaluate_runtime_correctness_with_gloo
 from .scheduling_evaluation import evaluate_scheduling
+from .traffic_builder import build_traffic_instances_from_trace_bundle
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -33,13 +36,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         cmd.add_argument("--config", default="")
         cmd.add_argument("--output-dir", default="")
         cmd.add_argument("--input", default="")
+        cmd.add_argument("--model-path", default="")
+        cmd.add_argument("--prompts", default="")
     return parser.parse_args(argv)
 
 
 def _load_config(path: str, *, default_rel: str) -> tuple[dict[str, Any], Path]:
     config_path = ROOT / default_rel if not path else Path(path)
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    return dict(payload or {}), config_path
+    config = dict(payload or {})
+    validate_paper_config(config)
+    return config, config_path
 
 
 def _git_text(command: str) -> str:
@@ -55,7 +62,7 @@ def _git_text(command: str) -> str:
     return result.stdout.strip()
 
 
-def _metadata(*, config: dict[str, Any], config_path: Path) -> RecordMetadata:
+def _metadata(*, config: dict[str, Any]) -> RecordMetadata:
     config_digest = stable_hash_dict(config)
     branch = _git_text("git branch --show-current")
     commit = _git_text("git rev-parse HEAD")
@@ -78,102 +85,145 @@ def _output_dir(args: argparse.Namespace, config: dict[str, Any], name: str) -> 
     return ROOT / str(base) / name
 
 
-def _write_smoke_summary(output_dir: Path, payload: dict[str, Any]) -> None:
-    write_json(output_dir / "smoke_summary.json", payload)
+def _selected_layers(config: dict[str, Any]) -> set[str] | None:
+    layers = config.get("layers")
+    if layers is None or layers == "auto" or layers == []:
+        return None
+    return {str(item) for item in layers}
 
 
-def cmd_audit(args: argparse.Namespace) -> int:
-    config, config_path = _load_config(args.config, default_rel="configs/official/paper/capability_audit.yaml")
-    output_dir = _output_dir(args, config, "audit")
+def _resolved_input_path(config: dict[str, Any], *, cli_input: str = "") -> Path:
+    source = cli_input or str(config.get("inputs", {}).get("source", ""))
+    if not source:
+        raise ValueError("inputs.source must be non-empty or --input must be provided")
+    return ROOT / source if not Path(source).is_absolute() else Path(source)
+
+
+def _write_common_output(output_dir: Path, config: dict[str, Any], input_path: str | None = None) -> RecordMetadata:
     output_dir.mkdir(parents=True, exist_ok=True)
-    metadata = _metadata(config=config, config_path=config_path)
-    matrix = run_capability_audit(repo_root=ROOT)
-    write_json(output_dir / "capability_matrix.json", matrix)
-    (output_dir / "CAPABILITY_AUDIT.md").write_text(render_capability_markdown(matrix), encoding="utf-8")
-    scheduling = evaluate_scheduling(
-        fixture_dir=ROOT / "tests/fixtures/offline_replay_smoke",
+    metadata = _metadata(config=config)
+    consumed = consumed_config_payload(config, output_dir=output_dir, input_path=input_path)
+    write_json(output_dir / "consumed_config.json", consumed)
+    return metadata
+
+
+def cmd_capture_trace(args: argparse.Namespace) -> int:
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/trace_capture.yaml")
+    output_dir = _output_dir(args, config, "capture_trace")
+    metadata = _write_common_output(output_dir, config, input_path=args.prompts or config["inputs"].get("source"))
+    model_path = args.model_path or os.environ.get("RS_MODEL_PATH", "")
+    if not model_path:
+        raise SystemExit("capture-trace requires --model-path or RS_MODEL_PATH")
+    prompts_path = args.prompts or str(_resolved_input_path(config))
+    bundle_dir = capture_trace_from_config(
+        output_dir=output_dir,
+        model_id=str(config["models"]["model_id"]),
+        model_path=str(model_path),
+        prompts_path=str(prompts_path),
+        run_id=str(metadata.run_id),
+        precision=str(config.get("measurement", {}).get("precision", "bf16")),
+    )
+    write_json(
+        output_dir / "capture_trace_summary.json",
+        {"status": "OK", "bundle_dir": str(bundle_dir), "model_path": str(model_path), "prompts_path": str(prompts_path)},
+    )
+    print(json.dumps({"output_dir": str(output_dir), "bundle_dir": str(bundle_dir)}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_build_traffic(args: argparse.Namespace) -> int:
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/trace_capture.yaml")
+    output_dir = _output_dir(args, config, "build_traffic")
+    input_dir = Path(args.input) if args.input else _resolved_input_path(config)
+    metadata = _write_common_output(output_dir, config, input_path=str(input_dir))
+    if not input_dir.exists():
+        summary = {"status": "ENVIRONMENT_BLOCKED", "reason": f"trace bundle missing: {input_dir}"}
+        write_json(output_dir / "build_traffic_summary.json", summary)
+        print(json.dumps({"output_dir": str(output_dir), **summary}, ensure_ascii=False, indent=2))
+        return 0
+    trace_samples, traffic_instances = build_traffic_instances_from_trace_bundle(
+        bundle_dir=input_dir,
+        virtual_ep_sizes=tuple(int(item) for item in config["virtual_ep_sizes"]),
+        selected_layers=_selected_layers(config),
         metadata=metadata,
-        model_id=metadata.model_id,
-        model_revision=metadata.model_revision,
-        policy_ids=("birkhoff_von_neumann_fluid", "exact_small_instance_reference", "B_birkhoff", "U_barrier_criticality_global_matching"),
+        cost_model_id=str(config["cost_model"]),
     )
-    prediction = evaluate_prediction(
-        fixture_dir=ROOT / "tests/fixtures/offline_replay_smoke",
-        metadata=metadata,
-        model_id=metadata.model_id,
-        model_revision=metadata.model_revision,
-        joint_policy_id="U_barrier_criticality_global_matching",
-    )
-    hiding = evaluate_hiding_gap(metadata=metadata, model_id=metadata.model_id)
-    runtime = evaluate_runtime_correctness(metadata=metadata)
-    write_json(output_dir / "scheduling_summary.json", scheduling)
-    write_json(output_dir / "prediction_summary.json", prediction)
-    write_json(output_dir / "hiding_summary.json", hiding)
-    write_json(output_dir / "runtime_summary.json", runtime)
-    _write_smoke_summary(
-        output_dir,
-        {
-            "tiny_scheduling_status": scheduling["status"],
-            "tiny_prediction_status": prediction["status"],
-            "tiny_hiding_status": hiding["status"],
-            "tiny_runtime_status": runtime["status"],
-            "real_trace_offline_smoke": "MISSING_CAPABILITY",
-            "reason": "clean frozen clone does not contain a replay-derived real trace bundle artifact",
-        },
-    )
-    print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
+    write_json(output_dir / "trace_samples.json", [item.to_dict() for item in trace_samples])
+    write_json(output_dir / "traffic_instances.json", [item.to_dict() for item in traffic_instances])
+    veps_present = sorted({int(item.virtual_ep_size) for item in traffic_instances})
+    summary = {
+        "status": "OK",
+        "trace_sample_count": len(trace_samples),
+        "traffic_instance_count": len(traffic_instances),
+        "virtual_ep_sizes_requested": list(config["virtual_ep_sizes"]),
+        "virtual_ep_sizes_present": veps_present,
+    }
+    write_json(output_dir / "build_traffic_summary.json", summary)
+    print(json.dumps({"output_dir": str(output_dir), **summary}, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_scheduling(args: argparse.Namespace) -> int:
-    config, config_path = _load_config(args.config, default_rel="configs/official/paper/scheduling_value.yaml")
-    metadata = _metadata(config=config, config_path=config_path)
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/scheduling_value.yaml")
+    input_dir = _resolved_input_path(config, cli_input=args.input)
     output_dir = _output_dir(args, config, "scheduling")
+    metadata = _write_common_output(output_dir, config, input_path=str(input_dir))
     result = evaluate_scheduling(
-        fixture_dir=ROOT / "tests/fixtures/offline_replay_smoke",
+        fixture_dir=input_dir,
         metadata=metadata,
         model_id=metadata.model_id,
         model_revision=metadata.model_revision,
-        policy_ids=tuple(config.get("policies", ["birkhoff_von_neumann_fluid", "exact_small_instance_reference", "B_birkhoff", "U_barrier_criticality_global_matching"])),
+        policy_ids=tuple(config["policies"]),
+        cost_model_id=str(config["cost_model"]),
     )
     write_json(output_dir / "scheduling_summary.json", result)
-    print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_prediction(args: argparse.Namespace) -> int:
-    config, config_path = _load_config(args.config, default_rel="configs/official/paper/prediction_value.yaml")
-    metadata = _metadata(config=config, config_path=config_path)
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/prediction_value.yaml")
+    input_dir = _resolved_input_path(config, cli_input=args.input)
     output_dir = _output_dir(args, config, "prediction")
+    metadata = _write_common_output(output_dir, config, input_path=str(input_dir))
     result = evaluate_prediction(
-        fixture_dir=ROOT / "tests/fixtures/offline_replay_smoke",
+        fixture_dir=input_dir,
         metadata=metadata,
         model_id=metadata.model_id,
         model_revision=metadata.model_revision,
-        joint_policy_id=str(config.get("joint_policy", "U_barrier_criticality_global_matching")),
+        joint_policy_id=str(config.get("joint_policy", config["policies"][0])),
     )
     write_json(output_dir / "prediction_summary.json", result)
-    print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_hiding(args: argparse.Namespace) -> int:
-    config, config_path = _load_config(args.config, default_rel="configs/official/paper/hiding_timeline.yaml")
-    metadata = _metadata(config=config, config_path=config_path)
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/hiding_timeline.yaml")
     output_dir = _output_dir(args, config, "hiding")
+    metadata = _write_common_output(output_dir, config)
     result = evaluate_hiding_gap(metadata=metadata, model_id=metadata.model_id)
     write_json(output_dir / "hiding_summary.json", result)
-    print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_runtime(args: argparse.Namespace) -> int:
-    config, config_path = _load_config(args.config, default_rel="configs/official/paper/runtime_correctness_gloo.yaml")
-    metadata = _metadata(config=config, config_path=config_path)
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/runtime_correctness_gloo.yaml")
     output_dir = _output_dir(args, config, "runtime")
-    result = evaluate_runtime_correctness(metadata=metadata)
+    metadata = _write_common_output(output_dir, config)
+    materialization = evaluate_materialization_contract_smoke(metadata=metadata)
+    gloo = evaluate_runtime_correctness_with_gloo(metadata=metadata)
+    overall_status = gloo["status"]
+    if gloo["status"] == "ENVIRONMENT_BLOCKED":
+        overall_status = "PARTIAL_GLOO_ENVIRONMENT_BLOCKED"
+    result = {
+        "status": overall_status,
+        "records": materialization["records"] + gloo["records"],
+        "tensor_parity_pass": bool(gloo.get("tensor_parity_pass", False)),
+    }
     write_json(output_dir / "runtime_summary.json", result)
-    print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "status": result["status"]}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -181,8 +231,96 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
     input_dir = Path(args.input) if args.input else ROOT / "outputs/paper/audit"
     output_dir = Path(args.output_dir) if args.output_dir else input_dir
     result = aggregate_results(input_dir=input_dir)
-    write_json(output_dir / "paired_records.jsonl", result["paired_records"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "paired_records.jsonl").open("w", encoding="utf-8") as handle:
+        for row in result["paired_records"]:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     write_json(output_dir / "aggregate_summary.json", result)
+    print(json.dumps({"output_dir": str(output_dir), "sample_count": result["sample_count"]}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    config, _ = _load_config(args.config, default_rel="configs/official/paper/capability_audit.yaml")
+    output_dir = _output_dir(args, config, "audit")
+    input_dir = _resolved_input_path(config, cli_input=args.input)
+    metadata = _write_common_output(output_dir, config, input_path=str(input_dir))
+    scheduling = evaluate_scheduling(
+        fixture_dir=input_dir,
+        metadata=metadata,
+        model_id=metadata.model_id,
+        model_revision=metadata.model_revision,
+        policy_ids=tuple(config["policies"]),
+        cost_model_id=str(config["cost_model"]),
+    )
+    prediction = evaluate_prediction(
+        fixture_dir=input_dir,
+        metadata=metadata,
+        model_id=metadata.model_id,
+        model_revision=metadata.model_revision,
+        joint_policy_id=str(config["policies"][-1]),
+    )
+    hiding = evaluate_hiding_gap(metadata=metadata, model_id=metadata.model_id)
+    runtime = {
+        "status": "MATERIALIZATION_CONTRACT_SMOKE",
+        "records": [],
+    }
+    try:
+        runtime = evaluate_runtime_correctness_with_gloo(metadata=metadata)
+    except Exception:
+        runtime = {"status": "ENVIRONMENT_BLOCKED", "records": [], "tensor_parity_pass": False}
+    materialization = evaluate_materialization_contract_smoke(metadata=metadata)
+    runtime_status = runtime["status"]
+    if runtime["status"] == "ENVIRONMENT_BLOCKED":
+        runtime_status = "PARTIAL_GLOO_ENVIRONMENT_BLOCKED"
+    runtime_summary = {
+        "status": runtime_status,
+        "records": materialization["records"] + runtime["records"],
+        "tensor_parity_pass": bool(runtime.get("tensor_parity_pass", False)),
+    }
+    write_json(output_dir / "scheduling_summary.json", scheduling)
+    write_json(output_dir / "prediction_summary.json", prediction)
+    write_json(output_dir / "hiding_summary.json", hiding)
+    write_json(output_dir / "runtime_summary.json", runtime_summary)
+    build_traffic_summary = {"status": "ENVIRONMENT_BLOCKED", "reason": "external trace bundle not provided during audit"}
+    matrix = apply_capability_evidence(
+        baseline_capability_matrix(),
+        scheduling_summary=scheduling,
+        prediction_summary=prediction,
+        runtime_summary=runtime_summary,
+        build_traffic_summary=build_traffic_summary,
+    )
+    write_json(output_dir / "capability_matrix.json", matrix)
+    (output_dir / "CAPABILITY_AUDIT.md").write_text(render_capability_markdown(matrix), encoding="utf-8")
+    smoke = {
+        "tiny_scheduling_status": scheduling["status"],
+        "tiny_prediction_status": prediction["status"],
+        "tiny_hiding_status": hiding["status"],
+        "tiny_runtime_status": runtime_summary["status"],
+        "real_trace_offline_smoke": "ENVIRONMENT_BLOCKED",
+        "build_traffic_smoke": build_traffic_summary["status"],
+    }
+    write_json(output_dir / "smoke_summary.json", smoke)
+    result_bundle = build_result_bundle(
+        branch=metadata.branch,
+        commit=metadata.commit,
+        config_digest=metadata.config_digest,
+        claim_scope=str(config["claim_scope"]),
+        status="PAPER-EVAL-HARNESS-PARTIAL",
+        scheduling_summary=scheduling,
+        prediction_summary=prediction,
+        hiding_summary=hiding,
+        runtime_summary=runtime_summary,
+        artifact_index={
+            "capability_matrix": str(output_dir / "capability_matrix.json"),
+            "scheduling_summary": str(output_dir / "scheduling_summary.json"),
+            "prediction_summary": str(output_dir / "prediction_summary.json"),
+            "hiding_summary": str(output_dir / "hiding_summary.json"),
+            "runtime_summary": str(output_dir / "runtime_summary.json"),
+            "smoke_summary": str(output_dir / "smoke_summary.json"),
+        },
+    )
+    write_json(output_dir / "result_bundle.json", result_bundle)
     print(json.dumps({"output_dir": str(output_dir)}, ensure_ascii=False, indent=2))
     return 0
 
@@ -191,6 +329,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "audit":
         return cmd_audit(args)
+    if args.command == "capture-trace":
+        return cmd_capture_trace(args)
+    if args.command == "build-traffic":
+        return cmd_build_traffic(args)
     if args.command == "scheduling":
         return cmd_scheduling(args)
     if args.command == "prediction":
@@ -201,8 +343,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_runtime(args)
     if args.command == "aggregate":
         return cmd_aggregate(args)
-    if args.command in {"capture-trace", "build-traffic"}:
-        raise SystemExit(f"{args.command} is scaffolded but not executed in this frozen audit round")
     raise SystemExit(f"unknown command {args.command}")
 
 

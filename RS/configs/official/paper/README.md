@@ -1,43 +1,33 @@
 # Paper evaluation configs
 
+This directory only contains frozen paper-evaluation entry configs. The evaluator must consume these configs directly and emit `consumed_config.json` with the resolved values.
+
 - `capability_audit.yaml`
-  - 用途: 论文评估框架能力审计与 tiny smoke。
-  - 环境: CPU 即可；如设置 `RS_MODEL_PATH`，trace capture 能力会被审计为可运行。
-  - correctness: 只验证框架与正式 public API 是否接通。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli audit`
+  - 用途：论文评估能力审计入口。
+  - 环境：CPU 即可；若提供真实 trace bundle 或模型路径，可额外验证对应能力。
+  - 结论范围：只审计 public entrypoint、最小 smoke 和 contract test 是否闭环，不给论文结论。
 
 - `trace_capture.yaml`
-  - 用途: 单卡真实模型 trace capture 的正式配置入口。
-  - 环境: GPU + 模型路径。
-  - correctness: 是，采集真实 router trace。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli capture-trace`
+  - 用途：真实模型 trace capture。
+  - 环境：外部模型路径，默认通过 `RS_MODEL_PATH` 指向 `D:\models\...`。
+  - 结论范围：只生成独立 trace bundle，不在 Git clone 内伪造 artifact。
 
 - `scheduling_value.yaml`
-  - 用途: offline scheduling paired/oracle 评估入口。
-  - 环境: CPU。
-  - correctness: 是，比较 paired/local/joint/oracle。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli scheduling`
+  - 用途：offline scheduling evaluator。
+  - 环境：CPU。
+  - 结论范围：只做 paired/oracle fail-closed 语义，不把 oracle-like 伪装成 exact comparable oracle。
 
 - `prediction_value.yaml`
-  - 用途: perfect/zero/shuffled 与正式 predicted 接口审计。
-  - 环境: CPU。
-  - correctness: 是。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli prediction`
+  - 用途：prediction evaluator。
+  - 环境：CPU。
+  - 结论范围：perfect/zero/shuffled baseline 可运行；正式 predicted path 缺失时必须显式保留缺失字段。
 
 - `hiding_timeline.yaml`
-  - 用途: timeline/hiding 能力审计入口。
-  - 环境: CPU。
-  - correctness: 部分，仅审计 current public API。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli hiding`
+  - 用途：hiding timeline evaluator。
+  - 环境：CPU。
+  - 结论范围：当前只允许报告 public API 可见的 timeline 能力状态。
 
 - `runtime_correctness_gloo.yaml`
-  - 用途: runtime correctness harness 入口。
-  - 环境: CPU/Gloo；本轮只跑 single-process smoke。
-  - correctness: 是，但不宣称 GPU/NCCL 性能。
-  - timing eligible: 否。
-  - runner: `python -m experiments.paper.cli runtime-correctness`
+  - 用途：真实 4-rank Gloo runtime correctness wrapper。
+  - 环境：CPU/Gloo，物理 world size = 4。
+  - 结论范围：只有正式 runner 返回 executed-plan identity、任务完成和 tensor parity 证据时，才能写 `RUNTIME_CORRECTNESS`。

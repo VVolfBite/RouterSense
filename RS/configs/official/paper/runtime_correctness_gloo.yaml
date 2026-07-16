@@ -1,23 +1,23 @@
 schema_version: paper_eval_config.v1
 claim_scope: runtime_correctness
 models:
-  model_id: synthetic-runtime-smoke
-  model_revision: frozen-clone
+  model_id: formal_m123_gloo_wrapper
+  model_revision: branch-convergence-m123-integration
 inputs:
-  source: synthetic
+  source: experiments/distributed/run_m123_integrated_publication_execution_gloo.py
 layers: [0]
-virtual_ep_sizes: [2, 4]
-physical_world_size: 1
+virtual_ep_sizes: [4]
+physical_world_size: 4
 policies:
-  - paper_runtime_joint_stub
+  - formal_m123_integrated_publication_execution_gloo
 predictors: []
 cost_model: not_applicable
 seeds:
   default: 0
 splits:
-  development: [synthetic]
-  validation: [synthetic]
-  frozen_evaluation: [synthetic]
+  development: [gloo_smoke]
+  validation: [gloo_smoke]
+  frozen_evaluation: [gloo_smoke]
 measurement:
   mode: runtime_correctness
 eligibility:
