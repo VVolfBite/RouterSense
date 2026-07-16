@@ -286,7 +286,6 @@ def main() -> None:
             )
         )
         write_layout_result_bundle(layout, result_bundle)
-        (layout.raw_dir / "legacy_config_snapshot.yaml").write_text(yaml.safe_dump(legacy_config, sort_keys=False), encoding="utf-8")
         update_status(
             layout,
             status=RUN_STATUS_COMPLETED,
