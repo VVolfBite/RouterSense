@@ -1,0 +1,32 @@
+schema_version: paper_eval_config.v1
+claim_scope: capability_audit
+run_id: paper-capability-audit
+models:
+  model_id: OLMoE-1B-7B-0924-Instruct
+  model_revision: local-D-drive
+inputs:
+  source: tests/fixtures/offline_replay_smoke
+layers: [1, 2]
+virtual_ep_sizes: [2, 4]
+physical_world_size: 1
+policies:
+  - birkhoff_von_neumann_fluid
+  - exact_small_instance_reference
+  - B_birkhoff
+  - U_barrier_criticality_global_matching
+predictors:
+  - zero
+  - copy_current
+cost_model: formal_replay_makespan
+seeds:
+  default: 0
+splits:
+  development: [synthetic]
+  validation: [synthetic]
+  frozen_evaluation: [offline_replay_smoke]
+measurement:
+  mode: audit_only
+eligibility:
+  runtime_performance: false
+output:
+  dir: outputs/paper

@@ -1,0 +1,25 @@
+schema_version: paper_eval_config.v1
+claim_scope: trace_capture
+models:
+  model_id: OLMoE-1B-7B-0924-Instruct
+  model_revision: local-D-drive
+inputs:
+  source: prompts
+layers: auto
+virtual_ep_sizes: [2, 4, 8, 16]
+physical_world_size: 1
+policies: []
+predictors: []
+cost_model: not_applicable
+seeds:
+  default: 0
+splits:
+  development: []
+  validation: []
+  frozen_evaluation: []
+measurement:
+  mode: trace_only
+eligibility:
+  runtime_performance: false
+output:
+  dir: outputs/paper

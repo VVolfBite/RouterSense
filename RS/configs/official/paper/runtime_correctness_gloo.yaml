@@ -1,0 +1,26 @@
+schema_version: paper_eval_config.v1
+claim_scope: runtime_correctness
+models:
+  model_id: synthetic-runtime-smoke
+  model_revision: frozen-clone
+inputs:
+  source: synthetic
+layers: [0]
+virtual_ep_sizes: [2, 4]
+physical_world_size: 1
+policies:
+  - paper_runtime_joint_stub
+predictors: []
+cost_model: not_applicable
+seeds:
+  default: 0
+splits:
+  development: [synthetic]
+  validation: [synthetic]
+  frozen_evaluation: [synthetic]
+measurement:
+  mode: runtime_correctness
+eligibility:
+  runtime_performance: false
+output:
+  dir: outputs/paper

@@ -1,0 +1,30 @@
+schema_version: paper_eval_config.v1
+claim_scope: prediction_value
+models:
+  model_id: replay_fixture_proxy
+  model_revision: frozen-clone
+inputs:
+  source: tests/fixtures/offline_replay_smoke
+layers: [1, 2]
+virtual_ep_sizes: [2, 4]
+physical_world_size: 1
+policies:
+  - U_barrier_criticality_global_matching
+joint_policy: U_barrier_criticality_global_matching
+predictors:
+  - zero
+  - perfect_trace_oracle
+  - shuffled_control
+cost_model: formal_replay_makespan
+seeds:
+  default: 0
+splits:
+  development: [synthetic]
+  validation: [synthetic]
+  frozen_evaluation: [offline_replay_smoke]
+measurement:
+  mode: offline
+eligibility:
+  runtime_performance: false
+output:
+  dir: outputs/paper
