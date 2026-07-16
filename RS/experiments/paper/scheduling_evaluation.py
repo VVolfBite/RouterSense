@@ -12,7 +12,7 @@ from rs.planning.request_builder import build_window_planning_request
 from rs.runtime.offline.replay_unified import PlanningHint, ReplayEngine, ReplayWindow, build_execution_truth, build_multiphase_problem, build_planning_problem
 from rs.runtime.offline.runner import replay_and_audit_logical_plan
 from rs.runtime.online.megatron_ep.target_planning.contracts import _compat_logical_plan_from_window_plan
-from rs.scheduling.algorithm_catalog import get_algorithm_metadata
+from rs.scheduling.algorithm_catalog import get_algorithm_metadata, list_pair_families
 from rs.scheduling.catalog import resolve_algorithm_id
 from rs.scheduling.reference.exact_small_instance import exact_result_to_logical_plan, solve_problem_exact_with_scope
 
@@ -345,7 +345,7 @@ def _heuristic_record(
         objective_logical_makespan=None,
         best_bound=None,
         optimality_gap=None,
-        planner_runtime_ms=None,
+        planner_runtime_ms=float(result.get("planning_runtime_ms_wall", 0.0) or 0.0),
         validation_runtime_ms=None,
         replay_evaluation_runtime_ms=None,
         record_construction_runtime_ms=None,
@@ -434,6 +434,84 @@ def _strict_pair_summary(records: list[ScheduleEvaluationRecord]) -> dict[str, A
         "paired_delta": None if b_record.objective is None or u_record.objective is None else float(u_record.objective - b_record.objective),
     }
 
+
+
+def _family_pair_summaries(records: list[ScheduleEvaluationRecord]) -> list[dict[str, Any]]:
+    by_policy_instance: dict[tuple[str, str], ScheduleEvaluationRecord] = {
+        (record.policy_id, record.instance_id): record for record in records
+    }
+    summaries: list[dict[str, Any]] = []
+    contract_fields = (
+        "matching_core_id",
+        "task_contract_digest",
+        "bucket_contract_digest",
+        "cost_contract_digest",
+        "service_model_id",
+        "solver_budget_digest",
+    )
+    for pair in list_pair_families():
+        family_id = str(pair["heuristic_family"])
+        local_id = pair.get("B_algorithm")
+        joint_id = pair.get("U_algorithm")
+        if not local_id or not joint_id or not bool(pair.get("paired_comparison_ready", False)):
+            continue
+        instance_ids = sorted(
+            {
+                instance_id
+                for policy_id, instance_id in by_policy_instance
+                if policy_id in {str(local_id), str(joint_id)}
+            }
+        )
+        paired_rows: list[dict[str, Any]] = []
+        for instance_id in instance_ids:
+            local = by_policy_instance.get((str(local_id), instance_id))
+            joint = by_policy_instance.get((str(joint_id), instance_id))
+            if local is None or joint is None:
+                continue
+            contract_match = {
+                f"{field}_equal": getattr(local, field) == getattr(joint, field)
+                for field in contract_fields
+            }
+            comparable = bool(local.comparable and joint.comparable and all(contract_match.values()))
+            delta = None if local.objective is None or joint.objective is None else float(joint.objective - local.objective)
+            improvement = None
+            if local.objective is not None and joint.objective is not None and float(local.objective) > 0.0:
+                improvement = (float(local.objective) - float(joint.objective)) / float(local.objective) * 100.0
+            local_runtime = local.planner_runtime_ms
+            joint_runtime = joint.planner_runtime_ms
+            paired_rows.append(
+                {
+                    "instance_id": instance_id,
+                    "comparable": comparable,
+                    "contract_match": contract_match,
+                    "local_objective": local.objective,
+                    "joint_objective": joint.objective,
+                    "joint_minus_local_makespan": delta,
+                    "joint_improvement_pct": improvement,
+                    "outcome": None if delta is None else "win" if delta < -1e-9 else "loss" if delta > 1e-9 else "tie",
+                    "local_planner_runtime_ms": local_runtime,
+                    "joint_planner_runtime_ms": joint_runtime,
+                    "joint_minus_local_runtime_ms": None if local_runtime is None or joint_runtime is None else float(joint_runtime - local_runtime),
+                }
+            )
+        if not paired_rows:
+            continue
+        comparable_rows = [row for row in paired_rows if row["comparable"]]
+        summaries.append(
+            {
+                "family_id": family_id,
+                "local_policy_id": local_id,
+                "joint_policy_id": joint_id,
+                "status": "READY" if len(comparable_rows) == len(paired_rows) else "PARTIAL_INVALID_PAIR",
+                "pair_count": len(paired_rows),
+                "comparable_count": len(comparable_rows),
+                "win_count": sum(row["outcome"] == "win" for row in comparable_rows),
+                "tie_count": sum(row["outcome"] == "tie" for row in comparable_rows),
+                "loss_count": sum(row["outcome"] == "loss" for row in comparable_rows),
+                "records": paired_rows,
+            }
+        )
+    return summaries
 
 def evaluate_scheduling(
     *,
@@ -535,6 +613,7 @@ def evaluate_scheduling(
             if not record.coverage_valid:
                 invalid_policy_seen = True
     same_core_pair_summary = _strict_pair_summary(records)
+    family_pair_summaries = _family_pair_summaries(records)
     exact_oracle_comparable = bool(o_local_record and o_local_record.comparable and o_joint_record and o_joint_record.comparable)
     dominance_result = None
     if exact_oracle_comparable and o_local_record is not None and o_joint_record is not None:
@@ -549,6 +628,8 @@ def evaluate_scheduling(
     status = "OK"
     if invalid_policy_seen or same_core_pair_summary["pair_status"] == "INVALID_PAIR":
         status = "PARTIAL_INVALID_POLICY"
+    if any(row["status"] != "READY" for row in family_pair_summaries):
+        status = "PARTIAL_INVALID_POLICY"
     if dominance_result is not None and dominance_result["status"] != "OK":
         status = "ORACLE_DOMINANCE_VIOLATION"
     return {
@@ -562,4 +643,5 @@ def evaluate_scheduling(
         "oracle_dominance": dominance_result,
         "execution_window_bridge_summary": execution_window_bridge_summary,
         "same_core_pair_summary": same_core_pair_summary,
+        "family_pair_summaries": family_pair_summaries,
     }

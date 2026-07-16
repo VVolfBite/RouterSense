@@ -616,17 +616,76 @@ _ALGORITHMS: dict[str, AlgorithmMetadata] = {
 }
 
 
+# Strict same-core families introduced by the Local(f)/Joint(f) scope layer.
+# These entries coexist with historical metadata so old artifacts remain
+# readable, while new experiments can make the information-scope control
+# explicit.
+def _register_strict_family_metadata() -> None:
+    rows = (
+        ("gated_greedy", "gated_greedy_local", "gated_greedy_joint", "Gated Greedy"),
+        ("gated_maxweight", "gated_maxweight_local", "gated_maxweight_joint", "Gated MaxWeight"),
+        ("barrier_criticality", "barrier_criticality_core_independent", "barrier_criticality_joint", "Barrier Criticality"),
+        ("birkhoff_ranked", "birkhoff_ranked_local", "birkhoff_ranked_joint", "Birkhoff-Ranked"),
+        ("adaptive_price", "adaptive_price_local", "adaptive_price_joint", "Adaptive Price"),
+    )
+    for family, local_id, joint_id, display in rows:
+        _ALGORITHMS[local_id] = AlgorithmMetadata(
+            algorithm_id=local_id,
+            display_name=f"{display} Local",
+            heuristic_family=family,
+            role="b_phase_local_strict",
+            paired_algorithm_id=joint_id,
+            local_oracle_reference_id="O_local_phase_oracle",
+            joint_oracle_reference_id="O_joint_cp_sat_oracle",
+            granularity_mode="canonical_bucket",
+            planning_scope="phase_local_scope_adapter",
+            source="strict_family_scope_layer",
+            online_eligible=True,
+            offline_eligible=True,
+            heavy_solver=False,
+            deterministic_solver=True,
+            oracle_like=False,
+            recommended_role="strict_family_local",
+            notes="Shares one immutable kernel with its Joint counterpart; only visible information and ready-set scope differ.",
+        )
+        _ALGORITHMS[joint_id] = AlgorithmMetadata(
+            algorithm_id=joint_id,
+            display_name=f"{display} Joint",
+            heuristic_family=family,
+            role="u_joint_strict",
+            paired_algorithm_id=local_id,
+            local_oracle_reference_id="O_local_phase_oracle",
+            joint_oracle_reference_id="O_joint_cp_sat_oracle",
+            granularity_mode="canonical_bucket",
+            planning_scope="global_release_aware_scope_adapter",
+            source="strict_family_scope_layer",
+            online_eligible=True,
+            offline_eligible=True,
+            heavy_solver=False,
+            deterministic_solver=True,
+            oracle_like=False,
+            recommended_role="strict_family_joint",
+            notes="Shares one immutable kernel with its Local counterpart; only visible information and ready-set scope differ.",
+        )
+
+
+_register_strict_family_metadata()
+
+
 _PAIR_FAMILIES: tuple[tuple[str, str | None, str | None], ...] = (
-    ("birkhoff_bvn", "B_birkhoff", "U_ibbr"),
-    ("gated_greedy", "B_gated_greedy_maximal", "U_gated_greedy_maximal"),
-    ("gated_maxweight_matching", "B_gated_maxweight_matching", "U_gated_maxweight_matching"),
-    ("barrier_criticality_matching", "B_barrier_criticality_matching", "U_barrier_criticality_global_matching"),
-    ("barrier_price_adaptive_matching", "B_barrier_price_adaptive_matching", "U_barrier_price_adaptive_matching"),
-    ("lagrangian_cross_phase", "B_lagrangian_phase_local", "U_lagrangian"),
+    ("gated_greedy", "gated_greedy_local", "gated_greedy_joint"),
+    ("gated_maxweight", "gated_maxweight_local", "gated_maxweight_joint"),
+    ("barrier_criticality", "barrier_criticality_core_independent", "barrier_criticality_joint"),
+    ("birkhoff_ranked", "birkhoff_ranked_local", "birkhoff_ranked_joint"),
+    ("adaptive_price", "adaptive_price_local", "adaptive_price_joint"),
+    ("legacy_birkhoff_ibbr", "B_birkhoff", "U_ibbr"),
+    ("legacy_lagrangian", "B_lagrangian_phase_local", "U_lagrangian"),
     ("cp_lpt", None, None),
 )
 
 _PAIR_PENDING_REASONS: dict[str, str] = {
+    "legacy_birkhoff_ibbr": "Legacy U adds iterative repair absent from B; not a strict information-scope control.",
+    "legacy_lagrangian": "Historical local and joint implementations do not share one update core.",
     "cp_lpt": "Historical U_cp_lpt exists, but no formal paired B-side is promoted yet.",
 }
 
@@ -708,9 +767,9 @@ def is_paired_comparison_ready(heuristic_family: str) -> bool:
         u_meta = _ALGORITHMS[u_id]
         if b_meta.source in {"legacy_poc1_pending", "pending"} or u_meta.source in {"legacy_poc1_pending", "pending"}:
             return False
-        if b_meta.role not in {"b_phase_local", "o_local_phase_oracle"}:
+        if b_meta.role not in {"b_phase_local", "b_phase_local_strict", "o_local_phase_oracle"}:
             return False
-        if u_meta.role != "u_routersense_joint":
+        if u_meta.role not in {"u_routersense_joint", "u_joint_strict"}:
             return False
         if b_meta.paired_algorithm_id != u_id or u_meta.paired_algorithm_id != b_id:
             return False

@@ -15,6 +15,7 @@ from .phase_local.p0p1_reservation_order import RouterSenseP0P1ReservationPolicy
 from .phase_local.p0p1p2_hint_order import RouterSenseP0P1P2HintPolicy
 from .phase_local.trivial_reverse_bucket import TrivialReverseBucketPolicy
 from .multiphase.safe_joint import SafeJointPolicy
+from .families import is_scoped_family_policy, resolve_scoped_family_policy
 from .runtime_bridge.joint_priority import RouterSenseJointPriorityPhaseSyncPolicy
 from .multiphase.routersense_lookahead import RouterSenseMultiphaseLookaheadPolicy, UnsupportedOnlineMultiPhaseExecution
 from .multiphase.recovered_candidates import is_recovered_candidate, resolve_recovered_candidate
@@ -66,7 +67,26 @@ def resolve_policy(
     prediction_weight: float | None = None,
     p2_hint_artifact: str = "",
 ) -> SchedulingPolicy:
+    # Family expressions and their canonical/legacy aliases are resolved before
+    # the historical per-policy branches.  This guarantees Local(f) and
+    # Joint(f) share one immutable kernel implementation.
+    if is_scoped_family_policy(policy_name):
+        return resolve_scoped_family_policy(
+            policy_name,
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
+        )
     base_name, mode = _parse_policy_name(policy_name)
+    if is_scoped_family_policy(base_name):
+        return resolve_scoped_family_policy(
+            base_name,
+            residual_weight=residual_weight,
+            barrier_weight=barrier_weight,
+            age_weight=age_weight,
+            prediction_weight=prediction_weight,
+        )
     if base_name == "native_passthrough":
         return NativePassthroughPolicy()
     if base_name in {
@@ -80,7 +100,7 @@ def resolve_policy(
         raw_u_name, paired_b_name = {
             "RS_safe_gated_greedy": ("U_gated_greedy_maximal", "B_gated_greedy_maximal"),
             "RS_safe_gated_maxweight": ("U_gated_maxweight_matching", "B_gated_maxweight_matching"),
-            "RS_safe_barrier_criticality": ("U_barrier_criticality_global_matching", "B_barrier_criticality_matching"),
+            "RS_safe_barrier_criticality": ("U_barrier_criticality_global_matching", "B_barrier_criticality_core_independent"),
             "RS_safe_barrier_price": ("U_barrier_price_adaptive_matching", "B_barrier_price_adaptive_matching"),
             "RS_safe_lagrangian": ("U_lagrangian", "B_lagrangian_phase_local"),
             "RS_safe_ibbr": ("U_ibbr", "B_birkhoff"),

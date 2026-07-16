@@ -75,19 +75,14 @@ class ISLIPRoundRobinPolicy:
             p2_waves, p2_trace = _schedule_flows(
                 p2_flows,
                 ranks=tuple(range(problem.topology.num_gpus)),
-                seed_payload={
-                    "policy": self.policy_name,
-                    "phase": "p2_next_dispatch",
-                    "matrix": problem.p2_next_dispatch_forecast_matrix,
-                    "seed": self.pointer_seed,
-                },
+                seed_payload={"policy": self.policy_name, "phase": "p2_next_dispatch", "matrix": problem.p2_next_dispatch_forecast_matrix, "seed": self.pointer_seed},
                 start_wave_id=len(p0_waves) + len(p1_waves),
                 max_rounds=self.max_rounds,
             )
-        all_traces = p0_trace + p1_trace + p2_trace
+        all_trace = p0_trace + p1_trace + p2_trace
         fallback_reason = ";".join(
             str(item.get("fallback_reason", ""))
-            for item in all_traces
+            for item in all_trace
             if item.get("fallback_used")
         )
         base_plan = build_phase_serial_release_aware_plan(
@@ -110,7 +105,8 @@ class ISLIPRoundRobinPolicy:
             diagnostics={
                 **base_plan.diagnostics,
                 "islip_rounds": self.max_rounds,
-                "islip_trace": all_traces,
+                "islip_trace": all_trace,
+                "p2_executable_flow_count": len(p2_flows),
             },
         )
 

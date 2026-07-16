@@ -20,6 +20,8 @@ __all__ = [
     "ReleaseConstraint",
     "estimate_planning_quantum_rows_from_contexts",
     "estimate_planning_quantum_rows_from_values",
+    "family_inventory",
+    "resolve_scoped_family_policy",
     "resolve_phase_policy",
     "resolve_policy",
     "supported_phase_policies",
@@ -64,6 +66,13 @@ def __getattr__(name: str):
             "MultiPhaseSchedulingProblem": MultiPhaseSchedulingProblem,
             "PreparedWindowPlan": PreparedWindowPlan,
             "ReleaseConstraint": ReleaseConstraint,
+        }[name]
+    if name in {"family_inventory", "resolve_scoped_family_policy"}:
+        from .families import family_inventory, resolve_scoped_family_policy
+
+        return {
+            "family_inventory": family_inventory,
+            "resolve_scoped_family_policy": resolve_scoped_family_policy,
         }[name]
     if name in {"resolve_phase_policy", "resolve_policy", "supported_phase_policies", "supported_policies"}:
         from .registry import resolve_phase_policy, resolve_policy, supported_phase_policies, supported_policies

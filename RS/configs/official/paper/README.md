@@ -31,3 +31,7 @@ This directory only contains frozen paper-evaluation entry configs. The evaluato
   - 用途：真实 4-rank Gloo runtime correctness wrapper。
   - 环境：CPU/Gloo，物理 world size = 4。
   - 结论范围：只有正式 runner 返回 executed-plan identity、任务完成和 tensor parity 证据时，才能写 `RUNTIME_CORRECTNESS`。
+
+- `scheduling_family_pilot.yaml`
+  - 用途：严格同核 `Local(f)`/`Joint(f)` 算法族小规模 pilot。
+  - 结论范围：同时记录 makespan 与 planning overhead，只验证采数合同，不形成论文普遍性结论。

@@ -1,0 +1,41 @@
+schema_version: paper_eval_config.v1
+claim_scope: scheduling_family_pilot
+models:
+  model_id: replay_fixture_proxy
+  model_revision: frozen-clone
+inputs:
+  source: tests/fixtures/tier1
+layers: [0]
+virtual_ep_sizes: [4]
+physical_world_size: 1
+policies:
+  - gated_greedy_local
+  - gated_greedy_joint
+  - gated_maxweight_local
+  - gated_maxweight_joint
+  - barrier_criticality_core_independent
+  - barrier_criticality_joint
+  - birkhoff_ranked_local
+  - birkhoff_ranked_joint
+  - adaptive_price_local
+  - adaptive_price_joint
+predictors: []
+cost_model: formal_replay_makespan
+seeds:
+  default: 0
+splits:
+  development:
+    - barrier_criticality_switch_witness_4rank
+    - unlock_hotspot_4rank
+  validation:
+    - p2_local_release_witness_4rank
+  frozen_evaluation: []
+measurement:
+  mode: paired_family_pilot
+  warmups: 5
+  repeats: 30
+eligibility:
+  runtime_performance: false
+  paper_claims: false
+output:
+  dir: outputs/paper
