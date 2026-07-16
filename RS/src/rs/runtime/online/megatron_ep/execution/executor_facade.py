@@ -7,7 +7,7 @@ from typing import Any, Protocol
 import torch
 import torch.distributed as dist
 
-from rs.runtime.online.megatron_ep.execution.async_p2p_executor import execute_async_phase_tensor
+from rs.runtime.online.megatron_ep.execution.async_release_backend import execute_async_phase_tensor
 from rs.runtime.online.megatron_ep.execution.sync_wave_executor import execute_scheduled_phase_tensor
 from rs.scheduling.phase_execution import PhaseExecutionPlan, PhaseReadyContext
 

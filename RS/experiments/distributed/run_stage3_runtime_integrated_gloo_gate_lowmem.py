@@ -19,7 +19,7 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from rs.runtime.online.megatron_ep.contracts import RouterSenseInjectionConfig
-from rs.runtime.online.megatron_ep.execution.async_p2p_executor import validate_async_phase_preflight
+from rs.runtime.online.megatron_ep.execution.async_release_backend import validate_async_phase_preflight
 from rs.runtime.online.megatron_ep.execution.transport_adapter import MegatronPhaseTransportAdapter
 from rs.runtime.online.megatron_ep.host import _maybe_create_dedicated_p2p_group
 from rs.runtime.online.megatron_ep.lifecycle import RouterSenseInjectionRuntime

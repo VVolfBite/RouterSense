@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.control.p2_matrix import build_traffic_matrix_bundle
-from rs.runtime.online.megatron_ep.execution.async_p2p_executor import execute_async_phase_tensor
+from rs.runtime.online.megatron_ep.execution.async_release_backend import execute_async_phase_tensor
 from rs.runtime.online.megatron_ep.phase import (
     DispatcherSnapshot,
     FutureDemandHint,

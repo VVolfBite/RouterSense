@@ -17,7 +17,7 @@ import torch.distributed as dist
 
 from rs.runtime.online.megatron_ep.phase import PhaseExecutionPlan, PhaseReadyContext
 
-from .async_p2p_executor import validate_async_phase_preflight
+from .async_release_backend import validate_async_phase_preflight
 from .api import PayloadInvocation
 from .executor_facade import ExecutionRequest, execute_transport
 from rs.core.contracts.execution import ExecutionContext

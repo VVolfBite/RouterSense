@@ -231,3 +231,17 @@ def test_official_online_wrappers_do_not_import_strategy_comparison_name() -> No
         assert "run_online_evaluation" in source
         assert "online_evaluation_runner" in source
         assert "strategy_comparison_runner" not in source
+
+
+def test_formal_runtime_async_path_uses_canonical_backend_module() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for relative in (
+        Path("src/rs/runtime/online/megatron_ep/execution/executor_facade.py"),
+        Path("src/rs/runtime/online/megatron_ep/execution/transport_adapter.py"),
+        Path("experiments/distributed/run_stage1_gloo_e2e_gate.py"),
+        Path("experiments/distributed/run_stage1_runtime_integrated_gloo_gate.py"),
+        Path("experiments/distributed/run_stage3_runtime_integrated_gloo_gate_lowmem.py"),
+    ):
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "async_release_backend" in source
+        assert "async_p2p_executor" not in source
