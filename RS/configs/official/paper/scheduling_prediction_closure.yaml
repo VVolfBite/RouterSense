@@ -1,0 +1,99 @@
+schema_version: paper_eval_config.v1
+claim_scope: scheduling_prediction_closure
+
+models:
+  model_ids:
+    - OLMoE-1B-7B-0924-Instruct
+    - Qwen1.5-MoE-A2.7B-Chat
+    - DeepSeek-V2-Lite-Chat
+  model_revision: per_trace_manifest
+
+inputs:
+  source: portable_trace_traffic_package
+  loader: rs.runtime.offline.traffic_dataset.load_traffic_instances
+
+layers: all_moe_layers
+virtual_ep_sizes: [8, 12]
+physical_world_size: 1
+
+families:
+  - greedy_control
+  - gmwd
+  - rsbc
+  - fast_stage
+
+family_pair_contract:
+  local: same immutable family kernel, independently applied to each phase
+  joint: same immutable family kernel, one release-aware global ready set
+  shared_p2_lift: model-agnostic critical-frontier potential
+  forbidden_joint_only_features:
+    - model_id
+    - layer_id
+    - expert_id
+    - expert_count
+    - top_k
+
+information_levels:
+  - id: exact_joint_p01_reactive
+    initial_truth: [P0, P1]
+    p2: true source row revealed after its P1 barrier
+    solver: rolling exact, execute first certified wave
+    role: non-clairvoyant exact-information baseline
+  - id: exact_joint_p012_predicted
+    initial_truth: [P0, P1]
+    advisory: predicted P2
+    p2: true source row revealed after its P1 barrier
+    solver: rolling exact, execute first certified wave
+    role: predict-then-optimize control
+    executable_forecast_bytes: false
+  - id: oracle_joint_p012_perfect
+    initial_truth: [P0, P1, P2]
+    solver: clairvoyant exact joint
+    role: performance upper bound / makespan lower bound
+
+prediction_contract:
+  primary: traffic_forecast_envelope_v1
+  fields:
+    - mean_rows
+    - lower_rows
+    - upper_rows
+    - rank_pressure
+    - stable_precedence
+  legacy_projection: PredictionHint
+  predicted_bytes_are_executable: false
+
+cost_model: discrete_multiphase_release_wave
+seeds:
+  default: 20260717
+
+splits:
+  development: trace_manifest_development
+  validation: trace_manifest_validation
+  frozen_evaluation: future_frozen_multimodel
+
+measurement:
+  mode: offline
+  family_metrics:
+    - p01_joint_gain_pct
+    - p012_joint_gain_pct
+    - p2_cross_phase_gain_pct
+    - perfect_p2_value_vs_reactive_pct
+    - planning_runtime_ms
+  prediction_metrics:
+    - forecast_remote_relative_l1
+    - forecast_rank_pressure_relative_l1
+    - predicted_p2_value_vs_reactive_pct
+    - prediction_capture_ratio
+    - prediction_regret_to_perfect_pct
+  oracle_metrics:
+    - exact_perfect_p2_information_value
+    - exact_predicted_p2_information_value
+    - exact_prediction_capture_ratio
+    - exact_prediction_regret_to_perfect
+
+eligibility:
+  runtime_performance: false
+  paper_claims_require_multimodel_validation: true
+
+output:
+  dir: outputs/paper/scheduling_prediction_closure

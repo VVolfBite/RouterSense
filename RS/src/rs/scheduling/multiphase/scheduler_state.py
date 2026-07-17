@@ -6,6 +6,7 @@ import math
 import time
 from typing import Any
 
+from .critical_frontier import critical_frontier_candidates
 from .dependency_model import collect_real_flows, inbound_remaining, outbound_loads
 from .flow_model import EXECUTION_WINDOW_MODE, RUNTIME_LOOKAHEAD_MODE
 from .matching import greedy_maximal_matching, maximum_weight_matching
@@ -41,6 +42,15 @@ def run_global_matching_scheduler(
     prediction_matrix: list[list[int]] | None = None,
     base_score_lookup: dict[str, float] | None = None,
     base_priority_weight: float = 0.0,
+    scoring_model: str = "weighted_components",
+    critical_path_weight: float = 0.0,
+    transitive_unlock_weight: float = 0.0,
+    endpoint_dual_weight: float = 0.0,
+    duplex_pair_weight: float = 0.0,
+    dual_temperature: float = 0.2,
+    transitive_tail_weight: float = 1.0,
+    destination_hotspot_weight: float = 0.0,
+    size_bias_power: float = 0.0,
     collect_debug_trace: bool = False,
 ) -> dict[str, Any]:
     start_time = time.perf_counter()
@@ -68,28 +78,47 @@ def run_global_matching_scheduler(
     schedule: list[dict[str, Any]] = []
     debug_trace: list[dict[str, Any]] = []
     wave_count = 0
-    max_rounds = max(1, max_waves)
+    max_rounds = max(1, int(max_waves))
     while any(value > 1e-9 for value in residual.values()) and wave_count < max_rounds:
-        ready = ready_flow_candidates(
-            flows=flows,
-            residual=residual,
-            ready_since=ready_since,
-            current_time=current_time,
-            release_time=release_time,
-            inbound_remaining=inbound,
-            downstream_load=downstream_load,
-            age_scale=max(1.0, current_time + 1.0),
-            residual_weight=residual_weight,
-            barrier_weight=barrier_weight,
-            age_weight=age_weight,
-            prediction_weight=prediction_weight,
-            endpoint_pressure_weight=endpoint_pressure_weight,
-            release_gain_weight=release_gain_weight,
-            mode=mode,
-            prediction_confidence=prediction_confidence,
-            base_score_lookup=base_score_lookup,
-            base_priority_weight=base_priority_weight,
-        )
+        candidate_kwargs = {
+            "flows": flows,
+            "residual": residual,
+            "ready_since": ready_since,
+            "current_time": current_time,
+            "release_time": release_time,
+            "inbound_remaining": inbound,
+            "downstream_load": downstream_load,
+            "age_scale": max(1.0, current_time + 1.0),
+            "residual_weight": residual_weight,
+            "barrier_weight": barrier_weight,
+            "age_weight": age_weight,
+            "prediction_weight": prediction_weight,
+            "endpoint_pressure_weight": endpoint_pressure_weight,
+            "release_gain_weight": release_gain_weight,
+            "mode": mode,
+            "prediction_confidence": prediction_confidence,
+            "base_score_lookup": base_score_lookup,
+            "base_priority_weight": base_priority_weight,
+        }
+        if scoring_model == "critical_frontier":
+            ready = critical_frontier_candidates(
+                **candidate_kwargs,
+                critical_path_weight=critical_path_weight,
+                transitive_unlock_weight=transitive_unlock_weight,
+                endpoint_dual_weight=endpoint_dual_weight,
+                duplex_pair_weight=duplex_pair_weight,
+                dual_temperature=dual_temperature,
+                transitive_tail_weight=transitive_tail_weight,
+                destination_hotspot_weight=destination_hotspot_weight,
+                size_bias_power=size_bias_power,
+                future_matrix=planning_prediction_matrix,
+            )
+        elif scoring_model == "weighted_components":
+            ready = ready_flow_candidates(
+                **candidate_kwargs,
+            )
+        else:
+            raise ValueError(f"unknown scoring_model {scoring_model!r}")
         if adaptive_prices:
             for candidate in ready:
                 if candidate["phase"] < 2:
@@ -229,6 +258,7 @@ def run_global_matching_scheduler(
         "solve_time_ms": planning_time_ms,
         "strategy": strategy,
         "mode": mode,
+        "scoring_model": scoring_model,
         "prediction_used": prediction_confidence > 0.0 and mode == RUNTIME_LOOKAHEAD_MODE,
         "wave_count": wave_count,
         "atomic": atomic,

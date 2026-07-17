@@ -11,6 +11,7 @@ from rs.scheduling.contracts import (
     MultiPhaseSchedulingProblem,
     ReleaseConstraint,
 )
+from rs.scheduling.families import is_scoped_family_policy
 from rs.scheduling.registry import resolve_policy
 from rs.scheduling.traffic_matrix import matrix_digest_remote, matrix_remote_bytes
 
@@ -144,16 +145,23 @@ class FormalRuntimePlanner(Planner):
 
     def plan(self, request: PlanningRequest):
         problem = _problem_from_planning_request(request)
+        # Scoped scheduling families own an immutable kernel specification.
+        # PlanningWeights carries historical non-null defaults, so forwarding
+        # those values would silently replace every family's intended kernel
+        # parameters.  Family-specific tuning must be explicit at policy
+        # construction time; the formal adapter therefore preserves the
+        # registered family defaults.
+        scoped_family = is_scoped_family_policy(self._planner_id)
         policy = resolve_policy(
             policy_name=self._planner_id,
             bucket_rows=int(request.constraints.bucket_rows),
             p0_weight=float(request.weights.p0_weight),
             p1_reservation_weight=float(request.weights.p1_weight),
             p2_hint_weight=float(request.weights.p2_weight),
-            residual_weight=float(request.weights.residual_weight),
-            barrier_weight=float(request.weights.barrier_weight),
-            age_weight=float(request.weights.age_weight),
-            prediction_weight=float(request.weights.prediction_weight),
+            residual_weight=None if scoped_family else float(request.weights.residual_weight),
+            barrier_weight=None if scoped_family else float(request.weights.barrier_weight),
+            age_weight=None if scoped_family else float(request.weights.age_weight),
+            prediction_weight=None if scoped_family else float(request.weights.prediction_weight),
         )
         logical_plan = policy.build_logical_plan(problem)
         return _window_plan_from_logical_plan(

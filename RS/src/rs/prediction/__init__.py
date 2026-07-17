@@ -3,6 +3,7 @@ from .evaluation import PredictionEvaluation, PredictionEvaluator, PredictionTru
 from .registry import PredictionRegistry, resolve_predictor_id
 from .route_to_traffic import RouteToTrafficMapper
 from .traffic_matrix import LinearTrafficPredictor
+from .traffic_envelope import build_traffic_forecast_envelope, envelope_to_prediction_hint, evaluate_traffic_forecast
 
 __all__ = [
     "LinearTrafficPredictor",
@@ -15,5 +16,8 @@ __all__ = [
     "RouteToTrafficMapper",
     "TrafficPredictionTrainingSample",
     "TrainableTrafficPredictor",
+    "build_traffic_forecast_envelope",
+    "envelope_to_prediction_hint",
+    "evaluate_traffic_forecast",
     "resolve_predictor_id",
 ]

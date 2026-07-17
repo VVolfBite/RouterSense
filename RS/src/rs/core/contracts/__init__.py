@@ -43,12 +43,16 @@ from .planning import (
 from .prediction import (
     ExpertRouteContext,
     ExpertRoutePrediction,
+    ExpertScoreDistribution,
     MatrixRows,
     PredictionContext,
     PredictionHint,
     PredictionIdentity,
     PredictionResult,
     RankedExpertRoutes,
+    RankPressureForecast,
+    StableEdgePrecedence,
+    TrafficForecastEnvelope,
     TrafficHistoryContext,
 )
 from .provenance import SourceProvenance
@@ -132,6 +136,9 @@ __all__ = [
     "PredictionIdentity",
     "PredictionResult",
     "RankedExpertRoutes",
+    "RankPressureForecast",
+    "StableEdgePrecedence",
+    "TrafficForecastEnvelope",
     "RankStageTiming",
     "RouteIdentity",
     "RouteRecord",
@@ -150,5 +157,6 @@ __all__ = [
     "TrafficHistoryContext",
     "ExpertRouteContext",
     "ExpertRoutePrediction",
+    "ExpertScoreDistribution",
     "WindowPlan",
 ]

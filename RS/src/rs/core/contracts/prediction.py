@@ -288,6 +288,202 @@ class RankedExpertRoutes:
 
 
 @dataclass(frozen=True)
+class ExpertScoreDistribution:
+    """Full routed-expert scores grouped by logical source rank.
+
+    The contract is deliberately model agnostic: each source rank owns a
+    sequence of tokens, every token has one score per routed expert, and
+    ``top_k`` fixes the total assignment mass. Shared/local experts must be
+    excluded before constructing this contract.
+    """
+
+    scores_by_source_rank: tuple[tuple[tuple[float, ...], ...], ...]
+    top_k: int
+    score_domain: str
+
+    def validate(
+        self,
+        *,
+        world_size: int | None = None,
+        expert_count: int | None = None,
+    ) -> None:
+        if int(self.top_k) <= 0:
+            raise ValueError("top_k must be > 0")
+        if self.score_domain not in {"logits", "probabilities", "nonnegative_scores"}:
+            raise ValueError(f"unsupported score_domain {self.score_domain!r}")
+        if world_size is not None and len(self.scores_by_source_rank) != int(world_size):
+            raise ValueError("scores_by_source_rank count does not match world_size")
+        inferred_expert_count = expert_count
+        for source_rank, token_rows in enumerate(self.scores_by_source_rank):
+            for token_index, row in enumerate(token_rows):
+                if inferred_expert_count is None:
+                    inferred_expert_count = len(row)
+                if len(row) != int(inferred_expert_count):
+                    raise ValueError(
+                        f"score width mismatch at source {source_rank}, token {token_index}"
+                    )
+                for value in row:
+                    numeric = float(value)
+                    if not math.isfinite(numeric):
+                        raise ValueError("expert scores must be finite")
+                    if self.score_domain != "logits" and numeric < 0.0:
+                        raise ValueError("non-logit expert scores must be non-negative")
+        if inferred_expert_count is None or int(inferred_expert_count) <= 0:
+            raise ValueError("expert score distribution must contain expert-width metadata")
+        if int(self.top_k) > int(inferred_expert_count):
+            raise ValueError("top_k cannot exceed routed expert count")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "scores_by_source_rank": [
+                [list(float(value) for value in row) for row in token_rows]
+                for token_rows in self.scores_by_source_rank
+            ],
+            "top_k": int(self.top_k),
+            "score_domain": str(self.score_domain),
+        }
+
+
+@dataclass(frozen=True)
+class RankPressureForecast:
+    """Per-source future remote-traffic pressure with calibrated bounds."""
+
+    mean: tuple[float, ...]
+    lower: tuple[float, ...]
+    upper: tuple[float, ...]
+    confidence: tuple[float, ...]
+
+    def validate(self, *, world_size: int | None = None) -> None:
+        widths = {len(self.mean), len(self.lower), len(self.upper), len(self.confidence)}
+        if len(widths) != 1:
+            raise ValueError("rank-pressure vectors must have equal length")
+        if world_size is not None and len(self.mean) != int(world_size):
+            raise ValueError("rank-pressure width does not match world_size")
+        for index, (mean, lower, upper, confidence) in enumerate(
+            zip(self.mean, self.lower, self.upper, self.confidence, strict=True)
+        ):
+            values = (float(mean), float(lower), float(upper), float(confidence))
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(f"rank-pressure values at {index} must be finite")
+            if lower < 0.0 or mean < 0.0 or upper < 0.0:
+                raise ValueError("rank-pressure values must be non-negative")
+            if float(lower) > float(mean) + 1e-9 or float(mean) > float(upper) + 1e-9:
+                raise ValueError("rank-pressure bounds must satisfy lower <= mean <= upper")
+            if float(confidence) < 0.0 or float(confidence) > 1.0:
+                raise ValueError("rank-pressure confidence must be within [0, 1]")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "mean": list(float(value) for value in self.mean),
+            "lower": list(float(value) for value in self.lower),
+            "upper": list(float(value) for value in self.upper),
+            "confidence": list(float(value) for value in self.confidence),
+        }
+
+
+@dataclass(frozen=True)
+class StableEdgePrecedence:
+    """A prediction-supported partial order; it is never executable truth."""
+
+    before_src: int
+    before_dst: int
+    after_src: int
+    after_dst: int
+    margin: float
+    confidence: float
+
+    def validate(self, *, world_size: int | None = None) -> None:
+        endpoints = (self.before_src, self.before_dst, self.after_src, self.after_dst)
+        if world_size is not None:
+            for endpoint in endpoints:
+                if int(endpoint) < 0 or int(endpoint) >= int(world_size):
+                    raise ValueError("precedence endpoint outside world_size")
+        if int(self.before_src) == int(self.before_dst) or int(self.after_src) == int(self.after_dst):
+            raise ValueError("precedence edges must be remote")
+        if (int(self.before_src), int(self.before_dst)) == (int(self.after_src), int(self.after_dst)):
+            raise ValueError("precedence edges must be distinct")
+        if not math.isfinite(float(self.margin)) or float(self.margin) < 0.0:
+            raise ValueError("precedence margin must be finite and non-negative")
+        if not math.isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
+            raise ValueError("precedence confidence must be within [0, 1]")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TrafficForecastEnvelope:
+    """Model-agnostic forecast contract consumed by planning and evaluation.
+
+    ``mean_rows`` remains available for exact/predict-then-optimize controls.
+    Online heuristics should primarily consume ``rank_pressure`` and only use
+    ``stable_precedence`` as a low-weight tie-break. Predicted bytes never become
+    executable bytes without a later actual-traffic reveal.
+    """
+
+    predictor_id: str
+    mean_rows: MatrixRows
+    lower_rows: MatrixRows
+    upper_rows: MatrixRows
+    rank_pressure: RankPressureForecast
+    stable_precedence: tuple[StableEdgePrecedence, ...] = ()
+    calibration_id: str = ""
+    source_layer_id: str | None = None
+    target_layer_id: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def validate(self, *, world_size: int | None = None) -> None:
+        if not str(self.predictor_id):
+            raise ValueError("predictor_id must be non-empty")
+        _validate_matrix("mean_rows", self.mean_rows, world_size=world_size)
+        _validate_matrix("lower_rows", self.lower_rows, world_size=world_size)
+        _validate_matrix("upper_rows", self.upper_rows, world_size=world_size)
+        if not (len(self.mean_rows) == len(self.lower_rows) == len(self.upper_rows)):
+            raise ValueError("forecast matrices must have equal shapes")
+        for src in range(len(self.mean_rows)):
+            if not (
+                len(self.mean_rows[src])
+                == len(self.lower_rows[src])
+                == len(self.upper_rows[src])
+            ):
+                raise ValueError("forecast matrices must have equal shapes")
+            for mean, lower, upper in zip(
+                self.mean_rows[src], self.lower_rows[src], self.upper_rows[src], strict=True
+            ):
+                if int(lower) > int(mean) or int(mean) > int(upper):
+                    raise ValueError("forecast bounds must satisfy lower <= mean <= upper")
+        inferred_world_size = len(self.mean_rows) if world_size is None else int(world_size)
+        self.rank_pressure.validate(world_size=inferred_world_size)
+        for precedence in self.stable_precedence:
+            precedence.validate(world_size=inferred_world_size)
+        for name, value in {
+            "source_layer_id": self.source_layer_id,
+            "target_layer_id": self.target_layer_id,
+        }.items():
+            if value is not None and not str(value):
+                raise ValueError(f"{name} must not be empty when provided")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "prediction_semantic_version": "traffic_forecast_envelope_v1",
+            "predictor_id": str(self.predictor_id),
+            "mean_rows": [list(row) for row in self.mean_rows],
+            "lower_rows": [list(row) for row in self.lower_rows],
+            "upper_rows": [list(row) for row in self.upper_rows],
+            "rank_pressure": self.rank_pressure.to_dict(),
+            "stable_precedence": [item.to_dict() for item in self.stable_precedence],
+            "calibration_id": str(self.calibration_id),
+            "source_layer_id": self.source_layer_id,
+            "target_layer_id": self.target_layer_id,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class PredictionResult:
     identity: PredictionIdentity
     hint: PredictionHint
@@ -319,7 +515,11 @@ class PredictionResult:
 __all__ = [
     "ExpertRouteContext",
     "ExpertRoutePrediction",
+    "ExpertScoreDistribution",
     "RankedExpertRoutes",
+    "RankPressureForecast",
+    "StableEdgePrecedence",
+    "TrafficForecastEnvelope",
     "MatrixRows",
     "PredictionContext",
     "PredictionHint",

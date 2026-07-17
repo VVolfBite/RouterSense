@@ -221,6 +221,70 @@ ALGORITHM_SPECS: tuple[AlgorithmSpec, ...] = (
         notes="RouterSense original barrier-criticality and release-gain family. Local and Joint share one immutable kernel; only visibility and phase coupling differ.",
     ),
     AlgorithmSpec(
+        canonical_id="rscf_local",
+        display_name="RouterSense Critical Frontier Local",
+        family="paired_family",
+        scheduling_scope="phase_local",
+        execution_model="deployable_bucket",
+        task_granularity="canonical_bucket",
+        deployable=True,
+        reference_only=False,
+        online_eligible=True,
+        offline_eligible=True,
+        supports_p2_hint=False,
+        supports_safe_wrapper=True,
+        aliases=("Local(rscf)", "Local(critical_frontier)"),
+        deprecated_aliases=(),
+        builder_key="rscf_local",
+        notes=(
+            "RouterSense model-agnostic critical-frontier family. Local and Joint "
+            "share one immutable kernel; only visibility and phase coupling differ."
+        ),
+    ),
+    AlgorithmSpec(
+        canonical_id="rscf_joint",
+        display_name="RouterSense Critical Frontier Joint",
+        family="paired_family",
+        scheduling_scope="joint",
+        execution_model="deployable_bucket",
+        task_granularity="canonical_bucket",
+        deployable=True,
+        reference_only=False,
+        online_eligible=True,
+        offline_eligible=True,
+        supports_p2_hint=True,
+        supports_safe_wrapper=True,
+        aliases=("Joint(rscf)", "Joint(critical_frontier)"),
+        deprecated_aliases=(),
+        builder_key="rscf_joint",
+        notes=(
+            "RouterSense model-agnostic critical-frontier family. Local and Joint "
+            "share one immutable kernel; only visibility and phase coupling differ."
+        ),
+    ),
+    AlgorithmSpec(
+        canonical_id="rscf_runtime_safe",
+        display_name="RouterSense Critical Frontier Runtime Safe",
+        family="runtime_safe",
+        scheduling_scope="joint_safe_wrapper",
+        execution_model="offline_guarded_candidate",
+        task_granularity="canonical_bucket",
+        deployable=False,
+        reference_only=False,
+        online_eligible=False,
+        offline_eligible=True,
+        supports_p2_hint=True,
+        supports_safe_wrapper=True,
+        aliases=("Safe(rscf)",),
+        deprecated_aliases=("RS_safe_rscf",),
+        builder_key="RS_safe_rscf",
+        notes=(
+            "Engineering guard evaluated after the primary RSCF heuristic. It "
+            "runs Joint(rscf) and Local(rscf) under the same information and "
+            "selects the lower audited makespan; it is not the primary algorithmic contribution."
+        ),
+    ),
+    AlgorithmSpec(
         canonical_id="fast_stage_local",
         display_name="FAST-Stage (single-tier) Local",
         family="paired_family",

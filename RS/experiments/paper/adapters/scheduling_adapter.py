@@ -39,11 +39,13 @@ def execute_policy(
     confidence: float = 1.0,
     expert_compute_delay: float = 0.0,
     bucket_rows: int = 1,
+    max_waves: int = 256,
 ) -> dict[str, Any]:
     engine = ReplayEngine(
         scheduling_mode="execution_window",
         expert_compute_delay=float(expert_compute_delay),
         bucket_rows=int(bucket_rows),
+        max_waves=int(max_waves),
     )
     hint = PlanningHint(
         hint_type=str(hint_type),

@@ -35,3 +35,8 @@ This directory only contains frozen paper-evaluation entry configs. The evaluato
 - `scheduling_family_pilot.yaml`
   - 用途：严格同核 `Local(f)`/`Joint(f)` 算法族小规模 pilot。
   - 结论范围：同时记录 makespan 与 planning overhead，只验证采数合同，不形成论文普遍性结论。
+
+- `scheduling_prediction_closure.yaml`
+  - 用途：统一 Local/Joint P01/P012、P2 信息阶梯、预测误差与 exact tiny-control。
+  - 环境：CPU；输入为可移植 trace/traffic 包。
+  - 结论范围：严格区分 rolling exact P01-reactive、predicted P012 与 clairvoyant O-Joint(P012-perfect)；预测字节绝不作为执行真值。

@@ -71,3 +71,15 @@ def test_safe_policy_keeps_raw_u_when_not_worse_than_paired_b() -> None:
     assert plan.diagnostics["safe_policy"] == "RS_safe_barrier_criticality"
     assert plan.diagnostics["safe_makespan"] <= plan.diagnostics["paired_b_makespan"]
     assert plan.diagnostics["same_information_guard"] is True
+
+
+def test_rscf_safe_aliases_resolve_to_same_offline_guard() -> None:
+    problem = _problem(p2_matrix=((0, 7), (5, 0)))
+    plans = [
+        resolve_policy(policy_name=name, bucket_rows=0).build_logical_plan(problem)
+        for name in ("rscf_runtime_safe", "RS_safe_rscf", "Safe(rscf)")
+    ]
+    assert {plan.diagnostics["safe_policy"] for plan in plans} == {"RS_safe_rscf"}
+    assert all(plan.diagnostics["raw_u_policy"] == "rscf_joint" for plan in plans)
+    assert all(plan.diagnostics["paired_b_policy"] == "rscf_local" for plan in plans)
+    assert all(plan.diagnostics["same_information_guard"] is True for plan in plans)

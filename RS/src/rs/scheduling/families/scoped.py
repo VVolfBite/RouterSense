@@ -56,6 +56,7 @@ _CANONICAL_NAMES: dict[str, tuple[str, FamilyScope]] = {
         "fast_stage",
         "aurora_order",
         "adaptive_price",
+        "rscf",
     )
     for scope in (FamilyScope.LOCAL, FamilyScope.JOINT)
 }
@@ -190,6 +191,15 @@ class ScopedFamilyPolicy:
             prediction_matrix=prediction_matrix,
             base_score_lookup=base_score_lookup,
             base_priority_weight=(float(self.spec.base_priority_weight) if base_score_lookup else 0.0),
+            scoring_model=str(self.spec.scoring_model),
+            critical_path_weight=float(self.spec.critical_path_weight),
+            transitive_unlock_weight=float(self.spec.transitive_unlock_weight),
+            endpoint_dual_weight=float(self.spec.endpoint_dual_weight),
+            duplex_pair_weight=float(self.spec.duplex_pair_weight),
+            dual_temperature=float(self.spec.dual_temperature),
+            transitive_tail_weight=float(self.spec.transitive_tail_weight),
+            destination_hotspot_weight=float(self.spec.destination_hotspot_weight),
+            size_bias_power=float(self.spec.size_bias_power),
             collect_debug_trace=bool(self.collect_debug_trace),
         )
 
@@ -214,7 +224,9 @@ class ScopedFamilyPolicy:
                 **contract,
                 "algorithm_id": self.policy_name,
                 "phase_independent": bool(phase_independent),
-                "uses_p2_prediction": self.scope is FamilyScope.JOINT and self.spec.prediction_weight > 0.0,
+                "uses_p2_prediction": self.scope is FamilyScope.JOINT and (
+                    self.spec.prediction_weight > 0.0 or self.spec.scoring_model == "critical_frontier"
+                ),
             },
         }
 
@@ -351,6 +363,16 @@ class ScopedFamilyPolicy:
             selection_model=f"family_{self.family_id}_local",
             extra_diagnostics={
                 **self._common_diagnostics(phase_independent=True),
+                "future_information_mode": (
+                    "oracle_execution_window"
+                    if problem.options.scheduling_mode == EXECUTION_WINDOW_MODE
+                    else "none"
+                ),
+                "forecast_consumed": False,
+                "prediction_used": False,
+                "evaluation_eligible": (
+                    problem.options.scheduling_mode != EXECUTION_WINDOW_MODE
+                ),
                 "kernel_call_count": len(phase_matrices),
                 "kernel_runtime_ms": kernel_runtime_ms,
                 "phase_kernel_runtime_ms": phase_runtime,

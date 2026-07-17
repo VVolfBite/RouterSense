@@ -13,6 +13,7 @@ def test_primary_families_have_honest_literature_labels() -> None:
         "greedy_control",
         "gmwd",
         "rsbc",
+        "rscf",
         "fast_stage",
     )
     assert EXPERIMENTAL_FAMILY_IDS == ("aurora_order", "adaptive_price")
@@ -55,3 +56,18 @@ def test_inventory_separates_primary_and_experimental_pairs() -> None:
     inventory = family_inventory()
     assert {row["family_id"] for row in inventory["primary_strict_families"]} == set(STRICT_FAMILY_IDS)
     assert {row["family_id"] for row in inventory["experimental_strict_families"]} == {"aurora_order", "adaptive_price"}
+
+
+def test_rscf_is_model_agnostic_and_uses_critical_frontier_scoring() -> None:
+    spec = FAMILY_KERNEL_SPECS["rscf"]
+    assert spec.scoring_model == "critical_frontier"
+    assert spec.critical_path_weight > 0.0
+    assert spec.transitive_unlock_weight > 0.0
+    assert spec.kernel_version == "v4"
+    assert spec.duplex_pair_weight == 0.0
+    text = " ".join(
+        spec.literature.defining_mechanisms
+        + spec.literature.implemented_mechanisms
+    ).lower()
+    for forbidden in ("olmoe", "expert id", "layer id", "64 experts", "top-8"):
+        assert forbidden not in text

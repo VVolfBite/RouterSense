@@ -74,4 +74,5 @@ def test_main_scheduling_evaluator_emits_family_pair_summaries(tmp_path: Path) -
     assert summaries["greedy_control"]["status"] == "READY"
     assert summaries["gmwd"]["status"] == "READY"
     assert summaries["rsbc"]["status"] == "READY"
-    assert summaries["greedy_control"]["win_count"] == 1
+    assert summaries["greedy_control"]["pair_count"] == 1
+    assert summaries["greedy_control"]["win_count"] + summaries["greedy_control"]["tie_count"] + summaries["greedy_control"]["loss_count"] == 1

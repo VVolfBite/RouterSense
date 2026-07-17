@@ -1,7 +1,8 @@
 """Literature-grounded kernels for controlled Local/Joint comparisons.
 
-A family describes *how a wave is selected*.  ``Local(f)`` and ``Joint(f)``
-share the same immutable kernel and differ only in the information/ready-set
+A family describes *how a wave is selected*. Literature/control families retain
+their native base score and may add the same model-agnostic RouterSense
+critical-frontier lift. ``Local(f)`` and ``Joint(f)`` share the same immutable kernel and differ only in the information/ready-set
 scope exposed by :mod:`rs.scheduling.families.scoped`.
 
 Names are deliberately conservative.  A paper name is used only when the
@@ -58,6 +59,15 @@ class FamilyKernelSpec:
     service_model: str = "fluid_wave"
     base_priority_model: str = "none"
     base_priority_weight: float = 0.0
+    scoring_model: str = "weighted_components"
+    critical_path_weight: float = 0.0
+    transitive_unlock_weight: float = 0.0
+    endpoint_dual_weight: float = 0.0
+    duplex_pair_weight: float = 0.0
+    dual_temperature: float = 0.2
+    transitive_tail_weight: float = 1.0
+    destination_hotspot_weight: float = 0.0
+    size_bias_power: float = 0.0
     kernel_version: str = "v2"
     task_contract_digest: str = "canonical_bucket_tasks_v1"
     bucket_contract_digest: str = "dynamic_or_fixed_bucket_v1"
@@ -126,6 +136,15 @@ class FamilyKernelSpec:
                     "service_model",
                     "base_priority_model",
                     "base_priority_weight",
+                    "scoring_model",
+                    "critical_path_weight",
+                    "transitive_unlock_weight",
+                    "endpoint_dual_weight",
+                    "duplex_pair_weight",
+                    "dual_temperature",
+                    "transitive_tail_weight",
+                    "destination_hotspot_weight",
+                    "size_bias_power",
                     "kernel_version",
                 }
             },
@@ -144,7 +163,9 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
             mapping_level="control",
             defining_mechanisms=("greedy maximal matching",),
             implemented_mechanisms=("greedy maximal matching", "residual-volume ordering"),
-            note="Generic control rather than a named-system reproduction.",
+            note=("Generic control rather than a named-system reproduction. The native "
+                  "greedy score is retained and augmented by the shared, model-agnostic "
+                  "RouterSense P2 critical-frontier lift."),
         ),
         primary_for_paper=True,
         exact_matching=False,
@@ -153,6 +174,13 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
         barrier_weight=0.0,
         age_weight=0.05,
         prediction_weight=0.0,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.20,
+        transitive_unlock_weight=3.00,
+        endpoint_dual_weight=0.50,
+        transitive_tail_weight=0.50,
+        destination_hotspot_weight=0.20,
+        kernel_version="v3-p2lift",
     ),
     # Greedy Max-Weight Decomposition (GMWD): repeatedly solve a maximum-weight
     # matching on the original residual MoE matrix and subtract the minimum
@@ -178,7 +206,10 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
             missing_mechanisms=(
                 "paper-specific photonic reconfiguration and expert-compute cost model",
             ),
-            note="The matching/decomposition core is reproduced; RouterSense extends its scope to multiphase release windows.",
+            note=("The residual max-weight decomposition core is retained. RouterSense "
+                  "adds the same model-agnostic P2 critical-frontier lift used across "
+                  "scoped families; results must therefore be labeled GMWD-CF or "
+                  "GMWD-style + RouterSense lift, not as an unmodified reproduction."),
         ),
         primary_for_paper=True,
         exact_matching=True,
@@ -187,6 +218,13 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
         barrier_weight=0.0,
         age_weight=0.0,
         prediction_weight=0.0,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.20,
+        transitive_unlock_weight=3.00,
+        endpoint_dual_weight=0.50,
+        transitive_tail_weight=0.50,
+        destination_hotspot_weight=0.20,
+        kernel_version="v3-p2lift",
     ),
     # RouterSense original: barrier urgency plus a normalized release-gain term.
     # The release-gain term is computed by the common kernel for both scopes;
@@ -210,7 +248,8 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
                 "normalized downstream release-gain scoring",
                 "maximum-weight bipartite matching",
             ),
-            note="RouterSense's primary original family.",
+            note=("RouterSense original family. RSBC retains its barrier/release-gain "
+                  "components and adds the shared model-agnostic P2 critical-frontier lift."),
         ),
         primary_for_paper=True,
         exact_matching=True,
@@ -220,6 +259,60 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
         age_weight=0.15,
         prediction_weight=0.35,
         release_gain_weight=1.50,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.35,
+        transitive_unlock_weight=3.00,
+        endpoint_dual_weight=1.00,
+        transitive_tail_weight=0.25,
+        destination_hotspot_weight=0.15,
+        kernel_version="v5-p2lift",
+    ),
+    # RouterSense Critical Frontier (RSCF): a model-agnostic extension of RSBC
+    # that prices the transitive P0->P1->P2 release DAG and endpoint bottlenecks.
+    # It consumes traffic geometry and
+    # release constraints only; no expert identity or model-specific feature is
+    # part of the kernel.
+    "rscf": FamilyKernelSpec(
+        family_id="rscf",
+        display_name="RouterSense Critical Frontier (RSCF)",
+        literature=LiteratureLineage(
+            paper_label="RouterSense Critical Frontier (RSCF)",
+            citation_key="routersense.rscf",
+            mapping_level="original",
+            defining_mechanisms=(
+                "release-aware global ready set",
+                "transitive P0-P1-P2 critical-frontier pricing",
+                "release-aware endpoint bottleneck dual pricing",
+                "maximum-weight matching",
+            ),
+            implemented_mechanisms=(
+                "traffic-only transitive release-DAG criticality",
+                "smooth critical-frontier and endpoint dual prices",
+                "maximum-weight bipartite matching",
+            ),
+            note=(
+                "RouterSense original, model-agnostic family. The kernel uses only "
+                "residual traffic, endpoint loads, and release dependencies."
+            ),
+        ),
+        primary_for_paper=True,
+        exact_matching=True,
+        atomic=False,
+        residual_weight=0.15,
+        barrier_weight=0.50,
+        age_weight=0.30,
+        prediction_weight=0.0,
+        release_gain_weight=2.50,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.25,
+        transitive_unlock_weight=2.50,
+        endpoint_dual_weight=1.00,
+        duplex_pair_weight=0.00,
+        dual_temperature=0.20,
+        transitive_tail_weight=0.25,
+        destination_hotspot_weight=0.10,
+        size_bias_power=0.00,
+        kernel_version="v4",
     ),
     # FAST contains intra-server rebalancing plus balanced one-to-one scale-out
     # stages.  Our current single-tier model implements only the stage-ordering
@@ -246,7 +339,8 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
                 "server/NIC hierarchy",
                 "two-tier scale-out topology model",
             ),
-            note="Must be reported as FAST-Stage or FAST-inspired, never as a full FAST reproduction.",
+            note=("Must be reported as FAST-Stage-CF (or FAST-inspired stage ordering "
+                  "+ RouterSense critical-frontier lift), never as a full FAST reproduction."),
         ),
         primary_for_paper=True,
         exact_matching=True,
@@ -257,6 +351,13 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
         prediction_weight=0.0,
         base_priority_model="birkhoff_round_rank",
         base_priority_weight=1.0,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.25,
+        transitive_unlock_weight=2.50,
+        endpoint_dual_weight=1.00,
+        transitive_tail_weight=0.25,
+        destination_hotspot_weight=0.10,
+        kernel_version="v3-p2lift",
     ),
     # Aurora jointly optimizes placement and transmission ordering.  The current
     # fixed-placement scheduler implements only the pressure-aware ordering part.
@@ -318,6 +419,13 @@ FAMILY_KERNEL_SPECS: dict[str, FamilyKernelSpec] = {
         price_decay=0.1,
         price_clip=8.0,
         iteration_budget=2,
+        scoring_model="critical_frontier",
+        critical_path_weight=0.20,
+        transitive_unlock_weight=2.00,
+        endpoint_dual_weight=0.50,
+        transitive_tail_weight=0.50,
+        destination_hotspot_weight=0.10,
+        kernel_version="v3-p2lift",
     ),
 }
 
@@ -351,6 +459,9 @@ FAMILY_ID_ALIASES: dict[str, str] = {
     "greedy_control": "greedy_control",
     "gmwd": "gmwd",
     "rsbc": "rsbc",
+    "rscf": "rscf",
+    "critical_frontier": "rscf",
+    "router_sense_critical_frontier": "rscf",
     "fast": "fast_stage",
     "fast_style": "fast_stage",
     "fast_stage": "fast_stage",
