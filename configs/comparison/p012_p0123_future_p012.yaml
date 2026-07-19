@@ -1,0 +1,49 @@
+# Portable comparison surface for the three RouterSense planning modes.
+# Model and topology paths are supplied by the deployment environment.
+model:
+  path: ""
+  model_id: ""
+  trust_remote_code: false
+
+topology:
+  ep_size: 4
+  launcher:
+    kind: torchrun
+
+runtime:
+  line: async_release
+  output_mode: paper
+  precision: bf16
+  dispatcher: alltoall
+  invariant_mode: diagnostic
+
+workload:
+  prompts: configs/workload/smoke_prompts.json
+
+strategies:
+  - name: routersense_p012_async
+    description: "On-demand P012: current P0/P1 plus one-step P2 advisory"
+  - name: routersense_p0123_async
+    description: "On-demand P0123 advisory horizon: P3=P2^T informs current P0/P1 only"
+  - name: routersense_future_p012_async
+    description: "Future-P012: the same P012 planner runs in the previous layer"
+
+execution:
+  repetitions: 1
+  schedule:
+    layer_selector: all
+    phase_selector: both
+
+
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+
+comparison:
+  baseline_strategy: routersense_p012_async
+  primary_metric: communication_makespan_us
+  secondary_metrics:
+    - scheduling_overhead_us
+    - plan_ready_margin_us
+    - bind_time_us
+    - repair_time_us

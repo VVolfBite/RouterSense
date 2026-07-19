@@ -1,8 +1,0 @@
-﻿{
-  "legal_path": ["LOGICAL_READY", "CLAIMED", "BOUND", "EXECUTING", "COMPLETED"],
-  "illegal_examples_rejected": [
-    "LOGICAL_READY->EXECUTING",
-    "LOGICAL_READY->COMPLETED",
-    "CLAIMED->COMPLETED"
-  ]
-}

@@ -1,9 +1,0 @@
-RS/src/rs/planning/runtime_compat.py
-  - alias / phase-policy lookup only
-  - no planner construction
-  - delete target: M1 after runtime alias consumers move to direct config resolution
-
-RS/src/rs/planning/_legacy_runtime.py
-  - private runtime/offline compatibility bridge
-  - not exported from rs.planning
-  - delete target: M1 after current-window lifecycle path and offline study runner migrate off legacy scheduling requests

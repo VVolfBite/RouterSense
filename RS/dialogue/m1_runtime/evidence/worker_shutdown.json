@@ -1,8 +1,0 @@
-{
-  "source": "RS/tests/contract/megatron_ep/test_target_planner_service.py",
-  "assertions": {
-    "close_rejects_submit": true,
-    "close_clears_thread": true,
-    "restart_after_close": true
-  }
-}

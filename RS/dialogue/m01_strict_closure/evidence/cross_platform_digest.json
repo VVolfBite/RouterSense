@@ -1,6 +1,0 @@
-﻿{
-  "planning_request_subprocess_digest": "stable",
-  "window_plan_subprocess_digest": "stable",
-  "two_horizon_subprocess_digest": "stable",
-  "pathsep": "os.pathsep"
-}

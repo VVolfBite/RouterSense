@@ -1,6 +1,0 @@
-﻿{
-  "lifecycle_uses_enqueue": false,
-  "lifecycle_main_thread_predict_calls": 0,
-  "worker_direct_collective_calls": false,
-  "formal_planning_api_exports_legacy_builders": false
-}

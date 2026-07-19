@@ -1,5 +1,0 @@
-﻿{
-  "handled_statuses": ["accepted", "replaced_stale", "dropped_overload", "rejected_expired", "rejected_closed"],
-  "lifecycle_uses_submit": true,
-  "lifecycle_uses_enqueue": false
-}

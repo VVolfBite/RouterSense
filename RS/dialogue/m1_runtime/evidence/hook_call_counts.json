@@ -1,9 +1,0 @@
-{
-  "source": "RS/tests/contract/megatron_ep/test_runtime_handle.py",
-  "assertions": {
-    "dispatch_ready_equals_complete": true,
-    "combine_ready_equals_complete": true,
-    "secondary_on_dispatch_not_called_by_formal_wrapper": true,
-    "secondary_on_combine_not_called_by_formal_wrapper": true
-  }
-}

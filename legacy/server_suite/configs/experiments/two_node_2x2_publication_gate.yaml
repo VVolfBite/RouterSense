@@ -1,0 +1,42 @@
+experiment:
+  name: two_node_2x2_publication_gate
+  capture_root: /shared/routersense/capture
+  output_root: ../../outputs
+  split: validation
+  models: [olmoe]
+  world_sizes: [4]
+  families: [gmwd, rsbc, rscf]
+  branches: [local, event, global]
+  predictors: [zero, ridge, fate, perfect]
+  fate_hint_path: /shared/routersense/fate_hints.jsonl
+  per_cell: null
+  seed: 20260719
+  ridge_alpha: 10.0
+  fate_proxy_alpha: 10.0
+  fate_training_prompts: 24
+  expert_compute_delay: 0.0
+  max_waves: 10000
+  row_bytes: 8192
+  phase_horizon: 3
+  planning_modes: [p012, future-p012]
+  oracle:
+    enabled: true
+    instances: 12
+    ranks: 3
+    target_tokens: 18
+    time_limit_s: 30
+  plots:
+    enabled: true
+    formats: [pdf, png]
+    dpi: 300
+  runtime:
+    corpus_path: /shared/routersense/corpus.jsonl
+    model_paths:
+      olmoe: /shared/models/OLMoE-1B-7B-0924-Instruct
+    batch_size: 1
+    prompt_limit: null
+    warmups: 3
+    repeats: 20
+    dtype: bfloat16
+    backend: nccl
+    master_port: 29500

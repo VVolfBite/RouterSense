@@ -1,5 +1,0 @@
-﻿{
-  "max_outgoing_per_rank_per_wave": 1,
-  "max_incoming_per_rank_per_wave": 1,
-  "multi_port_rejected": true
-}

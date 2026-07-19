@@ -1,4 +1,0 @@
-﻿{
-  "publication_token_fields": ["service_session_id", "forward_generation", "target_key", "task_version", "publish_sequence"],
-  "publish_if_current": true
-}

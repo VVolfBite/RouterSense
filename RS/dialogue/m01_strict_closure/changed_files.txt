@@ -1,2 +1,0 @@
-﻿Changed files in this pass are the tracked RouterSense source/test files plus dialogue artifacts under RS/dialogue/m01_strict_closure.
-User-preexisting deletions and archive/legacy content were intentionally not touched.

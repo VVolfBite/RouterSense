@@ -1,4 +1,0 @@
-strategy,total_forward_median_us,extra_vs_native_us,active_transport_sum_median_us,communication_span_median_us,raw_u_build_median_us,control_overhead_median_us,preflight_median_us,p2p_enqueue_median_us,p2p_wait_median_us,currently_unexplained_incremental_us
-native,140834.62524414062,,0,0.0,0.0,0.0,0.0,0.0,0.0,
-routersense_b_core_independent_async,207986.70196533203,67152.0767211914,7967.3555,85744.845,9233.120999999997,9440.449999999997,103.06850000000003,2020.116,239.81300000000002,38251.221221191416
-routersense_u_core_zero_raw_async,213655.85327148438,72821.22802734375,7830.102,90717.14,8176.875,8387.27,104.8945,2002.5115,231.56050000000002,46192.90902734375

@@ -1,7 +1,0 @@
-{
-  "status": "passed",
-  "local_mode": "runs LocalPlanner only",
-  "joint_mode": "runs JointPlanner only",
-  "compare_mode": "runs both planners and selects by CommonCorePlanEstimator + PlanningCostModel",
-  "source_test": "tests/unit/test_planner_selector.py"
-}

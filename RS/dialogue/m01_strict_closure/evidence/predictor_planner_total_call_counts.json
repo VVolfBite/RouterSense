@@ -1,8 +1,0 @@
-﻿{
-  "predictor_total_call_count_per_source_target": 1,
-  "planner_call_modes": {
-    "LOCAL": {"local": 1, "joint": 0},
-    "JOINT": {"local": 0, "joint": 1},
-    "COMPARE": {"local": 1, "joint": 1}
-  }
-}

@@ -1,4 +1,0 @@
-starting_branch: convergence/m1-runtime-lifecycle
-starting_sha: 8cb7212
-commit_subject: Converge runtime lifecycle and preparation flow
-commit_note: exact final SHA is recorded in the handoff bundle metadata and final git log

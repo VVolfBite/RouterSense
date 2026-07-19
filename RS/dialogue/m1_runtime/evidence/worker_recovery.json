@@ -1,8 +1,0 @@
-{
-  "source": "RS/tests/contract/megatron_ep/test_target_planner_service.py",
-  "assertions": {
-    "first_task_failure_terminal_state": "FAILED",
-    "second_task_still_built": true,
-    "worker_continues_after_task_failure": true
-  }
-}

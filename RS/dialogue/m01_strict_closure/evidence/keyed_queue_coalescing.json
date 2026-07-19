@@ -1,5 +1,0 @@
-﻿{
-  "same_key_high_frequency_replace": "latest preserved",
-  "new_key_overload": "existing key preserved",
-  "stale_inflight_publish": "rejected"
-}

@@ -1,0 +1,111 @@
+deployment:
+  name: two_node_2x2_publication_suite
+  python: python3.12
+  setup_command: >-
+    python3.12 -m pip install -e '.[all]' &&
+    if test -f RS/pyproject.toml; then python3.12 -m pip install -e RS; fi
+  ssh_user: ${ROUTERSENSE_SSH_USER}
+  remote_root: ${ROUTERSENSE_REMOTE_ROOT}
+  ready_port: 29600
+
+  ranks:
+    - {rank: 0, host: "${ROUTERSENSE_NODE0}", local_gpu: 0}
+    - {rank: 1, host: "${ROUTERSENSE_NODE0}", local_gpu: 1}
+    - {rank: 2, host: "${ROUTERSENSE_NODE1}", local_gpu: 0}
+    - {rank: 3, host: "${ROUTERSENSE_NODE1}", local_gpu: 1}
+
+  benchmark:
+    enabled: true
+    backend: torch_p2p
+    message_sizes: [4096, 65536, 1048576, 8388608, 33554432]
+    warmups: 5
+    repeats: 20
+    port_base: 29400
+    timeout_s: 120
+    wave_launch_ms: 0.0
+    allow_fallback_pairs: false
+
+  # The model and corpus remain on shared/remote storage. These values replace
+  # paths in the experiment config before the deploy bundle is distributed.
+  remote_path_overrides:
+    runtime.model_paths.olmoe: ${ROUTERSENSE_OLMOE_PATH}
+    runtime.corpus_path: ${ROUTERSENSE_CORPUS_PATH}
+    capture_root: ${ROUTERSENSE_CAPTURE_PATH}
+    fate_hint_path: ${ROUTERSENSE_FATE_HINT_PATH}
+
+  suite:
+    enabled: true
+    publication_mode: true
+    cleanup_on_success: true
+    cleanup_on_failure: false
+    required_command_names:
+      - formal_cpu
+      - gloo_correctness
+      - nccl_correctness
+      - runtime_matrix
+      - future_fate
+      - offline_analysis
+    required_artifacts:
+      - suite_command_results.json
+      - benchmark/link_profile.json
+      - collected/*/inventory/*.json
+      - collected/*/stages/formal_cpu/status.json
+      - collected/*/stages/gloo_correctness/status.json
+      - collected/*/stages/nccl_correctness/status.json
+      - collected/*/stages/runtime_matrix/status.json
+      - collected/*/stages/future_fate/status.json
+      - collected/*/stages/offline_analysis/status.json
+    commands:
+      # These commands are resolved on the controller before the bundle is built.
+      # Each command may use {output_dir}, {run_id}, {node_rank}, {nnodes},
+      # {nproc_per_node}, {master_addr}, {master_port}, {python}, {experiment},
+      # and {deployment}. A command must return non-zero on any failed gate.
+      - name: formal_cpu
+        scope: master
+        timeout_s: 3600
+        required: true
+        command: ${ROUTERSENSE_FORMAL_CPU_COMMAND}
+        artifacts: ["collected/*/stages/formal_cpu/status.json"]
+
+      - name: gloo_correctness
+        scope: distributed
+        timeout_s: 1800
+        required: true
+        command: ${ROUTERSENSE_GLOO_COMMAND}
+        artifacts: ["collected/*/stages/gloo_correctness/status.json"]
+
+      - name: nccl_correctness
+        scope: distributed
+        timeout_s: 3600
+        required: true
+        command: ${ROUTERSENSE_NCCL_CORRECTNESS_COMMAND}
+        artifacts: ["collected/*/stages/nccl_correctness/status.json"]
+
+      - name: runtime_matrix
+        scope: distributed
+        timeout_s: 14400
+        required: true
+        command: ${ROUTERSENSE_RUNTIME_MATRIX_COMMAND}
+        artifacts: ["collected/*/stages/runtime_matrix/status.json"]
+
+      - name: future_fate
+        scope: distributed
+        timeout_s: 14400
+        required: true
+        command: ${ROUTERSENSE_FUTURE_FATE_COMMAND}
+        artifacts: ["collected/*/stages/future_fate/status.json"]
+
+      - name: offline_analysis
+        scope: master
+        timeout_s: 14400
+        required: true
+        command: >-
+          {python} -m routersense_sched.cli run
+          --experiment {experiment}
+          --deployment {deployment}
+          --mode offline
+        artifacts: ["collected/*/stages/offline_analysis/status.json"]
+
+  metadata:
+    purpose: publication-gate orchestration for two nodes with two GPUs per node
+    evidence_contract: every required stage must exit zero and publish a stage status artifact

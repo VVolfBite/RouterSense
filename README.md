@@ -1,104 +1,97 @@
-# RouteSense
+# RouteSense Mainline
 
-RouteSense is a distributed MoE scheduling and deployment project. The formal
-mainline lives under `RS/`. Historical POC material is preserved in `legacy/`
-and curated result snapshots live under `archive/backup/`.
+`RS/` is the formal RouteSense codebase.
 
-## Mainline
+## Contents
 
-- `RS/src/rs/`
-  Mainline runtime, scheduler, trace, topology, oracle, and evaluation code.
-- `RS/deploy/`
-  Inventory, dry-run launch contracts, and deployment helpers.
-- `RS/experiments/`
-  Deployment smokes, distributed bring-up, and scheduler evaluation entrypoints.
-- `RS/docs/`
-  Mainline technical docs and current design notes.
-- `RS/docs/handoff_next_codex.md`
-  Current operator handoff for the next Codex session. Read this first when
-  resuming work.
-- `RS/tests/`
-  Mainline regression tests.
-- `RS/artifacts/`
-  Active working outputs only. This tree should stay trimmed.
+- `src/rs/core/`: shared contracts, artifact helpers, hashing, validation.
+- `src/rs/scheduling/`: formal scheduling ABI and policy surface.
+- `src/rs/runtime/offline/`: formal offline trace, traffic, prediction, and runner surface.
+- `src/rs/runtime/online/megatron_ep/`: formal online Megatron EP runtime surface.
+- `experiments/offline/`: formal offline experiment entrypoints.
+- `experiments/online/`: formal online experiment entrypoints.
+- `deploy/`: remote minimal runtime environment and cluster templates.
+- `scripts/`: deployment, verification, plotting, and maintenance helpers.
+- `configs/`: model, topology, workload, and experiment configuration.
+- `docs/`: architecture, handoff, experiment, and operations documentation.
+- `archive/`: small milestone manifests and fingerprints only.
+- `artifacts/`: raw run outputs, not tracked by Git.
+- `tests/`: mainline regression tests.
 
-## Curated Backup
+## Formal Dependency Direction
 
-- `archive/backup/`
-  Git-controlled curated backup area.
-- `archive/backup/README.md`
-  Index of the currently retained result snapshots.
-- `archive/backup/docs/`
-  Archived copies of root-level planning / task / elimination documents.
-
-As of the current cleanup, only three experiment backup groups are intentionally
-retained there:
-
-1. cross-layer prediction validity
-2. oracle / fast optimization-gap study
-3. execution-window multiscale scheduler study
-
-## Legacy
-
-- `legacy/poc1/`
-  Router observability and proxy-era experiments.
-- `legacy/poc2/`
-  Single-node NCCL harness and historical scheduler diagnostics.
-- `legacy/shared/`
-  Shared historical docs and test assets.
-
-The legacy trees are kept for reference and reproducibility. They are not part
-of the formal `RS/` runtime path, and the mainline tests explicitly guard
-against accidental legacy imports.
-
-## Operator Channel
-
-- `RS/channel/ins/`
-  Incoming operator instructions synchronized through git.
-- `RS/channel/reply/`
-  Outgoing step reports.
-
-## Current Phase
-
-The current mainline focus is the path from offline scheduler validation to a
-semantically correct distributed EP runtime under the `RS/` stack. Historical
-POC documents remain available for context, but they are not the source of
-truth for the deployment mainline.
-
-At the moment, the distributed execution path in `RS/` should be treated as
-`trace_replay`, not as a real EP runtime:
-
-- `trace_replay` is the only supported runtime mode today.
-- current 2-rank runs are valid for wiring, correctness protocol bring-up, and
-  collective calibration only.
-- current results do not justify production EP performance claims, online
-  prediction claims, or NCCL speedup claims from offline makespan numbers.
-
-## Resume Point
-
-If a new Codex session needs to resume the project, start from:
-
-1. `README.md`
-2. `RS/docs/handoff_next_codex.md`
-3. `RS/docs/multiphase_global_matching_study.md`
-4. `RS/docs/phase0c_distributed_ep_contract.md`
-
-## Current POC-Line1 Presets
-
-- Standard non-repeated prompt corpus:
-  `RS/artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
-- Tiered scheduler candidate presets:
-  `RS/experiments/poc_line1/configs/candidate_tiers.json`
-
-Example:
-
-```bash
-cd /root/autodl-tmp/RouterSense/RS
-OMP_NUM_THREADS=1 PYTHONPATH=src python -u experiments/poc_line1/exp_pairwise_candidate_compare.py \
-  --config-json experiments/poc_line1/configs/candidate_tiers.json \
-  --config-key tier2 \
-  --trace-jsonl artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/trace.jsonl \
-  --hidden-states-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/hidden_states.pt \
-  --gate-weights-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/gate_weights.pt \
-  --output-dir artifacts/poc_line1/tier2_compare
+```text
+core
+  ↑
+scheduling
+  ↑
+runtime/offline        runtime/online
+  ↑                        ↑
+experiments
+  ↑
+scripts / deploy
 ```
+
+Forbidden reverse dependencies:
+
+- `scheduling` must not import torch, Megatron, NCCL, experiment runners, or artifact paths.
+- `runtime` must not import `experiments`.
+- `experiments` must not implement reusable runtime logic.
+- `legacy` must not be imported by formal runtime code.
+
+## Current Formal Mainline
+
+The formal online runtime path is now:
+
+```text
+src/rs/runtime/online/megatron_ep/
+```
+
+The formal offline runtime path is now:
+
+```text
+src/rs/runtime/offline/
+```
+
+The formal scheduling path is now:
+
+```text
+src/rs/scheduling/
+```
+
+The formal mainline now routes all supported runtime, offline, and policy work
+through these packages. Historical material is parked under `legacy/` and is
+excluded from the default validation path.
+
+## Planning modes
+
+The online runtime preserves the original P012 path and exposes two isolated
+extensions through the same formal planner/runtime chain:
+
+- `routersense_p012_async`: on-demand P012.  Current P0/P1 are executable and
+  predicted P2 is advisory.
+- `routersense_p0123_async`: on-demand P0123 advisory horizon.  The planner also
+  considers `P3 = transpose(P2)`, but executable coverage remains current P0/P1.
+- `routersense_future_p012_async`: the unchanged P012 planner runs in the
+  previous layer and publishes an immutable target-layer plan.  The target
+  layer binds actual P0/P1 and performs at most the existing bounded repair;
+  it does not run a second full planner.
+
+See `docs/P012_P0123_FUTURE_P012.md` and
+`configs/comparison/p012_p0123_future_p012.yaml`.
+
+## Formal exact Oracle
+
+The current paper `O_local`/`O_joint` comparison uses the same certified tiny
+canonical bucket-wave model and changes only scheduling scope:
+
+```text
+O_local: exact P0/P1/P2 phase-local solve
+O_joint: exact rank-release-aware joint solve
+```
+
+The model ID is `routersense_exact_bucket_wave_release_v2`. It is limited to at
+most 4 ranks and 12 canonical bucket tasks and fails closed above that scale.
+Historical CP-SAT names are compatibility aliases; Birkhoff fluid decomposition
+is a separate sensitivity reference. See
+`reports/UNIFIED_ORACLE_MODEL_20260719.md`.
