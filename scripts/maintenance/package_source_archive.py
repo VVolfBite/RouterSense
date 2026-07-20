@@ -30,7 +30,8 @@ DEFAULT_INCLUDED = (
     "scripts",
     "deploy",
     "docs",
-    "archive",
+    ".gitignore",
+    "DEPLOYMENT_HANDOFF.md",
     "README.md",
     "pyproject.toml",
 )
@@ -57,8 +58,14 @@ DEFAULT_EXCLUDED = (
     "*.bin",
     "*.safetensors",
     "*.ckpt",
-    "archive/round1_removed_20260720",
-    "archive/round1_removed_20260720/*",
+    "archive",
+    "archive/*",
+    "configs/archive",
+    "configs/archive/*",
+    "experiments/archive",
+    "experiments/archive/*",
+    "scripts/maintenance/archive",
+    "scripts/maintenance/archive/*",
 )
 CACHE_PATH = Path(tempfile.gettempdir()) / "routersense_packager_cache.json"
 

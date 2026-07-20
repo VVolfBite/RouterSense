@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             "model_sync",
             [
                 "bash", "scripts/deploy/sync_model_cache.sh", args.inventory,
-                "--model-id", args.model_id, *apply_flag,
+                "--model-id", args.model_id, "--require-existing", *apply_flag,
             ],
         ))
     if not args.skip_model_preflight:

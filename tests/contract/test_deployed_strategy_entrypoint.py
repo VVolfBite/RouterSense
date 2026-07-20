@@ -9,11 +9,19 @@ import pytest
 
 from rs.core.experiment_config import load_run_config
 from rs.experiments_support.deployed_strategy import prepare_deployed_strategy
-from rs.topology import infer_model_row_contract, write_link_cost_profile
-from experiments.online.run_policy_correctness import _resolve_planner_cost_config
+from rs.topology import (
+    infer_model_row_contract,
+    resolve_runtime_link_cost_profile,
+    write_link_cost_profile,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_policy_correctness_entrypoint_imports_runtime_link_cost_resolver() -> None:
+    source = (ROOT / "experiments/online/run_policy_correctness.py").read_text(encoding="utf-8")
+    assert "from rs.topology import resolve_runtime_link_cost_profile" in source
 
 
 def test_prepare_deployed_strategy_expands_public_async_config(tmp_path: Path) -> None:
@@ -128,7 +136,16 @@ def test_runtime_accepts_matching_link_profile_and_rejects_model_row_mismatch(tm
         model_path=str(model_path),
     )
     config = load_run_config(config_path=str(payload["generated_config"]))
-    planner_config, metadata = _resolve_planner_cost_config(config, model_path=str(model_path))
+    planner_config, metadata = resolve_runtime_link_cost_profile(
+        configured_path=config.topology.cost_profile,
+        source_config_path=config.source_config_path,
+        repository_root=ROOT,
+        model_path=model_path,
+        precision=config.runtime.precision,
+        world_size=4,
+        local_world_size=2,
+        require_profile=config.topology.require_cost_profile,
+    )
     assert planner_config["cost_profile_id"]
     assert planner_config["ranks_per_node"] == 2
     assert metadata["mode"] == "measured_pairwise"
@@ -148,4 +165,13 @@ def test_runtime_accepts_matching_link_profile_and_rejects_model_row_mismatch(tm
     )
     bad_config = load_run_config(config_path=str(bad_payload["generated_config"]))
     with pytest.raises(RuntimeError, match="row_bytes"):
-        _resolve_planner_cost_config(bad_config, model_path=str(model_path))
+        resolve_runtime_link_cost_profile(
+            configured_path=bad_config.topology.cost_profile,
+            source_config_path=bad_config.source_config_path,
+            repository_root=ROOT,
+            model_path=model_path,
+            precision=bad_config.runtime.precision,
+            world_size=4,
+            local_world_size=2,
+            require_profile=bad_config.topology.require_cost_profile,
+        )

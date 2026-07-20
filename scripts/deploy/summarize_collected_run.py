@@ -38,14 +38,52 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _walk_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_dicts(child)
+
+
 def _explicit_failure(payload: dict[str, Any]) -> str | None:
     failure_markers = ("fail", "error", "invalid", "reject", "blocked", "timeout", "abort")
-    for key in ("status", "correctness_status", "validation_status", "execution_status"):
-        value = str(payload.get(key, "")).strip().lower()
-        if value and any(marker in value for marker in failure_markers):
-            return f"{key}={value}"
-    if int(payload.get("fallback_count", 0) or 0) > 0 and bool(payload.get("formal_execution_expected", False)):
-        return "unexpected fallback_count"
+    for row in _walk_dicts(payload):
+        for key in (
+            "status",
+            "correctness_status",
+            "validation_status",
+            "execution_status",
+            "execution_audit_status",
+        ):
+            value = str(row.get(key, "")).strip().lower()
+            if value and any(marker in value for marker in failure_markers):
+                return f"{key}={value}"
+        if bool(row.get("timeout_observed", False)):
+            return "timeout_observed=true"
+        if int(row.get("timeout_count", 0) or 0) > 0:
+            return "timeout_count_nonzero"
+        if bool(row.get("session_poisoned", False)):
+            return "session_poisoned=true"
+        if int(row.get("phase_sync_fallback_count", 0) or 0) > 0:
+            return "phase_sync_fallback_count_nonzero"
+        if int(row.get("native_fallback_count", 0) or 0) > 0:
+            return "native_fallback_count_nonzero"
+        if int(row.get("fallback_count", 0) or 0) > 0 and bool(row.get("formal_execution_expected", False)):
+            return "unexpected fallback_count"
+        if row.get("all_work_completed") is False and any(
+            key in row
+            for key in (
+                "execution_mode",
+                "transport_execution_count",
+                "timeout_count",
+                "phase_sync_fallback_count",
+                "native_fallback_count",
+            )
+        ):
+            return "all_work_completed=false"
     return None
 
 

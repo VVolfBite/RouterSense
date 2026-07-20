@@ -46,11 +46,20 @@ config_path = p / "config.json"
 config = json.loads(config_path.read_text(encoding="utf-8"))
 index_files = [p / name for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json") if (p / name).is_file()]
 referenced = []
+invalid_indexes = []
 for index_path in index_files:
     payload = json.loads(index_path.read_text(encoding="utf-8"))
-    referenced.extend(sorted(set((payload.get("weight_map") or {}).values())))
-missing = [name for name in referenced if not (p / name).is_file()]
-weight_files = sorted(list(p.glob("*.safetensors")) + list(p.glob("*.bin")))
+    values = sorted(set((payload.get("weight_map") or {}).values()))
+    if not values:
+        invalid_indexes.append(index_path.name)
+    referenced.extend(values)
+missing = [name for name in referenced if not (p / name).is_file() or (p / name).stat().st_size <= 0]
+weight_files = sorted(
+    file_path
+    for file_path in list(p.glob("*.safetensors")) + list(p.glob("*.bin"))
+    if file_path.is_file() and file_path.stat().st_size > 0
+)
+weights_ready = bool(weight_files) and not missing and not invalid_indexes
 readable = []
 for file_path in [config_path, *index_files, *weight_files[:2]]:
     with file_path.open("rb") as handle:
@@ -59,12 +68,14 @@ model_config = AutoConfig.from_pretrained(str(p), local_files_only=True, trust_r
 tokenizer = AutoTokenizer.from_pretrained(str(p), local_files_only=True, trust_remote_code=TRUST)
 stat = os.statvfs(p)
 print(json.dumps({
-    "status": "PASS" if not missing else "FAIL",
+    "status": "PASS" if weights_ready else "FAIL",
     "model_path": str(p),
     "model_type": str(getattr(model_config, "model_type", "")),
     "tokenizer_class": type(tokenizer).__name__,
     "index_referenced_shards": len(referenced),
+    "invalid_weight_indexes": invalid_indexes,
     "missing_index_shards": missing,
+    "weight_file_count": len(weight_files),
     "readable_files": readable,
     "filesystem_free_bytes": int(stat.f_bavail * stat.f_frsize),
 }, indent=2))

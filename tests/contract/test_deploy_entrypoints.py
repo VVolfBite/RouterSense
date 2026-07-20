@@ -119,6 +119,8 @@ def test_access_probe_and_full_pipeline_are_safe_dry_runs(tmp_path: Path) -> Non
         "result_validation",
     ]
     assert all(row["status"] == "PASS" for row in pipeline["stages"])
+    model_sync_stage = next(row for row in pipeline["stages"] if row["name"] == "model_sync")
+    assert "--require-existing" in model_sync_stage["command"]
 
 
 def test_pipeline_rejects_ambiguous_link_profile_modes() -> None:

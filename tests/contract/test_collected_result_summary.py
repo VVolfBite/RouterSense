@@ -113,6 +113,42 @@ def test_collected_result_summary_rejects_runtime_failure_status(tmp_path: Path)
     assert any("explicit failure" in item for item in payload["failures"])
 
 
+def test_collected_result_summary_rejects_nested_execution_failures(tmp_path: Path) -> None:
+    inventory = _inventory(tmp_path)
+    collected = tmp_path / "collected"
+    _successful_tree(collected)
+    result = collected / "node0" / "per_strategy" / "rscf" / "run" / "summary.json"
+    result.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "details": {
+                    "transport_mutation": True,
+                    "rank_summaries": [
+                        {
+                            "execution_audit_status": "passed",
+                            "all_work_completed": True,
+                            "timeout_count": 0,
+                            "phase_sync_fallback_count": 1,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    completed = _run(inventory, collected)
+    assert completed.returncode == 2
+    payload = json.loads(completed.stdout)
+    assert payload["status"] == "FAIL"
+    reasons = [
+        row["reason"]
+        for node in payload["nodes"]
+        for row in node["explicit_failures"]
+    ]
+    assert "phase_sync_fallback_count_nonzero" in reasons
+
+
 def test_collected_result_summary_rejects_missing_master_result(tmp_path: Path) -> None:
     inventory = _inventory(tmp_path)
     collected = tmp_path / "collected"

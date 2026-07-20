@@ -141,7 +141,17 @@ def test_public_policy_catalog_converges_birkhoff_and_reference_split() -> None:
     assert fluid.internal_policy_name == "birkhoff_fluid_reference"
     assert fluid.reference_only is True
     assert len(deployable_policies()) == 3
-    assert len(reference_policies()) == 8
+    assert {item.canonical_name for item in reference_policies()} == {
+        "gmwd_style_reference",
+        "islip_reference",
+        "fast_stage_reference",
+        "aurora_order_reference",
+        "power_of_two_reference",
+        "reverse_bucket_reference",
+        "birkhoff_fluid_reference",
+        "oracle_local_exact",
+        "oracle_joint_exact",
+    }
 
 
 def test_legacy_and_canonical_algorithm_names_produce_identical_plan_digest() -> None:

@@ -29,6 +29,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-id", default=DEFAULT_DEPLOYMENT_MODEL_ID)
     parser.add_argument("--revision", default=None)
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--require-existing", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -57,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
             parts.extend(["--revision", str(args.revision)])
         if args.local_files_only:
             parts.append("--local-files-only")
+        if args.require_existing:
+            parts.append("--require-existing")
         command = f"set -euo pipefail; cd {shlex.quote(remote_root)}; " + " ".join(shlex.quote(item) for item in parts)
         rows.append({"node_name": node.name, "command": command, "status": "DRY_RUN"})
     payload: dict[str, Any] = {
@@ -65,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         "inventory": summary,
         "model_id": str(args.model_id),
         "revision": args.revision or "default",
+        "require_existing": bool(args.require_existing),
         "nodes": rows,
     }
     if not args.apply:

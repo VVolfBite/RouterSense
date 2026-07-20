@@ -457,6 +457,40 @@ class MegatronPhaseTransportAdapter:
             self.real_recv_op_count += int(facade_result.recv_op_count)
             self.local_copy_task_count += int(facade_result.local_copy_task_count)
             self.local_copy_row_count += int(facade_result.local_copy_row_count)
+        if (
+            not bool(facade_result.all_work_completed)
+            or bool(facade_result.timeout)
+            or bool(str(facade_result.failure_code or ""))
+            or bool(facade_result.session_poisoned)
+            or not isinstance(output, torch.Tensor)
+        ):
+            failure_code = str(facade_result.failure_code or "")
+            if not failure_code:
+                if bool(facade_result.timeout):
+                    failure_code = "transport_timeout"
+                elif bool(facade_result.session_poisoned):
+                    failure_code = "transport_session_poisoned"
+                elif not bool(facade_result.all_work_completed):
+                    failure_code = "transport_incomplete"
+                else:
+                    failure_code = "invalid_transport_output"
+            if (
+                state.runtime is not None
+                and getattr(state.runtime, "target_plan_store", None) is not None
+                and str(state.phase) == "P0"
+            ):
+                try:
+                    state.runtime.target_plan_store.fail(
+                        state.runtime._target_plan_key(layer_name=state.layer_name),
+                        execution_origin=failure_code,
+                    )
+                except Exception:
+                    pass
+            if state.shared_session is not None:
+                state.shared_session["aborted"] = True
+                state.shared_session["abort_reason"] = failure_code
+            raise HostAPIDriftError(f"transport execution failed: {failure_code}")
+
         state.call_index += 1
         base_ordinal = len(self._latest_results)
         for index, entry in enumerate(execution_entries, start=1):

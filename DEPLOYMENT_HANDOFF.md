@@ -63,7 +63,7 @@ bash scripts/deploy/run_deployment_pipeline.sh \
 For 2x2 use a distinct run ID such as `rs-2x2-smoke`.
 
 The pipeline performs: access check, clean source distribution, source parity,
-Python support dependency installation, model parity, mounted-model load
+Python support dependency installation, mounted-model parity (without automatic download), mounted-model load
 preflight, CUDA/NCCL/Megatron runtime preflight, measured pairwise GPU link
 calibration, experiment launch, result collection, and local result validation.
 

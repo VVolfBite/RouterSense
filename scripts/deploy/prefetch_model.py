@@ -33,6 +33,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-id", default=DEFAULT_DEPLOYMENT_MODEL_ID)
     parser.add_argument("--revision", default=None)
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--require-existing",
+        action="store_true",
+        help="fail instead of downloading when the mounted snapshot is incomplete",
+    )
     return parser.parse_args(argv)
 
 
@@ -57,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not before.required_files_present:
+        if args.require_existing:
+            payload.update({
+                "status": "FAIL",
+                "reason": "required_mounted_model_snapshot_missing",
+                "download_attempted": False,
+            })
+            print(json.dumps(payload, indent=2))
+            return 2
         try:
             from huggingface_hub import snapshot_download
         except Exception as exc:

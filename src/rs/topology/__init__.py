@@ -45,5 +45,6 @@ from .link_cost import (
     load_link_cost_profile,
     precision_bytes,
     profile_digest,
+    resolve_runtime_link_cost_profile,
     write_link_cost_profile,
 )

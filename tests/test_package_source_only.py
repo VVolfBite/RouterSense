@@ -51,6 +51,8 @@ def test_package_source_only_mainline_excludes_legacy_and_runtime(packaged_sourc
     listing = subprocess.check_output(["tar", "-tzf", str(archive)], text=True).splitlines()
     assert "RS/src/rs/__init__.py" in listing
     assert "RS/deploy/README.md" in listing
+    assert "RS/DEPLOYMENT_HANDOFF.md" in listing
+    assert "RS/.gitignore" in listing
     assert "RS/deploy/inventory/hosts.example.yaml" in listing
     assert "RS/scripts/deploy/launch_remote.sh" in listing
     assert not any(line.startswith("RS/legacy/") for line in listing)
@@ -60,6 +62,9 @@ def test_package_source_only_mainline_excludes_legacy_and_runtime(packaged_sourc
     assert not any(line.startswith("RS/deploy/logs/") or line == "RS/deploy/logs" for line in listing)
     assert not any(line.startswith("RS/archives/") or line == "RS/archives" for line in listing)
     assert not any(line.startswith("RS/integrations/") or line == "RS/integrations" for line in listing)
+    assert not any(line.startswith("RS/archive/") or line == "RS/archive" for line in listing)
+    assert not any(line.startswith("RS/configs/archive/") or line == "RS/configs/archive" for line in listing)
+    assert not any(line.startswith("RS/experiments/archive/") or line == "RS/experiments/archive" for line in listing)
     assert "RS/README.md" in listing
 
 

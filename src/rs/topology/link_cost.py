@@ -221,6 +221,99 @@ def load_link_cost_profile(path: str | Path) -> LinkCostProfile:
     return link_cost_profile_from_dict(payload)
 
 
+
+def resolve_runtime_link_cost_profile(
+    *,
+    configured_path: str | Path | None,
+    source_config_path: str | Path,
+    repository_root: str | Path,
+    model_path: str | Path,
+    precision: str,
+    world_size: int,
+    local_world_size: int,
+    require_profile: bool = False,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Resolve one immutable planner cost configuration for online runtime.
+
+    Multi-node execution fails closed without a measured profile.  A supplied
+    profile is bound to the actual torchrun layout and model token-row byte
+    contract before any planner is created.
+    """
+    actual_world_size = int(world_size)
+    ranks_per_node = int(local_world_size)
+    if actual_world_size <= 0 or ranks_per_node <= 0 or actual_world_size % ranks_per_node != 0:
+        raise RuntimeError(
+            f"invalid runtime layout WORLD_SIZE={actual_world_size} "
+            f"LOCAL_WORLD_SIZE={ranks_per_node}"
+        )
+    configured = str(configured_path or "").strip()
+    required = bool(require_profile or actual_world_size > ranks_per_node)
+    if not configured:
+        if required:
+            raise RuntimeError(
+                "topology-aware link cost profile is required for multi-node execution; "
+                "run scripts/deploy/calibrate_cluster_links.py before launch"
+            )
+        rank_to_node = tuple(int(rank // ranks_per_node) for rank in range(actual_world_size))
+        planner_config: dict[str, object] = {
+            "ranks_per_node": ranks_per_node,
+            "rank_to_node": rank_to_node,
+            "cost_profile_id": "homogeneous-default",
+        }
+        return planner_config, {
+            "mode": "homogeneous_default",
+            "profile_id": "homogeneous-default",
+            "world_size": actual_world_size,
+            "ranks_per_node": ranks_per_node,
+        }
+
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        source_parent = Path(source_config_path).expanduser().resolve().parent
+        repo_candidate = Path(repository_root).expanduser().resolve() / candidate
+        probes = (source_parent / candidate, repo_candidate)
+        candidate = next((item for item in probes if item.exists()), repo_candidate)
+    profile = load_link_cost_profile(candidate)
+    if int(profile.world_size) != actual_world_size:
+        raise RuntimeError(
+            f"link cost profile world_size={profile.world_size} does not match "
+            f"runtime WORLD_SIZE={actual_world_size}"
+        )
+    if int(profile.ranks_per_node) != ranks_per_node:
+        raise RuntimeError(
+            f"link cost profile ranks_per_node={profile.ranks_per_node} does not match "
+            f"runtime LOCAL_WORLD_SIZE={ranks_per_node}"
+        )
+    expected_rank_to_node = tuple(
+        int(rank // ranks_per_node) for rank in range(actual_world_size)
+    )
+    if tuple(int(item) for item in profile.rank_to_node) != expected_rank_to_node:
+        raise RuntimeError(
+            "link cost profile rank_to_node does not match contiguous torchrun rank layout"
+        )
+    model_contract = infer_model_row_contract(model_path, precision=str(precision))
+    if int(profile.row_bytes) != int(model_contract["row_bytes"]):
+        raise RuntimeError(
+            f"link cost profile row_bytes={profile.row_bytes} does not match "
+            f"model/runtime row_bytes={model_contract['row_bytes']}"
+        )
+    profile_model_contract = dict((profile.metadata or {}).get("model_contract", {}) or {})
+    expected_config_sha256 = str(model_contract["config_sha256"])
+    calibrated_config_sha256 = str(profile_model_contract.get("config_sha256", "") or "")
+    if calibrated_config_sha256 and calibrated_config_sha256 != expected_config_sha256:
+        raise RuntimeError("link cost profile model config digest does not match runtime model")
+    metadata: dict[str, object] = {
+        "mode": "measured_pairwise",
+        "path": str(candidate.resolve()),
+        "profile_id": str(profile.profile_id),
+        "world_size": int(profile.world_size),
+        "ranks_per_node": int(profile.ranks_per_node),
+        "row_bytes": int(profile.row_bytes),
+        "source": str(profile.source),
+        "model_config_sha256": expected_config_sha256,
+    }
+    return profile.planner_config(), metadata
+
 def write_link_cost_profile(path: str | Path, payload: Mapping[str, Any]) -> LinkCostProfile:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -244,5 +337,6 @@ __all__ = [
     "load_link_cost_profile",
     "precision_bytes",
     "profile_digest",
+    "resolve_runtime_link_cost_profile",
     "write_link_cost_profile",
 ]

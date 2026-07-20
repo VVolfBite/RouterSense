@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -17,6 +18,7 @@ from rs.runtime.observation.instrumentation import RuntimeInstrumentation
 from rs.runtime.online.megatron_ep.control.plan_publisher import CanonicalPlanPublisher
 from rs.runtime.online.megatron_ep.control.rank_map import RankMap
 from rs.runtime.online.megatron_ep.execution.pipeline import RuntimeExecutionPipeline
+import rs.runtime.online.megatron_ep.execution.transport_adapter as transport_adapter_module
 from rs.runtime.online.megatron_ep.execution.transport_adapter import HostAPIDriftError, MegatronPhaseTransportAdapter
 from tests.contract.megatron_ep.helpers import make_contexts_from_matrix
 
@@ -376,3 +378,57 @@ def test_instrumentation_modes_do_not_change_published_or_materialized_digests()
     assert prepared_a.published_plan.logical_plan_digest == prepared_b.published_plan.logical_plan_digest
     assert prepared_a.published_plan.published_plan_digest == prepared_b.published_plan.published_plan_digest
     assert prepared_a.materialized_plan.materialized_plan_digest == prepared_b.materialized_plan.materialized_plan_digest
+
+
+def test_legacy_transport_executor_failure_is_fail_closed(monkeypatch) -> None:
+    context = make_contexts_from_matrix(phase="P0", matrix=((4,),), p2_hint_mode="deterministic_stub")[0]
+    store = _RecordingTargetPlanStore()
+    runtime = _RecordingRuntime(
+        instrumentation=RuntimeInstrumentation(
+            measurement_sink=NullMeasurementSink(),
+            debug_probe=NullDebugProbe(),
+        ),
+        target_plan_store=store,
+    )
+    tensor = torch.arange(8, dtype=torch.float16).reshape(4, 2)
+    fake_result = SimpleNamespace(
+        output_tensor=tensor.clone(),
+        raw_summary={
+            "phase": "P0",
+            "tensor_role": "hidden_states",
+            "wave_count": 1,
+            "bucket_count": 1,
+            "active_wave_count": 1,
+            "local_copy_rows": 0,
+            "remote_copy_rows": 4,
+            "output_shape": [4, 2],
+        },
+        execution_entries=(),
+        batch_isend_irecv_call_count=0,
+        send_op_count=1,
+        recv_op_count=1,
+        local_copy_task_count=0,
+        local_copy_row_count=0,
+        all_work_completed=False,
+        timeout=False,
+        failure_code="frontier_stalled",
+        session_poisoned=False,
+    )
+    monkeypatch.setattr(transport_adapter_module, "execute_transport", lambda *args, **kwargs: fake_result)
+    adapter = MegatronPhaseTransportAdapter(dispatcher_class="FakeDispatcher", dispatcher_module_sha256=None)
+    adapter.activate(
+        layer_name="decoder.layers.0",
+        phase="P0",
+        context=context,
+        plan=_StubExecutionPlan(),
+        runtime=runtime,
+    )
+    with pytest.raises(HostAPIDriftError, match="transport execution failed: frontier_stalled"):
+        adapter.maybe_execute(
+            group=None,
+            input_tensor=tensor,
+            output_split_sizes=context.recv_splits,
+            input_split_sizes=context.send_splits,
+            original_all_to_all=lambda *args, **kwargs: tensor.clone(),
+        )
+    assert store.failed == [(("run", 0, "decoder.layers.0"), "frontier_stalled")]

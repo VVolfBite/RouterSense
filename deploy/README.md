@@ -49,7 +49,7 @@ Pipeline stages:
 2. clean Git-bundle source distribution;
 3. remote commit/tree parity;
 4. Python-side runtime dependency installation;
-5. mounted model parity and structural/load preflight;
+5. mounted model parity without automatic download, followed by structural/load preflight;
 6. CUDA/NCCL/Megatron/Transformer-Engine preflight;
 7. directed GPU link calibration and profile distribution;
 8. torchrun experiment launch;

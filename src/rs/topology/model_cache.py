@@ -8,6 +8,7 @@ not import Transformers, allocate a GPU, or contact the network.
 """
 
 from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -58,10 +59,40 @@ class ModelCacheInspection:
         return asdict(self)
 
 
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _index_weight_files(path: Path, index_name: str) -> tuple[Path, ...] | None:
+    index_path = path / index_name
+    if not index_path.is_file():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ()
+    weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+    if not isinstance(weight_map, dict):
+        return ()
+    names = sorted({str(value) for value in weight_map.values() if str(value).strip()})
+    if not names:
+        return ()
+    return tuple(path / name for name in names)
+
+
 def _has_weight_files(path: Path, names: set[str]) -> bool:
-    if names.intersection(_WEIGHT_FILES):
-        return True
-    return any(path.glob("model-*.safetensors")) or any(path.glob("pytorch_model-*.bin"))
+    for standalone in ("model.safetensors", "pytorch_model.bin"):
+        if standalone in names and _nonempty_file(path / standalone):
+            return True
+    for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        referenced = _index_weight_files(path, index_name)
+        if referenced is not None:
+            return bool(referenced) and all(_nonempty_file(item) for item in referenced)
+    sharded = tuple(path.glob("model-*.safetensors")) + tuple(path.glob("pytorch_model-*.bin"))
+    return bool(sharded) and all(_nonempty_file(item) for item in sharded)
 
 
 def _looks_like_model_directory(path: Path) -> bool:
