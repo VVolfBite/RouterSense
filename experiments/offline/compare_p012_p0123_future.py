@@ -80,21 +80,37 @@ class FixedTwoHorizon:
         return self.bundle
 
 
+def _discover_model_roots(root: Path) -> list[Path]:
+    roots: set[Path] = set()
+    if (root / "traffic" / "traffic_instances.json").is_file():
+        roots.add(root)
+    for traffic_file in root.rglob("traffic/traffic_instances.json"):
+        candidate = traffic_file.parent.parent
+        if (candidate / "fate" / "fate_hints.jsonl").is_file():
+            roots.add(candidate)
+    return sorted(roots)
+
+
+def _extract_zip_roots(archive: Path, target: Path) -> list[Path]:
+    target.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive) as handle:
+        handle.extractall(target)
+    roots = _discover_model_roots(target)
+    for child in sorted(target.rglob("*.zip")):
+        nested_target = target / f"__nested_{child.stem}"
+        with zipfile.ZipFile(child) as inner:
+            inner.extractall(nested_target)
+        roots.extend(_discover_model_roots(nested_target))
+    return sorted(set(roots))
+
+
 def model_roots(bundle: Path, temp: Path) -> list[Path]:
     if bundle.is_dir():
-        if (bundle / "traffic" / "traffic_instances.json").is_file():
-            return [bundle]
-        return sorted(p.parent.parent for p in bundle.glob("*/traffic/traffic_instances.json"))
-    with zipfile.ZipFile(bundle) as outer:
-        outer.extractall(temp / "outer")
-    roots = []
-    for child in sorted((temp / "outer").glob("*.zip")):
-        target = temp / child.stem
-        with zipfile.ZipFile(child) as inner:
-            inner.extractall(target)
-        if (target / "traffic" / "traffic_instances.json").is_file():
-            roots.append(target)
-    return roots
+        roots = _discover_model_roots(bundle)
+        for index, child in enumerate(sorted(bundle.glob("*.zip"))):
+            roots.extend(_extract_zip_roots(child, temp / "directory_zips" / f"{index:03d}_{child.stem}"))
+        return sorted(set(roots))
+    return _extract_zip_roots(bundle, temp / "outer")
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:

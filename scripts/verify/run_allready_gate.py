@@ -289,12 +289,24 @@ def trace_mode_matrix(*, output_dir: Path, trace_root: Path, timeout_seconds: in
             if report.is_file():
                 try:
                     aggregate = json.loads(report.read_text(encoding="utf-8")).get("aggregate", {})
+                    instances = int(aggregate.get("instances", 0) or 0)
+                    if instances <= 0:
+                        aggregate["validation_error"] = "trace comparison produced zero validation instances"
+                        status = "FAIL"
                 except Exception as exc:  # pragma: no cover - report corruption path
                     aggregate = {"parse_error": f"{type(exc).__name__}: {exc}"}
                     status = "FAIL"
             rows.append({"core": core, "branch": branch, "status": status, "report": display_path(report), "aggregate": aggregate, **result})
             print(f"[trace] {status:4s} {core}/{branch}", flush=True)
-    return {"status": "PASS" if all(row["status"] == "PASS" for row in rows) else "FAIL", "rows": rows}
+    positive_counts = [int(row["aggregate"].get("instances", 0) or 0) for row in rows]
+    consistent_count = bool(positive_counts) and min(positive_counts) > 0 and len(set(positive_counts)) == 1
+    matrix_passed = all(row["status"] == "PASS" for row in rows) and consistent_count
+    return {
+        "status": "PASS" if matrix_passed else "FAIL",
+        "instance_count_consistent": consistent_count,
+        "expected_instance_count": positive_counts[0] if consistent_count else None,
+        "rows": rows,
+    }
 
 
 def deploy_gate(*, output_dir: Path, timeout_seconds: int) -> dict[str, Any]:
