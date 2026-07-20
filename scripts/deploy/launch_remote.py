@@ -43,6 +43,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-id", default=DEFAULT_DEPLOYMENT_MODEL_ID)
     parser.add_argument("--python-bin", default="python3")
     parser.add_argument("--nccl-socket-ifname", default=os.environ.get("NCCL_SOCKET_IFNAME", ""))
+    parser.add_argument(
+        "--link-cost-profile",
+        default=None,
+        help="remote absolute path or repository-relative calibrated profile; defaults to this run id",
+    )
     return parser.parse_args(argv)
 
 
@@ -121,6 +126,7 @@ def _strategy_command(
     model_id: str,
     python_bin: str,
     nccl_socket_ifname: str,
+    link_cost_profile: str | None,
 ) -> dict[str, str]:
     remote_root, _model_cache, artifact_root = _node_paths(summary, node.name)
     remote_inventory = f"{remote_root}/deploy/inventory/{inventory_name}"
@@ -135,10 +141,13 @@ def _strategy_command(
     master_port = int(summary["rendezvous"]["master_port"])
     backend = str(summary["rendezvous"].get("backend", "c10d"))
     nnodes = len(summary["nodes"])
+    configured_profile = str(link_cost_profile or f"outputs/deployment_profiles/{run_id}/link_cost_profile.json")
+    remote_profile = configured_profile if configured_profile.startswith("/") else f"{remote_root}/{configured_profile}"
     env_parts = [
         f"PYTHONPATH={shlex.quote(remote_root + '/src:' + remote_root)}",
         "TORCHDISTRIBUTED_DEBUG=DETAIL",
         "NCCL_ASYNC_ERROR_HANDLING=1",
+        f"RS_LINK_COST_PROFILE={shlex.quote(remote_profile)}",
     ]
     if nccl_socket_ifname:
         env_parts.append(f"NCCL_SOCKET_IFNAME={shlex.quote(nccl_socket_ifname)}")
@@ -249,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             model_id=str(args.model_id),
             python_bin=str(args.python_bin),
             nccl_socket_ifname=str(args.nccl_socket_ifname),
+            link_cost_profile=args.link_cost_profile,
         )
         for node in inventory.nodes
     ]
@@ -266,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         "strategy": str(args.strategy),
         "run_id": str(run_id),
         "world_size": sum(int(node.target_gpu_count) for node in inventory.nodes),
+        "link_cost_profile": str(args.link_cost_profile or f"outputs/deployment_profiles/{run_id}/link_cost_profile.json"),
         "commands": commands,
     }
     if not args.apply:

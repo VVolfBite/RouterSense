@@ -1266,6 +1266,7 @@ def attach_formal_online_runtime(
         online_p2_predictor=str(getattr(runtime_config.policy_parameters, "online_p2_predictor", "copy_current_dispatch")),
         online_p2_predictor_config=dict(getattr(runtime_config.policy_parameters, "online_p2_predictor_config", {}) or {}),
         safe_projection_mode=str(getattr(runtime_config.policy_parameters, "safe_projection_mode", "host_select")),
+        planner_config=dict(getattr(runtime_config.policy_parameters, "planner_config", {}) or {}),
         schedule_layer_selector=runtime_config.execution_selection.layer_selector,
         schedule_phase_selector=runtime_config.execution_selection.phase_selector,
         selected_layer_ids=tuple(str(item) for item in getattr(runtime_config.execution_selection, "selected_layer_ids", ()) or ()),

@@ -1,88 +1,37 @@
-## Runtime Contracts
+# Runtime contracts
 
-### Online Megatron EP runtime
+## Online Megatron EP runtime
 
-Formal package:
+The formal package is `rs.runtime.online.megatron_ep`.
 
-- `rs.runtime.online.megatron_ep`
+- `host.py`: process groups, Megatron dispatcher discovery, hook install/restore.
+- `lifecycle.py` and `lifecycle_parts/`: P0/P1 observation, current/future
+  planning, prediction publication, bounded target reconciliation, evidence.
+- `control/`: root-authoritative agreement and tensor-only control traffic.
+- `phase/`: canonical flow/layout contracts.
+- `execution/`: compiler facade, preflight, async P2P/sync execution and audit.
+- `target_planning/`: immutable Future-P012 planning service and truth binding.
 
-Canonical responsibilities:
+Frozen safety properties:
 
-- `host.py`
-  - distributed init
-  - model load
-  - dispatcher discovery
-  - hook install / restore
-- `lifecycle.py`
-  - P0 / P1 before/after hooks
-  - transport activation / clear
-  - scheduling-policy handoff
-- `observation/artifact_recorder.py`
-  - record-only artifact output
-- `phase/`
-  - `PhaseReadyContext`
-  - `OutgoingSegment`
-  - `IncomingSlot`
-  - `TransferLayout`
-  - phase validation
-- `control/`
-  - root-authoritative agreement
-  - mailbox / state machine / timeline
-- `execution/`
-  - bucketization
-  - transport adapter
-  - sync wave executor
-  - layout validation
-- `pending_window/policy_adapter.py`
-  - prepared logical plan to current phase-plan compiler
-- `control/p2_provider.py`
-  - allowed P2 hint modes only
+1. executable P0/P1 coverage is derived from actual traffic, never predicted P2;
+2. canonical tasks must have no missing/extra task IDs before transport starts;
+3. send/receive row, byte, dtype and shape contracts agree on all ranks;
+4. a failure before transport may fail closed; a failure after P2P begins cannot
+   switch to a different transport path;
+5. prediction repair emits each actual edge once and keeps newly inserted P1
+   blocked until its P0 dependency completes;
+6. Current, Safe Local, and Future planners consume the same measured link-cost
+   profile.
 
-Frozen semantic boundaries:
+## Offline runtime
 
-- P0/P1 hook timing
-- TransferLayout meaning
-- P0 hidden + routing_probs atomic bundle
-- P1 bundle contract
-- MegatronPhaseTransportAdapter semantics
-- sync_wave_executor collective semantics
-- root-authoritative plan agreement semantics
+`rs.runtime.offline` owns trace loading, traffic reconstruction, prediction
+artifacts, logical execution, oracle references and reproducible reports. It
+must not be used as an online fallback.
 
-### Offline runtime
+## Scheduling boundary
 
-Formal package:
-
-- `rs.runtime.offline`
-
-Canonical responsibilities:
-
-- trace collection / loading
-- traffic matrix construction
-- predictor / calibration artifact handling
-- offline runner orchestration
-
-### Scheduling boundary
-
-Formal package:
-
-- `rs.scheduling`
-
-Scheduling owns:
-
-- logical flow model
-- matching
-- scoring
-- baseline / reference policies
-- logical plan objects
-
-Scheduling must not own:
-
-- torch tensors
-- NCCL collectives
-- Megatron dispatcher access
-- artifact IO
-
-### Remaining contract debt
-
-- `experiments/offline` still exposes narrow study-specific entrypoints rather than a single config-driven runner
-- several oversized online runtime modules still need responsibility-based splitting before long-term freeze
+`rs.scheduling` owns logical flows, matching, release-aware planning and plan
+objects. It must not import torch, Megatron, NCCL, deployment scripts or
+experiment entrypoints.

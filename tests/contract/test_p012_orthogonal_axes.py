@@ -219,3 +219,30 @@ def test_current_local_runtime_strategy_disables_prediction() -> None:
     assert row["online_p2_predictor"] == "none"
     assert row["p2_hint_mode"] == "none"
     assert row["calibrated_p2"] is False
+
+
+def test_pairwise_link_cost_profile_reaches_runtime_planner() -> None:
+    world = 4
+    slope = tuple(
+        tuple(1.0 if src == dst else (2.0 if src // 2 == dst // 2 else 9.0) for dst in range(world))
+        for src in range(world)
+    )
+    intercept = tuple(
+        tuple(0.0 if src == dst else (0.5 if src // 2 == dst // 2 else 4.0) for dst in range(world))
+        for src in range(world)
+    )
+    plan = PlannerRegistry.create(
+        "current:p012:joint:global:rscf",
+        {
+            "ranks_per_node": 2,
+            "rank_to_node": (0, 0, 1, 1),
+            "edge_slope": slope,
+            "edge_intercept": intercept,
+            "wave_launch_b": 0.25,
+            "cost_profile_id": "fixture-profile",
+        },
+        usage="runtime",
+    ).plan(_request())
+    assert plan.metadata["cost_profile_mode"] == "measured_pairwise"
+    assert plan.metadata["cost_profile_id"] == "fixture-profile"
+    assert plan.metadata["topology_mode"] == "explicit_rank_to_node"

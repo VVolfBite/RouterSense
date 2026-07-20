@@ -46,6 +46,7 @@ def _repair_logical_plan(
         expected: dict[tuple[int, int], int],
         actual: dict[tuple[int, int], int],
         inserted_prefix: str,
+        inserted_release_state: str,
     ) -> tuple[list[FlowDemand], list[tuple[int, int]], set[tuple[int, int]], set[tuple[int, int]], set[tuple[int, int]]]:
         matched = {edge for edge in expected if edge in actual}
         removed = {edge for edge in expected if edge not in actual}
@@ -53,11 +54,13 @@ def _repair_logical_plan(
         resized = {edge for edge in matched if int(expected[edge]) != int(actual[edge])}
         replacement: list[FlowDemand] = []
         preferred_order: list[tuple[int, int]] = []
+        emitted_edges: set[tuple[int, int]] = set()
         for wave in prepared_plan.logical_plan.waves:
             for flow in wave.flows:
                 edge = (int(flow.src_rank), int(flow.dst_rank))
-                if str(flow.phase) != phase or edge not in actual:
+                if str(flow.phase) != phase or edge not in actual or edge in emitted_edges:
                     continue
+                emitted_edges.add(edge)
                 preferred_order.append(edge)
                 replacement.append(replace(flow, byte_count=int(actual[edge])))
         for edge in sorted(inserted):
@@ -68,7 +71,7 @@ def _repair_logical_plan(
                     src_rank=int(edge[0]),
                     dst_rank=int(edge[1]),
                     byte_count=int(actual[edge]),
-                    release_state="ready",
+                    release_state=str(inserted_release_state),
                     is_executable=True,
                     dependency_metadata={"inserted_by_repair": True, "phase": phase},
                 )
@@ -80,12 +83,14 @@ def _repair_logical_plan(
         expected=expected_p0,
         actual=actual_p0,
         inserted_prefix="repaired_p0",
+        inserted_release_state="ready",
     )
     p1_replacement, p1_preferred_order, p1_matched, p1_removed, p1_resized = _repair_phase(
         phase="p1_return",
         expected=expected_p1,
         actual=actual_p1,
         inserted_prefix="repaired_p1",
+        inserted_release_state="blocked",
     )
 
     replacement = [*p0_replacement, *p1_replacement]

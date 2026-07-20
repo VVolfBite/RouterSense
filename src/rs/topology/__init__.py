@@ -15,6 +15,7 @@ from .inventory import (
     inventory_paths,
     inventory_summary,
     load_inventory,
+    validate_inventory,
     render_torchrun_dry_run,
 )
 from .paths import (
@@ -33,4 +34,16 @@ from .model_cache import (
     inspect_model_cache,
     model_name,
     resolve_model_directory,
+)
+
+from .link_cost import (
+    LINK_COST_PROFILE_SCHEMA,
+    LinkCostProfile,
+    fit_affine_row_cost,
+    infer_model_row_contract,
+    link_cost_profile_from_dict,
+    load_link_cost_profile,
+    precision_bytes,
+    profile_digest,
+    write_link_cost_profile,
 )

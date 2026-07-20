@@ -1,0 +1,18 @@
+cluster_name: rs-ppio-1x4
+nodes:
+  - name: node0
+    host: NODE0_INTERNAL_IP
+    ssh_host: NODE0_SSH_HOST
+    port: 22
+    ssh_user: SSH_USER
+    node_rank: 0
+    current_gpu_count: 4
+    target_gpu_count: 4
+    paths:
+      remote_rs_root: /workspace/RouterSense
+      model_cache: /MOUNTED/CLOUD/MODEL/PATH
+      artifact_root: /workspace/routersense-artifacts
+rendezvous:
+  master_node: node0
+  master_port: 29500
+  backend: c10d

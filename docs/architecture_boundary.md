@@ -1,14 +1,15 @@
-# Architecture Boundary
+# Architecture boundary
 
-`RS/` is the formal mainline.
+This repository is the only deployable RouterSense source of truth. Historical
+POC, recovery, Round 1/2 handoff and retired B/U/Tier1 material are not present
+in the deployment mainline.
 
-## Legacy Scope
+Rules:
 
-- `legacy/poc1/`: router observability and proxy verification history.
-- `legacy/poc2/`: single-node NCCL harness history.
-- `legacy/shared/`: shared historical docs.
-
-## Rule
-
-`RS/` must not depend on legacy code paths for runtime or scheduler behavior. If a utility is reused, it must be copied into `RS/` and retested there.
-
+- `src/rs` must never import `experiments` or deployment scripts;
+- online runtime must never import offline reference/oracle execution as a
+  fallback;
+- related-work style baselines remain under `src/rs/reference/baselines` and do
+  not enter the online planner registry;
+- deployment scripts may configure and invoke the runtime but may not rewrite
+  source code on remote nodes.

@@ -44,11 +44,60 @@ class Inventory:
 
 def load_inventory(path: str | Path) -> Inventory:
     payload = _load_mapping(Path(path).read_text(encoding="utf-8"))
-    return Inventory(
+    inventory = Inventory(
         cluster_name=str(payload["cluster_name"]),
         nodes=[_load_node_spec(item) for item in payload.get("nodes", [])],
         rendezvous=_load_rendezvous_spec(payload["rendezvous"]),
     )
+    validate_inventory(inventory)
+    return inventory
+
+
+def validate_inventory(inventory: Inventory) -> None:
+    if not str(inventory.cluster_name).strip():
+        raise ValueError("cluster_name must be non-empty")
+    if not inventory.nodes:
+        raise ValueError("inventory must contain at least one node")
+    names = [str(node.name) for node in inventory.nodes]
+    ranks = [int(node.node_rank) for node in inventory.nodes]
+    if len(set(names)) != len(names):
+        raise ValueError("inventory node names must be unique")
+    if len(set(ranks)) != len(ranks) or sorted(ranks) != list(range(len(ranks))):
+        raise ValueError("node_rank values must be unique and contiguous from zero")
+    if str(inventory.rendezvous.master_node) not in set(names):
+        raise ValueError("rendezvous.master_node must name an inventory node")
+    if not 1 <= int(inventory.rendezvous.master_port) <= 65534:
+        raise ValueError("rendezvous.master_port must leave room for the calibration port")
+    target_counts = {int(node.target_gpu_count) for node in inventory.nodes}
+    if min(target_counts, default=0) <= 0:
+        raise ValueError("target_gpu_count must be positive on every node")
+    if len(inventory.nodes) > 1 and len(target_counts) != 1:
+        raise ValueError("multi-node deployment currently requires equal target_gpu_count per node")
+    for node in inventory.nodes:
+        if not str(node.host).strip() or not str(node.ssh_user).strip():
+            raise ValueError(f"node {node.name} requires host and ssh_user")
+        if not 1 <= int(node.port) <= 65535:
+            raise ValueError(f"node {node.name} has invalid SSH port")
+        if int(node.current_gpu_count) <= 0:
+            raise ValueError(f"node {node.name} current_gpu_count must be positive")
+        if int(node.current_gpu_count) < int(node.target_gpu_count):
+            raise ValueError(
+                f"node {node.name} current_gpu_count is below target_gpu_count "
+                f"({node.current_gpu_count} < {node.target_gpu_count})"
+            )
+        required_paths = {"remote_rs_root", "model_cache", "artifact_root"}
+        missing = sorted(key for key in required_paths if not str(node.paths.get(key, "")).strip())
+        if missing:
+            raise ValueError(f"node {node.name} is missing required paths: {', '.join(missing)}")
+        non_absolute = sorted(
+            key
+            for key in required_paths
+            if not Path(str(node.paths[key])).expanduser().is_absolute()
+        )
+        if non_absolute:
+            raise ValueError(
+                f"node {node.name} deployment paths must be absolute: {', '.join(non_absolute)}"
+            )
 
 
 def inventory_summary(inventory: Inventory) -> dict[str, Any]:

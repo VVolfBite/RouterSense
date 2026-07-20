@@ -36,15 +36,25 @@ remote_rs_root = Path(resolve_node_rs_root(inventory, node_name) or root)
 model_cache = Path(resolve_node_model_cache(inventory, node_name) or "")
 artifact_root = Path(resolve_node_artifact_root(inventory, node_name) or "")
 
-deps = ["transformers", "accelerate", "safetensors", "sentencepiece", "huggingface_hub"]
-if include_dev:
-    deps.extend(["pytest", "pyyaml"])
-
 source_ready = bool(
     remote_rs_root.is_dir()
     and (remote_rs_root / "pyproject.toml").is_file()
     and (remote_rs_root / "src" / "rs" / "__init__.py").is_file()
 )
+requirements_file = remote_rs_root / "deploy" / "environment" / "requirements-runtime.txt"
+requirements_ready = requirements_file.is_file()
+deps = (
+    [
+        line.strip()
+        for line in requirements_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if requirements_ready
+    else []
+)
+if include_dev:
+    deps.append("pytest")
+
 model_inspection = inspect_model_cache(model_cache, DEFAULT_DEPLOYMENT_MODEL_ID)
 payload = {
     "node_name": node_name,
@@ -56,16 +66,26 @@ payload = {
     "include_dev": include_dev,
     "pip_index_url": pip_index_url,
     "install_commands": [
-        f"PIP_INDEX_URL={pip_index_url} {python_bin} -m pip install {' '.join(deps)}",
+        f"PIP_INDEX_URL={pip_index_url} {python_bin} -m pip install -r {requirements_file}",
         f"{python_bin} -m pip install --no-deps -e {remote_rs_root}",
     ],
     "source_ready": source_ready,
+    "requirements_ready": requirements_ready,
     **model_inspection.to_dict(),
-    "deployment_prerequisites_ready": bool(source_ready and model_inspection.required_files_present),
+    "deployment_prerequisites_ready": bool(
+        source_ready and requirements_ready and model_inspection.required_files_present
+    ),
     "gpu_runtime_attempted": False,
 }
 
 if apply_mode:
+    if not source_ready or not requirements_ready:
+        payload.update({
+            "status": "FAIL",
+            "reason": "remote source tree or runtime requirements file is missing",
+        })
+        print(json.dumps(payload, indent=2))
+        raise SystemExit(2)
     env = dict(os.environ)
     env["PIP_INDEX_URL"] = pip_index_url
     payload["applied_steps"] = []
@@ -91,10 +111,16 @@ if apply_mode:
         return completed.returncode == 0
 
     ok = run_step(
-        "pip_install_deps",
-        [python_bin, "-m", "pip", "install", *deps],
-        {"packages": deps},
+        "pip_install_runtime_deps",
+        [python_bin, "-m", "pip", "install", "-r", str(requirements_file)],
+        {"requirements_file": str(requirements_file), "packages": deps},
     )
+    if ok and include_dev:
+        ok = run_step(
+            "pip_install_test_dependency",
+            [python_bin, "-m", "pip", "install", "pytest"],
+            {"packages": ["pytest"]},
+        )
     if ok:
         ok = run_step(
             "pip_install_editable",
@@ -105,7 +131,7 @@ if apply_mode:
     if ok:
         verify_code = (
             "import importlib;"
-            "mods=['torch','transformers','accelerate','safetensors','sentencepiece','yaml','rs'];"
+            "mods=['torch','numpy','numba','scipy','sklearn','yaml','transformers','accelerate','safetensors','sentencepiece','rs'];"
             "out={m:getattr(importlib.import_module(m),'__version__','n/a') for m in mods};"
             "print(out)"
         )

@@ -136,14 +136,38 @@ def topology_config(topology: dict[str, Any], output_dir: Path) -> str:
     launcher = dict(payload.get("launcher", {}) or {})
     ep = dict(payload.get("ep", {}) or {})
     network = dict(payload.get("network", {}) or {})
-    ep_size = int(topology.get("ep_size", ep.get("size", 1)))
-    launcher.setdefault("kind", "torchrun")
-    launcher.setdefault("nnodes", 1)
-    launcher["nproc_per_node"] = ep_size
-    launcher.setdefault("standalone", True)
-    ep["size"] = ep_size
-    network.setdefault("scope", "single_node")
+    configured_ep_size = int(topology.get("ep_size", ep.get("size", 1)))
+    ep_size = int(os.environ.get("WORLD_SIZE", str(configured_ep_size)))
+
+    # Under an already-started torchrun job the environment is the launch
+    # authority. Do not record global EP size as nproc_per_node on multi-node.
+    world_size = int(ep_size)
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", str(launcher.get("nproc_per_node", ep_size))))
+    if world_size <= 0 or local_world_size <= 0 or world_size % local_world_size != 0:
+        raise ValueError(
+            f"invalid torchrun layout WORLD_SIZE={world_size} LOCAL_WORLD_SIZE={local_world_size}"
+        )
+    nnodes = world_size // local_world_size
+    launcher["kind"] = "torchrun"
+    launcher["nnodes"] = int(nnodes)
+    launcher["nproc_per_node"] = int(local_world_size)
+    launcher["standalone"] = bool(nnodes == 1)
+    ep["size"] = int(world_size)
+    network["scope"] = "single_node" if nnodes == 1 else "multi_node"
     network.setdefault("interface_hint", "")
+
+    configured_profile = str(
+        os.environ.get("RS_LINK_COST_PROFILE")
+        or topology.get("cost_profile")
+        or network.get("cost_profile")
+        or ""
+    )
+    if configured_profile:
+        network["cost_profile"] = configured_profile
+    network["require_cost_profile"] = bool(
+        topology.get("require_cost_profile", network.get("require_cost_profile", nnodes > 1))
+    )
+
     payload = {"launcher": launcher, "ep": ep, "network": network}
     path = output_dir / "generated_configs" / "topology.yaml"
     dump_yaml(path, payload)

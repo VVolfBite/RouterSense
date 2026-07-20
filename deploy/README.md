@@ -1,131 +1,115 @@
 # RouterSense deployment
 
-The active deployment path is inventory-driven and dry-run by default.  No
-entrypoint contacts a remote host, installs packages, downloads a model, starts
-`torchrun`, stops a process, or copies artifacts unless `--apply` is present.
+The canonical operational handoff is [`../DEPLOYMENT_HANDOFF.md`](../DEPLOYMENT_HANDOFF.md).
+The local computer is the controller and result sink; PPIO instances are
+replaceable workers.
 
-## 1. Create the private inventory
+All commands are dry-run unless `--apply` is present. Remote source is never
+edited: a clean local commit is transferred through a Git bundle and verified
+by commit and canonical tree hash.
+
+## 1. Inventory
 
 ```bash
-cp deploy/inventory/hosts.example.yaml deploy/inventory/hosts.local.yaml
+cp deploy/inventory/hosts.1x4.example.yaml deploy/inventory/hosts.local.yaml
+# or
+cp deploy/inventory/hosts.2x2.example.yaml deploy/inventory/hosts.local.yaml
 ```
 
-Edit both nodes in `hosts.local.yaml`:
+Use the internal PPIO address for `host`. Use `ssh_host` for a separate public
+or NAT SSH endpoint. Set `model_cache` to the mounted cloud model directory or
+its parent. The model preflight resolves the snapshot and verifies config,
+tokenizer, weight index/shards, read permission and local-only loading.
 
-- `host`: address reachable by the NCCL/Gloo data plane and rendezvous;
-- `ssh_host` (optional): separate SSH management address;
-- `ssh_user` and `port`;
-- `current_gpu_count` and `target_gpu_count` (formal 2×2 EP uses 2 per node);
-- absolute `remote_rs_root`, `model_cache`, and `artifact_root` paths.
+SSH keys are preferred. Password mode is supported through `RSSH_PASSWORD`
+when `sshpass` is installed locally.
 
-`hosts.local.yaml` is git-ignored.  `sync_repo` copies it separately after the
-clean Git commit is installed on each node.
-
-SSH keys are used automatically.  Password authentication is also supported:
+## 2. Dry-run
 
 ```bash
-export RSSH_PASSWORD='<ssh-password>'
-# sshpass must be installed when password authentication is used.
-```
-
-For gated Hugging Face models, export `HF_TOKEN` on each target node or in the
-remote environment.
-
-## 2. Audit the full pipeline without side effects
-
-```bash
-bash scripts/deploy/run_allready_pipeline.sh \
+bash scripts/deploy/run_deployment_pipeline.sh \
   deploy/inventory/hosts.local.yaml \
-  --run-id rs-dryrun
+  --run-id rs-preflight
 ```
 
-The dry-run covers access, repository sync planning, commit/tree parity,
-environment preparation, model synchronization, the two-node `torchrun`
-command, and artifact collection.  Its report is written to:
+Expected final status: `DRY_RUN_PASS`.
 
-```text
-outputs/deployment_pipeline/rs-dryrun/pipeline_report.json
-```
-
-## 3. Apply and wait for the deployment smoke
-
-The local source tree must be committed and clean.  The canonical Future-P012
-smoke is:
+## 3. Apply
 
 ```bash
-bash scripts/deploy/run_allready_pipeline.sh \
+bash scripts/deploy/run_deployment_pipeline.sh \
   deploy/inventory/hosts.local.yaml \
   --apply \
-  --run-id rs-future-p012-smoke
+  --run-id rs-1x4-smoke
 ```
 
-The default strategy is:
+Pipeline stages:
+
+1. SSH access and inventory validation;
+2. clean Git-bundle source distribution;
+3. remote commit/tree parity;
+4. Python-side runtime dependency installation;
+5. mounted model parity and structural/load preflight;
+6. CUDA/NCCL/Megatron/Transformer-Engine preflight;
+7. directed GPU link calibration and profile distribution;
+8. torchrun experiment launch;
+9. local result collection;
+10. fail-closed result summary.
+
+The GPU image must already provide a CUDA-enabled PyTorch build, Megatron Core,
+Megatron Bridge, Transformer Engine, CUDA and NCCL. The pipeline installs the
+Python-side packages listed in `deploy/environment/requirements-runtime.txt`
+and rejects an incompatible GPU image before calibration or experiment launch.
+
+## Link cost profile
+
+Calibration measures directed rank-pair transfers at multiple token-row sizes,
+fits one affine cost per edge, validates it against world size, ranks per node,
+model config digest and row-byte size, then supplies the same immutable profile
+to Current, Local/Safe and Future planners. Multi-node runtime fails closed if
+that profile is missing or mismatched.
+
+## Outputs
+
+Local control report:
 
 ```text
-routersense_future_p012_global_rscf_async
+outputs/deployment_pipeline/<run-id>/pipeline_report.json
 ```
 
-The default comparison configuration is:
+Collected remote artifacts and final eligibility decision:
 
 ```text
-configs/official/online_p012_deploy_smoke.yaml
+outputs/deployment/<run-id>/
+outputs/deployment/<run-id>/deployment_result_summary.json
 ```
 
-The pipeline waits for both rank groups, records each node's exit code, and
-collects the remote run directories into:
+Calibrated topology profile:
 
 ```text
-outputs/deployment/rs-future-p012-smoke/
+outputs/deployment_profiles/<run-id>/link_cost_profile.json
 ```
 
-A different formal strategy can be selected with `--strategy`, for example:
+## Manual stages
+
+Each stage can be dry-run or applied independently:
 
 ```bash
-bash scripts/deploy/run_allready_pipeline.sh deploy/inventory/hosts.local.yaml \
-  --apply --run-id rs-p012-local \
-  --strategy routersense_p012_local_rscf_async
-```
-
-## Individual operations
-
-```bash
-# Read-only/dry-run forms
 bash scripts/deploy/verify_cluster_access.sh deploy/inventory/hosts.local.yaml
 bash scripts/deploy/sync_repo.sh deploy/inventory/hosts.local.yaml
 bash scripts/deploy/verify_repo_parity.sh deploy/inventory/hosts.local.yaml
 bash scripts/deploy/prepare_cluster_environment.sh deploy/inventory/hosts.local.yaml
 bash scripts/deploy/sync_model_cache.sh deploy/inventory/hosts.local.yaml
-bash scripts/deploy/launch_remote.sh deploy/inventory/hosts.local.yaml
-
-# Side-effecting forms
-bash scripts/deploy/verify_cluster_access.sh deploy/inventory/hosts.local.yaml --apply
-bash scripts/deploy/sync_repo.sh deploy/inventory/hosts.local.yaml --apply
-bash scripts/deploy/verify_repo_parity.sh deploy/inventory/hosts.local.yaml --apply
-bash scripts/deploy/prepare_cluster_environment.sh deploy/inventory/hosts.local.yaml --apply
-bash scripts/deploy/sync_model_cache.sh deploy/inventory/hosts.local.yaml --apply
-bash scripts/deploy/launch_remote.sh deploy/inventory/hosts.local.yaml \
-  --apply --wait --run-id rs-manual
-bash scripts/deploy/collect_remote_logs.sh deploy/inventory/hosts.local.yaml \
-  --apply --run-id rs-manual
-bash scripts/deploy/stop_remote_jobs.sh deploy/inventory/hosts.local.yaml \
-  --apply --run-id rs-manual
+bash scripts/deploy/verify_mounted_model.sh deploy/inventory/hosts.local.yaml
+bash scripts/deploy/verify_runtime_environment.sh deploy/inventory/hosts.local.yaml
+bash scripts/deploy/calibrate_cluster_links.sh deploy/inventory/hosts.local.yaml --run-id <RUN_ID>
+bash scripts/deploy/launch_remote.sh deploy/inventory/hosts.local.yaml --run-id <RUN_ID>
+bash scripts/deploy/collect_remote_logs.sh deploy/inventory/hosts.local.yaml --run-id <RUN_ID>
+bash scripts/deploy/summarize_collected_run.sh deploy/inventory/hosts.local.yaml --run-id <RUN_ID>
 ```
 
-## Repository all-ready gate
+## Failure rule
 
-After extracting the release bundle with its `external_traces/` companion:
-
-```bash
-python scripts/verify/run_allready_gate.py --trace-root external_traces
-```
-
-The durable JSON and Markdown reports are written under
-`outputs/allready/reports/`; every test file also receives an independent log
-and timeout boundary.
-
-## Readiness boundary
-
-The repository-level all-ready gate validates source compilation, CPU
-contracts, explicit Gloo paths, trace checksums and replay, packaging, and the
-complete deployment dry-run.  CUDA/NCCL and physical two-node behavior can only
-be marked verified after the commands above run on the target GPU hosts.
+Do not make speculative source/config edits on a worker. Stop the run and return
+the pipeline report, stage logs and collected artifacts. CUDA/NCCL performance
+is not considered verified until the final collected result summary passes.

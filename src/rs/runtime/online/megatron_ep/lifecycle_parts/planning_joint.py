@@ -98,7 +98,8 @@ class LifecycleJointPlanningMixin:
             joint_planner_name = effective_policy
             local_planner_name = effective_policy
             joint_start_ns = time.monotonic_ns()
-            joint_window_plan = PlannerRegistry.create(joint_planner_name, None, usage="runtime").plan(formal_request)
+            planner_config = dict(getattr(self.config, "planner_config", {}) or {})
+            joint_window_plan = PlannerRegistry.create(joint_planner_name, planner_config, usage="runtime").plan(formal_request)
             joint_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -129,7 +130,8 @@ class LifecycleJointPlanningMixin:
             joint_planner_name, local_planner_name = self._runtime_safe_scope_pair(effective_policy)
             safe_projection_mode = str(getattr(self.config, "safe_projection_mode", "host_select") or "host_select")
             joint_start_ns = time.monotonic_ns()
-            joint_window_plan = PlannerRegistry.create(joint_planner_name, None, usage="runtime").plan(formal_request)
+            planner_config = dict(getattr(self.config, "planner_config", {}) or {})
+            joint_window_plan = PlannerRegistry.create(joint_planner_name, planner_config, usage="runtime").plan(formal_request)
             joint_end_ns = time.monotonic_ns()
             self._record_planning_timing(
                 layer_name=layer_name,
@@ -147,7 +149,7 @@ class LifecycleJointPlanningMixin:
                 local_plan = joint_plan
                 local_end_ns = local_start_ns
             else:
-                local_window_plan = PlannerRegistry.create(local_planner_name, None, usage="runtime").plan(formal_request)
+                local_window_plan = PlannerRegistry.create(local_planner_name, planner_config, usage="runtime").plan(formal_request)
                 local_plan = _compat_logical_plan_from_window_plan(local_window_plan)
                 local_end_ns = time.monotonic_ns()
             self._record_planning_timing(
@@ -162,8 +164,8 @@ class LifecycleJointPlanningMixin:
             if safe_projection_mode != "disabled":
                 self._increment_state_counter_map("local_build_count_by_layer", str(layer_id))
             selector = PlannerSelector(
-                local_planner=PlannerRegistry.create(local_planner_name, None, usage="runtime"),
-                joint_planner=PlannerRegistry.create(joint_planner_name, None, usage="runtime"),
+                local_planner=PlannerRegistry.create(local_planner_name, planner_config, usage="runtime"),
+                joint_planner=PlannerRegistry.create(joint_planner_name, planner_config, usage="runtime"),
                 estimator=CommonCorePlanEstimator(),
                 cost_model=formal_cost_model,
             )

@@ -19,23 +19,30 @@ def make_target_p012_planner_factory(
     *,
     config_provider: PlannerConfigProvider,
     base_factory: Callable[[str, Any | None], Any] | None = None,
-) -> Callable[[str, Any | None], Any]:
+) -> Callable[..., Any]:
     """Return the factory signature consumed by ``TargetLayerPlannerService``."""
 
-    def factory(planner_id: str, config: Any | None = None):
+    def factory(planner_id: str, config: Any | None = None, *, usage: str | None = None):
         from rs.planning.registry import PlannerRegistry
 
         delegate = base_factory or PlannerRegistry.create
+
+        def create(values: Any | None):
+            try:
+                return delegate(str(planner_id), values, usage=usage)
+            except TypeError:
+                return delegate(str(planner_id), values)
+
         supplied = config_provider(str(planner_id))
         if supplied is None:
-            return delegate(str(planner_id), config)
+            return create(config)
         merged: dict[str, object] = {}
         if isinstance(config, Mapping):
             merged.update(dict(config))
         elif config is not None:
             merged.update(vars(config))
         merged.update(dict(supplied))
-        return delegate(str(planner_id), merged)
+        return create(merged)
 
     return factory
 

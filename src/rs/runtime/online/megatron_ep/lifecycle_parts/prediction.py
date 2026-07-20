@@ -143,8 +143,17 @@ class LifecyclePredictionMixin:
                 raise RuntimeError(
                     "faithful FATE requires an ExpertRouteContext provider at runtime attach"
                 )
+            from rs.runtime.online.megatron_ep.target_planning.p012_planner_factory import (
+                make_target_p012_planner_factory,
+            )
+
+            planner_config = dict(getattr(self.config, "planner_config", {}) or {})
+            planner_factory = make_target_p012_planner_factory(
+                config_provider=lambda _planner_id: planner_config,
+            )
             self.target_planner_service = TargetLayerPlannerService(
                 store=self.target_plan_store,
+                planner_factory=planner_factory,
                 two_horizon_predictor_request_factory=request_factory,
                 two_horizon_predictor_config=self._online_p2_predictor_config(),
             )

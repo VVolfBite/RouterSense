@@ -1,0 +1,13 @@
+# RouterSense Python-side runtime dependencies.
+# The GPU image must already provide a CUDA-enabled PyTorch build,
+# Megatron Core/Bridge, Transformer Engine, CUDA, and NCCL.
+numpy
+numba
+scipy
+scikit-learn
+pyyaml
+transformers
+accelerate
+safetensors
+sentencepiece
+huggingface_hub

@@ -50,7 +50,13 @@ def _tree_hash(repo_root: Path) -> str:
     for relative_raw in files:
         relative = relative_raw.decode("utf-8")
         digest.update(relative_raw)
-        digest.update((repo_root / relative).read_bytes())
+        path = repo_root / relative
+        if path.is_file():
+            digest.update(path.read_bytes())
+        else:
+            # Dry-run parity must remain inspectable while a deployment cleanup
+            # commit is being prepared. Apply mode still rejects a dirty tree.
+            digest.update(b"\0MISSING\0")
     return digest.hexdigest()
 
 

@@ -43,6 +43,7 @@ from rs.runtime.online.megatron_ep.host import (
 from rs.runtime.online.megatron_ep.observation.tokenization import compute_token_count_contract
 from rs.runtime.online.megatron_ep.runtime import SelectedLayerStop
 from rs.planning.runtime_compat import resolve_phase_policy
+from rs.topology import infer_model_row_contract, load_link_cost_profile
 
 from experiments.online.support.environment_validation import main as verify_env_main
 from experiments.online.support.phase_executor_artifacts import (
@@ -71,7 +72,71 @@ def _resolve_model_path(config: RunConfig) -> str:
     return config.model.local_path or config.model.model_id
 
 
-def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
+
+
+def _resolve_planner_cost_config(config: RunConfig, *, model_path: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    configured = str(config.topology.cost_profile or os.environ.get("RS_LINK_COST_PROFILE", "") or "").strip()
+    actual_world_size = int(os.environ.get("WORLD_SIZE", str(config.topology.ep_size)))
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", str(config.topology.launcher.nproc_per_node)))
+    required = bool(config.topology.require_cost_profile or actual_world_size > local_world_size)
+    if not configured:
+        if required:
+            raise RuntimeError(
+                "topology-aware link cost profile is required for multi-node execution; "
+                "run scripts/deploy/calibrate_cluster_links.py before launch"
+            )
+        rank_to_node = tuple(int(rank // max(local_world_size, 1)) for rank in range(actual_world_size))
+        planner_config = {
+            "ranks_per_node": int(max(local_world_size, 1)),
+            "rank_to_node": rank_to_node,
+            "cost_profile_id": "homogeneous-default",
+        }
+        return planner_config, {
+            "mode": "homogeneous_default",
+            "profile_id": "homogeneous-default",
+            "world_size": actual_world_size,
+            "ranks_per_node": int(max(local_world_size, 1)),
+        }
+
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        source_parent = Path(config.source_config_path).resolve().parent
+        probes = (source_parent / candidate, ROOT / candidate)
+        candidate = next((item for item in probes if item.exists()), probes[-1])
+    profile = load_link_cost_profile(candidate)
+    if int(profile.world_size) != actual_world_size:
+        raise RuntimeError(
+            f"link cost profile world_size={profile.world_size} does not match runtime WORLD_SIZE={actual_world_size}"
+        )
+    if int(profile.ranks_per_node) != local_world_size:
+        raise RuntimeError(
+            f"link cost profile ranks_per_node={profile.ranks_per_node} does not match "
+            f"runtime LOCAL_WORLD_SIZE={local_world_size}"
+        )
+    model_contract = infer_model_row_contract(model_path, precision=str(config.runtime.precision))
+    if int(profile.row_bytes) != int(model_contract["row_bytes"]):
+        raise RuntimeError(
+            f"link cost profile row_bytes={profile.row_bytes} does not match "
+            f"model/runtime row_bytes={model_contract['row_bytes']}"
+        )
+    profile_model_contract = dict((profile.metadata or {}).get("model_contract", {}) or {})
+    expected_config_sha256 = str(model_contract["config_sha256"])
+    calibrated_config_sha256 = str(profile_model_contract.get("config_sha256", "") or "")
+    if calibrated_config_sha256 and calibrated_config_sha256 != expected_config_sha256:
+        raise RuntimeError("link cost profile model config digest does not match runtime model")
+    metadata = {
+        "mode": "measured_pairwise",
+        "path": str(candidate.resolve()),
+        "profile_id": str(profile.profile_id),
+        "world_size": int(profile.world_size),
+        "ranks_per_node": int(profile.ranks_per_node),
+        "row_bytes": int(profile.row_bytes),
+        "source": str(profile.source),
+        "model_config_sha256": expected_config_sha256,
+    }
+    return profile.planner_config(), metadata
+
+def _build_online_runtime_config(config: RunConfig, *, planner_config: dict[str, Any] | None = None) -> OnlineRuntimeConfig:
     return OnlineRuntimeConfig(
         policy_name=config.online_policy.name,
         execution_mode=config.execution.mode,
@@ -101,6 +166,7 @@ def _build_online_runtime_config(config: RunConfig) -> OnlineRuntimeConfig:
             online_p2_predictor=config.online_policy.parameters.online_p2_predictor,
             online_p2_predictor_config=dict(config.online_policy.parameters.online_p2_predictor_config),
             safe_projection_mode=str(config.execution.safe_projection_mode),
+            planner_config=dict(planner_config or {}),
         ),
         observation=config.observation.to_dict(),
         validation=OnlineValidationConfig(
@@ -126,7 +192,13 @@ def _policy_capabilities(config: RunConfig) -> dict[str, Any] | None:
     ).capabilities.to_dict()
 
 
-def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> dict[str, Any]:
+def _build_run_manifest(
+    config: RunConfig,
+    *,
+    run_id: str,
+    model_path: str,
+    link_cost_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "run_kind": config.run.kind,
@@ -152,6 +224,7 @@ def _build_run_manifest(config: RunConfig, *, run_id: str, model_path: str) -> d
         "stop_after_selected_layer": config.validation.stop_after_selected_layer,
         "save_logits": config.validation.save_logits,
         "source_config_path": config.source_config_path,
+        "link_cost_profile": dict(link_cost_profile or {}),
     }
 
 
@@ -206,10 +279,19 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
     )
     model_path = _resolve_model_path(config)
+    planner_config, link_cost_metadata = _resolve_planner_cost_config(config, model_path=model_path)
     run_id = config.run.name
     run_dir = Path(config.artifact.output_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    write_json(run_dir / "run_manifest.json", _build_run_manifest(config, run_id=run_id, model_path=model_path))
+    write_json(
+        run_dir / "run_manifest.json",
+        _build_run_manifest(
+            config,
+            run_id=run_id,
+            model_path=model_path,
+            link_cost_profile=link_cost_metadata,
+        ),
+    )
     write_json(run_dir / "source_provenance.json", source_provenance(str(Path(__file__).resolve())))
     (run_dir / "command.txt").write_text(" ".join(sys.argv), encoding="utf-8")
 
@@ -540,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
 
         policy_name = resolve_effective_policy_name(config.online_policy.name, "disabled")
         policy_capabilities = _policy_capabilities(config)
-        online_runtime_config = _build_online_runtime_config(config)
+        online_runtime_config = _build_online_runtime_config(config, planner_config=planner_config)
         runtime = attach_formal_online_runtime(
             model=model,
             runtime_config=online_runtime_config,

@@ -67,6 +67,7 @@ class OnlinePolicyParameters:
     online_p2_predictor: str = "copy_current_dispatch"
     online_p2_predictor_config: dict[str, Any] = field(default_factory=dict)
     safe_projection_mode: str = "host_select"
+    planner_config: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -135,6 +136,7 @@ class RouterSenseInjectionConfig:
     online_p2_predictor: str = "copy_current_dispatch"
     online_p2_predictor_config: dict[str, Any] = field(default_factory=dict)
     safe_projection_mode: str = "host_select"
+    planner_config: dict[str, Any] = field(default_factory=dict)
     schedule_layer_selector: str = "all"
     schedule_phase_selector: str = "both"
     selected_layer_ids: tuple[str, ...] = ()

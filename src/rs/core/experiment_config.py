@@ -63,6 +63,8 @@ class TopologyConfig:
     ep_size: int = 1
     network_scope: str = "single_node"
     interface_hint: str = ""
+    cost_profile: str = ""
+    require_cost_profile: bool = False
 
 
 @dataclass(frozen=True)
@@ -445,6 +447,8 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
             "network_scope",
             "network",
             "interface_hint",
+            "cost_profile",
+            "require_cost_profile",
         },
         "workload": {"prompts", "trace_artifact_dir", "num_prompts", "tokenization"},
         "runtime": {"line", "precision", "invariant_mode", "dispatcher", "control_mode", "expert_compute_delay", "scheduling_mode"},
@@ -454,6 +458,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
         "evaluation": {"selected_layer_ids"},
         "observation": {
             "profile",
+            "invariant_mode",
             "capture_enabled",
             "capture_expert_trace",
             "capture_layer_selector",
@@ -473,7 +478,7 @@ def _validate_known_keys(payload: dict[str, Any]) -> None:
     nested: dict[tuple[str, ...], set[str]] = {
         ("topology", "launcher"): {"kind", "nnodes", "nproc_per_node", "standalone", "master_port"},
         ("topology", "ep"): {"size"},
-        ("topology", "network"): {"scope", "interface_hint"},
+        ("topology", "network"): {"scope", "interface_hint", "cost_profile", "require_cost_profile"},
         ("online_policy", "parameters"): {
             "planner_id",
             "p0_weight",
@@ -598,6 +603,16 @@ def _build_run_config(payload: dict[str, Any], *, source_config_path: str) -> Ru
             interface_hint=_strict_str(
                 topology.get("interface_hint", topology_network.get("interface_hint", "")),
                 field_name="topology.interface_hint",
+            ),
+            cost_profile=_strict_str(
+                topology.get("cost_profile", topology_network.get("cost_profile", "")),
+                field_name="topology.cost_profile",
+                default="",
+            ),
+            require_cost_profile=_strict_bool(
+                topology.get("require_cost_profile", topology_network.get("require_cost_profile")),
+                field_name="topology.require_cost_profile",
+                default=False,
             ),
         ),
         workload=WorkloadConfig(
