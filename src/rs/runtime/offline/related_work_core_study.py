@@ -216,8 +216,12 @@ def run_related_work_core_study(
 def write_study_artifacts(payload: Mapping[str, Any], output_dir: Path) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "related_work_core4_summary.json").write_text(
+    (output_dir / "related_work_core4_result.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    compact = {key: value for key, value in payload.items() if key != "rows"}
+    (output_dir / "related_work_core4_summary.json").write_text(
+        json.dumps(compact, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     rows = list(payload.get("rows", []))
     if rows:
