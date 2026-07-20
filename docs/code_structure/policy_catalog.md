@@ -8,6 +8,7 @@
 
 ## Offline paper references
 
+- `gmwd_style_reference`
 - `islip_reference`
 - `fast_stage_reference`
 - `aurora_order_reference`
