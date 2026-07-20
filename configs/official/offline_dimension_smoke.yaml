@@ -1,0 +1,22 @@
+schema_version: 1
+experiment:
+  name: routersense_offline_dimension_smoke
+  metric_schema: routersense.performance_metrics.v1
+  sample_count_per_ep: 8
+  ep_sizes: [4, 8, 12, 16]
+  core: rscf
+  horizons: [p01, p012]
+  scopes: [local, joint]
+  timings: [current, future]
+  predictors: [perfect]
+  engines: [event, global]
+  baseline_comparison_key: same_engine_current_p01_local
+  metrics:
+    - communication_makespan
+    - tail_latency_p95
+    - tail_latency_p99
+    - tail_latency_max
+    - first_token_time
+    - planning_ms
+    - bind_ms
+    - target_entry_overhead_ms

@@ -1,0 +1,27 @@
+run:
+  kind: offline_trace
+  name: offline-trace-olmoe
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: python
+  ep:
+    size: 1
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  precision: bf16
+online_policy:
+  name: disabled
+offline_study:
+  policies: []
+execution:
+  mode: native_passthrough
+observation:
+  profile: minimal
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+artifact:
+  artifact_root: artifacts/offline/trace

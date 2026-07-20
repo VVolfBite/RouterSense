@@ -1,0 +1,39 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: gpu_first_bringup
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/bringup_2_short_prompts.json
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 1
+  warmup: 1
+  selected_layer_ids:
+    - 0
+    - 1
+suite: first_bringup
+selected_layers: 0,1
+profile: execution
+preflight_mode: full
+world_size: 4
+strategies:
+  - native
+  - birkhoff_phase_local_sync
+  - birkhoff_phase_local_async_p2p
+  - routersense_current_p012_local_event_rscf_async
+  - routersense_current_p012_joint_event_rscf_async
+  - routersense_future_p012_joint_event_rscf_async
+  - routersense_future_p012_joint_global_rscf_async

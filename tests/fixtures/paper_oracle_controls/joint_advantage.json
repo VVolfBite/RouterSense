@@ -1,0 +1,23 @@
+{
+  "schema_version": "paper_oracle_fixture.v1",
+  "fixture_id": "oracle_joint_advantage_v1",
+  "rank_count": 3,
+  "bucket_rows": 1,
+  "expert_compute_delay": 0.0,
+  "p0_dispatch_matrix": [
+    [0, 1, 1],
+    [0, 0, 0],
+    [0, 0, 0]
+  ],
+  "p1_return_matrix": [
+    [0, 0, 0],
+    [1, 0, 0],
+    [1, 0, 0]
+  ],
+  "p2_next_dispatch_matrix": [
+    [0, 1, 1],
+    [0, 0, 0],
+    [0, 0, 0]
+  ],
+  "expected_relation": "joint_strictly_better"
+}

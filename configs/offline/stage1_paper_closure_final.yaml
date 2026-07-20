@@ -1,0 +1,24 @@
+fixture_dir: outputs/offline/replay_fixture_selected_256x128_birkhoffctx/fixtures
+output_dir: outputs/offline/stage1_paper_closure_final
+traffic_calibration: none
+service_demand_model: hidden_equivalent_rows
+use_complete_bundle_bytes: false
+wave_quantum: family_default
+chunking: family_default
+tie_break: deterministic_policy_default
+seed: 42
+predictor_split:
+  mode: contiguous_layers
+  train_ratio: 0.5
+  validation_ratio: 0.25
+  test_ratio: 0.25
+predictor_candidates:
+  - zero_hint
+  - copy_current_dispatch
+  - fate_style_history
+  - fate_style_linear
+diagnostic_predictors:
+  - perfect_trace
+  - actual_trace
+  - shuffled_actual
+  - amplified_actual_4x

@@ -1,0 +1,37 @@
+bucket_rows:
+  - 128
+  - 256
+  - 512
+  - 1024
+  - 2048
+predictors:
+  online_eligible:
+    - zero_hint
+    - copy_current_dispatch
+    - history_ema
+  offline_only:
+    - ridge_linear_trace_predictor
+    - perfect_trace_hint
+    - shuffled_control
+policies:
+  deployable_baselines:
+    - fifo_bucket
+    - greedy_bucket
+    - birkhoff_bucket_phase_local
+  routersense:
+    - current:p012:local:event:rscf
+    - current:p012:joint:event:rscf
+    - current:p012:local:global:rscf
+    - current:p012:joint:global:rscf
+    - future:p012:local:event:rscf
+    - future:p012:joint:event:rscf
+    - future:p012:local:global:rscf
+    - future:p012:joint:global:rscf
+  reference:
+    - gmwd_style_reference
+    - islip_reference
+    - fast_stage_reference
+    - aurora_order_reference
+    - birkhoff_fluid_reference
+    - oracle_local_exact
+    - oracle_joint_exact

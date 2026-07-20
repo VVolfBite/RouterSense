@@ -1,0 +1,51 @@
+model:
+  path: ""
+  model_id: ""
+  trust_remote_code: false
+
+topology:
+  ep_size: 4
+  launcher:
+    kind: torchrun
+
+runtime:
+  line: async_release
+  output_mode: paper
+  precision: bf16
+  dispatcher: alltoall
+  invariant_mode: diagnostic
+
+workload:
+  prompts: configs/workload/smoke_prompts.json
+
+strategies:
+  - name: native
+  - name: birkhoff_phase_local_async_p2p
+  - name: routersense_current_p012_local_event_rscf_async
+  - name: routersense_current_p012_joint_event_rscf_async
+  - name: routersense_future_p012_joint_global_rscf_async
+
+execution:
+  repetitions: 1
+  schedule:
+    layer_selector: all
+    phase_selector: both
+
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+
+comparison:
+  baseline_strategy: native
+  primary_metric: communication_makespan_us
+
+reference_strategy: native
+candidate_strategies:
+  - routersense_current_p012_joint_event_rscf_async
+  - routersense_future_p012_joint_global_rscf_async
+profile: execution
+selected_layers: all
+forward_epochs: 1
+world_size: 4
+warmup_iters: 0
+measure_iters: 1

@@ -1,0 +1,32 @@
+cluster_name: rs-linktest
+nodes:
+  - name: node0
+    host: HOST_OR_IP
+    port: 22
+    ssh_user: root
+    node_rank: 0
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /root/autodl-tmp/RouterSense/RS
+      model_cache: /root/autodl-tmp/models
+      artifact_root: /root/autodl-tmp/RouterSense/RS/artifacts/deployment
+    auth:
+      ssh_password: REPLACE_ME
+  - name: node1
+    host: HOST_OR_IP
+    port: 22
+    ssh_user: root
+    node_rank: 1
+    current_gpu_count: 2
+    target_gpu_count: 2
+    paths:
+      remote_rs_root: /root/autodl-tmp/RouterSense/RS
+      model_cache: /root/autodl-tmp/models
+      artifact_root: /root/autodl-tmp/RouterSense/RS/artifacts/deployment
+    auth:
+      ssh_password: REPLACE_ME
+rendezvous:
+  master_node: node0
+  master_port: 29500
+  backend: c10d

@@ -1,0 +1,18 @@
+schema_version: 1
+experiment:
+  name: routersense_formal_reference_baselines
+  deployable_controls:
+    - fifo_bucket
+    - greedy_bucket
+    - birkhoff_bucket_phase_local
+  literature_references:
+    - gmwd_style_reference
+    - fast_stage_reference
+    - aurora_order_reference
+    - islip_reference
+  diagnostic_references:
+    - power_of_two_reference
+    - reverse_bucket_reference
+  exact_references:
+    - oracle_local_exact
+    - oracle_joint_exact

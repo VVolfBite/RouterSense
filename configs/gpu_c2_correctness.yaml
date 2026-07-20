@@ -1,0 +1,47 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: c2_correctness
+model: {}
+topology:
+  world_size: 4
+workload: {}
+runtime:
+  line: async_release
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+  calibration_bucket_rows:
+    - 512
+    - 1024
+    - 2048
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 2
+  warmup: 0
+  selected_layer_ids:
+    - 0
+    - 1
+  metrics:
+    - output_parity
+    - nan_inf
+replay: {}
+oracle: {}
+regime_analysis: {}
+suite: c2
+reference_strategy: birkhoff_phase_local_sync
+candidate_strategies:
+  - birkhoff_phase_local_async_p2p
+  - routersense_joint_zero_raw_async
+  - routersense_future_p012_joint_event_rscf_async
+  - routersense_joint_zero_safe_async
+  - routersense_joint_predicted_safe_async
+selected_layers: 0,1
+forward_epochs: 2
+profile: execution
+preflight_mode: full
+coalescing_enabled: false
+require_output_parity: true
+require_no_fallback: true

@@ -1,0 +1,43 @@
+run:
+  kind: online_policy_correctness
+  name: online-policy-correctness-local-2gpu
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  config: configs/topology/local_2gpu.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+  control_mode: sync_before_phase
+online_policy:
+  name: fifo_bucket
+  parameters:
+    planner_id: ""
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 0.0
+  p2:
+    mode: none
+    artifact: ""
+offline_study:
+  policies: []
+execution:
+  mode: phase_sync_wave
+  bucket_rows: 0
+  schedule:
+    layer_selector: all
+    phase_selector: both
+observation:
+  profile: execution
+  capture_enabled: false
+  capture_layer_selector: ""
+  capture_phase_selector: ""
+  heartbeat_enabled: false
+  per_wave_timing_enabled: false
+validation:
+  save_logits: true
+  stop_after_selected_layer: false
+artifact:
+  artifact_root: artifacts/megatron_ep/phase_executor

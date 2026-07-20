@@ -1,0 +1,44 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: gpu_shadow_retire_check
+
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+
+workload:
+  prompts: configs/components/workloads/comparison_8x16_prompts.json
+  tokenization:
+    padding: max_length
+    truncation: true
+    max_length: 16
+    expected_prompt_count: 8
+    expected_batch_rows: 8
+    expected_seq_len: 16
+
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+
+evaluation:
+  warmup: 1
+  repeats: 2
+  selected_layer_ids: [0, 1]
+
+world_size: 4
+profile: attribution_light
+preflight_mode: compact
+selected_layers: "0,1"
+strategies:
+  - native
+  - routersense_current_p012_local_event_rscf_async
+  - routersense_current_p012_joint_event_rscf_async

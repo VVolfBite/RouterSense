@@ -1,0 +1,26 @@
+{
+  "schema_version": "paper_oracle_fixture.v1",
+  "fixture_id": "oracle_unsupported_scale_v1",
+  "rank_count": 4,
+  "bucket_rows": 1,
+  "expert_compute_delay": 0.0,
+  "p0_dispatch_matrix": [
+    [0, 2, 2, 2],
+    [2, 0, 2, 2],
+    [2, 2, 0, 2],
+    [2, 2, 2, 0]
+  ],
+  "p1_return_matrix": [
+    [0, 2, 2, 2],
+    [2, 0, 2, 2],
+    [2, 2, 0, 2],
+    [2, 2, 2, 0]
+  ],
+  "p2_next_dispatch_matrix": [
+    [0, 2, 2, 2],
+    [2, 0, 2, 2],
+    [2, 2, 0, 2],
+    [2, 2, 2, 0]
+  ],
+  "expected_relation": "unsupported"
+}

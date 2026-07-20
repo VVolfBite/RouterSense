@@ -1,0 +1,11 @@
+launcher:
+  kind: torchrun
+  nnodes: 2
+  nproc_per_node: 2
+  standalone: false
+  master_port: 29500
+ep:
+  size: 2
+network:
+  scope: multi_node
+  interface_hint: ""
