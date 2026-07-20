@@ -162,3 +162,84 @@ def test_pipeline_rejects_ambiguous_link_profile_modes() -> None:
     assert "only valid with --skip-link-calibration" in (
         conflicting_profile.stdout + conflicting_profile.stderr
     )
+
+
+def test_compact_inventory_examples_and_initializer(tmp_path: Path) -> None:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    for inventory_path, expected_nodes, expected_gpus in (
+        (ROOT / "deploy/inventory/hosts.1x4.example.yaml", 1, 4),
+        (ROOT / "deploy/inventory/hosts.2x2.example.yaml", 2, 2),
+    ):
+        completed = subprocess.run(
+            [
+                "python",
+                "-c",
+                (
+                    "from rs.topology import load_inventory; "
+                    "import sys; x=load_inventory(sys.argv[1]); "
+                    "print(len(x.nodes), x.nodes[0].target_gpu_count)"
+                ),
+                str(inventory_path),
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert completed.stdout.strip() == f"{expected_nodes} {expected_gpus}"
+
+    local = ROOT / "deploy/inventory/hosts.local.yaml"
+    local.unlink(missing_ok=True)
+    initialized = subprocess.run(
+        ["bash", "scripts/deploy/init_inventory.sh", "1x4"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    try:
+        assert initialized.returncode == 0, initialized.stdout + initialized.stderr
+        assert local.read_text(encoding="utf-8") == (
+            ROOT / "deploy/inventory/hosts.1x4.example.yaml"
+        ).read_text(encoding="utf-8")
+    finally:
+        local.unlink(missing_ok=True)
+
+
+def test_pipeline_writes_human_failure_summary(tmp_path: Path) -> None:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    run_id = f"failure-summary-{tmp_path.name}"
+    missing_inventory = tmp_path / "missing.yaml"
+    completed = subprocess.run(
+        [
+            "python",
+            "scripts/deploy/run_deployment_pipeline.py",
+            str(missing_inventory),
+            "--run-id",
+            run_id,
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode != 0
+    output_root = ROOT / "outputs/deployment_pipeline" / run_id
+    summary = output_root / "failure_summary.txt"
+    report = output_root / "pipeline_report.json"
+    assert summary.is_file()
+    assert report.is_file()
+    text = summary.read_text(encoding="utf-8")
+    assert "RouterSense deployment pipeline: FAIL" in text
+    assert "stage: access" in text
+    assert "Do not edit Python" in text
+    assert "missing.yaml" in text
+    assert "ROUTERSENSE DEPLOYMENT FAILED" in completed.stderr

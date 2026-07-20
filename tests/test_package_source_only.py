@@ -52,6 +52,7 @@ def test_package_source_only_mainline_excludes_legacy_and_runtime(packaged_sourc
     assert "RS/src/rs/__init__.py" in listing
     assert "RS/deploy/README.md" in listing
     assert "RS/DEPLOYMENT_HANDOFF.md" in listing
+    assert "RS/task-test-deploy.md" in listing
     assert "RS/.gitignore" in listing
     assert "RS/deploy/inventory/hosts.example.yaml" in listing
     assert "RS/scripts/deploy/launch_remote.sh" in listing

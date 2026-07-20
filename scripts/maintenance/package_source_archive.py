@@ -32,6 +32,7 @@ DEFAULT_INCLUDED = (
     "docs",
     ".gitignore",
     "DEPLOYMENT_HANDOFF.md",
+    "task-test-deploy.md",
     "README.md",
     "pyproject.toml",
 )

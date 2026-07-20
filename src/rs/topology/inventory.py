@@ -42,12 +42,31 @@ class Inventory:
     rendezvous: RendezvousSpec
 
 
+DEFAULT_REMOTE_RS_ROOT = "/workspace/RouterSense"
+DEFAULT_ARTIFACT_ROOT = "/workspace/routersense-artifacts"
+DEFAULT_SSH_USER = "root"
+DEFAULT_MASTER_PORT = 29500
+
+
 def load_inventory(path: str | Path) -> Inventory:
+    """Load either the full inventory schema or the compact deployment schema.
+
+    The compact schema intentionally leaves only values that vary on PPIO:
+    ``host``, optional ``ssh_host``/``ssh_port``/``ssh_user``, ``gpu_count``
+    and ``model_path``.  Stable RouterSense paths, node names/ranks and
+    rendezvous settings are derived deterministically.
+    """
+
     payload = _load_mapping(Path(path).read_text(encoding="utf-8"))
+    raw_nodes = payload.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raise RuntimeError("inventory nodes must parse to a list")
+    nodes = [_load_node_spec(item, index=index) for index, item in enumerate(raw_nodes)]
+    cluster_name = str(payload.get("cluster_name") or f"rs-{len(nodes)}node")
     inventory = Inventory(
-        cluster_name=str(payload["cluster_name"]),
-        nodes=[_load_node_spec(item) for item in payload.get("nodes", [])],
-        rendezvous=_load_rendezvous_spec(payload["rendezvous"]),
+        cluster_name=cluster_name,
+        nodes=nodes,
+        rendezvous=_load_rendezvous_spec(payload.get("rendezvous", {}), nodes=nodes),
     )
     validate_inventory(inventory)
     return inventory
@@ -185,24 +204,53 @@ def _render_torchrun_command(
     )
 
 
-def _load_node_spec(payload: dict[str, Any]) -> NodeSpec:
+def _load_node_spec(payload: dict[str, Any], *, index: int = 0) -> NodeSpec:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"inventory node {index} must parse to a mapping")
+    host = str(payload.get("host", ""))
+    gpu_count = int(
+        payload.get(
+            "gpu_count",
+            payload.get("target_gpu_count", payload.get("current_gpu_count", 0)),
+        )
+    )
+    target_gpu_count = int(payload.get("target_gpu_count", gpu_count))
+    current_gpu_count = int(payload.get("current_gpu_count", gpu_count or target_gpu_count))
+    paths = dict(payload.get("paths", {}))
+    model_path = payload.get("model_path", payload.get("model_cache"))
+    if model_path is not None and not paths.get("model_cache"):
+        paths["model_cache"] = str(model_path)
+    paths.setdefault(
+        "remote_rs_root",
+        str(payload.get("remote_rs_root", DEFAULT_REMOTE_RS_ROOT)),
+    )
+    paths.setdefault(
+        "artifact_root",
+        str(payload.get("artifact_root", DEFAULT_ARTIFACT_ROOT)),
+    )
     return NodeSpec(
-        name=str(payload["name"]),
-        host=str(payload["host"]),
+        name=str(payload.get("name") or f"node{index}"),
+        host=host,
         ssh_host=str(payload["ssh_host"]) if payload.get("ssh_host") else None,
-        port=int(payload.get("port", 22)),
-        ssh_user=str(payload["ssh_user"]),
-        node_rank=int(payload["node_rank"]),
-        current_gpu_count=int(payload.get("current_gpu_count", 0)),
-        target_gpu_count=int(payload.get("target_gpu_count", 0)),
-        paths=dict(payload.get("paths", {})),
+        port=int(payload.get("port", payload.get("ssh_port", 22))),
+        ssh_user=str(payload.get("ssh_user") or DEFAULT_SSH_USER),
+        node_rank=int(payload.get("node_rank", index)),
+        current_gpu_count=current_gpu_count,
+        target_gpu_count=target_gpu_count,
+        paths=paths,
     )
 
 
-def _load_rendezvous_spec(payload: dict[str, Any]) -> RendezvousSpec:
+def _load_rendezvous_spec(
+    payload: dict[str, Any],
+    *,
+    nodes: list[NodeSpec] | None = None,
+) -> RendezvousSpec:
+    nodes = list(nodes or [])
+    default_master = nodes[0].name if nodes else "node0"
     return RendezvousSpec(
-        master_node=str(payload["master_node"]),
-        master_port=int(payload["master_port"]),
+        master_node=str(payload.get("master_node") or default_master),
+        master_port=int(payload.get("master_port", DEFAULT_MASTER_PORT)),
         backend=str(payload.get("backend", "c10d")),
     )
 

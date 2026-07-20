@@ -1,6 +1,6 @@
 # RouterSense deployment
 
-The canonical operational handoff is [`../DEPLOYMENT_HANDOFF.md`](../DEPLOYMENT_HANDOFF.md).
+The canonical operational task is [`../task-test-deploy.md`](../task-test-deploy.md).
 The local computer is the controller and result sink; PPIO instances are
 replaceable workers.
 
@@ -11,15 +11,15 @@ by commit and canonical tree hash.
 ## 1. Inventory
 
 ```bash
-cp deploy/inventory/hosts.1x4.example.yaml deploy/inventory/hosts.local.yaml
-# or
-cp deploy/inventory/hosts.2x2.example.yaml deploy/inventory/hosts.local.yaml
+bash scripts/deploy/init_inventory.sh 1x4
+# later, after 1x4 passes:
+bash scripts/deploy/init_inventory.sh 2x2 --force
 ```
 
-Use the internal PPIO address for `host`. Use `ssh_host` for a separate public
-or NAT SSH endpoint. Set `model_cache` to the mounted cloud model directory or
-its parent. The model preflight resolves the snapshot and verifies config,
-tokenizer, weight index/shards, read permission and local-only loading.
+Edit only `host`, optional `ssh_host`, `gpu_count` and `model_path`. Stable
+paths, ranks and rendezvous settings are derived automatically. The model
+preflight resolves the mounted snapshot and verifies config, tokenizer, weight
+index/shards, read permission and local-only loading.
 
 SSH keys are preferred. Password mode is supported through `RSSH_PASSWORD`
 when `sshpass` is installed locally.
@@ -110,6 +110,8 @@ bash scripts/deploy/summarize_collected_run.sh deploy/inventory/hosts.local.yaml
 
 ## Failure rule
 
-Do not make speculative source/config edits on a worker. Stop the run and return
-the pipeline report, stage logs and collected artifacts. CUDA/NCCL performance
-is not considered verified until the final collected result summary passes.
+Do not make speculative source/config edits on a worker. Every failed pipeline
+run writes `outputs/deployment_pipeline/<run-id>/failure_summary.txt` with the
+failed stage, command, return code and relevant log tails. Stop and return that
+file, the pipeline report, stage logs and collected artifacts. CUDA/NCCL
+performance is not verified until the final collected result summary passes.

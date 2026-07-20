@@ -7,7 +7,7 @@ paths and could mislead an execution agent.
 
 ## Deployment
 
-- [`../DEPLOYMENT_HANDOFF.md`](../DEPLOYMENT_HANDOFF.md): the only operational
+- [`../task-test-deploy.md`](../task-test-deploy.md): the only operational
   handoff for Codex/PPIO execution.
 - [`../deploy/README.md`](../deploy/README.md): inventory fields, dry-run, apply,
   failure handling, and result locations.

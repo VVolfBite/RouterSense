@@ -28,6 +28,74 @@ DEFAULT_CONFIG = "configs/official/online_p012_deploy_smoke.yaml"
 DEFAULT_STRATEGY = "routersense_future_p012_joint_global_rscf_async"
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _tail_text(path: Path, *, line_count: int = 80) -> str:
+    if not path.is_file():
+        return "<log file missing>"
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-max(int(line_count), 1):])
+
+
+def _write_human_summary(output_root: Path, report: dict[str, Any]) -> Path:
+    """Write the one file an execution-only agent should read first."""
+
+    status = str(report.get("status", "UNKNOWN"))
+    failed = [row for row in report.get("stages", []) if str(row.get("status")) != "PASS"]
+    filename = "failure_summary.txt" if status == "FAIL" else "run_summary.txt"
+    path = output_root / filename
+    lines = [
+        f"RouterSense deployment pipeline: {status}",
+        f"run_id: {report.get('run_id')}",
+        f"generated_at: {report.get('generated_at')}",
+        f"pipeline_report: {output_root / 'pipeline_report.json'}",
+        "",
+    ]
+    if status == "FAIL":
+        lines.extend(
+            [
+                "STOP. Do not edit Python, planner parameters, experiment YAML, or result JSON.",
+                "Return this file, pipeline_report.json, the complete logs directory, and collected deployment artifacts.",
+                "",
+                "Failed or incomplete stages:",
+            ]
+        )
+        if not failed:
+            lines.append("- pipeline did not complete every required stage")
+        for row in failed:
+            log_rel = str(row.get("log", ""))
+            log_path = ROOT / log_rel if log_rel else Path()
+            lines.extend(
+                [
+                    f"- stage: {row.get('name')}",
+                    f"  returncode: {row.get('returncode')}",
+                    f"  timed_out: {row.get('timed_out')}",
+                    f"  command: {' '.join(str(x) for x in row.get('command', []))}",
+                    f"  log: {log_path if log_rel else '<missing>'}",
+                    "  log tail:",
+                ]
+            )
+            lines.extend(f"    {line}" for line in _tail_text(log_path).splitlines())
+        collected_root = ROOT / "outputs" / "deployment" / str(report.get("run_id", ""))
+        remote_logs = sorted(collected_root.rglob("*.log")) if collected_root.is_dir() else []
+        if remote_logs:
+            lines.extend(["", "Collected remote log tails:"])
+            for remote_log in remote_logs[:8]:
+                lines.append(f"--- {remote_log} ---")
+                lines.extend(_tail_text(remote_log, line_count=60).splitlines())
+    else:
+        lines.extend(
+            [
+                "All required pipeline stages completed successfully.",
+                "For an applied run, inspect the collected deployment_result_summary.json before accepting performance data.",
+            ]
+        )
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inventory")
@@ -86,6 +154,7 @@ def _run_stage(
 ) -> dict[str, Any]:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{name}.log"
+    started_at = _utc_now()
     timed_out = False
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         kwargs: dict[str, Any] = {
@@ -115,6 +184,8 @@ def _run_stage(
     return {
         "name": name,
         "command": command,
+        "started_at": started_at,
+        "finished_at": _utc_now(),
         "returncode": process.returncode,
         "timed_out": timed_out,
         "status": "PASS" if process.returncode == 0 and not timed_out else "FAIL",
@@ -293,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         status = "DRY_RUN_PASS"
     report = {
         "schema_version": "routersense.deploy.pipeline.v2",
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": _utc_now(),
         "apply_mode": bool(args.apply),
         "run_id": run_id,
         "inventory": args.inventory,
@@ -306,6 +377,14 @@ def main(argv: list[str] | None = None) -> int:
     }
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "pipeline_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    summary_path = _write_human_summary(output_root, report)
+    report["human_summary"] = str(summary_path.relative_to(ROOT))
+    (output_root / "pipeline_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if status == "FAIL":
+        print(
+            f"\n[ROUTERSENSE DEPLOYMENT FAILED] Read {summary_path} before taking any action.\n",
+            file=sys.stderr,
+        )
     print(json.dumps(report, indent=2))
     return 0 if status in {"PASS", "DRY_RUN_PASS"} else 2
 
