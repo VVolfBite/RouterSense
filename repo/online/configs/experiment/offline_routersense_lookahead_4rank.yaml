@@ -1,0 +1,41 @@
+run:
+  kind: offline_flow_study
+  name: offline-routersense-lookahead-4rank
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  launcher:
+    kind: python
+  ep:
+    size: 4
+workload:
+  trace_artifact_dir: artifacts/offline/trace/offline-trace-olmoe
+runtime:
+  precision: bf16
+  scheduling_mode: runtime_lookahead
+  expert_compute_delay: 0.0
+online_policy:
+  name: disabled
+  parameters:
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 1.0
+offline_study:
+  p2_source: copy_current_dispatch
+  policies:
+    - routersense_multiphase_lookahead:p0_only
+    - routersense_multiphase_lookahead:p0_p1
+    - routersense_multiphase_lookahead:p0_p1_p2
+  window:
+    sample_selector: first
+    start_layer_selector: first
+execution:
+  mode: native_passthrough
+  bucket_rows: 16
+observation:
+  profile: minimal
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+artifact:
+  artifact_root: artifacts/offline/routersense_lookahead

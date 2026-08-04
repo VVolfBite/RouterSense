@@ -1,0 +1,9 @@
+model_id: allenai/OLMoE-1B-7B-0924
+model_path: /root/autodl-tmp/models/OLMoE-1B-7B-0924
+prompt_file: /root/autodl-tmp/RouterSense/legacy/poc1/data/prompts/theory_prompts_50_long.jsonl
+precision: fp16
+num_windows: 32
+context_length: 24
+num_moe_layers: 4
+seed: 42
+enable_calibration: false

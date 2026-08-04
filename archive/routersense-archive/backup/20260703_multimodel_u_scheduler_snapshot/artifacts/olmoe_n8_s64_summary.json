@@ -1,0 +1,685 @@
+{
+  "pair_count": 960,
+  "model": "full_duplex",
+  "expert_compute_delay": 0.0,
+  "baseline_layer_time_ms": 10.0,
+  "hidden_window_ms": 10.0,
+  "token_to_ms_factor": 0.5,
+  "next_mode": "predicted",
+  "phase2_source": "actual",
+  "traffic_correlation": {
+    "mean": 0.7366104941554473,
+    "median": 0.8365724046883987,
+    "std": 0.2586365565453944,
+    "p25": 0.6808579792426924,
+    "p75": 0.9012146892341903
+  },
+  "greedy_latency_ms": {
+    "mean": 0.11929174264272054,
+    "median": 0.11658668518066406,
+    "std": 0.006279414548305356,
+    "p25": 0.11539459228515625,
+    "p75": 0.12159347534179688
+  },
+  "greedy_makespan_ms": {
+    "mean": 2073.3541666666665,
+    "median": 2085.25,
+    "std": 863.9270715648624,
+    "p25": 1657.875,
+    "p75": 2620.75
+  },
+  "include_fast_best_of": false,
+  "skip_oracle": true,
+  "predicted_improvement_vs_traffic_correlation": null,
+  "gate2_decision": null,
+  "B_birkhoff_improvement_pct": {
+    "mean": 33.46840317548028,
+    "median": 34.0080380897781,
+    "std": 11.510150120296185,
+    "p25": 26.14697192709868,
+    "p75": 40.8870166784732
+  },
+  "B_birkhoff_effective_improvement_pct": {
+    "mean": 33.46840317548028,
+    "median": 34.0080380897781,
+    "std": 11.510150120296185,
+    "p25": 26.14697192709868,
+    "p75": 40.8870166784732
+  },
+  "B_birkhoff_latency_ms": {
+    "mean": 0.5803594520936409,
+    "median": 0.5773454904556274,
+    "std": 0.04483878099200574,
+    "p25": 0.553155317902565,
+    "p75": 0.6015338003635406
+  },
+  "B_birkhoff_effective_latency_ms": {
+    "mean": 0.5803594520936409,
+    "median": 0.5773454904556274,
+    "std": 0.04483878099200574,
+    "p25": 0.553155317902565,
+    "p75": 0.6015338003635406
+  },
+  "B_birkhoff_comm_savings_ms": {
+    "mean": 732.8645833333334,
+    "median": 704.5,
+    "std": 424.2605667951317,
+    "p25": 456.0,
+    "p75": 987.0
+  },
+  "B_birkhoff_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "B_birkhoff_net_benefit_ms": {
+    "mean": 732.8645833333334,
+    "median": 704.5,
+    "std": 424.2605667951317,
+    "p25": 456.0,
+    "p75": 987.0
+  },
+  "B_birkhoff_effective_e2e_time_ms": {
+    "mean": 1340.4895833333333,
+    "median": 1329.5,
+    "std": 564.8076828810786,
+    "p25": 1078.375,
+    "p75": 1679.125
+  },
+  "B_birkhoff_e2e_speedup_pct": {
+    "mean": 33.46840317548028,
+    "median": 34.0080380897781,
+    "std": 11.510150120296185,
+    "p25": 26.14697192709868,
+    "p75": 40.8870166784732
+  },
+  "B_birkhoff_prediction_aware": false,
+  "B_birkhoff_description": "Baseline: per-phase Birkhoff decomposition.",
+  "B_birkhoff_wave_improvement_pct": {
+    "mean": 51.96195138862952,
+    "median": 53.53125828746476,
+    "std": 8.483796380152699,
+    "p25": 48.47472292258464,
+    "p75": 57.94817967282225
+  },
+  "B_birkhoff_wave_effective_improvement_pct": {
+    "mean": 51.96195138862952,
+    "median": 53.53125828746476,
+    "std": 8.483796380152699,
+    "p25": 48.47472292258464,
+    "p75": 57.94817967282225
+  },
+  "B_birkhoff_wave_latency_ms": {
+    "mean": 20.72938427639504,
+    "median": 17.2223299741745,
+    "std": 114.19837468927884,
+    "p25": 16.53279922902584,
+    "p75": 17.90465973317623
+  },
+  "B_birkhoff_wave_effective_latency_ms": {
+    "mean": 20.72938427639504,
+    "median": 17.2223299741745,
+    "std": 114.19837468927884,
+    "p25": 16.53279922902584,
+    "p75": 17.90465973317623
+  },
+  "B_birkhoff_wave_comm_savings_ms": {
+    "mean": 1131.0083333333334,
+    "median": 1111.75,
+    "std": 537.4308220340756,
+    "p25": 841.125,
+    "p75": 1466.625
+  },
+  "B_birkhoff_wave_exposed_latency_ms": {
+    "mean": 10.729384276395043,
+    "median": 7.2223299741744995,
+    "std": 114.19837468927884,
+    "p25": 6.532799229025841,
+    "p75": 7.904659733176231
+  },
+  "B_birkhoff_wave_net_benefit_ms": {
+    "mean": 1120.2789490569382,
+    "median": 1103.9312510490417,
+    "std": 549.1237943774004,
+    "p25": 830.9606392681599,
+    "p75": 1457.961634606123
+  },
+  "B_birkhoff_wave_effective_e2e_time_ms": {
+    "mean": 953.0752176097284,
+    "median": 973.1000361442566,
+    "std": 379.0349105761664,
+    "p25": 799.6486812382936,
+    "p75": 1159.6894623339176
+  },
+  "B_birkhoff_wave_e2e_speedup_pct": {
+    "mean": 51.32588310560708,
+    "median": 53.15917755244405,
+    "std": 10.4240654569246,
+    "p25": 48.087112055535066,
+    "p75": 57.66886017211121
+  },
+  "B_birkhoff_wave_prediction_aware": false,
+  "B_birkhoff_wave_description": "Baseline: phase-local Birkhoff order with wave-level interleave after release.",
+  "B_barrier_aware_birkhoff_improvement_pct": {
+    "mean": 35.548927643434325,
+    "median": 36.206626876703154,
+    "std": 11.05697419192262,
+    "p25": 28.12610708821346,
+    "p75": 43.22253653936822
+  },
+  "B_barrier_aware_birkhoff_effective_improvement_pct": {
+    "mean": 35.548927643434325,
+    "median": 36.206626876703154,
+    "std": 11.05697419192262,
+    "p25": 28.12610708821346,
+    "p75": 43.22253653936822
+  },
+  "B_barrier_aware_birkhoff_latency_ms": {
+    "mean": 6.819162347043554,
+    "median": 6.636682897806168,
+    "std": 0.8577049904825914,
+    "p25": 6.526010110974312,
+    "p75": 6.89532607793808
+  },
+  "B_barrier_aware_birkhoff_effective_latency_ms": {
+    "mean": 6.819162347043554,
+    "median": 6.636682897806168,
+    "std": 0.8577049904825914,
+    "p25": 6.526010110974312,
+    "p75": 6.89532607793808
+  },
+  "B_barrier_aware_birkhoff_comm_savings_ms": {
+    "mean": 770.2166666666667,
+    "median": 745.0,
+    "std": 433.0385657302617,
+    "p25": 491.375,
+    "p75": 1039.75
+  },
+  "B_barrier_aware_birkhoff_exposed_latency_ms": {
+    "mean": 0.0319082069521149,
+    "median": 0.0,
+    "std": 0.5990189708769504,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "B_barrier_aware_birkhoff_net_benefit_ms": {
+    "mean": 770.1847584597145,
+    "median": 745.0,
+    "std": 433.05452207624785,
+    "p25": 491.375,
+    "p75": 1039.75
+  },
+  "B_barrier_aware_birkhoff_effective_e2e_time_ms": {
+    "mean": 1303.169408206952,
+    "median": 1292.0,
+    "std": 551.278408319153,
+    "p25": 1040.0,
+    "p75": 1653.75
+  },
+  "B_barrier_aware_birkhoff_e2e_speedup_pct": {
+    "mean": 35.547499618084785,
+    "median": 36.206626876703154,
+    "std": 11.057936354628598,
+    "p25": 28.12610708821346,
+    "p75": 43.22253653936822
+  },
+  "B_barrier_aware_birkhoff_prediction_aware": false,
+  "B_barrier_aware_birkhoff_description": "Baseline: Birkhoff variant search within phase-local space.",
+  "B_barrier_aware_birkhoff_wave_improvement_pct": {
+    "mean": 51.83647385512727,
+    "median": 53.39191839184821,
+    "std": 8.564684128109803,
+    "p25": 48.33363255569661,
+    "p75": 57.59945282460811
+  },
+  "B_barrier_aware_birkhoff_wave_effective_improvement_pct": {
+    "mean": 51.83647385512727,
+    "median": 53.39191839184821,
+    "std": 8.564684128109803,
+    "p25": 48.33363255569661,
+    "p75": 57.59945282460811
+  },
+  "B_barrier_aware_birkhoff_wave_latency_ms": {
+    "mean": 23.035447687531512,
+    "median": 22.999893873929977,
+    "std": 2.797385429178221,
+    "p25": 22.369369864463806,
+    "p75": 23.764444515109062
+  },
+  "B_barrier_aware_birkhoff_wave_effective_latency_ms": {
+    "mean": 23.035447687531512,
+    "median": 22.999893873929977,
+    "std": 2.797385429178221,
+    "p25": 22.369369864463806,
+    "p75": 23.764444515109062
+  },
+  "B_barrier_aware_birkhoff_wave_comm_savings_ms": {
+    "mean": 1128.6796875,
+    "median": 1115.0,
+    "std": 535.5218295755885,
+    "p25": 847.625,
+    "p75": 1467.0
+  },
+  "B_barrier_aware_birkhoff_wave_exposed_latency_ms": {
+    "mean": 13.03544768753151,
+    "median": 12.999893873929977,
+    "std": 2.797385429178221,
+    "p25": 12.369369864463806,
+    "p75": 13.764444515109062
+  },
+  "B_barrier_aware_birkhoff_wave_net_benefit_ms": {
+    "mean": 1115.6442398124684,
+    "median": 1101.6391664743423,
+    "std": 534.5863157291323,
+    "p25": 834.689611390233,
+    "p75": 1453.3953518122435
+  },
+  "B_barrier_aware_birkhoff_wave_effective_e2e_time_ms": {
+    "mean": 957.7099268541982,
+    "median": 973.7997042238712,
+    "std": 362.4268158286257,
+    "p25": 804.4140393137932,
+    "p75": 1170.6917226165533
+  },
+  "B_barrier_aware_birkhoff_wave_e2e_speedup_pct": {
+    "mean": 50.66337553945446,
+    "median": 52.8099340483121,
+    "std": 9.874343704635661,
+    "p25": 47.46599633092405,
+    "p75": 56.98375577792358
+  },
+  "B_barrier_aware_birkhoff_wave_prediction_aware": false,
+  "B_barrier_aware_birkhoff_wave_description": "Baseline: barrier-aware Birkhoff order with wave-level interleave after release.",
+  "U_lagrangian_improvement_pct": {
+    "mean": 46.00699452304944,
+    "median": 48.179282180674264,
+    "std": 9.83156398110438,
+    "p25": 42.52425320316069,
+    "p75": 52.480437390828726
+  },
+  "U_lagrangian_effective_improvement_pct": {
+    "mean": 46.00699452304944,
+    "median": 48.179282180674264,
+    "std": 9.83156398110438,
+    "p25": 42.52425320316069,
+    "p75": 52.480437390828726
+  },
+  "U_lagrangian_latency_ms": {
+    "mean": 7.800868743409713,
+    "median": 5.431108176708221,
+    "std": 72.3972622205443,
+    "p25": 5.292786285281181,
+    "p75": 5.5799782276153564
+  },
+  "U_lagrangian_effective_latency_ms": {
+    "mean": 7.800868743409713,
+    "median": 5.431108176708221,
+    "std": 72.3972622205443,
+    "p25": 5.292786285281181,
+    "p75": 5.5799782276153564
+  },
+  "U_lagrangian_comm_savings_ms": {
+    "mean": 1019.7739583333333,
+    "median": 983.5,
+    "std": 499.24490373479523,
+    "p25": 738.375,
+    "p75": 1336.5
+  },
+  "U_lagrangian_exposed_latency_ms": {
+    "mean": 2.3495339335252843,
+    "median": 0.0,
+    "std": 72.24873100152934,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_lagrangian_net_benefit_ms": {
+    "mean": 1017.424424399808,
+    "median": 982.75,
+    "std": 501.0145383571013,
+    "p25": 736.125,
+    "p75": 1333.125
+  },
+  "U_lagrangian_effective_e2e_time_ms": {
+    "mean": 1055.9297422668585,
+    "median": 1074.0,
+    "std": 402.82530822131594,
+    "p25": 903.25,
+    "p75": 1290.875
+  },
+  "U_lagrangian_e2e_speedup_pct": {
+    "mean": 45.93573635262117,
+    "median": 48.141344318688,
+    "std": 10.020670228414504,
+    "p25": 42.503022448207915,
+    "p75": 52.45964984418283
+  },
+  "U_lagrangian_prediction_aware": true,
+  "U_lagrangian_description": "Ours: existing lagrangian-style cross-phase ordering.",
+  "U_ibbr_improvement_pct": {
+    "mean": 35.14043316845449,
+    "median": 35.822568435669154,
+    "std": 11.037616622466025,
+    "p25": 28.126771642955113,
+    "p75": 42.56381840203965
+  },
+  "U_ibbr_effective_improvement_pct": {
+    "mean": 35.14043316845449,
+    "median": 35.822568435669154,
+    "std": 11.037616622466025,
+    "p25": 28.126771642955113,
+    "p75": 42.56381840203965
+  },
+  "U_ibbr_latency_ms": {
+    "mean": 4.708301431188981,
+    "median": 3.981180489063263,
+    "std": 1.8176780357371674,
+    "p25": 3.4669842571020126,
+    "p75": 5.496371537446976
+  },
+  "U_ibbr_effective_latency_ms": {
+    "mean": 4.708301431188981,
+    "median": 3.981180489063263,
+    "std": 1.8176780357371674,
+    "p25": 3.4669842571020126,
+    "p75": 5.496371537446976
+  },
+  "U_ibbr_comm_savings_ms": {
+    "mean": 768.0682291666667,
+    "median": 737.0,
+    "std": 431.32173350377036,
+    "p25": 489.875,
+    "p75": 1027.0
+  },
+  "U_ibbr_exposed_latency_ms": {
+    "mean": 0.035817970211307205,
+    "median": 0.0,
+    "std": 0.6309390214883991,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_ibbr_net_benefit_ms": {
+    "mean": 768.0324111964553,
+    "median": 737.0,
+    "std": 431.32978381335823,
+    "p25": 489.875,
+    "p75": 1027.0
+  },
+  "U_ibbr_effective_e2e_time_ms": {
+    "mean": 1305.3217554702112,
+    "median": 1298.0,
+    "std": 545.5642541152071,
+    "p25": 1055.75,
+    "p75": 1636.0
+  },
+  "U_ibbr_e2e_speedup_pct": {
+    "mean": 35.137969927400356,
+    "median": 35.822568435669154,
+    "std": 11.03718919840903,
+    "p25": 28.126771642955113,
+    "p75": 42.56381840203965
+  },
+  "U_ibbr_prediction_aware": false,
+  "U_ibbr_description": "Ours: iterated Birkhoff barrier repair.",
+  "U_gated_maxweight_matching_atomic_improvement_pct": {
+    "mean": 59.139383739667466,
+    "median": 60.64689443761185,
+    "std": 6.5228815543328285,
+    "p25": 57.692658495430166,
+    "p75": 63.07232777462268
+  },
+  "U_gated_maxweight_matching_atomic_effective_improvement_pct": {
+    "mean": 59.139383739667466,
+    "median": 60.64689443761185,
+    "std": 6.5228815543328285,
+    "p25": 57.692658495430166,
+    "p75": 63.07232777462268
+  },
+  "U_gated_maxweight_matching_atomic_latency_ms": {
+    "mean": 2.569996907065312,
+    "median": 2.4880878627300262,
+    "std": 0.5182897356895645,
+    "p25": 2.4740230292081833,
+    "p75": 2.6044975966215134
+  },
+  "U_gated_maxweight_matching_atomic_effective_latency_ms": {
+    "mean": 2.569996907065312,
+    "median": 2.4880878627300262,
+    "std": 0.5182897356895645,
+    "p25": 2.4740230292081833,
+    "p75": 2.6044975966215134
+  },
+  "U_gated_maxweight_matching_atomic_comm_savings_ms": {
+    "mean": 1267.7885416666666,
+    "median": 1258.75,
+    "std": 564.0285565262099,
+    "p25": 976.875,
+    "p75": 1620.375
+  },
+  "U_gated_maxweight_matching_atomic_exposed_latency_ms": {
+    "mean": 0.00847757887095213,
+    "median": 0.0,
+    "std": 0.26253133228087694,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_gated_maxweight_matching_atomic_net_benefit_ms": {
+    "mean": 1267.7800640877956,
+    "median": 1258.75,
+    "std": 564.0270663125871,
+    "p25": 976.875,
+    "p75": 1620.375
+  },
+  "U_gated_maxweight_matching_atomic_effective_e2e_time_ms": {
+    "mean": 805.5741025788709,
+    "median": 816.5,
+    "std": 314.73763321135414,
+    "p25": 665.375,
+    "p75": 1000.625
+  },
+  "U_gated_maxweight_matching_atomic_e2e_speedup_pct": {
+    "mean": 59.1390019527334,
+    "median": 60.64689443761185,
+    "std": 6.5227398857812915,
+    "p25": 57.692658495430166,
+    "p75": 63.07232777462268
+  },
+  "U_gated_maxweight_matching_atomic_prediction_aware": true,
+  "U_gated_maxweight_matching_atomic_description": "Ours: atomic-wave exact global max-weight matching over released edges.",
+  "U_gated_maxweight_matching_improvement_pct": {
+    "mean": 63.8085397228793,
+    "median": 65.07497085480409,
+    "std": 5.518522161976521,
+    "p25": 61.86888476962138,
+    "p75": 67.36920049207136
+  },
+  "U_gated_maxweight_matching_effective_improvement_pct": {
+    "mean": 63.8085397228793,
+    "median": 65.07497085480409,
+    "std": 5.518522161976521,
+    "p25": 61.86888476962138,
+    "p75": 67.36920049207136
+  },
+  "U_gated_maxweight_matching_latency_ms": {
+    "mean": 15.858309048538407,
+    "median": 16.14423468708992,
+    "std": 2.830989817321525,
+    "p25": 15.462668612599373,
+    "p75": 16.810232773423195
+  },
+  "U_gated_maxweight_matching_effective_latency_ms": {
+    "mean": 15.858309048538407,
+    "median": 16.14423468708992,
+    "std": 2.830989817321525,
+    "p25": 15.462668612599373,
+    "p75": 16.810232773423195
+  },
+  "U_gated_maxweight_matching_comm_savings_ms": {
+    "mean": 1358.5770833333333,
+    "median": 1335.25,
+    "std": 601.2142273625598,
+    "p25": 1056.25,
+    "p75": 1742.375
+  },
+  "U_gated_maxweight_matching_exposed_latency_ms": {
+    "mean": 5.9221334631244344,
+    "median": 6.14423468708992,
+    "std": 2.6799636284554467,
+    "p25": 5.462668612599373,
+    "p75": 6.810232773423195
+  },
+  "U_gated_maxweight_matching_net_benefit_ms": {
+    "mean": 1352.6549498702088,
+    "median": 1328.7592174708843,
+    "std": 599.8555658368881,
+    "p25": 1050.1453167200089,
+    "p75": 1733.3746740370989
+  },
+  "U_gated_maxweight_matching_effective_e2e_time_ms": {
+    "mean": 720.6992167964578,
+    "median": 732.9989239871502,
+    "std": 277.64106110525717,
+    "p25": 602.609301790595,
+    "p75": 884.0952356010675
+  },
+  "U_gated_maxweight_matching_e2e_speedup_pct": {
+    "mean": 63.50940883974568,
+    "median": 64.72551924342596,
+    "std": 5.525367270748655,
+    "p25": 61.529405015336465,
+    "p75": 67.0821679980071
+  },
+  "U_gated_maxweight_matching_prediction_aware": true,
+  "U_gated_maxweight_matching_description": "Ours: exact global max-weight matching over currently released edges.",
+  "U_barrier_criticality_global_matching_atomic_improvement_pct": {
+    "mean": 59.141964554880424,
+    "median": 60.66023510976204,
+    "std": 6.534173740034226,
+    "p25": 57.69308954468926,
+    "p75": 63.06587990231518
+  },
+  "U_barrier_criticality_global_matching_atomic_effective_improvement_pct": {
+    "mean": 59.141964554880424,
+    "median": 60.66023510976204,
+    "std": 6.534173740034226,
+    "p25": 57.69308954468926,
+    "p75": 63.06587990231518
+  },
+  "U_barrier_criticality_global_matching_atomic_latency_ms": {
+    "mean": 2.556408569216728,
+    "median": 2.4771131575107574,
+    "std": 0.3993111333181319,
+    "p25": 2.4632439017295837,
+    "p75": 2.591647207736969
+  },
+  "U_barrier_criticality_global_matching_atomic_effective_latency_ms": {
+    "mean": 2.556408569216728,
+    "median": 2.4771131575107574,
+    "std": 0.3993111333181319,
+    "p25": 2.4632439017295837,
+    "p75": 2.591647207736969
+  },
+  "U_barrier_criticality_global_matching_atomic_comm_savings_ms": {
+    "mean": 1267.871875,
+    "median": 1258.75,
+    "std": 564.0246173711313,
+    "p25": 978.0,
+    "p75": 1620.375
+  },
+  "U_barrier_criticality_global_matching_atomic_exposed_latency_ms": {
+    "mean": 0.004373511920372645,
+    "median": 0.0,
+    "std": 0.13543771502213967,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_barrier_criticality_global_matching_atomic_net_benefit_ms": {
+    "mean": 1267.8675014880796,
+    "median": 1258.75,
+    "std": 564.0211393991124,
+    "p25": 978.0,
+    "p75": 1620.375
+  },
+  "U_barrier_criticality_global_matching_atomic_effective_e2e_time_ms": {
+    "mean": 805.486665178587,
+    "median": 816.5,
+    "std": 314.7172658290048,
+    "p25": 665.375,
+    "p75": 1000.125
+  },
+  "U_barrier_criticality_global_matching_atomic_e2e_speedup_pct": {
+    "mean": 59.1418094107896,
+    "median": 60.66023510976204,
+    "std": 6.534132308042726,
+    "p25": 57.69308954468926,
+    "p75": 63.06587990231518
+  },
+  "U_barrier_criticality_global_matching_atomic_prediction_aware": true,
+  "U_barrier_criticality_global_matching_atomic_description": "Ours: atomic-wave barrier-criticality global matching.",
+  "U_barrier_criticality_global_matching_improvement_pct": {
+    "mean": 63.76064784664518,
+    "median": 64.95584766111082,
+    "std": 5.543437766363006,
+    "p25": 61.75825375735033,
+    "p75": 67.32578032988752
+  },
+  "U_barrier_criticality_global_matching_effective_improvement_pct": {
+    "mean": 63.76064784664518,
+    "median": 64.95584766111082,
+    "std": 5.543437766363006,
+    "p25": 61.75825375735033,
+    "p75": 67.32578032988752
+  },
+  "U_barrier_criticality_global_matching_latency_ms": {
+    "mean": 15.76444444557031,
+    "median": 16.045834869146347,
+    "std": 2.829203007484146,
+    "p25": 15.413692221045494,
+    "p75": 16.682831570506096
+  },
+  "U_barrier_criticality_global_matching_effective_latency_ms": {
+    "mean": 15.76444444557031,
+    "median": 16.045834869146347,
+    "std": 2.829203007484146,
+    "p25": 15.413692221045494,
+    "p75": 16.682831570506096
+  },
+  "U_barrier_criticality_global_matching_comm_savings_ms": {
+    "mean": 1357.6859375,
+    "median": 1335.5,
+    "std": 601.4398860409875,
+    "p25": 1055.375,
+    "p75": 1745.0
+  },
+  "U_barrier_criticality_global_matching_exposed_latency_ms": {
+    "mean": 5.836923088567953,
+    "median": 6.045834869146347,
+    "std": 2.6583789550355443,
+    "p25": 5.413692221045494,
+    "p75": 6.682831570506096
+  },
+  "U_barrier_criticality_global_matching_net_benefit_ms": {
+    "mean": 1351.849014411432,
+    "median": 1329.6226302087307,
+    "std": 600.1192549503285,
+    "p25": 1048.90586784482,
+    "p75": 1739.2194337397814
+  },
+  "U_barrier_criticality_global_matching_effective_e2e_time_ms": {
+    "mean": 721.5051522552346,
+    "median": 734.6251937150955,
+    "std": 277.792408106774,
+    "p25": 603.9655237048864,
+    "p75": 883.0848409384489
+  },
+  "U_barrier_criticality_global_matching_e2e_speedup_pct": {
+    "mean": 63.47592464411539,
+    "median": 64.64698098785256,
+    "std": 5.524572625955273,
+    "p25": 61.41202104402147,
+    "p75": 67.03212398009717
+  },
+  "U_barrier_criticality_global_matching_prediction_aware": true,
+  "U_barrier_criticality_global_matching_description": "Ours: global ready-set max-weight matching with barrier criticality."
+}

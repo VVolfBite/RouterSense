@@ -1,0 +1,9 @@
+torch
+transformers
+accelerate
+safetensors
+psutil
+huggingface_hub
+pyyaml
+numpy
+pytest

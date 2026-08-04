@@ -1,0 +1,55 @@
+{
+  "$id": "RS_SIM_FORMAL_RUN_RESULT",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "attempt_index": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "paired_instance_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provenance_digest": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "record_digest": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "RS_SIM_FORMAL_RUN_RESULT"
+    },
+    "status": {
+      "enum": [
+        "COMPLETED",
+        "CONTRACT_ERROR",
+        "FAILED",
+        "TIMEOUT",
+        "UNSUPPORTED"
+      ]
+    },
+    "treatment_digest": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "paired_instance_id",
+    "treatment_digest",
+    "attempt_index",
+    "status",
+    "provenance_digest",
+    "record_digest"
+  ],
+  "title": "RS-SIM Formal Run Attempt Result",
+  "type": "object"
+}

@@ -1,0 +1,45 @@
+{
+  "num_gpus": 2,
+  "p0_dispatch_matrix": [
+    [0, 1],
+    [0, 0]
+  ],
+  "p1_return_matrix": [
+    [0, 0],
+    [1, 0]
+  ],
+  "p2_next_dispatch_matrix": [
+    [0, 0],
+    [0, 0]
+  ],
+  "invalid_schedule": [
+    {
+      "chunk_id": "phase1_src1_dst0_wave0",
+      "flow_id": "phase1_src1_dst0",
+      "phase": 1,
+      "size": 1.0,
+      "served_volume": 1.0,
+      "src": 1,
+      "dst": 0,
+      "src_gpu": 1,
+      "dst_gpu": 0,
+      "start": 2.0,
+      "end": 3.0,
+      "wave_id": 0
+    },
+    {
+      "chunk_id": "phase0_src0_dst1_wave1",
+      "flow_id": "phase0_src0_dst1",
+      "phase": 0,
+      "size": 1.0,
+      "served_volume": 1.0,
+      "src": 0,
+      "dst": 1,
+      "src_gpu": 0,
+      "dst_gpu": 1,
+      "start": 10.0,
+      "end": 11.0,
+      "wave_id": 1
+    }
+  ]
+}

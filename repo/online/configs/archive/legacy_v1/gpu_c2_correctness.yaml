@@ -1,0 +1,51 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: c2_correctness
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/bringup_2_short_prompts.json
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+  calibration_bucket_rows:
+    - 512
+    - 1024
+    - 2048
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 2
+  warmup: 0
+  selected_layer_ids:
+    - 0
+    - 1
+  metrics:
+    - output_parity
+    - nan_inf
+replay: {}
+oracle: {}
+regime_analysis: {}
+suite: c2
+reference_strategy: native
+candidate_strategies:
+  - birkhoff_phase_local_async_p2p
+  - routersense_b_core_independent_async
+  - routersense_u_core_zero_raw_async
+  - routersense_u_core_predicted_raw_async
+  - routersense_u_core_predicted_safe_async
+selected_layers: 0,1
+forward_epochs: 2
+profile: execution
+preflight_mode: full
+coalescing_enabled: false
+require_output_parity: true
+require_no_fallback: true

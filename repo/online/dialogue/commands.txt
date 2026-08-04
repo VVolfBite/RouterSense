@@ -1,0 +1,7 @@
+git rev-parse HEAD
+git branch --show-current
+git status --short
+python -m compileall RS/src RS/experiments RS/tests
+cd /root/autodl-tmp/RouterSense/RS && PYTHONPATH=src:. pytest -q tests/contract/test_shadow_path_retire_cpu.py tests/contract/test_gpu_child_config_and_a2_metrics.py
+cd /root/autodl-tmp/RouterSense/RS && PYTHONPATH=src:. pytest -q tests/contract/test_runtime_attribution_cpu.py tests/contract/test_runtime_diag_cpu.py
+git diff --check

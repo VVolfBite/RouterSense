@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "source_tests": [
+    "tests/contract/test_prediction_api.py::test_linear_predictor_uses_next_traffic_as_training_target",
+    "tests/contract/test_fate_style_predictor.py::test_fate_style_linear_predictor_trains_without_target_leak"
+  ],
+  "verified": [
+    "formal linear predictor exposes fit(samples) separate from predict(context)",
+    "training target is target_next_dispatch_rows rather than current dispatch rows",
+    "formal linear predictor remains offline_only"
+  ]
+}

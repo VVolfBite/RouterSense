@@ -1,0 +1,32 @@
+# Tier 1 Recovery Map
+
+This document records the source-of-truth mapping used for M4-A Tier 1 recovery. The recovered policies are offline-only logical schedulers and are not online EP executor policies.
+
+Golden semantic evidence is stored in:
+
+```text
+tests/fixtures/tier1/historical_golden/tier1_semantic_witness.json
+docs/migration/tier1_recovery_provenance.json
+tests/contract/test_tier1_historical_regression.py
+```
+
+The golden witness compares semantic schedule signature, makespan, service model, release signature, flow conservation, and matching legality for both `runtime_lookahead` and `execution_window`.
+
+| Algorithm ID | Historical full commit SHA | Historical file path | Historical symbol | Source blob / SHA256 | Current migration function | Service model | Original tie-break | Original release semantics | Recovery evidence | Recovery status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `B_birkhoff` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py` | `fast_schedule_birkhoff` | blob `e42eef0ff1afd7214d174e07409d9bac4a44ab6a`; SHA256 `117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9` | `Tier1MultiphasePolicy._build_b_birkhoff_atomic` | `atomic_chunk` | Birkhoff round, `src_rank`, `dst_rank` | Phase-serial P0 then P1; P2 only in `execution_window`; P1 delayed by expert compute | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `B_birkhoff` | `recovered_exactly` |
+| `B_birkhoff_wave` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/birkhoff.py` | `fast_schedule_birkhoff_wave` | blob `e42eef0ff1afd7214d174e07409d9bac4a44ab6a`; SHA256 `117f05760fabbaa6504ee15cbe0ed24ff7cdf3b394052f19b133a3ff08da96e9` | `Tier1MultiphasePolicy._build_b_birkhoff_wave` | `fluid_wave` | Wave id, `src_rank`, `dst_rank` | Phase-serial P0 then P1; P2 only in `execution_window`; P1 delayed by expert compute | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `B_birkhoff_wave` | `recovered_exactly` |
+| `U_gated_maxweight_matching` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/global_matching.py` | `fast_schedule_u_gated_maxweight_matching` | blob `6aa9a283dff49dd25fd5b33a88bc8994fee6f9ec`; SHA256 `4ffbeaf83cbebbe635c0fa4531b53011eeca9d253c490f823e57e37f9da55d06` | `Tier1MultiphasePolicy._build_u_policy` with gated params | `fluid_wave` | Score, barrier urgency, age, residual, `src_rank`, `dst_rank` | Global ready set; P1/P2 release from local inbound completion; P2 suppressed in `runtime_lookahead` | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `U_gated_maxweight_matching` | `recovered_exactly` |
+| `U_barrier_criticality_global_matching` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/global_matching.py` | `fast_schedule_u_barrier_criticality_global_matching` | blob `6aa9a283dff49dd25fd5b33a88bc8994fee6f9ec`; SHA256 `4ffbeaf83cbebbe635c0fa4531b53011eeca9d253c490f823e57e37f9da55d06` | `Tier1MultiphasePolicy._build_u_policy` with barrier-criticality params | `fluid_wave` | Residual, barrier criticality, age, prediction, `src_rank`, `dst_rank` | Global ready set; stronger barrier criticality; P2 suppressed in `runtime_lookahead` | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `U_barrier_criticality_global_matching` | `recovered_exactly` |
+| `U_gated_maxweight_matching_atomic` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/global_matching.py` | `fast_schedule_u_gated_maxweight_matching_atomic` | blob `6aa9a283dff49dd25fd5b33a88bc8994fee6f9ec`; SHA256 `4ffbeaf83cbebbe635c0fa4531b53011eeca9d253c490f823e57e37f9da55d06` | `Tier1MultiphasePolicy._build_u_policy` with gated atomic params | `atomic_chunk` | Same as gated fluid variant | Global ready set; same release semantics as fluid variant; each chunk served atomically | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `U_gated_maxweight_matching_atomic` | `recovered_exactly` |
+| `U_barrier_criticality_global_matching_atomic` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/global_matching.py` | `fast_schedule_u_barrier_criticality_global_matching_atomic` | blob `6aa9a283dff49dd25fd5b33a88bc8994fee6f9ec`; SHA256 `4ffbeaf83cbebbe635c0fa4531b53011eeca9d253c490f823e57e37f9da55d06` | `Tier1MultiphasePolicy._build_u_policy` with barrier-criticality atomic params | `atomic_chunk` | Residual, barrier criticality, age, prediction, `src_rank`, `dst_rank` | Global ready set; same release semantics as fluid variant; each chunk served atomically | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `U_barrier_criticality_global_matching_atomic` | `recovered_exactly` |
+| `U_lagrangian` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223` | `legacy/historical_poc/src_rs_legacy/scheduler/cross_phase.py` | `fast_schedule_lagrangian` | blob `171f73dd557b2059313eb8eb5eb2b45a2caa8077`; SHA256 `739d475a1dffa9782487638c700aa06b95ecd70d19c21a8f0563c41a2b866187` | `Tier1MultiphasePolicy._build_lagrangian` | `lagrangian_atomic_chunk` | Birkhoff round, dual-price row/column terms, size, `src_rank`, `dst_rank` | Lagrangian phase-order candidate over P0/P1/P2; P2 only scheduled in `execution_window`; P1 delayed by expert compute | `tier1_semantic_witness.json` and `tier1_recovery_provenance.json` entries for `U_lagrangian` | `recovered_exactly` |
+
+Historical candidates recorded but not promoted into this Tier 1 set:
+
+| Historical candidate | Location | Status |
+| --- | --- | --- |
+| `U_barrier_price_adaptive_matching` | `cb14d0e9eca8cd3221464f33e6eb82c8e139e223:RS/src/rs/scheduling/multiphase/global_ready_set_impl.py` | Historical non-Tier1 candidate; not renamed to `U_lagrangian`. |
+| `U_gated_greedy_maximal` | `src/rs/scheduling/multiphase/strategies.py` | Greedy comparison path; not part of this Tier 1 migration. |
+
+`execution_window` means P0, P1, and P2 are real communication stages and is always oracle execution-window reference. `runtime_lookahead` means P0 and P1 are real communication stages while P2 is forecast pressure only and must not appear as an executable phase-2 schedule entry.

@@ -1,0 +1,35 @@
+{
+  "confirmed": [
+    {
+      "finding": "Legacy full_forward - dispatch_hook - combine_hook must be exported only as outside_measured_hooks_us with derived_legacy status.",
+      "id": "A1",
+      "recommended_next_action": "measure"
+    },
+    {
+      "finding": "selected_window_span_us is a range reference that can include compute/control gaps and must not be summed as communication.",
+      "id": "A2",
+      "recommended_next_action": "measure"
+    },
+    {
+      "finding": "attribution_light is treated as perf-safe: per-wave heavy artifacts and replay/debug paths remain disabled.",
+      "id": "A3",
+      "recommended_next_action": "measure"
+    }
+  ],
+  "not_modified": [
+    "scheduler objective",
+    "B/U math",
+    "P2P ordering",
+    "task merge policy",
+    "expert compute semantics"
+  ],
+  "requires_gpu_timeline": [
+    "selected MoE module enter/exit availability",
+    "expert module pre/post boundary availability",
+    "largest before_token_dispatch component",
+    "after/on hook contribution",
+    "rank 3 critical component",
+    "executor batch submit/wait contribution"
+  ],
+  "status": "cpu_prepared_gpu_required"
+}

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "routersense-rs-sim-integrated"
+version = "0.8.1"
+description = "RouterSense Current P12 trace-driven formal discrete-event simulator"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6", "numpy>=1.26", "scipy>=1.11"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+oracle = ["scipy>=1.11"]
+plot = ["pandas>=2.0", "matplotlib>=3.8"]
+
+[project.scripts]
+rs-sim = "rs_sim.app.cli:console_main"
+rs-sim-formal = "rs_sim.app.formal_runner:console_main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rs_sim*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+

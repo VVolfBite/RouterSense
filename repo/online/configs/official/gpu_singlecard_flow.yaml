@@ -1,0 +1,44 @@
+schema_version: 2
+experiment_id: gpu-singlecard-flow
+suites:
+  - suite_id: gpu-singlecard-flow
+    markers: [gpu_correctness]
+    case_ids: [singlecard-native, singlecard-routersense]
+    run_kinds: [GPU_CORRECTNESS]
+planning_cases:
+  - case_id: singlecard-native
+    run_kind: GPU_CORRECTNESS
+    planner_id: native
+    planner_family: native
+    selector_mode: fixed
+    predictor_id: none
+    prediction_mode: none
+    execution_backend: native
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+  - case_id: singlecard-routersense
+    run_kind: GPU_CORRECTNESS
+    planner_id: barrier_criticality_joint
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: copy_current_dispatch
+    prediction_mode: predicted
+    execution_backend: phase_sync
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+defaults:
+  model:
+    id: olmoe_1b_7b_instruct
+  topology:
+    world_size: 1
+    topology_id: local-1gpu
+  workload:
+    id: comparison-64-prompts
+    max_windows: 1
+  runtime:
+    selected_layers: [0, 1]
+    line: phase_sync
+  evaluation:
+    repeats: 1
+    warmup: 0
+  strategies: [native, routersense_joint_phase_sync]

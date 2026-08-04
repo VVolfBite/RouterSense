@@ -1,0 +1,24 @@
+{
+  "head_sha": "83251525a055003e3d84884cc24c100effb50fda",
+  "gloo_e2e_gate_passed": true,
+  "gloo_gate_output_dir": "outputs/distributed/run_stage1_gloo_e2e_gate",
+  "cpu_targeted_tests_passed": true,
+  "cpu_targeted_tests_count": 60,
+  "joint_window_async_p2p_reachable": true,
+  "async_p2p_executor_called": true,
+  "batch_isend_irecv_executed": true,
+  "dedicated_p2p_group_initialized": true,
+  "forward_epochs_tested": 2,
+  "layers_tested": 2,
+  "fallback_used": false,
+  "gpu_device_count": 1,
+  "four_gpu_runs_blocked": true,
+  "four_gpu_block_reason": "only_one_gpu_visible",
+  "faithful_fate_not_validated": true,
+  "async_release_real_collectives_not_validated": true,
+  "next_required_runs": [
+    "Run B2",
+    "Run C2",
+    "Run A2"
+  ]
+}

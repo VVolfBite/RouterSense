@@ -1,0 +1,418 @@
+{
+  "pair_count": 240,
+  "model": "full_duplex",
+  "expert_compute_delay": 0.0,
+  "baseline_layer_time_ms": 10.0,
+  "hidden_window_ms": 10.0,
+  "token_to_ms_factor": 0.5,
+  "next_mode": "predicted",
+  "phase2_source": "actual",
+  "traffic_correlation": {
+    "mean": 0.7410353473924719,
+    "median": 0.786192455446187,
+    "std": 0.16310433069400535,
+    "p25": 0.6922017276949843,
+    "p75": 0.8417338206661928
+  },
+  "greedy_latency_ms": {
+    "mean": 0.4277835289637248,
+    "median": 0.49304962158203125,
+    "std": 0.12742056503953939,
+    "p25": 0.4062652587890625,
+    "p75": 0.511467456817627
+  },
+  "greedy_makespan_ms": {
+    "mean": 56.075,
+    "median": 57.25,
+    "std": 20.82497999198719,
+    "p25": 42.75,
+    "p75": 65.5
+  },
+  "include_fast_best_of": false,
+  "skip_oracle": false,
+  "predicted_improvement_vs_traffic_correlation": 0.003807957908260296,
+  "gate2_decision": {
+    "decision": "PASS",
+    "mean_perfect_improvement_pct": 45.35141002861063,
+    "mean_predicted_improvement_pct": 45.29739083223036,
+    "reason": "Oracle-perfect >= 15% and Oracle-predicted >= 10%",
+    "thresholds": {
+      "oracle_perfect_mean_improvement_pct": 15.0,
+      "oracle_predicted_mean_improvement_pct": 10.0
+    },
+    "passed": true
+  },
+  "perfect_improvement_pct": {
+    "mean": 45.35141002861063,
+    "median": 46.2962962962963,
+    "std": 5.463707915409096,
+    "p25": 41.79670722977809,
+    "p75": 49.18032786885246
+  },
+  "predicted_improvement_pct": {
+    "mean": 45.29739083223036,
+    "median": 46.15384615384615,
+    "std": 5.525548923887875,
+    "p25": 42.28632478632478,
+    "p75": 49.13294797687861
+  },
+  "oracle_prediction_gap_pct": {
+    "mean": 0.05401919638026064,
+    "median": 0.0,
+    "std": 1.6779778026761742,
+    "p25": -0.7476714173493413,
+    "p75": 0.7060185185185173
+  },
+  "oracle_perfect_latency_ms": {
+    "mean": 120.23065984249115,
+    "median": 113.77882957458496,
+    "std": 81.33264445348532,
+    "p25": 64.70620632171631,
+    "p75": 216.1186933517456
+  },
+  "oracle_predicted_latency_ms": {
+    "mean": 130.03897766272226,
+    "median": 116.86420440673828,
+    "std": 85.61495763855612,
+    "p25": 74.16903972625732,
+    "p75": 222.06032276153564
+  },
+  "oracle_perfect_comm_savings_ms": {
+    "mean": 26.00625,
+    "median": 26.25,
+    "std": 11.280927973243159,
+    "p25": 19.0,
+    "p75": 32.5
+  },
+  "oracle_perfect_exposed_latency_ms": {
+    "mean": 112.09772845109303,
+    "median": 103.77882957458496,
+    "std": 78.6212755793983,
+    "p25": 54.70620632171631,
+    "p75": 206.1186933517456
+  },
+  "oracle_perfect_net_benefit_ms": {
+    "mean": -86.09147845109304,
+    "median": -80.13194847106934,
+    "std": 77.66008272521492,
+    "p25": -170.27967643737793,
+    "p75": -34.17053842544556
+  },
+  "oracle_perfect_effective_e2e_time_ms": {
+    "mean": 142.16647845109304,
+    "median": 134.8984670639038,
+    "std": 80.43903504649988,
+    "p25": 80.51034641265869,
+    "p75": 235.8713355064392
+  },
+  "oracle_perfect_e2e_speedup_pct": {
+    "mean": -169.07357765197474,
+    "median": -169.67672376735237,
+    "std": 143.11951084405746,
+    "p25": -298.62968901626203,
+    "p75": -57.866029274688074
+  },
+  "oracle_predicted_comm_savings_ms": {
+    "mean": 26.027083333333334,
+    "median": 26.0,
+    "std": 11.383847101326902,
+    "p25": 19.0,
+    "p75": 32.0
+  },
+  "oracle_predicted_exposed_latency_ms": {
+    "mean": 121.90694630146027,
+    "median": 106.86420440673828,
+    "std": 82.82127699898915,
+    "p25": 64.16903972625732,
+    "p75": 212.06032276153564
+  },
+  "oracle_predicted_net_benefit_ms": {
+    "mean": -95.87986296812693,
+    "median": -80.47902584075928,
+    "std": 82.15407311194704,
+    "p25": -180.25490999221802,
+    "p75": -49.27072095870972
+  },
+  "oracle_predicted_effective_e2e_time_ms": {
+    "mean": 151.95486296812695,
+    "median": 139.39071559906006,
+    "std": 84.44570619613968,
+    "p25": 80.2085485458374,
+    "p75": 241.69640016555786
+  },
+  "oracle_predicted_e2e_speedup_pct": {
+    "mean": -188.68029890596077,
+    "median": -197.38355963011523,
+    "std": 155.18634023482423,
+    "p25": -309.56992587455517,
+    "p75": -83.68521213444177
+  },
+  "oracle_perfect_solver_statuses": {
+    "OPTIMAL": 163,
+    "FEASIBLE": 77
+  },
+  "oracle_predicted_solver_statuses": {
+    "OPTIMAL": 147,
+    "FEASIBLE": 93
+  },
+  "B_birkhoff_improvement_pct": {
+    "mean": 20.726093897419283,
+    "median": 20.833333333333336,
+    "std": 9.741927704545752,
+    "p25": 14.814814814814813,
+    "p75": 27.548725637181413
+  },
+  "B_birkhoff_effective_improvement_pct": {
+    "mean": 20.726093897419283,
+    "median": 20.833333333333336,
+    "std": 9.741927704545752,
+    "p25": 14.814814814814813,
+    "p75": 27.548725637181413
+  },
+  "B_birkhoff_latency_ms": {
+    "mean": 2.465239198257526,
+    "median": 2.7125701308250427,
+    "std": 0.7780057473725198,
+    "p25": 2.286938950419426,
+    "p75": 3.0239857733249664
+  },
+  "B_birkhoff_effective_latency_ms": {
+    "mean": 2.465239198257526,
+    "median": 2.7125701308250427,
+    "std": 0.7780057473725198,
+    "p25": 2.286938950419426,
+    "p75": 3.0239857733249664
+  },
+  "B_birkhoff_comm_savings_ms": {
+    "mean": 12.379166666666666,
+    "median": 11.75,
+    "std": 8.433809892661534,
+    "p25": 6.0,
+    "p75": 17.0
+  },
+  "B_birkhoff_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "B_birkhoff_net_benefit_ms": {
+    "mean": 12.379166666666666,
+    "median": 11.75,
+    "std": 8.433809892661534,
+    "p25": 6.0,
+    "p75": 17.0
+  },
+  "B_birkhoff_effective_e2e_time_ms": {
+    "mean": 43.69583333333333,
+    "median": 46.0,
+    "std": 14.88165759043289,
+    "p25": 33.75,
+    "p75": 51.0
+  },
+  "B_birkhoff_e2e_speedup_pct": {
+    "mean": 20.726093897419283,
+    "median": 20.833333333333336,
+    "std": 9.741927704545752,
+    "p25": 14.814814814814813,
+    "p75": 27.548725637181413
+  },
+  "B_birkhoff_prediction_aware": false,
+  "B_birkhoff_description": "Baseline: per-phase Birkhoff decomposition.",
+  "O_lagrangian_improvement_pct": {
+    "mean": 21.290501134956337,
+    "median": 21.889282028600913,
+    "std": 9.552915926691636,
+    "p25": 15.04424778761062,
+    "p75": 27.85618707786415
+  },
+  "O_lagrangian_effective_improvement_pct": {
+    "mean": 21.290501134956337,
+    "median": 21.889282028600913,
+    "std": 9.552915926691636,
+    "p25": 15.04424778761062,
+    "p75": 27.85618707786415
+  },
+  "O_lagrangian_latency_ms": {
+    "mean": 6.657181556026141,
+    "median": 5.665075033903122,
+    "std": 1.7178360534657695,
+    "p25": 5.304200574755669,
+    "p75": 8.237572386860847
+  },
+  "O_lagrangian_effective_latency_ms": {
+    "mean": 6.657181556026141,
+    "median": 5.665075033903122,
+    "std": 1.7178360534657695,
+    "p25": 5.304200574755669,
+    "p75": 8.237572386860847
+  },
+  "O_lagrangian_comm_savings_ms": {
+    "mean": 12.647916666666667,
+    "median": 12.0,
+    "std": 8.395310932879271,
+    "p25": 6.375,
+    "p75": 17.125
+  },
+  "O_lagrangian_exposed_latency_ms": {
+    "mean": 0.04848829532663027,
+    "median": 0.0,
+    "std": 0.3215375804993373,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "O_lagrangian_net_benefit_ms": {
+    "mean": 12.599428371340036,
+    "median": 11.980820208787918,
+    "std": 8.420663778031441,
+    "p25": 6.0,
+    "p75": 17.0
+  },
+  "O_lagrangian_effective_e2e_time_ms": {
+    "mean": 43.475571628659964,
+    "median": 46.0,
+    "std": 14.809923550235212,
+    "p25": 33.625,
+    "p75": 50.0
+  },
+  "O_lagrangian_e2e_speedup_pct": {
+    "mean": 21.141217096304253,
+    "median": 21.700231816864676,
+    "std": 9.573766617991787,
+    "p25": 15.033185840707965,
+    "p75": 27.85618707786415
+  },
+  "O_lagrangian_prediction_aware": true,
+  "O_lagrangian_description": "Ours: existing lagrangian-style cross-phase ordering.",
+  "O_gated_maxweight_matching_improvement_pct": {
+    "mean": 44.86121711223742,
+    "median": 45.74957298646696,
+    "std": 5.789916239907932,
+    "p25": 41.37931034482759,
+    "p75": 48.41269841269841
+  },
+  "O_gated_maxweight_matching_effective_improvement_pct": {
+    "mean": 44.86121711223742,
+    "median": 45.74957298646696,
+    "std": 5.789916239907932,
+    "p25": 41.37931034482759,
+    "p75": 48.41269841269841
+  },
+  "O_gated_maxweight_matching_latency_ms": {
+    "mean": 18.889451896150906,
+    "median": 22.13319018483162,
+    "std": 7.686677656345252,
+    "p25": 11.36503741145134,
+    "p75": 24.2207832634449
+  },
+  "O_gated_maxweight_matching_effective_latency_ms": {
+    "mean": 18.889451896150906,
+    "median": 22.13319018483162,
+    "std": 7.686677656345252,
+    "p25": 11.36503741145134,
+    "p75": 24.2207832634449
+  },
+  "O_gated_maxweight_matching_comm_savings_ms": {
+    "mean": 25.879166666666666,
+    "median": 25.5,
+    "std": 11.559266815224724,
+    "p25": 18.375,
+    "p75": 32.0
+  },
+  "O_gated_maxweight_matching_exposed_latency_ms": {
+    "mean": 9.307179485758146,
+    "median": 12.13319018483162,
+    "std": 7.039019675731754,
+    "p25": 1.3650374114513397,
+    "p75": 14.2207832634449
+  },
+  "O_gated_maxweight_matching_net_benefit_ms": {
+    "mean": 16.571987180908522,
+    "median": 13.598080217838287,
+    "std": 10.318008622730808,
+    "p25": 9.532483786344528,
+    "p75": 19.33135597407818
+  },
+  "O_gated_maxweight_matching_effective_e2e_time_ms": {
+    "mean": 39.50301281909148,
+    "median": 43.093430668115616,
+    "std": 14.989763050750662,
+    "p25": 26.81827600300312,
+    "p75": 48.299051865935326
+  },
+  "O_gated_maxweight_matching_e2e_speedup_pct": {
+    "mean": 29.53827284876896,
+    "median": 27.6279470277211,
+    "std": 11.256824607610438,
+    "p25": 21.640014482080083,
+    "p75": 37.5046082050712
+  },
+  "O_gated_maxweight_matching_prediction_aware": true,
+  "O_gated_maxweight_matching_description": "Ours: exact global max-weight matching over currently released edges.",
+  "O_barrier_criticality_global_matching_improvement_pct": {
+    "mean": 44.83000268750113,
+    "median": 45.86748633879781,
+    "std": 5.992533097830743,
+    "p25": 41.697442686920766,
+    "p75": 48.52345415778251
+  },
+  "O_barrier_criticality_global_matching_effective_improvement_pct": {
+    "mean": 44.83000268750113,
+    "median": 45.86748633879781,
+    "std": 5.992533097830743,
+    "p25": 41.697442686920766,
+    "p75": 48.52345415778251
+  },
+  "O_barrier_criticality_global_matching_latency_ms": {
+    "mean": 15.102879920353493,
+    "median": 16.77922159433365,
+    "std": 5.146069130427742,
+    "p25": 10.190851986408234,
+    "p75": 19.057542085647583
+  },
+  "O_barrier_criticality_global_matching_effective_latency_ms": {
+    "mean": 15.102879920353493,
+    "median": 16.77922159433365,
+    "std": 5.146069130427742,
+    "p25": 10.190851986408234,
+    "p75": 19.057542085647583
+  },
+  "O_barrier_criticality_global_matching_comm_savings_ms": {
+    "mean": 25.883333333333333,
+    "median": 25.75,
+    "std": 11.57479901433378,
+    "p25": 18.5,
+    "p75": 32.0
+  },
+  "O_barrier_criticality_global_matching_exposed_latency_ms": {
+    "mean": 5.612580408652623,
+    "median": 6.779221594333649,
+    "std": 4.352468581992924,
+    "p25": 0.19085198640823364,
+    "p75": 9.057542085647583
+  },
+  "O_barrier_criticality_global_matching_net_benefit_ms": {
+    "mean": 20.27075292468071,
+    "median": 17.834788382053375,
+    "std": 10.164474091520821,
+    "p25": 12.474197313189507,
+    "p75": 25.03448247909546
+  },
+  "O_barrier_criticality_global_matching_effective_e2e_time_ms": {
+    "mean": 35.80424707531929,
+    "median": 37.923000514507294,
+    "std": 12.8457345836441,
+    "p25": 26.162266179919243,
+    "p75": 43.58409096300602
+  },
+  "O_barrier_criticality_global_matching_e2e_speedup_pct": {
+    "mean": 35.70698320918323,
+    "median": 35.33433553117014,
+    "std": 8.13758663860621,
+    "p25": 30.190805864984167,
+    "p75": 41.753758052970646
+  },
+  "O_barrier_criticality_global_matching_prediction_aware": true,
+  "O_barrier_criticality_global_matching_description": "Ours: global ready-set max-weight matching with barrier criticality."
+}

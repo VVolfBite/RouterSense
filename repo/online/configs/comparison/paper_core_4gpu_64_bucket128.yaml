@@ -1,0 +1,82 @@
+model:
+  path: /root/autodl-tmp/models/OLMoE-1B-7B-0924
+  model_id: OLMoE-1B-7B-0924
+  trust_remote_code: false
+
+topology:
+  ep_size: 4
+  launcher:
+    kind: torchrun
+
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+
+workload:
+  prompts: configs/workload/comparison_64_prompts.json
+
+observation:
+  profile: execution
+  capture_enabled: false
+  capture_layer_selector: ""
+  capture_phase_selector: ""
+  heartbeat_enabled: false
+  per_wave_timing_enabled: false
+
+validation:
+  save_logits: false
+  stop_after_selected_layer: false
+
+strategies:
+  - name: disabled
+    description: "Native Megatron EP baseline (no RouterSense)"
+    family: native
+    policy: ""
+    execution_mode: native_passthrough
+    control_mode: default_continue
+    p2_hint_mode: none
+    calibrated_p2: false
+
+  - name: birkhoff_phase_local
+    description: "Per-phase Birkhoff decomposition (local-optimal, no cross-phase)"
+    family: global_phase_local
+    policy: birkhoff_phase_local
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: none
+    calibrated_p2: false
+
+  - name: routersense_p0p1_reservation
+    description: "P1 reservation without P2 prediction"
+    family: semantic
+    policy: routersense_p0p1_reservation
+    execution_mode: phase_sync_wave
+    control_mode: sync_before_phase
+    p2_hint_mode: deterministic_stub
+    calibrated_p2: false
+
+  - name: routersense_p0p1p2_hint
+    description: "Cross-layer prediction scheduling with pending-window joint planning"
+    family: semantic
+    policy: routersense_p0p1p2_hint
+    execution_mode: multiphase_pending_window
+    control_mode: sync_before_phase
+    p2_hint_mode: calibrated_artifact
+    calibrated_p2: true
+
+execution:
+  repetitions: 1
+  bucket_rows: 128
+  p0_weight: 1.0
+  p1_reservation_weight: 1.0
+  p2_hint_weight: 1.0
+  schedule_layer_selector: all
+  schedule_phase_selector: both
+
+comparison:
+  baseline_strategy: disabled
+  primary_metric: communication_makespan_us
+  secondary_metrics:
+    - total_wave_count
+    - scheduling_overhead_us
+    - plan_agreement_us

@@ -1,0 +1,24 @@
+fixture_dir: outputs/offline/replay_fixture_selected_256x128_birkhoffctx/fixtures
+output_dir: outputs/offline/prediction_oracle_baseline_closure
+seed: 42
+exact_instance_count: 32
+safe_overhead_repeats: 20
+predictor_split:
+  mode: contiguous_layers
+  train_ratio: 0.5
+  validation_ratio: 0.25
+  test_ratio: 0.25
+baseline_policies:
+  - phase_barrier_fifo
+  - greedy_ready_set
+  - islip_round_robin
+  - birkhoff_phase_local
+  - B_birkhoff_wave
+  - fast_bvn_single_tier
+  - U_gated_maxweight_matching
+  - U_barrier_criticality_global_matching
+joint_prediction_policies:
+  - U_gated_maxweight_matching
+  - RS_safe_gated_maxweight
+  - U_barrier_criticality_global_matching
+  - RS_safe_barrier_criticality

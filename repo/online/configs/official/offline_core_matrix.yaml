@@ -1,0 +1,143 @@
+schema_version: 2
+experiment_id: official-offline-core-matrix
+suites:
+  - suite_id: offline-core
+    markers: [offline, integration_cpu]
+    case_ids:
+      [
+        fifo-zero,
+        fifo-perfect,
+        greedy-zero,
+        greedy-perfect,
+        b-phase-local-zero,
+        b-phase-local-copy,
+        b-phase-local-perfect,
+        u-joint-zero,
+        u-joint-copy,
+        u-joint-perfect,
+        safe-u-copy,
+      ]
+    run_kinds: [OFFLINE_EVALUATION]
+planning_cases:
+  - case_id: fifo-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo_bucket
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: fifo-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: fifo_bucket
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: greedy-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: greedy_bucket
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: greedy-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: greedy_bucket
+    planner_family: baseline
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: b-phase-local-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: birkhoff_bucket_phase_local
+    planner_family: phase_local
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: b-phase-local-copy
+    run_kind: OFFLINE_EVALUATION
+    planner_id: birkhoff_bucket_phase_local
+    planner_family: phase_local
+    selector_mode: fixed
+    predictor_id: copy_current_dispatch
+    prediction_mode: predicted
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: b-phase-local-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: birkhoff_bucket_phase_local
+    planner_family: phase_local
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: u-joint-zero
+    run_kind: OFFLINE_EVALUATION
+    planner_id: barrier_criticality_joint
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: zero_hint
+    prediction_mode: zero
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: u-joint-copy
+    run_kind: OFFLINE_EVALUATION
+    planner_id: barrier_criticality_joint
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: copy_current_dispatch
+    prediction_mode: predicted
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: u-joint-perfect
+    run_kind: OFFLINE_EVALUATION
+    planner_id: barrier_criticality_joint
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: perfect_trace_hint
+    prediction_mode: oracle
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+  - case_id: safe-u-copy
+    run_kind: OFFLINE_EVALUATION
+    planner_id: barrier_criticality_runtime_safe
+    planner_family: joint_safe
+    selector_mode: fixed
+    predictor_id: copy_current_dispatch
+    prediction_mode: predicted
+    execution_backend: simulator
+    instrumentation_mode: perf_light
+    fallback_policy: fail_closed
+defaults:
+  model: {id: offline-trace}
+  topology: {world_size: 4, topology_id: local-4gpu}
+  workload:
+    id: offline-replay-smoke
+    fixture_dir: tests/fixtures/offline_replay_smoke
+    max_windows: 1
+    bucket_rows: 4
+  runtime: {selected_layers: [0, 1], line: offline_replay}
+  evaluation: {repeats: 1, warmup: 0}
+  seed: 7
+  strategies: [fifo_bucket, greedy_bucket, birkhoff_bucket_phase_local, barrier_criticality_joint, barrier_criticality_runtime_safe]

@@ -1,0 +1,44 @@
+{
+  "dataset_digest": "runtime-profile:9b8308f5100e7e8fda6a3d6d7401f7452f7a6144428bcd5edc50a6808d92cfac",
+  "provenance": {
+    "capture_id": "capture-receiver-format",
+    "collector_version": "rs-sim-trace-provider",
+    "dataset_id": "receiver-profile-format-example",
+    "environment_digest": "sha256:eda37b13754d87bb37d2d359f994c8553dfc3e80c79a2dad6748e41220de720e",
+    "hardware_profile_calibrated": false,
+    "measurement_method": "synthetic_format_example_only",
+    "network_wait_included": false,
+    "notes": "Format example only; not measured and not performance eligible.",
+    "performance_eligible": false,
+    "plane": "RECEIVER",
+    "queue_wait_included": false,
+    "scheduler_wait_included": false,
+    "source_digest": "sha256:bf28a113dbc6a00fa406d2a6c0de976c2b7a59919ec5d2dc952c7a66b76066a3",
+    "source_kind": "synthetic_format_example"
+  },
+  "samples": [
+    {
+      "component": "receiver_posting_service",
+      "dst_rank": 1,
+      "metadata": {},
+      "node_relation": "same_node",
+      "observed_service_ns": 100,
+      "payload_bytes": 4096,
+      "repetition_index": 0,
+      "sample_id": "receiver-post-0",
+      "src_rank": 0
+    },
+    {
+      "component": "receiver_drain",
+      "dst_rank": 1,
+      "metadata": {},
+      "node_relation": "same_node",
+      "observed_service_ns": 200,
+      "payload_bytes": 4096,
+      "repetition_index": 0,
+      "sample_id": "receiver-drain-0",
+      "src_rank": 0
+    }
+  ],
+  "schema_version": "RS_SIM_RUNTIME_PROFILE"
+}

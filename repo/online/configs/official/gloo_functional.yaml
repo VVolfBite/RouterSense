@@ -1,0 +1,35 @@
+schema_version: 2
+experiment_id: official-gloo-functional
+suites:
+  - suite_id: gloo-functional
+    markers: [gloo, integration_cpu]
+    case_ids: [gloo-phase-sync, gloo-async-release]
+    run_kinds: [GLOO_FUNCTIONAL]
+planning_cases:
+  - case_id: gloo-phase-sync
+    run_kind: GLOO_FUNCTIONAL
+    planner_id: routersense_joint_phase_sync
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: none
+    prediction_mode: none
+    execution_backend: phase_sync
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+  - case_id: gloo-async-release
+    run_kind: GLOO_FUNCTIONAL
+    planner_id: routersense_joint_phase_sync
+    planner_family: joint
+    selector_mode: fixed
+    predictor_id: none
+    prediction_mode: none
+    execution_backend: async_release
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+defaults:
+  model: {id: olmoe_1b_7b_instruct}
+  topology: {world_size: 4, topology_id: local-4gpu}
+  workload: {id: comparison-64-prompts}
+  runtime: {selected_layers: [0, 1], line: phase_sync}
+  evaluation: {repeats: 1, warmup: 0}
+  strategies: [routersense_joint_phase_sync]

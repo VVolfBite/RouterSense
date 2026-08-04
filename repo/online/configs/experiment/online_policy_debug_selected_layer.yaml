@@ -1,0 +1,43 @@
+run:
+  kind: online_policy_correctness
+  name: online-policy-debug-selected-layer
+model:
+  config: configs/model/olmoe_1b_7b_instruct.yaml
+topology:
+  config: configs/topology/local_2gpu.yaml
+workload:
+  prompts: configs/workload/smoke_prompts.json
+runtime:
+  precision: fp16
+  dispatcher: alltoall
+  control_mode: sync_before_phase
+online_policy:
+  name: trivial_reverse_bucket
+  parameters:
+    p0_weight: 1.0
+    p1_reservation_weight: 1.0
+    p2_hint_weight: 0.0
+  p2:
+    mode: deterministic_stub
+    artifact: ""
+offline_study:
+  policies: []
+execution:
+  mode: phase_sync_wave
+  bucket_rows: 1024
+  schedule:
+    layer_selector: "0"
+    phase_selector: both
+observation:
+  profile: debug
+  capture_enabled: true
+  capture_layer_selector: "0"
+  capture_phase_selector: both
+  heartbeat_enabled: true
+  per_wave_timing_enabled: true
+validation:
+  save_logits: true
+  stop_after_selected_layer: false
+  allow_debug_capture: true
+artifact:
+  artifact_root: artifacts/megatron_ep/phase_executor_debug

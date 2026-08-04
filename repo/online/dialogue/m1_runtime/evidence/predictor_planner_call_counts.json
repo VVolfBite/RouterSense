@@ -1,0 +1,14 @@
+{
+  "source": "RS/tests/contract/megatron_ep/test_target_planner_service.py",
+  "assertions": {
+    "disabled_safe_projection": {
+      "raw_u_calls": 1,
+      "paired_b_calls": 0
+    },
+    "host_select_safe_projection": {
+      "raw_u_calls": 1,
+      "paired_b_calls": 1
+    },
+    "selector_replan_in_compare": false
+  }
+}

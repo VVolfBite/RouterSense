@@ -1,0 +1,29 @@
+bucket_rows:
+  - 128
+  - 256
+  - 512
+  - 1024
+  - 2048
+predictors:
+  online_eligible:
+    - zero_hint
+    - copy_current_dispatch
+    - history_ema
+  offline_only:
+    - ridge_linear_trace_predictor
+    - perfect_trace_hint
+    - shuffled_control
+policies:
+  deployable:
+    - fifo_bucket
+    - greedy_bucket
+    - islip_bucket
+    - birkhoff_bucket_phase_local
+    - barrier_criticality_phase_local
+    - barrier_criticality_joint
+    - barrier_criticality_runtime_safe
+  reference:
+    - birkhoff_fluid_reference
+    - oracle_joint_cp_sat
+    - oracle_local_cp_sat
+    - barrier_criticality_posthoc_best

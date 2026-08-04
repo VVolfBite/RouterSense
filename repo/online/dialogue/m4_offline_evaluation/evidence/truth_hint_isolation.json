@@ -1,0 +1,8 @@
+{
+  "same_hint_same_request_digest": true,
+  "different_truth_different_truth_digest": true,
+  "request_digest_a": "8c2f4475b03fb59bd260467b10c33a2fbdee0081c67b34286383e8a65c50a949",
+  "request_digest_b": "8c2f4475b03fb59bd260467b10c33a2fbdee0081c67b34286383e8a65c50a949",
+  "truth_digest_a": "85a5dffad64bce9e21b1befa5a8dc1a28bdd556216d35b8aa266a1d54cf0d113",
+  "truth_digest_b": "8a75000529b480f3b2efaffbbbfff104dc102d8e9ca5c0728f2d7983e9f022b0"
+}

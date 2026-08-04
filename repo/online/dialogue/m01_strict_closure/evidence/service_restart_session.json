@@ -1,0 +1,5 @@
+﻿{
+  "service_restart_supported": true,
+  "session_id_rotates_on_start": true,
+  "strict_multi_session_publish_proof": "partial"
+}

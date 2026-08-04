@@ -1,0 +1,49 @@
+{
+  "commit_sha": "9796d72a47f47c559daf795d349e1bfa3d728592",
+  "hostname": "autodl-container-43df4dbbb8-b31320c7",
+  "git_status_short": [
+    "M experiments/distributed/run_gpu_b2_lifecycle.py",
+    " M src/rs/runtime/online/megatron_ep/lifecycle.py"
+  ],
+  "b2_a_zero_hint_status": "passed",
+  "b2_b_nonzero_predictor_status": "passed",
+  "gpu_environment": {
+    "world_size": 4,
+    "selected_layers": "0,1",
+    "profile": "debug"
+  },
+  "b2_a": {
+    "actual_p0_total_rows": 1048576,
+    "p1_is_exact_transpose": true,
+    "stored_equals_consumed": true,
+    "batch_isend_irecv_call_count": 12,
+    "real_send_op_count": 36,
+    "real_recv_op_count": 36,
+    "fallback_count": 0,
+    "timeout_count": 0,
+    "planning_traffic_source": "pre_transport_phase_ready_context",
+    "safe_selected_policy": "U_barrier_criticality_global_matching",
+    "prediction_confidence": 0.0
+  },
+  "b2_b": {
+    "actual_p0_total_rows": 1048576,
+    "p1_is_exact_transpose": true,
+    "stored_equals_consumed": true,
+    "batch_isend_irecv_call_count": 12,
+    "real_send_op_count": 36,
+    "real_recv_op_count": 36,
+    "fallback_count": 0,
+    "timeout_count": 0,
+    "planning_traffic_source": "pre_transport_phase_ready_context",
+    "safe_selected_policy": "U_barrier_criticality_global_matching",
+    "prediction_confidence": 1.0,
+    "prediction_audit": {
+      "predictor_name": "copy_current_dispatch",
+      "source_layer_id": "0",
+      "predicted_layer_id": "1",
+      "relative_l1_error": 0.1805419921875,
+      "cosine_similarity": 0.974753507728759
+    }
+  },
+  "result": "B2_PASSED"
+}

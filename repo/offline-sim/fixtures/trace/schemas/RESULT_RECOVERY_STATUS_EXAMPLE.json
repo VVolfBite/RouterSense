@@ -1,0 +1,171 @@
+{
+  "attempt_result_count": 5,
+  "attempt_results": [
+    {
+      "attempt_index": 0,
+      "failure_code": null,
+      "failure_message": null,
+      "finished_at_unix_ns": null,
+      "metrics_digest": "sha256:metrics-example",
+      "paired_instance_id": "pair:example",
+      "provenance_digest": "provenance:synthetic-example",
+      "record_digest": "formal-run-attempt-result:2bc450a479b2e59817e05a5658de9869203c47fac08d96caa97b677bd6cf7091",
+      "result_artifact_digest": "sha256:completed-example",
+      "result_artifact_path": "results/run-completed.json",
+      "run_id": "run-completed",
+      "schema_version": "RS_SIM_FORMAL_RUN_RESULT",
+      "started_at_unix_ns": null,
+      "status": "COMPLETED",
+      "timeout_limit_seconds": null,
+      "treatment_digest": "treatment:example",
+      "unsupported_reason": null
+    },
+    {
+      "attempt_index": 0,
+      "failure_code": "CONTRACT_ERROR",
+      "failure_message": "synthetic example contract error",
+      "finished_at_unix_ns": null,
+      "metrics_digest": null,
+      "paired_instance_id": "pair:example",
+      "provenance_digest": "provenance:synthetic-example",
+      "record_digest": "formal-run-attempt-result:28addbbbe1e95e834006163db809843fd06888f14b7d7e127a364894b473f8eb",
+      "result_artifact_digest": null,
+      "result_artifact_path": null,
+      "run_id": "run-contract",
+      "schema_version": "RS_SIM_FORMAL_RUN_RESULT",
+      "started_at_unix_ns": null,
+      "status": "CONTRACT_ERROR",
+      "timeout_limit_seconds": null,
+      "treatment_digest": "treatment:example",
+      "unsupported_reason": null
+    },
+    {
+      "attempt_index": 0,
+      "failure_code": "EXECUTION_ERROR",
+      "failure_message": "synthetic example failure",
+      "finished_at_unix_ns": null,
+      "metrics_digest": null,
+      "paired_instance_id": "pair:example",
+      "provenance_digest": "provenance:synthetic-example",
+      "record_digest": "formal-run-attempt-result:1ab7c988e7ed7532d3f96c60045a75f155877a4abd29f8d7d2f480a0cd1d33a7",
+      "result_artifact_digest": null,
+      "result_artifact_path": null,
+      "run_id": "run-failed",
+      "schema_version": "RS_SIM_FORMAL_RUN_RESULT",
+      "started_at_unix_ns": null,
+      "status": "FAILED",
+      "timeout_limit_seconds": null,
+      "treatment_digest": "treatment:example",
+      "unsupported_reason": null
+    },
+    {
+      "attempt_index": 0,
+      "failure_code": "TIME_LIMIT",
+      "failure_message": "synthetic example timeout",
+      "finished_at_unix_ns": null,
+      "metrics_digest": null,
+      "paired_instance_id": "pair:example",
+      "provenance_digest": "provenance:synthetic-example",
+      "record_digest": "formal-run-attempt-result:d870e1f92d9b231a8f553d7cf616759e91d7bf51709d86f494cd5c87699c0385",
+      "result_artifact_digest": null,
+      "result_artifact_path": null,
+      "run_id": "run-timeout",
+      "schema_version": "RS_SIM_FORMAL_RUN_RESULT",
+      "started_at_unix_ns": null,
+      "status": "TIMEOUT",
+      "timeout_limit_seconds": 900,
+      "treatment_digest": "treatment:example",
+      "unsupported_reason": null
+    },
+    {
+      "attempt_index": 0,
+      "failure_code": null,
+      "failure_message": null,
+      "finished_at_unix_ns": null,
+      "metrics_digest": null,
+      "paired_instance_id": "pair:example",
+      "provenance_digest": "provenance:synthetic-example",
+      "record_digest": "formal-run-attempt-result:d5ebf9fb4639b0837ab008617cd20a77518e6d4eb40c9f0af870693b5fce0588",
+      "result_artifact_digest": null,
+      "result_artifact_path": null,
+      "run_id": "run-unsupported",
+      "schema_version": "RS_SIM_FORMAL_RUN_RESULT",
+      "started_at_unix_ns": null,
+      "status": "UNSUPPORTED",
+      "timeout_limit_seconds": null,
+      "treatment_digest": "treatment:example",
+      "unsupported_reason": "synthetic example capability gate"
+    }
+  ],
+  "directives": [
+    {
+      "action": "NONE",
+      "directive_digest": "formal-run-recovery-directive:066459e2b2fe89e84917af6571cf9dd4616a91416cdb4204309bb80448f0848e",
+      "latest_attempt_index": 0,
+      "latest_status": "COMPLETED",
+      "next_attempt_index": null,
+      "reason": "run completed",
+      "run_id": "run-completed"
+    },
+    {
+      "action": "MANUAL_CONTRACT_REVIEW",
+      "directive_digest": "formal-run-recovery-directive:ce2e0aa0ead61149f4c8deb6e5818044c34bc24d047e0e40317c44cf42fc02df",
+      "latest_attempt_index": 0,
+      "latest_status": "CONTRACT_ERROR",
+      "next_attempt_index": null,
+      "reason": "contract errors are not automatically retried",
+      "run_id": "run-contract"
+    },
+    {
+      "action": "RETRY",
+      "directive_digest": "formal-run-recovery-directive:99f63fe65319793a6184b76a2b4d9d414466bcd2eeaca3820166ec029efd0796",
+      "latest_attempt_index": 0,
+      "latest_status": "FAILED",
+      "next_attempt_index": 1,
+      "reason": "failed or timed-out run remains retryable",
+      "run_id": "run-failed"
+    },
+    {
+      "action": "RETRY",
+      "directive_digest": "formal-run-recovery-directive:adf0f867c8a64865bb85a86a6ab6c847ed907fa9277abbafea94dffeb702ec43",
+      "latest_attempt_index": null,
+      "latest_status": null,
+      "next_attempt_index": 0,
+      "reason": "no attempt result recovered",
+      "run_id": "run-missing"
+    },
+    {
+      "action": "RETRY",
+      "directive_digest": "formal-run-recovery-directive:08bafe248a463cf45fd0e7054339f5b26f120e60bb8aae4da2967cceb2c2e94b",
+      "latest_attempt_index": 0,
+      "latest_status": "TIMEOUT",
+      "next_attempt_index": 1,
+      "reason": "failed or timed-out run remains retryable",
+      "run_id": "run-timeout"
+    },
+    {
+      "action": "SKIP_UNSUPPORTED",
+      "directive_digest": "formal-run-recovery-directive:54b4f8d4c8a715d748d52e40392a345160f709f90c82c9a1d1c395ca26230628",
+      "latest_attempt_index": 0,
+      "latest_status": "UNSUPPORTED",
+      "next_attempt_index": null,
+      "reason": "capability is explicitly unsupported",
+      "run_id": "run-unsupported"
+    }
+  ],
+  "expected_run_count": 6,
+  "latest_result_count": 5,
+  "latest_status_counts": {
+    "COMPLETED": 1,
+    "CONTRACT_ERROR": 1,
+    "FAILED": 1,
+    "TIMEOUT": 1,
+    "UNSUPPORTED": 1
+  },
+  "ledger_digest": "formal-run-recovery-ledger:8637f62960d70ecbeee6a167a81ba4addbd630b06c6a399e965f833bacb65389",
+  "missing_run_ids": [
+    "run-missing"
+  ],
+  "schema_version": "RS_SIM_FORMAL_RUN_RECOVERY",
+  "source_manifest_digest": "r2-5-formal-run-manifest:example"
+}

@@ -1,0 +1,22 @@
+{
+  "starting_sha": "d76a5221ade3c714bda89739c4c196bd15178f3a",
+  "final_sha": "ef042342900dcefe8e3a5f3dc13baacd14893730",
+  "git_dirty": false,
+  "included_artifacts": [
+    "outputs/closure/runtime_measurement_semantics",
+    "outputs/closure/pre_gpu_claim_runtime",
+    "outputs/distributed/run_stage3_runtime_integrated_gloo_gate_lowmem"
+  ],
+  "test_commands": [
+    "PYTHONPATH=src:. pytest -q tests/contract/megatron_ep tests/contract/test_gpu_child_config_and_a2_metrics.py tests/contract/test_runtime_measurement_semantics.py tests/contract/test_u_weight_tuning.py tests/test_experiment_config.py tests/test_architecture_dependencies.py tests/test_runtime_fast_path_guards.py",
+    "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python experiments/distributed/run_stage3_runtime_integrated_gloo_gate_lowmem.py"
+  ],
+  "test_results": {
+    "contract_and_architecture_regression": "176 passed",
+    "gloo_gate": "passed"
+  },
+  "gpu_environment": {
+    "torch_cuda_device_count": 0,
+    "torch_cuda_available": false
+  }
+}

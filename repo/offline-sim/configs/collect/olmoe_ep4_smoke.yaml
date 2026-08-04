@@ -1,0 +1,72 @@
+version: 1
+name: olmoe_ep4_small_trace_smoke
+
+model:
+  framework: megatron
+  runner: AUTO_MEGATRON_BRIDGE
+  family: OLMoE-1B-7B-0924
+  path: /models/OLMoE-1B-7B-0924
+  format: hf
+  dtype: bfloat16
+  dispatcher: alltoall
+  trust_remote_code: true
+
+launch:
+  launcher: torchrun
+  nnodes: 1
+  nproc_per_node: 4
+  timeout_seconds: 1200
+  environment: {}
+
+parallel:
+  ep: 4
+  tp: 1
+  pp: 1
+  dp: 1
+  cp: 1
+  etp: 1
+
+input:
+  dataset_id: olmoe_small_trace_smoke
+  split: test
+  seq_length: 128
+  micro_batch_size: 1
+  sample_count: 2
+  seed: 1234
+  notes: self-contained short forward for routing and compute capture
+
+capture:
+  backend: MEGATRON_CORE_AUTO
+  capture_id: olmoe-ep4-small-smoke
+  request_id: olmoe-ep4-small-smoke
+  sample_id_prefix: olmoe-ep4-small-smoke
+  strict: true
+  local_compute: true
+  allow_compute_fallback: false
+  minimum_consecutive_layers: 2
+  require_all_expected_layers: false
+  rank_to_node: [0, 0, 0, 0]
+
+prediction:
+  mode: FATE_P2
+  provider: MEGATRON_SAMPLED_FATE
+  max_sample_tokens: 512
+  confidence_ppm: 750000
+  require_complete_fate_coverage: true
+
+payload:
+  dispatch:
+    auxiliary_payload_bytes_per_row: 16
+    metadata_bytes_per_edge: 64
+    alignment_bytes: 256
+  combine:
+    auxiliary_payload_bytes_per_row: 8
+    metadata_bytes_per_edge: 48
+    alignment_bytes: 128
+  descriptor:
+    fixed_header_bytes: 64
+    per_destination_entry_bytes: 16
+
+output:
+  directory: /results/traces/olmoe_ep4_small_smoke
+  overwrite: true

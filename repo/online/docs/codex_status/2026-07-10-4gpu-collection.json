@@ -1,0 +1,24 @@
+{
+  "scope": "single-node 4gpu minimal real collection",
+  "run_b_dir": "outputs/online/4gpu_expert_trace_20260710_090102/run_b_expert_trace",
+  "run_b_passed": true,
+  "source_expert_records_count": 64,
+  "merged_layer_count": 16,
+  "complete_world_matrix_layer_count": 16,
+  "mean_relative_l1_error": 0.9355505261940585,
+  "expert_to_traffic_mapping_valid": true,
+  "source_rank_granularity_required": true,
+  "recommended_next_predictor_direction": "source_rank_expert_prediction",
+  "run_c_dir": "outputs/online/4gpu_bridge_probe_20260710_091120",
+  "bridge_probe_passed": true,
+  "run_a_dir": "outputs/online/4gpu_strategy_compare_20260710_171849",
+  "strategy_totals_us": {
+    "disabled": 5186720.655,
+    "birkhoff_phase_local": 5157683.672,
+    "routersense_joint_priority_phase_sync": 7405063.436
+  },
+  "async_release_real_collectives_not_run": true,
+  "faithful_fate_not_validated": true,
+  "run_b_debug_trace_not_for_performance": true,
+  "large_benchmark_not_run": true
+}

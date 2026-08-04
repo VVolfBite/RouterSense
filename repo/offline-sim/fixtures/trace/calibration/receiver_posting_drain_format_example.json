@@ -1,0 +1,73 @@
+{
+  "dataset_digest": "sha256:97d7eb08e3e18335fadec6e9f7f146725b6a54a9b1c85429ed6a4ab4d2a6cdf0",
+  "provenance": {
+    "capture_id": "format-example-not-a-measurement",
+    "collector_version": "rs-sim-trace-provider",
+    "dataset_id": "receiver-format-example",
+    "environment_digest": "sha256:191c185f81c9a1b8922d76c51c97ff3e9bbfaf1f87aba7e6863b0266d51eaa54",
+    "hardware_profile_calibrated": false,
+    "measurement_method": "synthetic_format_example_only",
+    "network_transfer_included": false,
+    "notes": "Format-only example. Values are synthetic and must not be used for performance claims.",
+    "performance_eligible": false,
+    "queue_wait_included": false,
+    "scheduler_wait_included": false,
+    "source_digest": "sha256:b65a6e3755fa436d1d6cb76285941209ebbc61ab38edb843423a111832f820b0",
+    "units": "ns"
+  },
+  "samples": [
+    {
+      "component": "receiver_posting_service",
+      "dst_rank": 1,
+      "metadata": {
+        "synthetic": true
+      },
+      "node_relation": "same_node",
+      "observed_service_ns": 100,
+      "payload_bytes": 4096,
+      "repetition_index": 0,
+      "sample_id": "posting-format-0",
+      "src_rank": 0
+    },
+    {
+      "component": "receiver_posting_service",
+      "dst_rank": 2,
+      "metadata": {
+        "synthetic": true
+      },
+      "node_relation": "cross_node",
+      "observed_service_ns": 120,
+      "payload_bytes": 8192,
+      "repetition_index": 0,
+      "sample_id": "posting-format-1",
+      "src_rank": 0
+    },
+    {
+      "component": "receiver_drain",
+      "dst_rank": 1,
+      "metadata": {
+        "synthetic": true
+      },
+      "node_relation": "same_node",
+      "observed_service_ns": 180,
+      "payload_bytes": 4096,
+      "repetition_index": 0,
+      "sample_id": "drain-format-0",
+      "src_rank": 0
+    },
+    {
+      "component": "receiver_drain",
+      "dst_rank": 2,
+      "metadata": {
+        "synthetic": true
+      },
+      "node_relation": "cross_node",
+      "observed_service_ns": 210,
+      "payload_bytes": 8192,
+      "repetition_index": 0,
+      "sample_id": "drain-format-1",
+      "src_rank": 0
+    }
+  ],
+  "schema_version": "RS_SIM_RECEIVER_CALIBRATION"
+}

@@ -1,0 +1,42 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: gpu_hotpath_iteration
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/comparison_8x16_prompts.json
+  tokenization:
+    padding: max_length
+    truncation: true
+    max_length: 16
+    expected_prompt_count: 8
+    expected_batch_rows: 8
+    expected_seq_len: 16
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 2
+  warmup: 1
+  selected_layer_ids:
+    - 0
+    - 1
+suite: hotpath_iteration
+world_size: 4
+profile: perf
+preflight_mode: compact
+selected_layers: 0,1
+strategies:
+  - native
+  - routersense_b_core_independent_async
+  - routersense_u_core_zero_raw_async

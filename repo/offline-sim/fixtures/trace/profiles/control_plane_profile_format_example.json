@@ -1,0 +1,33 @@
+{
+  "dataset_digest": "runtime-profile:6bdffc18aef249ee664adc6c756359c3b84beb02d39f3928fa709b0ce63806c8",
+  "provenance": {
+    "capture_id": "capture-control-format",
+    "collector_version": "rs-sim-trace-provider",
+    "dataset_id": "control-plane-profile-format-example",
+    "environment_digest": "sha256:eda37b13754d87bb37d2d359f994c8553dfc3e80c79a2dad6748e41220de720e",
+    "hardware_profile_calibrated": false,
+    "measurement_method": "synthetic_format_example_only",
+    "network_wait_included": false,
+    "notes": "Format example only; not measured and not performance eligible.",
+    "performance_eligible": false,
+    "plane": "CONTROL_PLANE",
+    "queue_wait_included": false,
+    "scheduler_wait_included": false,
+    "source_digest": "sha256:bf28a113dbc6a00fa406d2a6c0de976c2b7a59919ec5d2dc952c7a66b76066a3",
+    "source_kind": "synthetic_format_example"
+  },
+  "samples": [
+    {
+      "component": "descriptor_delivery",
+      "dst_rank": 1,
+      "metadata": {},
+      "node_relation": "same_node",
+      "observed_service_ns": 80,
+      "payload_bytes": 48,
+      "repetition_index": 0,
+      "sample_id": "control-delivery-0",
+      "src_rank": 0
+    }
+  ],
+  "schema_version": "RS_SIM_RUNTIME_PROFILE"
+}

@@ -1,0 +1,1188 @@
+{
+  "schema": "P12_RANK_TIMING_PROFILE",
+  "profile_id": "DEEPSEEK_EP8_S128_CALIBRATION_STEP1_STEP2",
+  "rank_count": 8,
+  "calibration_fixture_ids": [
+    "deepseek-v2-lite_ep8_s128_gb16:deepseek-v2-lite_ep8_s128_gb16:step1",
+    "deepseek-v2-lite_ep8_s128_gb16:deepseek-v2-lite_ep8_s128_gb16:step2"
+  ],
+  "calibration_dataset_ids": [
+    "routersense_deepseek-v2-lite_formal_fixed_global_v1"
+  ],
+  "calibration_capture_ids": [
+    "deepseek-v2-lite_ep8_s128_gb16"
+  ],
+  "layers": [
+    {
+      "layer_id": 2,
+      "dispatch_inbound_baseline_bytes": [
+        4763136,
+        11365248,
+        5464448,
+        7978880,
+        5601920,
+        7098752,
+        4236672,
+        4031360
+      ],
+      "p1_source_ready_baseline_ns": [
+        256000,
+        457728,
+        272384,
+        358336,
+        282112,
+        322048,
+        247808,
+        248320
+      ],
+      "p1_source_ready_slope_ns_per_gib": 29070314,
+      "p1_to_p2_delay_ns": [
+        2921472,
+        3118608,
+        2805312,
+        3118080,
+        3192752,
+        3036624,
+        3038720,
+        2941440
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        268288,
+        474624,
+        284160,
+        373184,
+        293888,
+        335360,
+        258560,
+        259072
+      ],
+      "dispatch_tail_slope_ns_per_gib": 29991718
+    },
+    {
+      "layer_id": 3,
+      "dispatch_inbound_baseline_bytes": [
+        7699072,
+        5161728,
+        3731072,
+        4884480,
+        7641472,
+        6619776,
+        4761216,
+        10040832
+      ],
+      "p1_source_ready_baseline_ns": [
+        363520,
+        269312,
+        250832,
+        271360,
+        361472,
+        315392,
+        257152,
+        400896
+      ],
+      "p1_source_ready_slope_ns_per_gib": 27897520,
+      "p1_to_p2_delay_ns": [
+        2228736,
+        2469376,
+        2265600,
+        2501680,
+        2307584,
+        2290208,
+        2374192,
+        2205696
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        376320,
+        281088,
+        261120,
+        282624,
+        374784,
+        327680,
+        267904,
+        415744
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28592087
+    },
+    {
+      "layer_id": 4,
+      "dispatch_inbound_baseline_bytes": [
+        5275136,
+        6580864,
+        4789760,
+        5314432,
+        5867392,
+        7917184,
+        3768192,
+        11027712
+      ],
+      "p1_source_ready_baseline_ns": [
+        295424,
+        306672,
+        267776,
+        287232,
+        284160,
+        364032,
+        235936,
+        447536
+      ],
+      "p1_source_ready_slope_ns_per_gib": 28557596,
+      "p1_to_p2_delay_ns": [
+        2249056,
+        2447872,
+        2242016,
+        2435072,
+        2235904,
+        2238496,
+        2238016,
+        2224720
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        307200,
+        318464,
+        278528,
+        299008,
+        295936,
+        377856,
+        245200,
+        462384
+      ],
+      "dispatch_tail_slope_ns_per_gib": 29333212
+    },
+    {
+      "layer_id": 5,
+      "dispatch_inbound_baseline_bytes": [
+        9689472,
+        5735296,
+        1675136,
+        5211392,
+        7213952,
+        5044736,
+        12448384,
+        3521280
+      ],
+      "p1_source_ready_baseline_ns": [
+        420352,
+        307712,
+        217600,
+        272896,
+        326144,
+        309760,
+        487936,
+        240640
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25507672,
+      "p1_to_p2_delay_ns": [
+        3118176,
+        3682816,
+        3248128,
+        3272704,
+        3240544,
+        3551744,
+        3156928,
+        3101696
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        435200,
+        320000,
+        226304,
+        285696,
+        339968,
+        320000,
+        504832,
+        250368
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26237754
+    },
+    {
+      "layer_id": 6,
+      "dispatch_inbound_baseline_bytes": [
+        5840512,
+        4136064,
+        6519040,
+        1808640,
+        6644480,
+        12744704,
+        7218176,
+        5628672
+      ],
+      "p1_source_ready_baseline_ns": [
+        316016,
+        245760,
+        329728,
+        214016,
+        334848,
+        496624,
+        358928,
+        311360
+      ],
+      "p1_source_ready_slope_ns_per_gib": 27476206,
+      "p1_to_p2_delay_ns": [
+        2476976,
+        2746352,
+        2651168,
+        2713088,
+        2529280,
+        2783824,
+        2565744,
+        2447744
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        327792,
+        256512,
+        342528,
+        222816,
+        347648,
+        514048,
+        371248,
+        322112
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28389368
+    },
+    {
+      "layer_id": 7,
+      "dispatch_inbound_baseline_bytes": [
+        4927872,
+        6064384,
+        2723712,
+        5519616,
+        11572480,
+        8568704,
+        6115968,
+        5046656
+      ],
+      "p1_source_ready_baseline_ns": [
+        278528,
+        314368,
+        235072,
+        283648,
+        460288,
+        398848,
+        306688,
+        266752
+      ],
+      "p1_source_ready_slope_ns_per_gib": 28270762,
+      "p1_to_p2_delay_ns": [
+        2223152,
+        2430464,
+        2225296,
+        2417664,
+        2236448,
+        2247792,
+        2329200,
+        2212528
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        290304,
+        326144,
+        244800,
+        295936,
+        477184,
+        412160,
+        317952,
+        278016
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28743150
+    },
+    {
+      "layer_id": 8,
+      "dispatch_inbound_baseline_bytes": [
+        2812160,
+        7355904,
+        4144384,
+        4664320,
+        11336320,
+        10787328,
+        7010432,
+        2429440
+      ],
+      "p1_source_ready_baseline_ns": [
+        236000,
+        334304,
+        232448,
+        271360,
+        447584,
+        444416,
+        324096,
+        227328
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25014418,
+      "p1_to_p2_delay_ns": [
+        2280448,
+        2501136,
+        2275424,
+        2840112,
+        2279968,
+        2257408,
+        2346528,
+        2268128
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        246272,
+        347616,
+        242176,
+        282112,
+        463968,
+        460288,
+        336384,
+        236544
+      ],
+      "dispatch_tail_slope_ns_per_gib": 25712648
+    },
+    {
+      "layer_id": 9,
+      "dispatch_inbound_baseline_bytes": [
+        5474688,
+        13418880,
+        1198208,
+        12360064,
+        4031360,
+        1886720,
+        9442560,
+        2727808
+      ],
+      "p1_source_ready_baseline_ns": [
+        273408,
+        503808,
+        184320,
+        504832,
+        270848,
+        210944,
+        394240,
+        220160
+      ],
+      "p1_source_ready_slope_ns_per_gib": 26447910,
+      "p1_to_p2_delay_ns": [
+        2262496,
+        2440704,
+        2260992,
+        2434032,
+        2263568,
+        2266112,
+        2372208,
+        2253824
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        285184,
+        522752,
+        192512,
+        521728,
+        280576,
+        218112,
+        408576,
+        229888
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27202278
+    },
+    {
+      "layer_id": 10,
+      "dispatch_inbound_baseline_bytes": [
+        10052992,
+        9931648,
+        6091392,
+        5458304,
+        4574208,
+        3042048,
+        3737088,
+        7651968
+      ],
+      "p1_source_ready_baseline_ns": [
+        415232,
+        407040,
+        313856,
+        299520,
+        283136,
+        231424,
+        232960,
+        391168
+      ],
+      "p1_source_ready_slope_ns_per_gib": 28069400,
+      "p1_to_p2_delay_ns": [
+        2240416,
+        2316720,
+        2218496,
+        2405952,
+        2246032,
+        2242560,
+        2240080,
+        2321504
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        431104,
+        422912,
+        325632,
+        311296,
+        293376,
+        241152,
+        243200,
+        404992
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28874920
+    },
+    {
+      "layer_id": 11,
+      "dispatch_inbound_baseline_bytes": [
+        1288576,
+        7623168,
+        5336704,
+        5456000,
+        9514496,
+        10818048,
+        5881856,
+        4621312
+      ],
+      "p1_source_ready_baseline_ns": [
+        217088,
+        333824,
+        306304,
+        284160,
+        419328,
+        427408,
+        290304,
+        244736
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25845212,
+      "p1_to_p2_delay_ns": [
+        2213904,
+        2441728,
+        2253824,
+        2447872,
+        2289712,
+        2258048,
+        2265600,
+        2227728
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        224768,
+        348160,
+        317056,
+        295424,
+        433664,
+        442368,
+        301568,
+        255488
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26457969
+    },
+    {
+      "layer_id": 12,
+      "dispatch_inbound_baseline_bytes": [
+        6998016,
+        895616,
+        6432384,
+        2205568,
+        1206272,
+        8135168,
+        8753792,
+        15912704
+      ],
+      "p1_source_ready_baseline_ns": [
+        363520,
+        180736,
+        326576,
+        218624,
+        204288,
+        370640,
+        386400,
+        587776
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25765323,
+      "p1_to_p2_delay_ns": [
+        2190448,
+        2340416,
+        2190960,
+        2394624,
+        2180096,
+        2204224,
+        2217504,
+        2183744
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        377344,
+        188928,
+        337920,
+        226816,
+        211456,
+        383488,
+        400768,
+        607232
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26797166
+    },
+    {
+      "layer_id": 13,
+      "dispatch_inbound_baseline_bytes": [
+        3455360,
+        1811072,
+        6412032,
+        8459776,
+        10055296,
+        6977536,
+        1313152,
+        12055808
+      ],
+      "p1_source_ready_baseline_ns": [
+        239104,
+        212480,
+        314880,
+        377344,
+        419312,
+        320512,
+        207872,
+        467968
+      ],
+      "p1_source_ready_slope_ns_per_gib": 24527548,
+      "p1_to_p2_delay_ns": [
+        2193616,
+        2427392,
+        2227632,
+        2435072,
+        2228736,
+        2231808,
+        2260480,
+        2205216
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        249344,
+        219648,
+        328192,
+        392192,
+        434160,
+        333824,
+        215040,
+        484352
+      ],
+      "dispatch_tail_slope_ns_per_gib": 25378334
+    },
+    {
+      "layer_id": 14,
+      "dispatch_inbound_baseline_bytes": [
+        3301248,
+        6223104,
+        974080,
+        8844032,
+        11586816,
+        7285760,
+        5435776,
+        6889216
+      ],
+      "p1_source_ready_baseline_ns": [
+        228768,
+        327680,
+        208896,
+        388144,
+        457632,
+        356864,
+        293760,
+        332800
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25789728,
+      "p1_to_p2_delay_ns": [
+        2338192,
+        2540592,
+        2546752,
+        2544704,
+        2384368,
+        2357248,
+        2366912,
+        2352192
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        239616,
+        339456,
+        216576,
+        403504,
+        473088,
+        370176,
+        304528,
+        346112
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27015894
+    },
+    {
+      "layer_id": 15,
+      "dispatch_inbound_baseline_bytes": [
+        9913344,
+        2166656,
+        8015872,
+        2343424,
+        4909184,
+        8957440,
+        6265984,
+        7968512
+      ],
+      "p1_source_ready_baseline_ns": [
+        420800,
+        227840,
+        370688,
+        204800,
+        276976,
+        398848,
+        315392,
+        356864
+      ],
+      "p1_source_ready_slope_ns_per_gib": 27559988,
+      "p1_to_p2_delay_ns": [
+        2231408,
+        2383552,
+        2218096,
+        2398720,
+        2220016,
+        2242128,
+        2233872,
+        2194432
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        436208,
+        236544,
+        384512,
+        214016,
+        286704,
+        412160,
+        327680,
+        369664
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28352190
+    },
+    {
+      "layer_id": 16,
+      "dispatch_inbound_baseline_bytes": [
+        7041152,
+        9779840,
+        4428032,
+        5556992,
+        4043520,
+        7183232,
+        3981952,
+        8525696
+      ],
+      "p1_source_ready_baseline_ns": [
+        353792,
+        428032,
+        257024,
+        296448,
+        253552,
+        344064,
+        251824,
+        382464
+      ],
+      "p1_source_ready_slope_ns_per_gib": 30282402,
+      "p1_to_p2_delay_ns": [
+        2207744,
+        2428944,
+        2213392,
+        2422752,
+        2242960,
+        2258960,
+        2263072,
+        2192896
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        366592,
+        443392,
+        268288,
+        308736,
+        263280,
+        356864,
+        261616,
+        396288
+      ],
+      "dispatch_tail_slope_ns_per_gib": 31148761
+    },
+    {
+      "layer_id": 17,
+      "dispatch_inbound_baseline_bytes": [
+        2970368,
+        5717376,
+        13511424,
+        7300224,
+        3955200,
+        7925248,
+        6227072,
+        2933248
+      ],
+      "p1_source_ready_baseline_ns": [
+        240608,
+        290816,
+        516336,
+        338432,
+        248320,
+        374304,
+        328192,
+        220160
+      ],
+      "p1_source_ready_slope_ns_per_gib": 27097001,
+      "p1_to_p2_delay_ns": [
+        2258592,
+        2326496,
+        2250608,
+        2426880,
+        2263136,
+        2245120,
+        2312192,
+        2219520
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        250864,
+        302080,
+        534768,
+        352768,
+        259072,
+        387616,
+        339456,
+        229376
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27968980
+    },
+    {
+      "layer_id": 18,
+      "dispatch_inbound_baseline_bytes": [
+        6107520,
+        9557888,
+        4900864,
+        9290496,
+        4810496,
+        4343424,
+        4769280,
+        6759424
+      ],
+      "p1_source_ready_baseline_ns": [
+        304640,
+        407040,
+        270464,
+        393728,
+        283648,
+        286720,
+        269312,
+        306176
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25031801,
+      "p1_to_p2_delay_ns": [
+        2305104,
+        2561536,
+        2347008,
+        2553344,
+        2341856,
+        2364560,
+        2412544,
+        2343424
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        316416,
+        421888,
+        281728,
+        409088,
+        293376,
+        297472,
+        280576,
+        318976
+      ],
+      "dispatch_tail_slope_ns_per_gib": 25655510
+    },
+    {
+      "layer_id": 19,
+      "dispatch_inbound_baseline_bytes": [
+        9023360,
+        6263936,
+        6150912,
+        5920512,
+        4621312,
+        2495488,
+        8552576,
+        7512064
+      ],
+      "p1_source_ready_baseline_ns": [
+        391168,
+        328192,
+        295424,
+        322416,
+        267776,
+        233984,
+        360960,
+        352768
+      ],
+      "p1_source_ready_slope_ns_per_gib": 23770150,
+      "p1_to_p2_delay_ns": [
+        2218496,
+        2394608,
+        2225664,
+        2398160,
+        2219520,
+        2291792,
+        2302976,
+        2244720
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        406528,
+        341504,
+        307200,
+        333824,
+        277504,
+        243200,
+        375296,
+        366592
+      ],
+      "dispatch_tail_slope_ns_per_gib": 24859313
+    },
+    {
+      "layer_id": 20,
+      "dispatch_inbound_baseline_bytes": [
+        8595328,
+        8852352,
+        6636032,
+        3322112,
+        7152512,
+        4748672,
+        1442688,
+        9789952
+      ],
+      "p1_source_ready_baseline_ns": [
+        379392,
+        408480,
+        320000,
+        239104,
+        334848,
+        265632,
+        215536,
+        415744
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25848278,
+      "p1_to_p2_delay_ns": [
+        2227152,
+        2380800,
+        2207744,
+        2419824,
+        2238464,
+        2249712,
+        2246656,
+        2252288
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        393216,
+        423424,
+        332800,
+        248832,
+        347648,
+        275968,
+        222704,
+        431104
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26995691
+    },
+    {
+      "layer_id": 21,
+      "dispatch_inbound_baseline_bytes": [
+        8334464,
+        6220928,
+        6928128,
+        5357568,
+        6685568,
+        9559808,
+        3181952,
+        4272000
+      ],
+      "p1_source_ready_baseline_ns": [
+        381872,
+        340480,
+        340304,
+        326720,
+        326656,
+        407552,
+        235520,
+        252416
+      ],
+      "p1_source_ready_slope_ns_per_gib": 26552420,
+      "p1_to_p2_delay_ns": [
+        2210304,
+        2447472,
+        2201136,
+        2395136,
+        2228224,
+        2189296,
+        2219040,
+        2180096
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        395776,
+        352768,
+        353792,
+        337984,
+        339456,
+        421376,
+        245248,
+        262656
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27276129
+    },
+    {
+      "layer_id": 22,
+      "dispatch_inbound_baseline_bytes": [
+        6956672,
+        3971584,
+        3761920,
+        3587200,
+        1831296,
+        9654656,
+        14942336,
+        5834624
+      ],
+      "p1_source_ready_baseline_ns": [
+        367616,
+        272384,
+        247808,
+        251392,
+        219760,
+        416768,
+        572976,
+        323472
+      ],
+      "p1_source_ready_slope_ns_per_gib": 27567606,
+      "p1_to_p2_delay_ns": [
+        2429296,
+        2692096,
+        2459616,
+        2721280,
+        2473984,
+        2486368,
+        2531328,
+        2460176
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        380416,
+        283136,
+        258560,
+        262144,
+        227440,
+        432128,
+        591408,
+        334848
+      ],
+      "dispatch_tail_slope_ns_per_gib": 28256366
+    },
+    {
+      "layer_id": 23,
+      "dispatch_inbound_baseline_bytes": [
+        7135872,
+        7925376,
+        3872896,
+        1066624,
+        1855744,
+        1442688,
+        14463744,
+        12777216
+      ],
+      "p1_source_ready_baseline_ns": [
+        335872,
+        373168,
+        264192,
+        212992,
+        202240,
+        211456,
+        563712,
+        519168
+      ],
+      "p1_source_ready_slope_ns_per_gib": 26692857,
+      "p1_to_p2_delay_ns": [
+        2335744,
+        2462208,
+        2280496,
+        2403360,
+        2302960,
+        2302976,
+        2287216,
+        2704896
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        349184,
+        387072,
+        274432,
+        221184,
+        210432,
+        218624,
+        582192,
+        537088
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27534716
+    },
+    {
+      "layer_id": 24,
+      "dispatch_inbound_baseline_bytes": [
+        5034496,
+        8192640,
+        7799680,
+        3529472,
+        2224000,
+        12510336,
+        9748992,
+        1500288
+      ],
+      "p1_source_ready_baseline_ns": [
+        300544,
+        374784,
+        410608,
+        245248,
+        230896,
+        514048,
+        404480,
+        217568
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25944326,
+      "p1_to_p2_delay_ns": [
+        2192896,
+        2473472,
+        2297344,
+        2475520,
+        2305472,
+        2304544,
+        2279472,
+        2218608
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        312320,
+        389120,
+        424016,
+        256512,
+        239648,
+        530944,
+        418304,
+        225248
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26786772
+    },
+    {
+      "layer_id": 25,
+      "dispatch_inbound_baseline_bytes": [
+        1522688,
+        7758720,
+        3992320,
+        4979072,
+        5854848,
+        2094208,
+        9329792,
+        15008256
+      ],
+      "p1_source_ready_baseline_ns": [
+        219184,
+        369664,
+        257024,
+        279040,
+        325168,
+        216208,
+        410624,
+        566784
+      ],
+      "p1_source_ready_slope_ns_per_gib": 26630042,
+      "p1_to_p2_delay_ns": [
+        2224640,
+        2432400,
+        2217072,
+        2434048,
+        2290176,
+        2232448,
+        2276256,
+        2243072
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        227888,
+        384000,
+        268288,
+        290816,
+        335920,
+        224400,
+        424448,
+        585216
+      ],
+      "dispatch_tail_slope_ns_per_gib": 27459027
+    },
+    {
+      "layer_id": 26,
+      "dispatch_inbound_baseline_bytes": [
+        12212224,
+        6434432,
+        5315968,
+        5692544,
+        4711680,
+        8157568,
+        7394944,
+        620288
+      ],
+      "p1_source_ready_baseline_ns": [
+        487424,
+        338432,
+        291376,
+        323936,
+        292352,
+        401408,
+        334848,
+        196608
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25495734,
+      "p1_to_p2_delay_ns": [
+        2216000,
+        2470880,
+        2247792,
+        2415168,
+        2238976,
+        2241536,
+        2292192,
+        2205264
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        504320,
+        350720,
+        302224,
+        335248,
+        303104,
+        414720,
+        347648,
+        204288
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26445334
+    },
+    {
+      "layer_id": 27,
+      "dispatch_inbound_baseline_bytes": [
+        519680,
+        6802688,
+        2986752,
+        11223296,
+        1856128,
+        5583360,
+        7563264,
+        14004864
+      ],
+      "p1_source_ready_baseline_ns": [
+        204800,
+        341504,
+        232960,
+        471552,
+        212480,
+        304624,
+        348688,
+        542144
+      ],
+      "p1_source_ready_slope_ns_per_gib": 25548946,
+      "p1_to_p2_delay_ns": [
+        2037344,
+        2283008,
+        2328576,
+        2292224,
+        2045504,
+        2062848,
+        2075648,
+        2044928
+      ],
+      "dispatch_to_following_p1_tail_baseline_ns": [
+        212992,
+        354816,
+        242688,
+        488960,
+        220160,
+        314880,
+        362048,
+        560576
+      ],
+      "dispatch_tail_slope_ns_per_gib": 26536852
+    }
+  ],
+  "profile_digest": "02c40ce56b73e59f7cff6eee82d7ccd2c3b226ab34400a6ceeb433776bad29e3"
+}

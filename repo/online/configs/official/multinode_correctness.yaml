@@ -1,0 +1,25 @@
+schema_version: 2
+experiment_id: official-multinode-correctness
+suites:
+  - suite_id: multinode-correctness
+    markers: [multinode, integration_cpu]
+    case_ids: [multinode-correctness-core]
+    run_kinds: [MULTINODE_CORRECTNESS]
+planning_cases:
+  - case_id: multinode-correctness-core
+    run_kind: MULTINODE_CORRECTNESS
+    planner_id: native
+    planner_family: native
+    selector_mode: fixed
+    predictor_id: none
+    prediction_mode: none
+    execution_backend: multinode
+    instrumentation_mode: contract
+    fallback_policy: fail_closed
+defaults:
+  model: {id: olmoe_1b_7b_instruct}
+  topology: {world_size: 2, topology_id: two-node-2gpu}
+  workload: {id: smoke-prompts}
+  runtime: {selected_layers: [0], line: multinode_correctness}
+  evaluation: {repeats: 1, warmup: 0}
+  strategies: [native]

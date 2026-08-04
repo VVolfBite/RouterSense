@@ -1,0 +1,106 @@
+{
+  "assumptions": [
+    "CORRECTNESS_AND_RELATIVE_SENSITIVITY_ONLY",
+    "NOT_HARDWARE_CALIBRATED",
+    "PLANNING_LINES_GLOBAL_FIFO_NONPREEMPTIVE",
+    "RECEIVER_DRAIN_SINGLE_FIFO_PER_DESTINATION",
+    "RECEIVER_POSTING_SINGLE_FIFO_PER_DESTINATION",
+    "RECEIVER_STAGING_RESERVED_AT_POSTING_START"
+  ],
+  "performance_eligible": false,
+  "planning_cost_model": {
+    "binding_base_ns": 13,
+    "binding_per_phase_ns": 2,
+    "binding_per_task_ns": 1,
+    "control_base_ns": 41,
+    "control_per_observation_ns": 2,
+    "control_per_phase_ns": 3,
+    "control_per_task_ns": 1,
+    "prediction_base_ns": 31,
+    "prediction_per_observation_ns": 2,
+    "prediction_per_task_ns": 1,
+    "zero_cost_mode": false
+  },
+  "profile_digest": "9fef0380cf36432c05afb5cfe76ea335f0d975ca1938fabee9818c444d02195a",
+  "profile_id": "rs-sim-current-p12-synthetic",
+  "profile_kind": "SYNTHETIC",
+  "profile_provenance": "SYNTHETIC_TEST_ONLY",
+  "receiver_cost_model": {
+    "drain_bytes_per_ns": 4096,
+    "drain_fixed_ns": 2,
+    "posting_bytes_per_ns": 4096,
+    "posting_fixed_ns": 3
+  },
+  "schema_version": "RS_SIM_RUNTIME_PROFILE_BUNDLE",
+  "source_digests": [],
+  "transport_profile": {
+    "assumptions": [
+      "CONTROL_PLANE_GLOBAL_FIFO_SERIALIZATION_SERVER",
+      "CONTROL_PLANE_PROPAGATION_PIPELINED_AFTER_SERIALIZATION",
+      "DATA_PLANE_RESOURCE_HELD_COMMIT_THROUGH_COMPLETION",
+      "DATA_PLANE_TASKS_NON_PIPELINED_PER_ENDPOINT_NIC_LANE",
+      "INTRA_INTER_SHARE_RANK_ENDPOINT_RESOURCES",
+      "LOCAL_ASSEMBLY_FIXED_LATENCY_PER_EDGE",
+      "LOCAL_ASSEMBLY_NO_SHARED_RESOURCE_CONTENTION",
+      "SYNTHETIC_CORRECTNESS_AND_SENSITIVITY_ONLY"
+    ],
+    "bandwidth_contention": {
+      "group_source": "TOPOLOGY_NIC_ID_BY_LANE",
+      "mode": "FIXED_PER_LANE",
+      "share_policy": "EQUAL_SHARE_WITHIN_CONFIRMED_BATCH"
+    },
+    "bundle_digest": "8f65fb4f9dcddfec500e364fc13f78480c75678f6e66a0981985e03c0ecc106e",
+    "bundle_id": "rs-sim-current-p12-synthetic",
+    "control_profile": {
+      "bandwidth_bytes_per_second": 10000000000,
+      "fixed_latency_ns": 1000,
+      "performance_eligible": false,
+      "profile_digest": "4dbc06043a801cc74666ac4e5cae4784eb70a2005ae276508391549511f245e5",
+      "profile_id": "rs-sim-current-p12-synthetic:control",
+      "profile_provenance": "SYNTHETIC_TEST_ONLY"
+    },
+    "hardware_profile": {
+      "bandwidth_bytes_per_second_by_link_class": [
+        [
+          "INTRA_NODE",
+          100000000000
+        ],
+        [
+          "INTER_NODE",
+          25000000000
+        ]
+      ],
+      "fixed_latency_ns_by_link_class": [
+        [
+          "INTRA_NODE",
+          1000
+        ],
+        [
+          "INTER_NODE",
+          5000
+        ]
+      ],
+      "launch_delay_ns_by_link_class": [
+        [
+          "INTRA_NODE",
+          100
+        ],
+        [
+          "INTER_NODE",
+          1000
+        ]
+      ],
+      "max_batch_tasks": 64,
+      "performance_eligible": false,
+      "profile_digest": "0400bff860a15467861f0a526c2a15026dfb3d92a792a4d3eac75283470aa22e",
+      "profile_id": "rs-sim-current-p12-synthetic:data",
+      "profile_provenance": "SYNTHETIC_TEST_ONLY"
+    },
+    "local_assembly_latency_ns": 5,
+    "performance_eligible": false,
+    "profile_kind": "SYNTHETIC",
+    "profile_provenance": "SYNTHETIC_TEST_ONLY",
+    "schema_version": "TRANSPORT_PROFILE_BUNDLE",
+    "source_digests": []
+  }
+}

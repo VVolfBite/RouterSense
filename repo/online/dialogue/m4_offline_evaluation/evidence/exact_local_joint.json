@@ -1,0 +1,8 @@
+{
+  "supported_relation_check": false,
+  "local_status": "UNSUPPORTED",
+  "joint_status": "UNSUPPORTED",
+  "local_objective": null,
+  "joint_objective": null,
+  "joint_le_local": null
+}

@@ -1,0 +1,841 @@
+{
+  "expected_invariants": {
+    "bootstrap_has_no_predecessor_p1": true,
+    "combine_expectation_unique_from_realized_dispatch": true,
+    "descriptor_payload_thread_simultaneous_at_local_path_complete": true,
+    "does_not_include_full_expected_timeline": true,
+    "does_not_include_plan_or_task_ids": true,
+    "does_not_include_stable_event_ids": true,
+    "only_first_window_is_bootstrap": true,
+    "scope": "trace_input_truth_only",
+    "windows": [
+      {
+        "combine_accounting_closes": true,
+        "combine_is_dispatch_transpose": true,
+        "combine_nonzero_edge_count": 16,
+        "combine_payload_accounting": {
+          "data_plane_payload_bytes": 132608,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 131584,
+          "local_rows": 32,
+          "local_workload_payload_bytes": 131584,
+          "remote_network_payload_bytes": 132608,
+          "remote_rows": 32,
+          "total_payload_bytes": 264192,
+          "total_rows": 64
+        },
+        "combine_payload_digest": "sha256:86f8498ee3dda305957978e4deaafcfaf8781f7777e707973ab83278689864e8",
+        "combine_payload_spec_digest": "sha256:5dc52eb29dbedf5bc6411c0d7e5621e48d64d960177e99e57e80f38edc116ad7",
+        "combine_payload_total_bytes": 264192,
+        "combine_rows_by_source": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "combine_total_rows": 64,
+        "complete_payload_accounting": {
+          "combine": {
+            "data_plane_payload_bytes": 132608,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 131584,
+            "local_rows": 32,
+            "local_workload_payload_bytes": 131584,
+            "remote_network_payload_bytes": 132608,
+            "remote_rows": 32,
+            "total_payload_bytes": 264192,
+            "total_rows": 64
+          },
+          "control_plane_descriptor_bytes": 192,
+          "descriptor": {
+            "accounting_plane": "CONTROL_PLANE",
+            "control_plane_descriptor_bytes": 192,
+            "data_plane_descriptor_bytes": 0,
+            "per_source_descriptor_bytes": 48,
+            "source_descriptor_count": 4
+          },
+          "descriptor_double_counted_in_data_plane": false,
+          "dispatch": {
+            "data_plane_payload_bytes": 134144,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 132096,
+            "local_rows": 32,
+            "local_workload_payload_bytes": 132096,
+            "remote_network_payload_bytes": 134144,
+            "remote_rows": 32,
+            "total_payload_bytes": 266240,
+            "total_rows": 64
+          },
+          "network_data_plane_payload_bytes": 266752,
+          "transport_accounted_bytes": 266944,
+          "workload_payload_bytes_local": 263680,
+          "workload_payload_bytes_total": 530432
+        },
+        "decode_step": 0,
+        "descriptor_accounted_only_on_control_plane": true,
+        "descriptor_metadata_spec_digest": "sha256:52b626e0c5e00827f9697e93584ab57b9f47d7f3c32d70e57177d10ed16ba25d",
+        "descriptor_payload_bytes": 48,
+        "descriptor_payload_bytes_all_sources": 192,
+        "dispatch_accounting_closes": true,
+        "dispatch_nonzero_edge_count": 16,
+        "dispatch_payload_accounting": {
+          "data_plane_payload_bytes": 134144,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 132096,
+          "local_rows": 32,
+          "local_workload_payload_bytes": 132096,
+          "remote_network_payload_bytes": 134144,
+          "remote_rows": 32,
+          "total_payload_bytes": 266240,
+          "total_rows": 64
+        },
+        "dispatch_payload_digest": "sha256:2556f2e4260d07e13c13c59417f5b5ca5aa524ccc321423d1195402119c6cac5",
+        "dispatch_payload_spec_digest": "sha256:9c25df0222629f2b76ac79eaf2b0876fd82f1a00cccd00d986f5f1f506b1066e",
+        "dispatch_payload_total_bytes": 266240,
+        "dispatch_rows_by_source": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "dispatch_total_rows": 64,
+        "is_bootstrap_p0": true,
+        "layer_id": 0,
+        "mapping_digest": "sha256:29296c1d0dfd36d84bb253990b9d463523b0545354232766f03758e982d693ca",
+        "raw_equals_kept_plus_dropped": true,
+        "realized_equals_kept_plus_padding": true,
+        "request_id": "ep4_train_balanced-request0",
+        "routing_digest": "sha256:75844a7caa6c83fdb5ba824e27fc5bd200412bf1aebb5d2741451227cfc140ee",
+        "timing_profile_digest": "timing:43a4598cd8b2c1c9a2c8aec7e6b33490628ad4e2eafdb4cfc4454de24ead929c",
+        "totals": {
+          "dropped_rows": 0,
+          "kept_rows": 64,
+          "padding_rows": 0,
+          "raw_selected_rows": 64,
+          "realized_transfer_rows": 64
+        },
+        "truth_digest": "sha256:b529ff6b8be2e9d1acc3670bb38b06f4a58582250292be89cf33369ae25e98d5",
+        "window_id": "ep4_train_balanced-request0-step0-layer0",
+        "workload_identity_digest": "workload:9b527785c93c4709ddfb35b96d46d6068fd3215c2b194597ac23f3429a6a4a31"
+      },
+      {
+        "combine_accounting_closes": true,
+        "combine_is_dispatch_transpose": true,
+        "combine_nonzero_edge_count": 16,
+        "combine_payload_accounting": {
+          "data_plane_payload_bytes": 165376,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 98816,
+          "local_rows": 24,
+          "local_workload_payload_bytes": 98816,
+          "remote_network_payload_bytes": 165376,
+          "remote_rows": 40,
+          "total_payload_bytes": 264192,
+          "total_rows": 64
+        },
+        "combine_payload_digest": "sha256:f160a1d364ac4df6b40a17ed94ad161d3448496f0d451331f27124efea3a4616",
+        "combine_payload_spec_digest": "sha256:5dc52eb29dbedf5bc6411c0d7e5621e48d64d960177e99e57e80f38edc116ad7",
+        "combine_payload_total_bytes": 264192,
+        "combine_rows_by_source": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "combine_total_rows": 64,
+        "complete_payload_accounting": {
+          "combine": {
+            "data_plane_payload_bytes": 165376,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 98816,
+            "local_rows": 24,
+            "local_workload_payload_bytes": 98816,
+            "remote_network_payload_bytes": 165376,
+            "remote_rows": 40,
+            "total_payload_bytes": 264192,
+            "total_rows": 64
+          },
+          "control_plane_descriptor_bytes": 192,
+          "descriptor": {
+            "accounting_plane": "CONTROL_PLANE",
+            "control_plane_descriptor_bytes": 192,
+            "data_plane_descriptor_bytes": 0,
+            "per_source_descriptor_bytes": 48,
+            "source_descriptor_count": 4
+          },
+          "descriptor_double_counted_in_data_plane": false,
+          "dispatch": {
+            "data_plane_payload_bytes": 166912,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 99328,
+            "local_rows": 24,
+            "local_workload_payload_bytes": 99328,
+            "remote_network_payload_bytes": 166912,
+            "remote_rows": 40,
+            "total_payload_bytes": 266240,
+            "total_rows": 64
+          },
+          "network_data_plane_payload_bytes": 332288,
+          "transport_accounted_bytes": 332480,
+          "workload_payload_bytes_local": 198144,
+          "workload_payload_bytes_total": 530432
+        },
+        "decode_step": 0,
+        "descriptor_accounted_only_on_control_plane": true,
+        "descriptor_metadata_spec_digest": "sha256:52b626e0c5e00827f9697e93584ab57b9f47d7f3c32d70e57177d10ed16ba25d",
+        "descriptor_payload_bytes": 48,
+        "descriptor_payload_bytes_all_sources": 192,
+        "dispatch_accounting_closes": true,
+        "dispatch_nonzero_edge_count": 16,
+        "dispatch_payload_accounting": {
+          "data_plane_payload_bytes": 166912,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 99328,
+          "local_rows": 24,
+          "local_workload_payload_bytes": 99328,
+          "remote_network_payload_bytes": 166912,
+          "remote_rows": 40,
+          "total_payload_bytes": 266240,
+          "total_rows": 64
+        },
+        "dispatch_payload_digest": "sha256:53ed2d08558c1aa8aba71af18132054d1b0a90a92c6a534a8d9175f33e837846",
+        "dispatch_payload_spec_digest": "sha256:9c25df0222629f2b76ac79eaf2b0876fd82f1a00cccd00d986f5f1f506b1066e",
+        "dispatch_payload_total_bytes": 266240,
+        "dispatch_rows_by_source": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "dispatch_total_rows": 64,
+        "is_bootstrap_p0": false,
+        "layer_id": 1,
+        "mapping_digest": "sha256:29296c1d0dfd36d84bb253990b9d463523b0545354232766f03758e982d693ca",
+        "raw_equals_kept_plus_dropped": true,
+        "realized_equals_kept_plus_padding": true,
+        "request_id": "ep4_train_balanced-request0",
+        "routing_digest": "sha256:756a589e08d728cc862b8958afacb97616aad3fcb91e15ed9e3af1c0ea6f9ba6",
+        "timing_profile_digest": "timing:c37ce79cbcee00bd63801eafda9539a9aabdcad924a985d77f0dcea1d0b83a8e",
+        "totals": {
+          "dropped_rows": 0,
+          "kept_rows": 64,
+          "padding_rows": 0,
+          "raw_selected_rows": 64,
+          "realized_transfer_rows": 64
+        },
+        "truth_digest": "sha256:cb67bb14cd2de49d8877d75bc2d62fb9b9b2cc07cfd42d0c6eb34bfe889f384f",
+        "window_id": "ep4_train_balanced-request0-step0-layer1",
+        "workload_identity_digest": "workload:a9a5082367fc31defd46e4f3e76d561387cee4c3ba2f93a274d0748e1f971ec8"
+      }
+    ]
+  },
+  "fixture_id": "ep4_train_balanced",
+  "fixture_truth_digest": "sha256:74df8c7738188f97b7fdc8d09fc5cce531f13f5aae7359af0310f674eee7d7c1",
+  "initial_state": {
+    "bootstrap_source_ranks": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "bootstrap_window_id": "ep4_train_balanced-request0-step0-layer0",
+    "initial_time_ns": 0,
+    "predecessor_p1_exists": false,
+    "receiver_model": "RECEIVER_DECOUPLED_P12"
+  },
+  "provenance": {
+    "capture_id": "capture-ep4_train_balanced",
+    "collector_version": "rs-sim-trace-provider",
+    "dataset_id": "rs_sim_contract_ep4",
+    "notes": "Contract-only fixture; not a performance result or real model trace.",
+    "source_digest": "sha256:420b0dee6392e105f182e6691a789bbd529dab8faf536f28f57db8f6fbbdba9f",
+    "source_kind": "synthetic_contract_fixture",
+    "split": "train",
+    "transform_digest": "sha256:7ef419ecd62b4ab6b6a20ecb8da4af098646161bea91154218a68225879038a5"
+  },
+  "schema_version": "RS_SIM_FIXTURE",
+  "windows": [
+    {
+      "combine_payload_spec": {
+        "alignment_bytes": 128,
+        "auxiliary_payload_bytes_per_row": 8,
+        "dtype": "bf16+combine_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 48,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "COMBINE",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "decode_step": 0,
+      "descriptor_metadata_spec": {
+        "accounting_plane": "CONTROL_PLANE",
+        "fixed_header_bytes": 16,
+        "included_in_data_plane_payload": false,
+        "per_destination_entry_bytes": 8,
+        "schema_version": "RS_SIM_DESCRIPTOR_METADATA"
+      },
+      "dispatch_payload_spec": {
+        "alignment_bytes": 256,
+        "auxiliary_payload_bytes_per_row": 16,
+        "dtype": "bf16+route_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 64,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "DISPATCH",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "is_bootstrap_p0": true,
+      "layer_id": 0,
+      "local_compute": {
+        "bootstrap_router_and_pack_ns": [
+          900,
+          1000,
+          950,
+          1050
+        ],
+        "combine_release_to_router_ready_ns": [
+          1100,
+          1300,
+          1200,
+          1400
+        ],
+        "dispatch_local_postprocess_ns": [
+          300,
+          350,
+          325,
+          375
+        ],
+        "dispatch_release_to_combine_source_ready_ns": [
+          2100,
+          2200,
+          2300,
+          2400
+        ],
+        "provenance": {
+          "absolute_hook_timestamps_replayed": false,
+          "excluded_components": [
+            "barrier_wait",
+            "collective_wait",
+            "network_wait",
+            "old_hook_absolute_time",
+            "receiver_wait",
+            "scheduler_wait",
+            "transport_wait"
+          ],
+          "included_components": [
+            "combine_postprocess",
+            "residual_and_norm",
+            "local_attention_path",
+            "router",
+            "pack",
+            "dispatch_postprocess",
+            "expert_compute"
+          ],
+          "measurement_method": "synthetic_contract_fixture_segment_sum_v1",
+          "source_artifact_digest": "sha256:d1427ec6b1a148d941636036d65ed2dca22813665b27058ea365ad508095d661",
+          "units": "ns"
+        },
+        "router_and_pack_ns": [
+          700,
+          800,
+          750,
+          850
+        ]
+      },
+      "mapping": {
+        "expert_to_rank": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3
+        ],
+        "mapping_name": "ep4_2nodes_8experts",
+        "rank_to_node": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "world_size": 4
+      },
+      "metadata": {
+        "fixture_role": "contract_acceptance",
+        "performance_claim_allowed": false,
+        "realized_after_clipping_dropping_padding": true
+      },
+      "request_id": "ep4_train_balanced-request0",
+      "routing": {
+        "dropped_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "kept_rows": [
+          [
+            4,
+            4,
+            2,
+            2,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            4,
+            4,
+            2,
+            2,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            4,
+            4,
+            2,
+            2
+          ],
+          [
+            2,
+            2,
+            1,
+            1,
+            1,
+            1,
+            4,
+            4
+          ]
+        ],
+        "padding_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "raw_selected_rows": [
+          [
+            4,
+            4,
+            2,
+            2,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            4,
+            4,
+            2,
+            2,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            4,
+            4,
+            2,
+            2
+          ],
+          [
+            2,
+            2,
+            1,
+            1,
+            1,
+            1,
+            4,
+            4
+          ]
+        ],
+        "realization_origin": "synthetic_balanced_no_drop_no_padding"
+      },
+      "schema_version": "RS_SIM_TRACE",
+      "window_id": "ep4_train_balanced-request0-step0-layer0"
+    },
+    {
+      "combine_payload_spec": {
+        "alignment_bytes": 128,
+        "auxiliary_payload_bytes_per_row": 8,
+        "dtype": "bf16+combine_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 48,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "COMBINE",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "decode_step": 0,
+      "descriptor_metadata_spec": {
+        "accounting_plane": "CONTROL_PLANE",
+        "fixed_header_bytes": 16,
+        "included_in_data_plane_payload": false,
+        "per_destination_entry_bytes": 8,
+        "schema_version": "RS_SIM_DESCRIPTOR_METADATA"
+      },
+      "dispatch_payload_spec": {
+        "alignment_bytes": 256,
+        "auxiliary_payload_bytes_per_row": 16,
+        "dtype": "bf16+route_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 64,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "DISPATCH",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "is_bootstrap_p0": false,
+      "layer_id": 1,
+      "local_compute": {
+        "bootstrap_router_and_pack_ns": [
+          1000,
+          1100,
+          1050,
+          1150
+        ],
+        "combine_release_to_router_ready_ns": [
+          1200,
+          1400,
+          1300,
+          1500
+        ],
+        "dispatch_local_postprocess_ns": [
+          400,
+          450,
+          425,
+          475
+        ],
+        "dispatch_release_to_combine_source_ready_ns": [
+          2200,
+          2300,
+          2400,
+          2500
+        ],
+        "provenance": {
+          "absolute_hook_timestamps_replayed": false,
+          "excluded_components": [
+            "barrier_wait",
+            "collective_wait",
+            "network_wait",
+            "old_hook_absolute_time",
+            "receiver_wait",
+            "scheduler_wait",
+            "transport_wait"
+          ],
+          "included_components": [
+            "combine_postprocess",
+            "residual_and_norm",
+            "local_attention_path",
+            "router",
+            "pack",
+            "dispatch_postprocess",
+            "expert_compute"
+          ],
+          "measurement_method": "synthetic_contract_fixture_segment_sum_v1",
+          "source_artifact_digest": "sha256:60f86c18edb39a6c056c9a571d72bd05e6f0146c9b732ce45202abb485fddc63",
+          "units": "ns"
+        },
+        "router_and_pack_ns": [
+          800,
+          900,
+          850,
+          950
+        ]
+      },
+      "mapping": {
+        "expert_to_rank": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3
+        ],
+        "mapping_name": "ep4_2nodes_8experts",
+        "rank_to_node": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "world_size": 4
+      },
+      "metadata": {
+        "fixture_role": "contract_acceptance",
+        "performance_claim_allowed": false,
+        "realized_after_clipping_dropping_padding": true
+      },
+      "request_id": "ep4_train_balanced-request0",
+      "routing": {
+        "dropped_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "kept_rows": [
+          [
+            3,
+            3,
+            3,
+            3,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            3,
+            3,
+            3,
+            3,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            3,
+            3,
+            3,
+            3
+          ],
+          [
+            3,
+            3,
+            1,
+            1,
+            1,
+            1,
+            3,
+            3
+          ]
+        ],
+        "padding_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "raw_selected_rows": [
+          [
+            3,
+            3,
+            3,
+            3,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            3,
+            3,
+            3,
+            3,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            3,
+            3,
+            3,
+            3
+          ],
+          [
+            3,
+            3,
+            1,
+            1,
+            1,
+            1,
+            3,
+            3
+          ]
+        ],
+        "realization_origin": "synthetic_rotated_no_drop_no_padding"
+      },
+      "schema_version": "RS_SIM_TRACE",
+      "window_id": "ep4_train_balanced-request0-step0-layer1"
+    }
+  ]
+}

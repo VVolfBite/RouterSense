@@ -1,0 +1,55 @@
+{
+  "forward_cost_tree": [
+    "full_forward_wall_us",
+    "outside_selected_layers_us",
+    "selected_layer_0_total_us",
+    "inter_selected_layer_gap_us",
+    "selected_layer_1_total_us",
+    "forward_unattributed_us",
+    "forward_tree_valid"
+  ],
+  "legacy_fields": {
+    "outside_measured_hooks_us": {
+      "deprecated": true,
+      "measurement_status": "derived_legacy",
+      "note": "This replaces the invalid full_forward - dispatch_hook - combine_hook expert-compute label."
+    },
+    "selected_window_span_us": {
+      "deprecated_as_communication": true,
+      "note": "This is a range reference and may include compute/control gaps; it is not network busy time."
+    }
+  },
+  "phase_cost_tree": [
+    "hook_total_us",
+    "context_us",
+    "observation_us",
+    "local_matrix_us",
+    "global_matrix_us",
+    "prediction_us",
+    "plan_input_us",
+    "scheduler_solve_us",
+    "plan_postprocess_us",
+    "plan_store_us",
+    "agreement_us",
+    "materialization_us",
+    "preflight_us",
+    "pack_us",
+    "executor_wall_us",
+    "unpack_us",
+    "state_update_us",
+    "summary_us",
+    "unattributed_us",
+    "phase_tree_valid"
+  ],
+  "profile": "attribution_light",
+  "selected_layer_cost_tree": [
+    "selected_layer_total_us",
+    "p0_total_routerSense_us",
+    "p0_to_expert_us",
+    "expert_module_wall_us",
+    "expert_to_p1_us",
+    "p1_total_routerSense_us",
+    "selected_layer_unattributed_us",
+    "selected_layer_tree_valid"
+  ]
+}

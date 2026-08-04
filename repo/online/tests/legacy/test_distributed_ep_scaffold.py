@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from rs.runtime.distributed_ep.adapter.expert_store import plan_local_expert_ids, summarize_residency
+from rs.runtime.distributed_ep.adapter.expert_store import extract_local_expert_weights
+from rs.runtime.distributed_ep.adapter.olmoe_adapter import build_dispatch_plan_from_trace, execute_local_experts
+from rs.runtime.distributed_ep.core.collective import CollectiveOps
+from rs.runtime.distributed_ep.core.correctness import summarize_dispatch_plans
+from rs.runtime.distributed_ep.core.placement import PlacementStrategy
+from rs.runtime.distributed_ep.core.worker_loop import WorkerLoop
+import torch
+
+
+def test_round_robin_placement_balanced():
+    owner = PlacementStrategy.round_robin(num_experts=8, num_gpus=4)
+    assert owner[0] == 0
+    assert owner[1] == 1
+    assert owner[4] == 0
+
+
+def test_plan_local_expert_ids():
+    owner = {0: 0, 1: 1, 2: 0, 3: 1}
+    assert plan_local_expert_ids(owner, 0) == [0, 2]
+    assert plan_local_expert_ids(owner, 1) == [1, 3]
+
+
+def test_build_dispatch_plan_from_trace_counts_cross_node():
+    owner = {0: 0, 1: 1, 2: 2, 3: 3}
+    trace_records = [
+        {"token_position": 0, "expert_id": 0, "expert_rank_within_topk": 0, "routing_weight": 0.7},
+        {"token_position": 0, "expert_id": 2, "expert_rank_within_topk": 1, "routing_weight": 0.3},
+    ]
+    plan = build_dispatch_plan_from_trace(
+        trace_records,
+        owner_by_expert=owner,
+        origin_rank=0,
+        layer_id=5,
+        world_size=4,
+    )
+    assert plan.layer_id == 5
+    assert plan.total_cross_node_routes() == 1
+    assert plan.send_counts_for_rank(0) == [1, 0, 1, 0]
+
+
+def test_collective_ops_use_dispatch_plan():
+    owner = {0: 0, 1: 1}
+    trace_records = [
+        {"token_position": 0, "expert_id": 0, "expert_rank_within_topk": 0, "routing_weight": 0.5},
+        {"token_position": 1, "expert_id": 1, "expert_rank_within_topk": 0, "routing_weight": 0.5},
+    ]
+    plan = build_dispatch_plan_from_trace(
+        trace_records,
+        owner_by_expert=owner,
+        origin_rank=0,
+        layer_id=1,
+        world_size=2,
+    )
+    ops = CollectiveOps(bytes_per_row=16)
+    ops.dispatch(payload=None, plan=plan, rank=0)
+    ops.return_results(payload=None, plan=plan, rank=0)
+    assert len(ops.records) == 2
+    assert ops.records[0].send_bytes == 32
+
+
+def test_worker_loop_records_processed_routes():
+    owner = {0: 0, 1: 1}
+    trace_records = [
+        {"token_position": 0, "expert_id": 1, "expert_rank_within_topk": 0, "routing_weight": 0.5},
+        {"token_position": 1, "expert_id": 1, "expert_rank_within_topk": 0, "routing_weight": 0.5},
+    ]
+    plan = build_dispatch_plan_from_trace(
+        trace_records,
+        owner_by_expert=owner,
+        origin_rank=0,
+        layer_id=1,
+        world_size=2,
+    )
+    loop = WorkerLoop()
+    loop.record_plan(plan, rank=1)
+    assert loop.state.processed_route_count == 2
+
+
+def test_correctness_summary_counts_routes():
+    owner = {0: 0, 1: 1}
+    plan = build_dispatch_plan_from_trace(
+        [{"token_position": 0, "expert_id": 1, "expert_rank_within_topk": 0, "routing_weight": 1.0}],
+        owner_by_expert=owner,
+        origin_rank=0,
+        layer_id=0,
+        world_size=2,
+    )
+    summary = summarize_dispatch_plans([plan])
+    assert summary["cross_node_routes"] == 1
+
+
+def test_residency_summary_is_physically_sharded():
+    residency = summarize_residency([1, 3], local_parameter_count=1024)
+    assert residency.weight_residency_mode == "rank_local_expert_weight_cache_from_full_model"
+    assert residency.non_owner_parameter_count == 0
+
+
+def test_extract_local_expert_weights_slices_expected_experts():
+    class DummyExperts:
+        def __init__(self):
+            self.gate_up_proj = torch.arange(4 * 6 * 3, dtype=torch.float32).reshape(4, 6, 3)
+            self.down_proj = torch.arange(4 * 3 * 3, dtype=torch.float32).reshape(4, 3, 3)
+            self.act_fn = torch.nn.functional.silu
+
+    weights = extract_local_expert_weights(DummyExperts(), [1, 3])
+    assert weights.local_expert_ids == [1, 3]
+    assert list(weights.gate_up_proj.shape) == [2, 6, 3]
+    assert list(weights.down_proj.shape) == [2, 3, 3]
+
+
+def test_execute_local_experts_returns_expected_shape():
+    class DummyExperts:
+        def __init__(self):
+            self.gate_up_proj = torch.ones((2, 4, 2), dtype=torch.float32)
+            self.down_proj = torch.ones((2, 2, 2), dtype=torch.float32)
+            self.act_fn = torch.nn.functional.silu
+
+    weights = extract_local_expert_weights(DummyExperts(), [0, 1])
+    route_items = [
+        type("RouteItemLike", (), {"expert_id": 0, "routing_weight": 0.5})(),
+        type("RouteItemLike", (), {"expert_id": 1, "routing_weight": 0.25})(),
+    ]
+    hidden_states = torch.ones((2, 2), dtype=torch.float32)
+    output = execute_local_experts(hidden_states, route_items, weights)
+    assert list(output.shape) == [2, 2]
+    assert torch.all(output >= 0)

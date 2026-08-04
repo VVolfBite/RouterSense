@@ -1,0 +1,841 @@
+{
+  "expected_invariants": {
+    "bootstrap_has_no_predecessor_p1": true,
+    "combine_expectation_unique_from_realized_dispatch": true,
+    "descriptor_payload_thread_simultaneous_at_local_path_complete": true,
+    "does_not_include_full_expected_timeline": true,
+    "does_not_include_plan_or_task_ids": true,
+    "does_not_include_stable_event_ids": true,
+    "only_first_window_is_bootstrap": true,
+    "scope": "trace_input_truth_only",
+    "windows": [
+      {
+        "combine_accounting_closes": true,
+        "combine_is_dispatch_transpose": true,
+        "combine_nonzero_edge_count": 15,
+        "combine_payload_accounting": {
+          "data_plane_payload_bytes": 218752,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 94848,
+          "local_rows": 23,
+          "local_workload_payload_bytes": 94848,
+          "remote_network_payload_bytes": 218752,
+          "remote_rows": 53,
+          "total_payload_bytes": 313600,
+          "total_rows": 76
+        },
+        "combine_payload_digest": "sha256:9a3539bd62791b434275defcbce81c56208c49008d5a9e3ab7b135b2a80f21a8",
+        "combine_payload_spec_digest": "sha256:5dc52eb29dbedf5bc6411c0d7e5621e48d64d960177e99e57e80f38edc116ad7",
+        "combine_payload_total_bytes": 313600,
+        "combine_rows_by_source": [
+          47,
+          16,
+          9,
+          4
+        ],
+        "combine_total_rows": 76,
+        "complete_payload_accounting": {
+          "combine": {
+            "data_plane_payload_bytes": 218752,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 94848,
+            "local_rows": 23,
+            "local_workload_payload_bytes": 94848,
+            "remote_network_payload_bytes": 218752,
+            "remote_rows": 53,
+            "total_payload_bytes": 313600,
+            "total_rows": 76
+          },
+          "control_plane_descriptor_bytes": 192,
+          "descriptor": {
+            "accounting_plane": "CONTROL_PLANE",
+            "control_plane_descriptor_bytes": 192,
+            "data_plane_descriptor_bytes": 0,
+            "per_source_descriptor_bytes": 48,
+            "source_descriptor_count": 4
+          },
+          "descriptor_double_counted_in_data_plane": false,
+          "dispatch": {
+            "data_plane_payload_bytes": 219904,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 95488,
+            "local_rows": 23,
+            "local_workload_payload_bytes": 95488,
+            "remote_network_payload_bytes": 219904,
+            "remote_rows": 53,
+            "total_payload_bytes": 315392,
+            "total_rows": 76
+          },
+          "network_data_plane_payload_bytes": 438656,
+          "transport_accounted_bytes": 438848,
+          "workload_payload_bytes_local": 190336,
+          "workload_payload_bytes_total": 628992
+        },
+        "decode_step": 0,
+        "descriptor_accounted_only_on_control_plane": true,
+        "descriptor_metadata_spec_digest": "sha256:52b626e0c5e00827f9697e93584ab57b9f47d7f3c32d70e57177d10ed16ba25d",
+        "descriptor_payload_bytes": 48,
+        "descriptor_payload_bytes_all_sources": 192,
+        "dispatch_accounting_closes": true,
+        "dispatch_nonzero_edge_count": 15,
+        "dispatch_payload_accounting": {
+          "data_plane_payload_bytes": 219904,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 95488,
+          "local_rows": 23,
+          "local_workload_payload_bytes": 95488,
+          "remote_network_payload_bytes": 219904,
+          "remote_rows": 53,
+          "total_payload_bytes": 315392,
+          "total_rows": 76
+        },
+        "dispatch_payload_digest": "sha256:5f2a41b8d0044cf89256d59a8dda2a2b4f0191843129fb364826322a836a6a26",
+        "dispatch_payload_spec_digest": "sha256:9c25df0222629f2b76ac79eaf2b0876fd82f1a00cccd00d986f5f1f506b1066e",
+        "dispatch_payload_total_bytes": 315392,
+        "dispatch_rows_by_source": [
+          20,
+          18,
+          20,
+          18
+        ],
+        "dispatch_total_rows": 76,
+        "is_bootstrap_p0": true,
+        "layer_id": 0,
+        "mapping_digest": "sha256:29296c1d0dfd36d84bb253990b9d463523b0545354232766f03758e982d693ca",
+        "raw_equals_kept_plus_dropped": true,
+        "realized_equals_kept_plus_padding": true,
+        "request_id": "ep4_validation_skew_clipped-request0",
+        "routing_digest": "sha256:fa21b8cb5de620d398a6ffa0b98ecda0e124ae17a245c44d0ebfa9cbf484e7f6",
+        "timing_profile_digest": "timing:6926d6794aca72718cc1d384fea492c00abb9970805fc46d52b1d3a234999f26",
+        "totals": {
+          "dropped_rows": 18,
+          "kept_rows": 76,
+          "padding_rows": 0,
+          "raw_selected_rows": 94,
+          "realized_transfer_rows": 76
+        },
+        "truth_digest": "sha256:afadab1e248de6ff8866b159740f4c79b4d588c850e79a114f8fd0470009574b",
+        "window_id": "ep4_validation_skew_clipped-request0-step0-layer0",
+        "workload_identity_digest": "workload:e0d5e5c10b80454a86e20a17d9b0964a2d6994a2ff70002793bb2563170b444c"
+      },
+      {
+        "combine_accounting_closes": true,
+        "combine_is_dispatch_transpose": true,
+        "combine_nonzero_edge_count": 15,
+        "combine_payload_accounting": {
+          "data_plane_payload_bytes": 218880,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 94848,
+          "local_rows": 23,
+          "local_workload_payload_bytes": 94848,
+          "remote_network_payload_bytes": 218880,
+          "remote_rows": 53,
+          "total_payload_bytes": 313728,
+          "total_rows": 76
+        },
+        "combine_payload_digest": "sha256:ba5ff2917b20706496f12be8f3502e1df34ff1843c0d652bea6bdddc2d0a9400",
+        "combine_payload_spec_digest": "sha256:5dc52eb29dbedf5bc6411c0d7e5621e48d64d960177e99e57e80f38edc116ad7",
+        "combine_payload_total_bytes": 313728,
+        "combine_rows_by_source": [
+          12,
+          46,
+          13,
+          5
+        ],
+        "combine_total_rows": 76,
+        "complete_payload_accounting": {
+          "combine": {
+            "data_plane_payload_bytes": 218880,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 94848,
+            "local_rows": 23,
+            "local_workload_payload_bytes": 94848,
+            "remote_network_payload_bytes": 218880,
+            "remote_rows": 53,
+            "total_payload_bytes": 313728,
+            "total_rows": 76
+          },
+          "control_plane_descriptor_bytes": 192,
+          "descriptor": {
+            "accounting_plane": "CONTROL_PLANE",
+            "control_plane_descriptor_bytes": 192,
+            "data_plane_descriptor_bytes": 0,
+            "per_source_descriptor_bytes": 48,
+            "source_descriptor_count": 4
+          },
+          "descriptor_double_counted_in_data_plane": false,
+          "dispatch": {
+            "data_plane_payload_bytes": 219904,
+            "local_data_plane_payload_bytes": 0,
+            "local_payload_bytes": 95488,
+            "local_rows": 23,
+            "local_workload_payload_bytes": 95488,
+            "remote_network_payload_bytes": 219904,
+            "remote_rows": 53,
+            "total_payload_bytes": 315392,
+            "total_rows": 76
+          },
+          "network_data_plane_payload_bytes": 438784,
+          "transport_accounted_bytes": 438976,
+          "workload_payload_bytes_local": 190336,
+          "workload_payload_bytes_total": 629120
+        },
+        "decode_step": 0,
+        "descriptor_accounted_only_on_control_plane": true,
+        "descriptor_metadata_spec_digest": "sha256:52b626e0c5e00827f9697e93584ab57b9f47d7f3c32d70e57177d10ed16ba25d",
+        "descriptor_payload_bytes": 48,
+        "descriptor_payload_bytes_all_sources": 192,
+        "dispatch_accounting_closes": true,
+        "dispatch_nonzero_edge_count": 15,
+        "dispatch_payload_accounting": {
+          "data_plane_payload_bytes": 219904,
+          "local_data_plane_payload_bytes": 0,
+          "local_payload_bytes": 95488,
+          "local_rows": 23,
+          "local_workload_payload_bytes": 95488,
+          "remote_network_payload_bytes": 219904,
+          "remote_rows": 53,
+          "total_payload_bytes": 315392,
+          "total_rows": 76
+        },
+        "dispatch_payload_digest": "sha256:62b5c6ead56a3c9673291d1d437ddf98b4debca444827e7e2c668f1d1c456dab",
+        "dispatch_payload_spec_digest": "sha256:9c25df0222629f2b76ac79eaf2b0876fd82f1a00cccd00d986f5f1f506b1066e",
+        "dispatch_payload_total_bytes": 315392,
+        "dispatch_rows_by_source": [
+          19,
+          19,
+          19,
+          19
+        ],
+        "dispatch_total_rows": 76,
+        "is_bootstrap_p0": false,
+        "layer_id": 1,
+        "mapping_digest": "sha256:29296c1d0dfd36d84bb253990b9d463523b0545354232766f03758e982d693ca",
+        "raw_equals_kept_plus_dropped": true,
+        "realized_equals_kept_plus_padding": true,
+        "request_id": "ep4_validation_skew_clipped-request0",
+        "routing_digest": "sha256:0d86f00106398f405c10903b8909e8c6546365d3eff91829c3143c75f72176a3",
+        "timing_profile_digest": "timing:10fe7ba56e25df52cd8b895f12fb00e9a8fc6844af88ee410470a2ae706ed398",
+        "totals": {
+          "dropped_rows": 16,
+          "kept_rows": 76,
+          "padding_rows": 0,
+          "raw_selected_rows": 92,
+          "realized_transfer_rows": 76
+        },
+        "truth_digest": "sha256:f9b225ccbdc07d330942fab2788ea0119b5f395a3481171a930211595f8582aa",
+        "window_id": "ep4_validation_skew_clipped-request0-step0-layer1",
+        "workload_identity_digest": "workload:f9f2a875894ec2a742e56ad0b8c91dffa042345e8f7da40bbcd1bed7d344baeb"
+      }
+    ]
+  },
+  "fixture_id": "ep4_validation_skew_clipped",
+  "fixture_truth_digest": "sha256:992861f9c01f7cbc8966a3c634fe2ac6ae7766b3a59acad171edfc9f79817270",
+  "initial_state": {
+    "bootstrap_source_ranks": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "bootstrap_window_id": "ep4_validation_skew_clipped-request0-step0-layer0",
+    "initial_time_ns": 0,
+    "predecessor_p1_exists": false,
+    "receiver_model": "RECEIVER_DECOUPLED_P12"
+  },
+  "provenance": {
+    "capture_id": "capture-ep4_validation_skew_clipped",
+    "collector_version": "rs-sim-trace-provider",
+    "dataset_id": "rs_sim_contract_ep4",
+    "notes": "Contract-only fixture; not a performance result or real model trace.",
+    "source_digest": "sha256:2ebacde6a1600c81678b5226111f7ce5b9502f79b14ef9b38f5645a169ab301d",
+    "source_kind": "synthetic_contract_fixture",
+    "split": "validation",
+    "transform_digest": "sha256:7e689ff5c9d28aea44f3dac853f50ef82362e87d0fde32918c7875b413cb6947"
+  },
+  "schema_version": "RS_SIM_FIXTURE",
+  "windows": [
+    {
+      "combine_payload_spec": {
+        "alignment_bytes": 128,
+        "auxiliary_payload_bytes_per_row": 8,
+        "dtype": "bf16+combine_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 48,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "COMBINE",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "decode_step": 0,
+      "descriptor_metadata_spec": {
+        "accounting_plane": "CONTROL_PLANE",
+        "fixed_header_bytes": 16,
+        "included_in_data_plane_payload": false,
+        "per_destination_entry_bytes": 8,
+        "schema_version": "RS_SIM_DESCRIPTOR_METADATA"
+      },
+      "dispatch_payload_spec": {
+        "alignment_bytes": 256,
+        "auxiliary_payload_bytes_per_row": 16,
+        "dtype": "bf16+route_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 64,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "DISPATCH",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "is_bootstrap_p0": true,
+      "layer_id": 0,
+      "local_compute": {
+        "bootstrap_router_and_pack_ns": [
+          900,
+          1000,
+          950,
+          1050
+        ],
+        "combine_release_to_router_ready_ns": [
+          1100,
+          1300,
+          1200,
+          1400
+        ],
+        "dispatch_local_postprocess_ns": [
+          300,
+          350,
+          325,
+          375
+        ],
+        "dispatch_release_to_combine_source_ready_ns": [
+          2100,
+          2200,
+          2300,
+          2400
+        ],
+        "provenance": {
+          "absolute_hook_timestamps_replayed": false,
+          "excluded_components": [
+            "barrier_wait",
+            "collective_wait",
+            "network_wait",
+            "old_hook_absolute_time",
+            "receiver_wait",
+            "scheduler_wait",
+            "transport_wait"
+          ],
+          "included_components": [
+            "combine_postprocess",
+            "residual_and_norm",
+            "local_attention_path",
+            "router",
+            "pack",
+            "dispatch_postprocess",
+            "expert_compute"
+          ],
+          "measurement_method": "synthetic_contract_fixture_segment_sum_v1",
+          "source_artifact_digest": "sha256:99f158ab4d77c8620ad8da366037517f5c4c806bbbb352e8003084d96422f249",
+          "units": "ns"
+        },
+        "router_and_pack_ns": [
+          700,
+          800,
+          750,
+          850
+        ]
+      },
+      "mapping": {
+        "expert_to_rank": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3
+        ],
+        "mapping_name": "ep4_2nodes_8experts",
+        "rank_to_node": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "world_size": 4
+      },
+      "metadata": {
+        "fixture_role": "contract_acceptance",
+        "performance_claim_allowed": false,
+        "realized_after_clipping_dropping_padding": true
+      },
+      "request_id": "ep4_validation_skew_clipped-request0",
+      "routing": {
+        "dropped_rows": [
+          [
+            4,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            3,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            2,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            3,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "kept_rows": [
+          [
+            8,
+            6,
+            2,
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          [
+            7,
+            5,
+            2,
+            2,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            6,
+            5,
+            3,
+            2,
+            2,
+            1,
+            1,
+            0
+          ],
+          [
+            6,
+            4,
+            2,
+            2,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "padding_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "raw_selected_rows": [
+          [
+            12,
+            8,
+            2,
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          [
+            10,
+            6,
+            2,
+            2,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            8,
+            7,
+            3,
+            2,
+            2,
+            1,
+            1,
+            0
+          ],
+          [
+            9,
+            5,
+            2,
+            2,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "realization_origin": "synthetic_explicit_capacity_clipping"
+      },
+      "schema_version": "RS_SIM_TRACE",
+      "window_id": "ep4_validation_skew_clipped-request0-step0-layer0"
+    },
+    {
+      "combine_payload_spec": {
+        "alignment_bytes": 128,
+        "auxiliary_payload_bytes_per_row": 8,
+        "dtype": "bf16+combine_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 48,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "COMBINE",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "decode_step": 0,
+      "descriptor_metadata_spec": {
+        "accounting_plane": "CONTROL_PLANE",
+        "fixed_header_bytes": 16,
+        "included_in_data_plane_payload": false,
+        "per_destination_entry_bytes": 8,
+        "schema_version": "RS_SIM_DESCRIPTOR_METADATA"
+      },
+      "dispatch_payload_spec": {
+        "alignment_bytes": 256,
+        "auxiliary_payload_bytes_per_row": 16,
+        "dtype": "bf16+route_meta_v1",
+        "includes_control_plane_descriptor_bytes": false,
+        "metadata_accounting_plane": "DATA_PLANE",
+        "metadata_bytes_per_edge": 64,
+        "padding_rule": "EDGE_TOTAL_ALIGN_UP",
+        "phase_kind": "DISPATCH",
+        "schema_version": "RS_SIM_PAYLOAD",
+        "token_payload_bytes_per_row": 4096
+      },
+      "is_bootstrap_p0": false,
+      "layer_id": 1,
+      "local_compute": {
+        "bootstrap_router_and_pack_ns": [
+          1000,
+          1100,
+          1050,
+          1150
+        ],
+        "combine_release_to_router_ready_ns": [
+          1200,
+          1400,
+          1300,
+          1500
+        ],
+        "dispatch_local_postprocess_ns": [
+          400,
+          450,
+          425,
+          475
+        ],
+        "dispatch_release_to_combine_source_ready_ns": [
+          2200,
+          2300,
+          2400,
+          2500
+        ],
+        "provenance": {
+          "absolute_hook_timestamps_replayed": false,
+          "excluded_components": [
+            "barrier_wait",
+            "collective_wait",
+            "network_wait",
+            "old_hook_absolute_time",
+            "receiver_wait",
+            "scheduler_wait",
+            "transport_wait"
+          ],
+          "included_components": [
+            "combine_postprocess",
+            "residual_and_norm",
+            "local_attention_path",
+            "router",
+            "pack",
+            "dispatch_postprocess",
+            "expert_compute"
+          ],
+          "measurement_method": "synthetic_contract_fixture_segment_sum_v1",
+          "source_artifact_digest": "sha256:140bb9aa643a18f8a648c0fa662ed49f1c50efad0336e1d13c3f84a34912c74c",
+          "units": "ns"
+        },
+        "router_and_pack_ns": [
+          800,
+          900,
+          850,
+          950
+        ]
+      },
+      "mapping": {
+        "expert_to_rank": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3
+        ],
+        "mapping_name": "ep4_2nodes_8experts",
+        "rank_to_node": [
+          0,
+          0,
+          1,
+          1
+        ],
+        "world_size": 4
+      },
+      "metadata": {
+        "fixture_role": "contract_acceptance",
+        "performance_claim_allowed": false,
+        "realized_after_clipping_dropping_padding": true
+      },
+      "request_id": "ep4_validation_skew_clipped-request0",
+      "routing": {
+        "dropped_rows": [
+          [
+            0,
+            0,
+            2,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            3,
+            2,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            3,
+            2,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            2,
+            1,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "kept_rows": [
+          [
+            2,
+            2,
+            6,
+            5,
+            2,
+            1,
+            1,
+            0
+          ],
+          [
+            2,
+            2,
+            7,
+            6,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            1,
+            1,
+            6,
+            5,
+            2,
+            2,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            6,
+            5,
+            2,
+            2,
+            1,
+            1
+          ]
+        ],
+        "padding_rows": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "raw_selected_rows": [
+          [
+            2,
+            2,
+            8,
+            6,
+            2,
+            1,
+            1,
+            0
+          ],
+          [
+            2,
+            2,
+            10,
+            8,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            1,
+            1,
+            9,
+            7,
+            2,
+            2,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            8,
+            6,
+            2,
+            2,
+            1,
+            1
+          ]
+        ],
+        "realization_origin": "synthetic_explicit_capacity_clipping"
+      },
+      "schema_version": "RS_SIM_TRACE",
+      "window_id": "ep4_validation_skew_clipped-request0-step0-layer1"
+    }
+  ]
+}

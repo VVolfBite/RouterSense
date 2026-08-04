@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "source_test": "tests/contract/test_truth_hint_isolation.py",
+  "verified": [
+    "planning_task_digest is derived from P0 actual + P1 actual + P2 hint",
+    "execution_truth_digest changes when P2 truth changes",
+    "input_task_digest is retained only as a deprecated compatibility alias"
+  ]
+}

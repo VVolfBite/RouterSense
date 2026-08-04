@@ -1,0 +1,55 @@
+RouterSense RS-SIM 当前分层单路线源码状态
+
+正式结构：
+- rs_sim/contracts：共享不可变合同、摘要与工厂。
+- rs_sim/backend：唯一离散事件 Backend；core、resources、observability、adapters 分层。
+- rs_sim/scheduler：单一算法核、正交装饰器、FATE、Current-P12、planning、execution 与 metrics。
+- rs_sim/trace：schema、build、io、profiles、collection、runners、adapters 分层。
+- rs_sim/transport：api、config、control、data、core、observability、runtime 分层。
+- rs_sim/runtime：config、core、adapters、assembly、metrics 分层；负责唯一正式装配链。
+- rs_sim/app：collect / experiment 两个用户入口。
+
+本轮 Local 语义核验与修正：
+- phase-barrier Local 在人工可手算 matching case 上能够达到预期；并非所有 Local 算法失效。
+- RSCF-Local 在 P2 人工 case 中能够识别 destination completion tail，并达到精确 Oracle 的预期顺序。
+- Oracle 现在同时尊重 canonical task 的 ready_at_ns 与 wire-model source-ready；不会把未来任务提前执行。
+- PHASE_LOCAL + RANK_LOCAL 不再把全部 P1 priority 静态放在全部 P2 之前；在不改变 P1/P2 各自内部顺序的前提下，已释放 P2 可以越过后续 P1 wave。
+- rank-local Local 仍只是执行约束消融，不是新的正式算法；它不使用 P2 预测反向调整 P1，因此不保证优于 phase-barrier Local。
+
+本轮非 RSCF Joint baseline 的 P2 适配：
+- 所有 baseline 只沿用自身原始调度思想使用预测 P2，不注入 RSCF 的关键路径、release gain 或 completion-tail score。
+- Greedy-Joint 使用“当前 canonical payload + 按比例分摊的 downstream P2 work”作为最长工作优先级；该附加量只作用于排序，不改变 task、ready time 或 wire cost。
+- Birkhoff、iSLIP、Residual-MWM、FAST 与 Aurora 分别沿用合并 P1/P2 bucket matrix、VOQ、edge residual、two-tier residual 与 endpoint-load 语义。
+- 当预测 P2 为空或被 ZERO_P2 mask 时，上述 Joint baseline 的 P1 task order 与 wave 划分必须严格退化为对应 P1-only core。
+- 这些 matched Joint baseline 仅用于显式诊断消融，不替代论文主线的 RSCF-Joint 与 Oracle-Joint。
+
+正式语义：
+- 正式预测为 FATE_P2；缺失、不完整、摘要错误或跨 rank 身份不一致时 fail-closed。
+- release_mode 由 Backend、Runtime 与 planner 共同消费。
+- canonical taskization 固定为 256 KiB。
+- Safe objective 与 RSCF 核统一采用 max_i(launch_i + duration_i)。
+- Backend、scheduler、runtime、transport 不读取环境变量决定仿真语义。
+
+性能与指标：
+- RuntimeProfileBundle 是 transport、receiver、local assembly 与 planning cost 的唯一入口，摘要进入 paired identity 与 evidence。
+- synthetic profile 明确标记 performance_eligible=false。
+- Receiver 指标拆为互斥的 posting queue、buffer stall、posting service、drain queue、drain service。
+- P2 exposed stall分别报告 descriptor stall、data stall 与完整 dependency stall。
+
+当前验证状态：
+- 本轮只运行 Local/Oracle/Current-P12/Trace 相关定向测试：46 项通过。
+- 人工 matching、P2 tail、task ready-time、rank-local overtaking case 全部通过。
+- OLMoE EP8 单窗口真实 trace smoke 的四个 treatment 全部终止并通过公平性检查。
+- Greedy/Birkhoff/iSLIP/Residual-MWM/FAST/Aurora 的 ZERO_P2 exact-reduction 人工回归通过；Greedy 与 Residual-MWM 的非空 P2 改序 case 通过。
+- 新增 EP8 matched Joint baseline 诊断配置，不修改正式论文默认矩阵。
+- 未执行本轮修改后的完整回归。
+- 正式 zero-communication frozen-plan dual execution 尚未实现，相关论文因果指标继续明确标记 BLOCKED。
+
+本轮主线合并（2026-08-01）：
+- 以 CURRENT_SOURCE(6) 为唯一主线，完整保留 Greedy/Birkhoff/iSLIP/Residual-MWM/FAST/Aurora 的 matched Joint P2 adaptation、快速 bounded Oracle、Local rank-release merge、优化后的 literature cores、formal sweep 与测试治理。
+- 未采用旧 RouterSenseY 的 planner、Oracle、live executor 或慢版 literature core 覆盖主线。
+- 新增 scheduler/metrics/communication_stall.py：复用主线 ready-aware priority replay，以同一 frozen priority 做 actual/zero-transport 对照；canonical ready_at、source-ready、release dependency、P1→P2 local delay 与 P2 completion tail 保持不变，只将 wire launch/service 置零。
+- 实验结果新增 Mean/P95/Max Communication Stall 的稳定字段、逐窗口值、paired improvement 和 grouped summary；当前正式状态仍为 AVAILABLE_CAUSAL_RANK_EXPOSURE，不冒充尚未实现的完整 Runtime frozen-plan dual execution。
+- 新增可手算 HOL case：FIFO 与 Birkhoff makespan 同为 300 ns，但 Mean Communication Stall 从 175 ns 降至 150 ns（14.29%）。
+- 本轮合并定向测试 36 项通过；完整 OLMoE EP8 trace（15 个正式 P12 窗口）上 6 组 Local/Joint matched baseline 均 PASS。Local 单条约 11–12 秒，Joint 单条约 29–30 秒。
+- 完整 trace 上 Joint 相对各自 Local 的 Mean Communication Stall 改善约 9.34%–12.67%，P95 改善约 5.19%–12.53%，compute-excluded communication makespan 改善约 25.00%–26.46%。这些仍是 synthetic、mechanism-only、uncalibrated 结果。

@@ -1,0 +1,36 @@
+{
+  "pair_count": 7500,
+  "perfect_improvement_pct": {
+    "mean": 34.28979570858096,
+    "median": 34.61538461538461,
+    "std": 5.172047815369296,
+    "p25": 31.016042780748666,
+    "p75": 38.114754098360656
+  },
+  "predicted_improvement_pct": {
+    "mean": 34.3392023122317,
+    "median": 34.774116847826086,
+    "std": 5.157486540264684,
+    "p25": 31.07569721115538,
+    "p75": 38.07692307692307
+  },
+  "traffic_correlation": {
+    "mean": 0.727953744925804,
+    "median": 0.8075065299192075,
+    "std": 0.23741403705842673,
+    "p25": 0.6517202603822486,
+    "p75": 0.8814339730319352
+  },
+  "predicted_improvement_vs_traffic_correlation": -0.034513301943942726,
+  "gate2_decision": {
+    "decision": "PASS",
+    "mean_perfect_improvement_pct": 34.28979570858096,
+    "mean_predicted_improvement_pct": 34.3392023122317,
+    "reason": "Oracle-perfect >= 15% and Oracle-predicted >= 10%",
+    "thresholds": {
+      "oracle_perfect_mean_improvement_pct": 15.0,
+      "oracle_predicted_mean_improvement_pct": 10.0
+    },
+    "passed": true
+  }
+}

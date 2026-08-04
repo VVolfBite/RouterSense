@@ -1,0 +1,140 @@
+{
+  "date": "2026-07-11",
+  "baseline_commit": "0a6c7d58a1f9beee74f9e7887cbeb2f0119e3bbb",
+  "mainlines": [
+    {
+      "name": "联合调度机会",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 90,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure/shared_core_b_u.csv",
+        "outputs/offline/stage1_paper_closure/host_projection_gap.csv"
+      ],
+      "remaining_work": "4GPU 上验证 runtime joint-only gain 是否能兑现到真实 transport",
+      "gpu_dependency": true
+    },
+    {
+      "name": "离线完整基线与 oracle",
+      "previous_completion_percent": 65,
+      "new_completion_percent": 90,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure/baseline_summary.csv",
+        "outputs/offline/stage1_paper_closure/oracle_gap.csv",
+        "outputs/offline/stage1_paper_closure/paper_ready_tables.md"
+      ],
+      "remaining_work": "仅剩换更多模型/trace 扩表，不再缺统一 runner",
+      "gpu_dependency": false
+    },
+    {
+      "name": "流量生成与预测数据链",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 90,
+      "evidence_generated": [
+        "outputs/distributed/run_stage1_runtime_integrated_gloo_gate/summary.json",
+        "outputs/offline/stage1_paper_closure/predictor_validation.csv"
+      ],
+      "remaining_work": "4GPU B2 上收集真实 prediction lifecycle artifact",
+      "gpu_dependency": true
+    },
+    {
+      "name": "非 oracle 预测器",
+      "previous_completion_percent": 55,
+      "new_completion_percent": 68,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure/predictor_validation.csv",
+        "outputs/offline/stage1_paper_closure/predictor_selection.json"
+      ],
+      "remaining_work": "当前 held-out regret 最优仍是 zero_hint，后续需要真正提高 online-eligible predictor",
+      "gpu_dependency": false
+    },
+    {
+      "name": "预测带来的调度收益",
+      "previous_completion_percent": 35,
+      "new_completion_percent": 40,
+      "evidence_generated": [
+        "outputs/offline/stage1_paper_closure/prediction_schedule_regret.csv",
+        "outputs/offline/stage1_paper_closure/prediction_failure_taxonomy.csv"
+      ],
+      "remaining_work": "当前统一离线结论仍是 prediction mostly neutral；需要 4GPU A2 验证 runtime consumption",
+      "gpu_dependency": true
+    },
+    {
+      "name": "Async P2P 执行器",
+      "previous_completion_percent": 80,
+      "new_completion_percent": 88,
+      "evidence_generated": [
+        "outputs/distributed/run_stage1_gloo_e2e_gate/summary.json",
+        "outputs/distributed/run_stage1_runtime_integrated_gloo_gate/summary.json"
+      ],
+      "remaining_work": "只差 4GPU NCCL C2 correctness 和 A2 performance",
+      "gpu_dependency": true
+    },
+    {
+      "name": "Runtime 联合规划链",
+      "previous_completion_percent": 72,
+      "new_completion_percent": 88,
+      "evidence_generated": [
+        "outputs/distributed/run_stage1_runtime_integrated_gloo_gate/summary.json",
+        "outputs/pre_gpu_final_code_audit.json"
+      ],
+      "remaining_work": "只差 4GPU B2/C2/A2 实跑和一次针对真实瓶颈的调优",
+      "gpu_dependency": true
+    }
+  ],
+  "answers": {
+    "strongest_baseline": "phase_barrier_fifo",
+    "strict_common_core_b_u_completed": false,
+    "joint_only_gain": [
+      {
+        "heuristic_family": "gated_greedy",
+        "u_vs_b": -0.14912500913600413,
+        "safe_vs_b": -0.14992262201729326
+      },
+      {
+        "heuristic_family": "barrier_criticality_matching",
+        "u_vs_b": -0.11146046552753155,
+        "safe_vs_b": -0.11146046552753155
+      }
+    ],
+    "safe_u_relative_to_strongest_b": {
+      "main_safe_u_policy": "RS_safe_gated_greedy",
+      "main_safe_u_improvement_pct": 11.518515105389767
+    },
+    "local_joint_exact_oracle_gap": {
+      "O_joint_vs_O_local_gap": -0.13333333333333333,
+      "B_gap_to_O_local": 0.26666666666666666,
+      "raw_U_gap_to_O_joint": 0.46153846153846156,
+      "safe_U_gap_to_O_joint": 0.46153846153846156
+    },
+    "selected_predictor": "zero_hint",
+    "held_out_prediction_error": 0.75,
+    "held_out_schedule_regret": 0.0,
+    "oracle_prediction_schedule_gain_vs_zero": null,
+    "prediction_failure_taxonomy": {
+      "PREDICTION_NEUTRAL": 48
+    },
+    "real_lifecycle_materialization_fixed": true,
+    "b2_c2_a2_gpu_body_real": true,
+    "gloo_low_level_passed": true,
+    "gloo_runtime_integrated_passed": true
+  },
+  "status_fields": {
+    "real_async_executor_reachable": true,
+    "dedicated_group_order_validated": true,
+    "coalescing_enabled": false,
+    "per_peer_sequence_validated": true,
+    "microbatch_sequence_isolated": true,
+    "preflight_validated": true,
+    "post_start_fallback_forbidden": true,
+    "host_projected_safe_selection_active": true,
+    "birkhoff_same_executor_ready": true,
+    "p1_planning_collective_count": 0,
+    "prediction_extra_collective_count": 0,
+    "perf_hotpath_json_count": 0,
+    "perf_hotpath_filesystem_write_count": 0,
+    "runtime_integrated_gloo_passed": true,
+    "gpu_run_b2_ready": true,
+    "gpu_run_c2_ready": true,
+    "gpu_run_a2_ready": true
+  }
+}

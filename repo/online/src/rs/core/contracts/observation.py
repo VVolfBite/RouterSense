@@ -1,0 +1,26 @@
+"""Canonical runtime observation configuration contracts."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Literal
+
+
+ObservationProfile = Literal["minimal", "perf", "execution", "debug"]
+InvariantMode = Literal["evaluation_strict", "runtime_safe", "diagnostic"]
+
+
+@dataclass(frozen=True)
+class RuntimeObservationConfig:
+    profile: ObservationProfile = "minimal"
+    invariant_mode: InvariantMode = "diagnostic"
+    capture_enabled: bool = False
+    capture_expert_trace: bool = False
+    capture_layer_selector: str = ""
+    capture_phase_selector: str = ""
+    heartbeat_enabled: bool = False
+    per_wave_timing_enabled: bool = False
+    replay_trace_enabled: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)

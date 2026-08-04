@@ -1,0 +1,21 @@
+{
+  "milestone": "M-SHADOW-PATH-RETIRE",
+  "starting_sha": "bef9f932f79b57dfdf22d68b863ce83676832038",
+  "branch": "main",
+  "gpu_available": false,
+  "completed": [
+    "explicit hook execution mode added",
+    "async on_dispatch finalize-only path",
+    "async on_combine finalize-only path",
+    "legacy shadow mode retained",
+    "shadow counter contract exported",
+    "DTOH callsite fields exported",
+    "gpu shadow retire check config added"
+  ],
+  "remaining": [
+    "short 4GPU verification run"
+  ],
+  "final_status": "SHADOW_PATH_RETIRE_CPU_READY",
+  "deprecated": true,
+  "note": "Historical status moved out of dialogue root; module-local status files are authoritative."
+}

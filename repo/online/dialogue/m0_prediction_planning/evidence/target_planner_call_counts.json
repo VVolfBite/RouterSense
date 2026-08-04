@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "source_test": "tests/contract/megatron_ep/test_target_planner_service.py",
+  "counts": {
+    "LOCAL": {
+      "local_planner_calls": 1,
+      "joint_planner_calls": 0
+    },
+    "JOINT": {
+      "local_planner_calls": 0,
+      "joint_planner_calls": 1
+    },
+    "COMPARE": {
+      "local_planner_calls": 1,
+      "joint_planner_calls": 1
+    },
+    "service_build_disabled": {
+      "raw_u_calls": 1,
+      "paired_b_calls": 0
+    },
+    "service_build_host_select": {
+      "raw_u_calls": 1,
+      "paired_b_calls": 1
+    }
+  }
+}

@@ -1,0 +1,2 @@
+- Retire legacy `rs.core.experiment_config` after all callers migrate to `rs.experiments.config_loader`.
+- Replace Phase A placeholder runners with service-backed implementations once M2/M4 integration surfaces are stable.

@@ -1,0 +1,490 @@
+{
+  "pair_count": 736,
+  "model": "full_duplex",
+  "expert_compute_delay": 0.0,
+  "baseline_layer_time_ms": 10.0,
+  "hidden_window_ms": 10.0,
+  "token_to_ms_factor": 0.5,
+  "next_mode": "predicted",
+  "phase2_source": "actual",
+  "traffic_correlation": {
+    "mean": 0.6788923267156831,
+    "median": 0.706054734450174,
+    "std": 0.14329001840978806,
+    "p25": 0.6113122545594586,
+    "p75": 0.7748929039124111
+  },
+  "greedy_latency_ms": {
+    "mean": 0.18254181613092837,
+    "median": 0.16617774963378906,
+    "std": 0.06757090589171726,
+    "p25": 0.12153387069702148,
+    "p75": 0.24366378784179688
+  },
+  "greedy_makespan_ms": {
+    "mean": 70.93478260869566,
+    "median": 28.0,
+    "std": 158.60377495972307,
+    "p25": 14.0,
+    "p75": 56.5
+  },
+  "include_fast_best_of": false,
+  "skip_oracle": true,
+  "predicted_improvement_vs_traffic_correlation": null,
+  "gate2_decision": null,
+  "B_birkhoff_improvement_pct": {
+    "mean": 15.321309522536149,
+    "median": 16.0,
+    "std": 11.323199951615473,
+    "p25": 7.871407241508025,
+    "p75": 23.534985190611163
+  },
+  "B_birkhoff_effective_improvement_pct": {
+    "mean": 15.321309522536149,
+    "median": 16.0,
+    "std": 11.323199951615473,
+    "p25": 7.871407241508025,
+    "p75": 23.534985190611163
+  },
+  "B_birkhoff_latency_ms": {
+    "mean": 0.9935863882951115,
+    "median": 0.9488724172115326,
+    "std": 0.33703946178337835,
+    "p25": 0.6972756236791611,
+    "p75": 1.2661311775445938
+  },
+  "B_birkhoff_effective_latency_ms": {
+    "mean": 0.9935863882951115,
+    "median": 0.9488724172115326,
+    "std": 0.33703946178337835,
+    "p25": 0.6972756236791611,
+    "p75": 1.2661311775445938
+  },
+  "B_birkhoff_comm_savings_ms": {
+    "mean": 15.57133152173913,
+    "median": 3.5,
+    "std": 48.21623910514425,
+    "p25": 1.5,
+    "p75": 9.125
+  },
+  "B_birkhoff_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "B_birkhoff_net_benefit_ms": {
+    "mean": 15.57133152173913,
+    "median": 3.5,
+    "std": 48.21623910514425,
+    "p25": 1.5,
+    "p75": 9.125
+  },
+  "B_birkhoff_effective_e2e_time_ms": {
+    "mean": 55.36345108695652,
+    "median": 23.0,
+    "std": 115.204998209915,
+    "p25": 12.0,
+    "p75": 45.625
+  },
+  "B_birkhoff_e2e_speedup_pct": {
+    "mean": 15.321309522536149,
+    "median": 16.0,
+    "std": 11.323199951615473,
+    "p25": 7.871407241508025,
+    "p75": 23.534985190611163
+  },
+  "B_birkhoff_prediction_aware": false,
+  "B_birkhoff_description": "Baseline: per-phase Birkhoff decomposition.",
+  "U_gated_greedy_maximal_improvement_pct": {
+    "mean": 38.449766272058106,
+    "median": 39.285714285714285,
+    "std": 10.47293918918479,
+    "p25": 31.790465631929045,
+    "p75": 46.15384615384615
+  },
+  "U_gated_greedy_maximal_effective_improvement_pct": {
+    "mean": 38.449766272058106,
+    "median": 39.285714285714285,
+    "std": 10.47293918918479,
+    "p25": 31.790465631929045,
+    "p75": 46.15384615384615
+  },
+  "U_gated_greedy_maximal_latency_ms": {
+    "mean": 7.838362139528212,
+    "median": 4.8533715307712555,
+    "std": 7.583621385152887,
+    "p25": 2.1478012204170227,
+    "p75": 11.368867009878159
+  },
+  "U_gated_greedy_maximal_effective_latency_ms": {
+    "mean": 7.838362139528212,
+    "median": 4.8533715307712555,
+    "std": 7.583621385152887,
+    "p25": 2.1478012204170227,
+    "p75": 11.368867009878159
+  },
+  "U_gated_greedy_maximal_comm_savings_ms": {
+    "mean": 35.52785326086956,
+    "median": 11.0,
+    "std": 94.17139842468666,
+    "p25": 4.5,
+    "p75": 24.0
+  },
+  "U_gated_greedy_maximal_exposed_latency_ms": {
+    "mean": 2.25899999961257,
+    "median": 0.0,
+    "std": 5.062531236965486,
+    "p25": 0.0,
+    "p75": 1.3688670098781586
+  },
+  "U_gated_greedy_maximal_net_benefit_ms": {
+    "mean": 33.26885326125699,
+    "median": 11.0,
+    "std": 89.96621642269892,
+    "p25": 4.5,
+    "p75": 22.824558183550835
+  },
+  "U_gated_greedy_maximal_effective_e2e_time_ms": {
+    "mean": 37.665929347438656,
+    "median": 16.5,
+    "std": 70.01810593726833,
+    "p25": 9.5,
+    "p75": 31.29780913889408
+  },
+  "U_gated_greedy_maximal_e2e_speedup_pct": {
+    "mean": 36.95558883035126,
+    "median": 37.5,
+    "std": 9.61417789134402,
+    "p25": 31.38392857142857,
+    "p75": 44.06779661016949
+  },
+  "U_gated_greedy_maximal_prediction_aware": true,
+  "U_gated_greedy_maximal_description": "Ours: greedy maximal matching over the same ready-set scores.",
+  "U_gated_greedy_maximal_atomic_improvement_pct": {
+    "mean": 20.083594930359503,
+    "median": 20.454545454545457,
+    "std": 12.673010310866836,
+    "p25": 12.244897959183673,
+    "p75": 28.57142857142857
+  },
+  "U_gated_greedy_maximal_atomic_effective_improvement_pct": {
+    "mean": 20.083594930359503,
+    "median": 20.454545454545457,
+    "std": 12.673010310866836,
+    "p25": 12.244897959183673,
+    "p75": 28.57142857142857
+  },
+  "U_gated_greedy_maximal_atomic_latency_ms": {
+    "mean": 3.0830589062331812,
+    "median": 3.062088042497635,
+    "std": 1.3717342208948862,
+    "p25": 1.7719268798828125,
+    "p75": 4.425473511219025
+  },
+  "U_gated_greedy_maximal_atomic_effective_latency_ms": {
+    "mean": 3.0830589062331812,
+    "median": 3.062088042497635,
+    "std": 1.3717342208948862,
+    "p25": 1.7719268798828125,
+    "p75": 4.425473511219025
+  },
+  "U_gated_greedy_maximal_atomic_comm_savings_ms": {
+    "mean": 25.533967391304348,
+    "median": 4.5,
+    "std": 79.25418870784097,
+    "p25": 2.0,
+    "p75": 14.0
+  },
+  "U_gated_greedy_maximal_atomic_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_gated_greedy_maximal_atomic_net_benefit_ms": {
+    "mean": 25.533967391304348,
+    "median": 4.5,
+    "std": 79.25418870784097,
+    "p25": 2.0,
+    "p75": 14.0
+  },
+  "U_gated_greedy_maximal_atomic_effective_e2e_time_ms": {
+    "mean": 45.400815217391305,
+    "median": 22.5,
+    "std": 80.77342892305361,
+    "p25": 12.0,
+    "p75": 41.0
+  },
+  "U_gated_greedy_maximal_atomic_e2e_speedup_pct": {
+    "mean": 20.083594930359503,
+    "median": 20.454545454545457,
+    "std": 12.673010310866836,
+    "p25": 12.244897959183673,
+    "p75": 28.57142857142857
+  },
+  "U_gated_greedy_maximal_atomic_prediction_aware": true,
+  "U_gated_greedy_maximal_atomic_description": "Ours: atomic-wave greedy maximal matching over the same ready-set scores.",
+  "U_barrier_price_adaptive_matching_improvement_pct": {
+    "mean": 38.92735426496398,
+    "median": 40.0,
+    "std": 10.662325242518346,
+    "p25": 31.89071566731141,
+    "p75": 46.77379582442873
+  },
+  "U_barrier_price_adaptive_matching_effective_improvement_pct": {
+    "mean": 38.92735426496398,
+    "median": 40.0,
+    "std": 10.662325242518346,
+    "p25": 31.89071566731141,
+    "p75": 46.77379582442873
+  },
+  "U_barrier_price_adaptive_matching_latency_ms": {
+    "mean": 10.803702570821928,
+    "median": 7.825747132301331,
+    "std": 8.736689473742642,
+    "p25": 4.152186214923859,
+    "p75": 14.521023258566856
+  },
+  "U_barrier_price_adaptive_matching_effective_latency_ms": {
+    "mean": 10.803702570821928,
+    "median": 7.825747132301331,
+    "std": 8.736689473742642,
+    "p25": 4.152186214923859,
+    "p75": 14.521023258566856
+  },
+  "U_barrier_price_adaptive_matching_comm_savings_ms": {
+    "mean": 35.84986413043478,
+    "median": 11.0,
+    "std": 94.66799939090923,
+    "p25": 4.5,
+    "p75": 24.0
+  },
+  "U_barrier_price_adaptive_matching_exposed_latency_ms": {
+    "mean": 3.6557011221252056,
+    "median": 0.0,
+    "std": 6.897822479041353,
+    "p25": 0.0,
+    "p75": 4.521023258566856
+  },
+  "U_barrier_price_adaptive_matching_net_benefit_ms": {
+    "mean": 32.19416300830958,
+    "median": 10.5,
+    "std": 88.97315085526965,
+    "p25": 4.5,
+    "p75": 19.944035962224007
+  },
+  "U_barrier_price_adaptive_matching_effective_e2e_time_ms": {
+    "mean": 38.740619600386076,
+    "median": 16.25,
+    "std": 71.07468213806756,
+    "p25": 9.0,
+    "p75": 34.48016403615475
+  },
+  "U_barrier_price_adaptive_matching_e2e_speedup_pct": {
+    "mean": 35.82215017979938,
+    "median": 36.49291857088305,
+    "std": 9.480744962465154,
+    "p25": 29.78692391433755,
+    "p75": 41.97235898167246
+  },
+  "U_barrier_price_adaptive_matching_prediction_aware": true,
+  "U_barrier_price_adaptive_matching_description": "Ours: global ready-set matching with bounded adaptive barrier prices.",
+  "U_barrier_price_adaptive_matching_atomic_improvement_pct": {
+    "mean": 22.52470105460941,
+    "median": 22.45689655172414,
+    "std": 14.093216259602306,
+    "p25": 13.461538461538462,
+    "p75": 31.88718140929535
+  },
+  "U_barrier_price_adaptive_matching_atomic_effective_improvement_pct": {
+    "mean": 22.52470105460941,
+    "median": 22.45689655172414,
+    "std": 14.093216259602306,
+    "p25": 13.461538461538462,
+    "p75": 31.88718140929535
+  },
+  "U_barrier_price_adaptive_matching_atomic_latency_ms": {
+    "mean": 4.495308602876637,
+    "median": 4.592113196849823,
+    "std": 1.3228753125998693,
+    "p25": 3.271510824561119,
+    "p75": 5.829829722642899
+  },
+  "U_barrier_price_adaptive_matching_atomic_effective_latency_ms": {
+    "mean": 4.495308602876637,
+    "median": 4.592113196849823,
+    "std": 1.3228753125998693,
+    "p25": 3.271510824561119,
+    "p75": 5.829829722642899
+  },
+  "U_barrier_price_adaptive_matching_atomic_comm_savings_ms": {
+    "mean": 29.233016304347824,
+    "median": 5.0,
+    "std": 89.23968768599099,
+    "p25": 2.0,
+    "p75": 16.0
+  },
+  "U_barrier_price_adaptive_matching_atomic_exposed_latency_ms": {
+    "mean": 0.0,
+    "median": 0.0,
+    "std": 0.0,
+    "p25": 0.0,
+    "p75": 0.0
+  },
+  "U_barrier_price_adaptive_matching_atomic_net_benefit_ms": {
+    "mean": 29.233016304347824,
+    "median": 5.0,
+    "std": 89.23968768599099,
+    "p25": 2.0,
+    "p75": 16.0
+  },
+  "U_barrier_price_adaptive_matching_atomic_effective_e2e_time_ms": {
+    "mean": 41.70176630434783,
+    "median": 22.0,
+    "std": 70.60625268399266,
+    "p25": 12.0,
+    "p75": 38.5
+  },
+  "U_barrier_price_adaptive_matching_atomic_e2e_speedup_pct": {
+    "mean": 22.52470105460941,
+    "median": 22.45689655172414,
+    "std": 14.093216259602306,
+    "p25": 13.461538461538462,
+    "p75": 31.88718140929535
+  },
+  "U_barrier_price_adaptive_matching_atomic_prediction_aware": true,
+  "U_barrier_price_adaptive_matching_atomic_description": "Ours: atomic-wave barrier-price adaptive global matching.",
+  "oracle_wave_atomic_improvement_pct": {
+    "mean": 17.468257233061205,
+    "median": 17.857142857142858,
+    "std": 13.440934574638307,
+    "p25": 8.304794520547944,
+    "p75": 26.31578947368421
+  },
+  "oracle_wave_atomic_effective_improvement_pct": {
+    "mean": 17.468257233061205,
+    "median": 17.857142857142858,
+    "std": 13.440934574638307,
+    "p25": 8.304794520547944,
+    "p75": 26.31578947368421
+  },
+  "oracle_wave_atomic_latency_ms": {
+    "mean": 140.9608041766383,
+    "median": 136.61376759409904,
+    "std": 62.603373504886115,
+    "p25": 98.69812615215778,
+    "p75": 169.92160119116306
+  },
+  "oracle_wave_atomic_effective_latency_ms": {
+    "mean": 140.9608041766383,
+    "median": 136.61376759409904,
+    "std": 62.603373504886115,
+    "p25": 98.69812615215778,
+    "p75": 169.92160119116306
+  },
+  "oracle_wave_atomic_comm_savings_ms": {
+    "mean": 24.829483695652176,
+    "median": 4.0,
+    "std": 80.11797390177023,
+    "p25": 1.5,
+    "p75": 13.5
+  },
+  "oracle_wave_atomic_exposed_latency_ms": {
+    "mean": 130.9608041766383,
+    "median": 126.61376759409904,
+    "std": 62.603373504886115,
+    "p25": 88.69812615215778,
+    "p75": 159.92160119116306
+  },
+  "oracle_wave_atomic_net_benefit_ms": {
+    "mean": -106.13132048098613,
+    "median": -107.7098905146122,
+    "std": 90.53405551932167,
+    "p25": -142.7650931328535,
+    "p75": -77.89757207036018
+  },
+  "oracle_wave_atomic_effective_e2e_time_ms": {
+    "mean": 177.06610308968177,
+    "median": 156.94325417280197,
+    "std": 113.58817158266098,
+    "p25": 107.24842865765095,
+    "p75": 202.167615249753
+  },
+  "oracle_wave_atomic_e2e_speedup_pct": {
+    "mean": -478.4185163092449,
+    "median": -482.00590067079804,
+    "std": 308.58039876892786,
+    "p25": -672.6673452002661,
+    "p75": -225.44844234524274
+  },
+  "oracle_wave_atomic_prediction_aware": true,
+  "oracle_wave_atomic_description": "Wave outer-loop oracle over atomic chunk execution.",
+  "oracle_wave_fluid_improvement_pct": {
+    "mean": 37.229938407830645,
+    "median": 38.59649122807017,
+    "std": 11.475292134273838,
+    "p25": 29.411764705882355,
+    "p75": 45.62356979405034
+  },
+  "oracle_wave_fluid_effective_improvement_pct": {
+    "mean": 37.229938407830645,
+    "median": 38.59649122807017,
+    "std": 11.475292134273838,
+    "p25": 29.411764705882355,
+    "p75": 45.62356979405034
+  },
+  "oracle_wave_fluid_latency_ms": {
+    "mean": 208.88479793970674,
+    "median": 172.9869544506073,
+    "std": 123.49558796118457,
+    "p25": 114.99599367380142,
+    "p75": 275.49790032207966
+  },
+  "oracle_wave_fluid_effective_latency_ms": {
+    "mean": 208.88479793970674,
+    "median": 172.9869544506073,
+    "std": 123.49558796118457,
+    "p25": 114.99599367380142,
+    "p75": 275.49790032207966
+  },
+  "oracle_wave_fluid_comm_savings_ms": {
+    "mean": 35.55638586956522,
+    "median": 10.5,
+    "std": 94.68339268596694,
+    "p25": 4.0,
+    "p75": 24.0
+  },
+  "oracle_wave_fluid_exposed_latency_ms": {
+    "mean": 198.88479793970674,
+    "median": 162.9869544506073,
+    "std": 123.49558796118457,
+    "p25": 104.99599367380142,
+    "p75": 265.49790032207966
+  },
+  "oracle_wave_fluid_net_benefit_ms": {
+    "mean": -163.32841207014152,
+    "median": -138.87441340088844,
+    "std": 138.47307140555796,
+    "p25": -225.1026996523142,
+    "p75": -86.8499037027359
+  },
+  "oracle_wave_fluid_effective_e2e_time_ms": {
+    "mean": 234.26319467883718,
+    "median": 183.11313000321388,
+    "std": 151.94236555406684,
+    "p25": 122.60475452244282,
+    "p75": 310.27823753654957
+  },
+  "oracle_wave_fluid_e2e_speedup_pct": {
+    "mean": -653.1498795920788,
+    "median": -683.0874566520963,
+    "std": 390.56710948192074,
+    "p25": -901.1732578056831,
+    "p75": -391.70723995423623
+  },
+  "oracle_wave_fluid_prediction_aware": true,
+  "oracle_wave_fluid_description": "Fluid wave oracle-style relaxation for small-sample upper-bound analysis."
+}

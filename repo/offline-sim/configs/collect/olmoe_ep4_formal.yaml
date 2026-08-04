@@ -1,0 +1,76 @@
+version: 1
+name: olmoe_ep4_trace_only_fixed
+
+model:
+  framework: megatron
+  runner: AUTO_MEGATRON_BRIDGE
+  family: auto
+  path: /models/OLMoE-1B-7B-0924
+  format: hf
+  dtype: bfloat16
+  dispatcher: alltoall
+  trust_remote_code: true
+
+launch:
+  launcher: torchrun
+  nnodes: 1
+  nproc_per_node: 4
+  timeout_seconds: 1200
+  environment: {}
+
+parallel:
+  ep: 4
+  tp: 1
+  pp: 1
+  dp: 1
+  cp: 1
+  etp: 1
+
+input:
+  dataset_id: olmoe_ep4_trace_only
+  split: test
+  seq_length: 128
+  micro_batch_size: 1
+  warmup_count: 1
+  sample_count: 2
+  seed: 1234
+  notes: one excluded warmup plus two formal measured forwards
+
+capture:
+  backend: MEGATRON_CORE_AUTO
+  capture_id: olmoe-ep4-trace-only-fixed
+  request_id: olmoe-ep4-trace-only-fixed
+  sample_id_prefix: olmoe-ep4-trace-only-fixed
+  strict: true
+  local_compute: true
+  allow_compute_fallback: false
+  minimum_consecutive_layers: 16
+  expected_moe_layer_count: 16
+  require_all_expected_layers: true
+  rank_to_node: [0, 0, 0, 0]
+
+prediction:
+  mode: FATE_P2
+  provider: MEGATRON_SAMPLED_FATE
+  max_sample_tokens: 512
+  confidence_ppm: 750000
+  require_complete_fate_coverage: true
+
+payload:
+  dispatch:
+    token_payload_bytes_per_row: 4096
+    auxiliary_payload_bytes_per_row: 16
+    metadata_bytes_per_edge: 64
+    alignment_bytes: 256
+  combine:
+    token_payload_bytes_per_row: 4096
+    auxiliary_payload_bytes_per_row: 8
+    metadata_bytes_per_edge: 48
+    alignment_bytes: 128
+  descriptor:
+    fixed_header_bytes: 64
+    per_destination_entry_bytes: 16
+
+output:
+  directory: /workspace/results/olmoe_ep4_trace
+  overwrite: true

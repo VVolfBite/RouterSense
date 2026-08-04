@@ -1,0 +1,12 @@
+{
+  "prompts": [
+    "Task 1. Write an executive summary of the material below, preserving chronology,",
+    "Task 2. Read the material below and produce a structured technical memo with assumptions,",
+    "Task 3. Summarize the material below for an engineer joining the project this",
+    "Task 4. Turn the material below into a project handoff note. Include system",
+    "Task 5. Read the material below and answer as if you were reviewing a distributed",
+    "Task 6. Convert the material below into a design review response. State what should",
+    "Task 7. Write an executive summary of the material below, preserving chronology,",
+    "Task 8. Read the material below and produce a structured technical memo with assumptions,"
+  ]
+}

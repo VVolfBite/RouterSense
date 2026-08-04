@@ -1,0 +1,104 @@
+# RouteSense
+
+RouteSense is a distributed MoE scheduling and deployment project. The formal
+mainline lives under `RS/`. Historical POC material is preserved in `legacy/`
+and curated result snapshots live under `archive/backup/`.
+
+## Mainline
+
+- `RS/src/rs/`
+  Mainline runtime, scheduler, trace, topology, oracle, and evaluation code.
+- `RS/deploy/`
+  Inventory, dry-run launch contracts, and deployment helpers.
+- `RS/experiments/`
+  Deployment smokes, distributed bring-up, and scheduler evaluation entrypoints.
+- `RS/docs/`
+  Mainline technical docs and current design notes.
+- `RS/docs/handoff_next_codex.md`
+  Current operator handoff for the next Codex session. Read this first when
+  resuming work.
+- `RS/tests/`
+  Mainline regression tests.
+- `RS/artifacts/`
+  Active working outputs only. This tree should stay trimmed.
+
+## Curated Backup
+
+- `archive/backup/`
+  Git-controlled curated backup area.
+- `archive/backup/README.md`
+  Index of the currently retained result snapshots.
+- `archive/backup/docs/`
+  Archived copies of root-level planning / task / elimination documents.
+
+As of the current cleanup, only three experiment backup groups are intentionally
+retained there:
+
+1. cross-layer prediction validity
+2. oracle / fast optimization-gap study
+3. execution-window multiscale scheduler study
+
+## Legacy
+
+- `legacy/poc1/`
+  Router observability and proxy-era experiments.
+- `legacy/poc2/`
+  Single-node NCCL harness and historical scheduler diagnostics.
+- `legacy/shared/`
+  Shared historical docs and test assets.
+
+The legacy trees are kept for reference and reproducibility. They are not part
+of the formal `RS/` runtime path, and the mainline tests explicitly guard
+against accidental legacy imports.
+
+## Operator Channel
+
+- `RS/channel/ins/`
+  Incoming operator instructions synchronized through git.
+- `RS/channel/reply/`
+  Outgoing step reports.
+
+## Current Phase
+
+The current mainline focus is the path from offline scheduler validation to a
+semantically correct distributed EP runtime under the `RS/` stack. Historical
+POC documents remain available for context, but they are not the source of
+truth for the deployment mainline.
+
+At the moment, the distributed execution path in `RS/` should be treated as
+`trace_replay`, not as a real EP runtime:
+
+- `trace_replay` is the only supported runtime mode today.
+- current 2-rank runs are valid for wiring, correctness protocol bring-up, and
+  collective calibration only.
+- current results do not justify production EP performance claims, online
+  prediction claims, or NCCL speedup claims from offline makespan numbers.
+
+## Resume Point
+
+If a new Codex session needs to resume the project, start from:
+
+1. `README.md`
+2. `RS/docs/handoff_next_codex.md`
+3. `RS/docs/multiphase_global_matching_study.md`
+4. `RS/docs/phase0c_distributed_ep_contract.md`
+
+## Current POC-Line1 Presets
+
+- Standard non-repeated prompt corpus:
+  `RS/artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl`
+- Tiered scheduler candidate presets:
+  `RS/experiments/poc_line1/configs/candidate_tiers.json`
+
+Example:
+
+```bash
+cd /root/autodl-tmp/RouterSense/RS
+OMP_NUM_THREADS=1 PYTHONPATH=src python -u experiments/poc_line1/exp_pairwise_candidate_compare.py \
+  --config-json experiments/poc_line1/configs/candidate_tiers.json \
+  --config-key tier2 \
+  --trace-jsonl artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/trace.jsonl \
+  --hidden-states-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/hidden_states.pt \
+  --gate-weights-path artifacts/poc_line1/full_sequence_trace_olmoe_mix200_unique_v1/gate_weights.pt \
+  --output-dir artifacts/poc_line1/tier2_compare
+```

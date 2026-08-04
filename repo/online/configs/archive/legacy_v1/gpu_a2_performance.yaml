@@ -1,0 +1,54 @@
+schema_version: 1
+run:
+  kind: gpu_validation
+  name: a2_performance
+model:
+  path: configs/components/models/olmoe_1b_7b_instruct.yaml
+topology:
+  world_size: 4
+  component: configs/components/topologies/local_4gpu.yaml
+workload:
+  prompts: configs/components/workloads/comparison_64_prompts.json
+runtime:
+  line: async_release
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_mode: dynamic_current
+  bucket_rows: 0
+  calibration_bucket_rows:
+    - 512
+    - 1024
+    - 2048
+policy: {}
+prediction: {}
+evaluation:
+  repeats: 10
+  warmup: 3
+  selected_layer_ids:
+    - 0
+    - 1
+  metrics:
+    - backend_gain
+    - joint_gain
+    - prediction_gain
+    - safe_u_net_benefit
+    - rank_early_release_gain
+replay: {}
+oracle: {}
+regime_analysis: {}
+suite: a2
+world_size: 4
+profile: perf
+preflight_mode: compact
+selected_layers: 0,1
+strategies:
+  - native
+  - fifo_async_p2p
+  - greedy_async_p2p
+  - birkhoff_phase_local_sync
+  - birkhoff_phase_local_async_p2p
+  - routersense_b_core_independent_async
+  - routersense_u_core_zero_raw_async
+  - routersense_u_core_predicted_raw_async
+  - routersense_u_core_predicted_safe_async

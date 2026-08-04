@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+from .multiphase_global import EXECUTION_WINDOW_MODE
+
+
+@dataclass
+class SchedulingContext:
+    """Scheduling inputs for pairwise multi-phase communication."""
+
+    dispatch_matrix: list[list[int]]
+    combine_matrix: list[list[int]]
+    next_dispatch_matrix: list[list[int]]
+    num_gpus: int
+    model: str = "full_duplex"
+    expert_compute_delay: float = 0.0
+    mode: str = EXECUTION_WINDOW_MODE
+    prediction_confidence: float = 1.0
+
+
+@dataclass
+class SchedulingResult:
+    """Normalized strategy output."""
+
+    makespan: float
+    schedule: list[dict[str, Any]]
+    solve_time_ms: float
+    strategy: str
+
+
+class SchedulingStrategy(ABC):
+    """Common interface for all schedulers."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Stable registry name."""
+
+    @abstractmethod
+    def solve(self, ctx: SchedulingContext) -> SchedulingResult:
+        """Run the scheduling policy."""
+
+    @property
+    def prediction_aware(self) -> bool:
+        """Whether the strategy intentionally uses next-phase values in its policy."""
+
+        return False
+
+    @property
+    def description(self) -> str:
+        """Short strategy description."""
+
+        return ""
+
+
+_REGISTRY: dict[str, type[SchedulingStrategy]] = {}
+
+
+def register_strategy(cls: type[SchedulingStrategy]) -> type[SchedulingStrategy]:
+    """Class decorator for strategy registration."""
+
+    _REGISTRY[cls().name] = cls
+    return cls
+
+
+def get_strategy(name: str) -> SchedulingStrategy:
+    """Construct a registered strategy by name."""
+
+    if name not in _REGISTRY:
+        available = ", ".join(sorted(_REGISTRY))
+        raise KeyError(f"Unknown strategy '{name}'. Available: {available}")
+    return _REGISTRY[name]()
+
+
+def list_strategies() -> list[str]:
+    """List registered strategy names."""
+
+    return sorted(_REGISTRY)
+
+
+def get_strategy_metadata(name: str) -> dict[str, Any]:
+    """Return registered metadata for a strategy."""
+
+    strategy = get_strategy(name)
+    return {
+        "name": strategy.name,
+        "prediction_aware": bool(strategy.prediction_aware),
+        "description": str(strategy.description),
+    }

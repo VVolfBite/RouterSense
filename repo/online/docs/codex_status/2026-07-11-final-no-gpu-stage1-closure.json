@@ -1,0 +1,22 @@
+{
+  "local_copy_coverage_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "ordered_sequence_digest_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "multi_ep_subgroup_index_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "zero_hint_async_status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "fifo_async_status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "greedy_async_status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "birkhoff_async_status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "predicted_joint_async_status": "IMPLEMENTED_AND_TESTED_GLOO",
+  "async_execution_audit_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "c2_parity_runner_status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+  "a2_performance_runner_status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+  "compact_preflight_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "perf_artifact_status": "IMPLEMENTED_AND_TESTED_CPU",
+  "gpu_b2_status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+  "gpu_c2_status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+  "gpu_a2_status": "IMPLEMENTED_GPU_BLOCKED_BY_ENVIRONMENT",
+  "runtime_integrated_gloo_passed": true,
+  "low_level_gloo_passed": true,
+  "current_cuda_device_count": 1,
+  "remaining_todo_in_scope": false
+}

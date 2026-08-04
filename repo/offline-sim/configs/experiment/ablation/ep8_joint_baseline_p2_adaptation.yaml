@@ -1,0 +1,119 @@
+version: 1
+name: current_p12_ep8_joint_baseline_p2_adaptation
+traces:
+- /results/traces/RouterSense_FATE_Trace_Repository/measured/EP8
+simulation:
+  release_mode: RANK_LOCAL
+  p0_p1_compute_end_barrier: true
+  staging: 1.0X
+  max_task_bytes: 262144
+  max_window_prefix_tasks: 256
+  alignment_bytes: 256
+  max_timestamps: 2000000
+  runtime_profile: ../../profiles/current_p12_synthetic_runtime.json
+experiments:
+  treatments:
+  - name: Greedy-Local
+    algorithm: local(global_(greedy()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: Greedy-Joint-FATE
+    algorithm: joint(global_(greedy()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+  - name: Birkhoff-Local
+    algorithm: local(global_(birkhoff()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: Birkhoff-Joint-FATE
+    algorithm: joint(global_(birkhoff()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+  - name: iSLIP-Local
+    algorithm: local(global_(islip()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: iSLIP-Joint-FATE
+    algorithm: joint(global_(islip()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+  - name: Residual-MWM-Local
+    algorithm: local(global_(residual_mwm()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: Residual-MWM-Joint-FATE
+    algorithm: joint(global_(residual_mwm()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+  - name: FAST-Local
+    algorithm: local(global_(fast()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: FAST-Joint-FATE
+    algorithm: joint(global_(fast()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+  - name: Aurora-Local
+    algorithm: local(global_(aurora()))
+    information: zero
+    overlap: overlap
+    experiment_role: DIAGNOSTIC_BASELINE
+    release_mode: PHASE_BARRIER
+  - name: Aurora-Joint-FATE
+    algorithm: joint(global_(aurora()))
+    information: fate
+    overlap: overlap
+    experiment_role: EXPLICIT_DIAGNOSTIC_ABLATION
+    release_mode: RANK_LOCAL
+    allow_matched_joint_diagnostic: true
+repetitions:
+  warmup: 0
+  measure: 1
+  seed: 20260801
+oracle:
+  time_limit_ms_per_window: 1000
+  relative_gap: 0.05
+  require_all_certified: false
+execution:
+  mode: SUBPROCESS_ISOLATED
+  per_run_timeout_seconds: 120
+  kill_grace_seconds: 5
+  fail_fast: false
+comparison:
+  claim_mode: DIAGNOSTIC
+  baseline: Greedy-Local
+  primary_metric: compute_excluded_communication_makespan_ns_sum
+  target_improvement_percent: 0.0
+  tie_tolerance_percent: 0.05
+  minimum_paired_samples: 3
+output:
+  directory: /results/experiments/current_p12_ep8_joint_baseline_p2_adaptation
+  save_raw_events: false
+  save_task_timeline: false
+  save_plans: true
+  overwrite: false

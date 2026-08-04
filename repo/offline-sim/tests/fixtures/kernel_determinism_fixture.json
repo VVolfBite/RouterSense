@@ -1,0 +1,77 @@
+{
+  "completion_order": [
+    "edge-0",
+    "edge-1",
+    "edge-2",
+    "edge-3"
+  ],
+  "event_digest": "6adedf52060f51065d009c29458207d52e38e61f5619e2c428276357a8c995c4",
+  "timeline_digest": "ed829ba3a1e6f95802e5c78edd0fd28df540eb46c60581273a5fc130a0f240b4",
+  "timeline_shape": [
+    [
+      "descriptor",
+      0,
+      3
+    ],
+    [
+      "permit",
+      0,
+      4
+    ],
+    [
+      "permit",
+      0,
+      4
+    ],
+    [
+      "permit",
+      0,
+      4
+    ],
+    [
+      "permit",
+      0,
+      4
+    ],
+    [
+      "submit",
+      0,
+      7
+    ],
+    [
+      "submit",
+      0,
+      7
+    ],
+    [
+      "submit",
+      0,
+      7
+    ],
+    [
+      "submit",
+      0,
+      7
+    ],
+    [
+      "complete",
+      1,
+      1
+    ],
+    [
+      "complete",
+      1,
+      1
+    ],
+    [
+      "complete",
+      1,
+      1
+    ],
+    [
+      "complete",
+      1,
+      1
+    ]
+  ]
+}

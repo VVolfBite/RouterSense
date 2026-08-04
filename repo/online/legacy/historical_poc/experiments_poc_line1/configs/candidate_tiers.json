@@ -1,0 +1,37 @@
+{
+  "prompt_set": "RS/artifacts/poc_line1/prompt_sets/olmoe_oasst256_unique.jsonl",
+  "notes": {
+    "tier1": "final-conclusion candidate pool; representative matchups only",
+    "tier2": "promotion pool; small-to-mid scale quick screening for promising upgrades",
+    "tier3": "fast rejection pool for first-try ideas"
+  },
+  "configs": {
+    "tier1": {
+      "num_gpus": 16,
+      "sample_limit": 256,
+      "phase2_source": "actual",
+      "next_mode": "predicted",
+      "skip_oracle": true,
+      "skip_fast_best_of": true,
+      "algorithms": "B_birkhoff,B_birkhoff_wave,U_gated_maxweight_matching,U_barrier_criticality_global_matching,U_gated_maxweight_matching_atomic,U_lagrangian"
+    },
+    "tier2": {
+      "num_gpus": 8,
+      "sample_limit": 64,
+      "phase2_source": "actual",
+      "next_mode": "predicted",
+      "skip_oracle": true,
+      "skip_fast_best_of": true,
+      "algorithms": "B_birkhoff,B_birkhoff_wave,B_barrier_aware_birkhoff,B_barrier_aware_birkhoff_wave,U_cp_lpt,U_lagrangian,U_ibbr,U_gated_greedy_maximal,U_gated_greedy_maximal_atomic,U_barrier_price_adaptive_matching,U_barrier_price_adaptive_matching_atomic,oracle_wave_atomic"
+    },
+    "tier3": {
+      "num_gpus": 4,
+      "sample_limit": 32,
+      "phase2_source": "actual",
+      "next_mode": "predicted",
+      "skip_oracle": true,
+      "skip_fast_best_of": true,
+      "algorithms": "lookahead_lpt,completion_balanced,critical_path_compression,cp_local_swap,quantized_decomposed"
+    }
+  }
+}

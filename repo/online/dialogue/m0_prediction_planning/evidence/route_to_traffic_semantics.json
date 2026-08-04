@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "source_test": "tests/contract/test_prediction_api.py::test_route_to_traffic_mapper_supports_ranked_routes_and_skips_diagonal",
+  "verified": [
+    "RouteToTrafficMapper supports ranked source-rank routes through map_ranked(...)",
+    "diagonal self-traffic is excluded from the remote communication matrix",
+    "output remains world_size x world_size in row units"
+  ]
+}

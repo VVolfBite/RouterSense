@@ -1,0 +1,36 @@
+schema_version: 1
+run:
+  kind: offline_replay
+  name: offline_replay_smoke
+model: {}
+topology: {}
+workload: {}
+runtime:
+  line: offline_replay
+  invariant_mode: evaluation_strict
+traffic:
+  matrix_unit: rows
+  bucket_rows:
+    - 512
+    - 1024
+policy:
+  names:
+    - fifo_bucket
+    - birkhoff_bucket_phase_local
+    - barrier_criticality_joint
+    - barrier_criticality_runtime_safe
+prediction:
+  names:
+    - perfect_trace_hint
+evaluation:
+  max_windows: 4
+  metrics:
+    - makespan
+    - plan_digest
+replay:
+  fixture_dir: tests/fixtures/offline_replay_smoke
+  output_dir: outputs/offline/official_replay
+  scheduling_mode: execution_window
+  expert_compute_delay: 0.0
+oracle: {}
+regime_analysis: {}
